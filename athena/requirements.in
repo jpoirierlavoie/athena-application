@@ -73,7 +73,7 @@ reportlab==5.0.1
 # bomb). None are reachable here — reportlab emits tabular PDFs and no
 # untrusted image is ever decoded (no `import PIL` anywhere) — so this is a
 # hygiene bump.
-Pillow==12.3.0
+Pillow==13.0.0
 Markdown==3.11
 # bleach is archived upstream; 6.4.0 is a security release clearing the
 # URI-scheme sanitization advisories (GHSA-gj48-438w-jh9v, GHSA-8rfp-98v4-mmr6)
