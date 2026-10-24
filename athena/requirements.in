@@ -176,7 +176,7 @@ werkzeug==3.1.9
 # parent "pypdf" logger would not apply: logger filters are not inherited).
 # Re-check its prefix at every pypdf bump; tests/test_pdf_text.py fails if
 # pypdf stops logging the notice under it.
-pypdf==6.19.0
+pypdf==6.21.2
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its
 # pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the
