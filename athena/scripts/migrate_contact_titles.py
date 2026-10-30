@@ -211,7 +211,20 @@ def apply(plans: list[Plan], resync: bool) -> int:
     return 0
 
 
+def _safe_console() -> None:
+    """Never crash on the console's encoding (the lawyer's Windows console
+    encodes cp1252, which has no « → »): a character it cannot encode is
+    written as a replacement — never an exception halfway through the
+    report, or between two batches of ``--appliquer``."""
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        # A stream that cannot be reconfigured keeps its encoding — nothing to repair.
+        pass
+
+
 def main(argv: Optional[list[str]] = None) -> int:
+    _safe_console()
     parser = argparse.ArgumentParser(prog="python -m scripts.migrate_contact_titles")
     parser.add_argument("--appliquer", action="store_true",
                         help="écrire (par défaut : afficher seulement)")

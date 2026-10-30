@@ -115,3 +115,16 @@ def test_une_fiche_modifiee_pendant_la_passe_n_est_pas_ecrasee(fake, monkeypatch
 
 def test_aucun_contact_lu_est_un_echec(fake):
     assert script.main(["--appliquer"]) == 1
+
+
+def test_une_console_cp1252_ne_fait_pas_tomber_le_rapport(fake, monkeypatch):
+    """La console Windows de l'avocat encode cp1252, sans « → » : le premier
+    essai réel du rapport levait UnicodeEncodeError à la première paire."""
+    import io
+
+    _legacy(fake)
+    brut = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(brut, encoding="cp1252"))
+    assert script.main([]) == 0
+    sys.stdout.flush()
+    assert "Avocate — Associée".encode("cp1252") in brut.getvalue()
