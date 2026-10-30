@@ -1,4 +1,25 @@
-"""Partie (contact/party) Firestore CRUD and vCard 4.0 serialization."""
+"""Partie (contact/party) Firestore CRUD and vCard 4.0 serialization.
+
+Names, titles and occupation (2026-10-30). A natural person's ``prefix`` is
+an honorific title of ``utils/civilite.PREFIX_LABELS``; ``middle_name`` and
+``suffix`` (« Ad. E. », « j.c.s. ») are the other two parts of vCard ``N``
+the contact keeps; ``occupation`` is a key of
+``utils/occupations.OCCUPATION_LABELS`` (art. 14 of the lawyers'
+accounting regulation), never serialized. ``job_title`` is the « Poste ou
+profession » (vCard TITLE); ``organization`` names the employer, the
+business or the school the work coordinates belong to.
+
+Two declared exceptions to « the model validates a whitelist »:
+
+* a title received over CardDAV is NORMALIZED (« Dr. » → « Dr »,
+  ``civilite.canonical_prefix``), and one this vocabulary does not know is
+  KEPT as received — refusing the PUT would stop DavX5 from syncing. Every
+  other writer may only store a key of the vocabulary, or leave an unknown
+  stored title unchanged (``_vocabulary_errors``);
+* ``job_role`` (« Fonction », vCard ROLE) left the schema: a stored one is
+  folded into ``job_title`` by every write (``_retire_job_role``) and by the
+  one-shot ``scripts/migrate_contact_titles.py``, never dropped.
+"""
 
 import logging
 import uuid
@@ -13,7 +34,7 @@ from google.api_core.exceptions import AlreadyExists
 from models import aggregation_values, concurrency, dav_ids, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
-from utils import kyc
+from utils import civilite, kyc, occupations
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.validators import (
     apply_address_defaults,
@@ -42,7 +63,10 @@ VALID_CONTACT_ROLES = (
     "notaire",
     "autre",
 )
-VALID_PREFIXES = ("Me", "M.", "Mme", "")
+# Derived from the pure vocabularies (the connector's enums and the forms
+# read the same tuples; tests pin every copy).
+VALID_PREFIXES = civilite.PREFIXES + ("",)
+VALID_OCCUPATIONS = occupations.OCCUPATIONS + ("",)
 VALID_LANGUAGES = ("fr", "en", "es", "")
 VALID_GENDERS = ("M", "F", "O", "N", "U", "")
 VALID_PRONOUNS = (
@@ -95,6 +119,8 @@ def _default_doc() -> dict:
         "first_name": "",
         "last_name": "",
         "prefix": "",
+        "middle_name": "",         # Autres prénoms (vCard N, 3rd component)
+        "suffix": "",              # Ad. E., j.c.s. (vCard N, 5th component)
         # Date de naissance — DATE SEULE, stockée à minuit UTC (convention
         # dossier.opened_date). Ne JAMAIS la rendre via to_mtl : la conversion
         # vers Montréal la reculerait d'un jour.
@@ -107,10 +133,10 @@ def _default_doc() -> dict:
         "language": "",
         "gender": "",
         "pronouns": "",
-        # Professional coordinates
-        "job_title": "",
-        "job_role": "",
-        "organization": "",
+        # Occupation and professional coordinates
+        "occupation": "",          # utils/occupations key; never on the vCard
+        "job_title": "",           # Poste ou profession (vCard TITLE)
+        "organization": "",        # Employer / business / school (vCard ORG)
         # Personal contact
         "email": "",
         "phone_home": "",
@@ -333,6 +359,19 @@ def _validate(data: dict) -> list[str]:
 
 def _normalize(data: dict) -> dict:
     """Normalize input data before validation."""
+    # Name components — ONLY those the caller sent (no key added). A vCard
+    # component can be multi-valued and vobject hands it over as a LIST,
+    # which _sanitize_data (top-level strings only) let through to storage
+    # and display_name then failed to join: joined here, as DavX5 does.
+    for field in ("first_name", "last_name", "middle_name", "suffix"):
+        if field in data and not isinstance(data[field], str):
+            data[field] = civilite.as_text(data[field])
+    # The title: a known spelling becomes its key (« Dr. » → « Dr ») — the
+    # declared normalization of the module docstring; an unknown one is kept
+    # as received and judged by _vocabulary_errors.
+    if "prefix" in data:
+        data["prefix"] = civilite.canonical_prefix(data["prefix"])
+
     # Apply address defaults
     for prefix in ("address", "work_address"):
         data = apply_address_defaults(data, prefix)
@@ -408,16 +447,78 @@ def _normalize(data: dict) -> dict:
     return data
 
 
+# Refusals of _vocabulary_errors — constants, so a caller (and a test) can
+# tell them apart; neither echoes the value.
+PREFIX_INVALID = "Titre invalide : choisissez un titre de la liste."
+OCCUPATION_INVALID = "Occupation invalide : choisissez une occupation de la liste."
+
+
+def _vocabulary_errors(
+    data: dict, merged: dict, existing: Optional[dict]
+) -> list[str]:
+    """The title and the occupation, judged only when the write CARRIES them.
+
+    An unknown title is refused only when it CHANGES and does not come from
+    a phone (module docstring): a contact holding one, received over
+    CardDAV, stays editable in the web form, which re-posts it unchanged —
+    a new rule never locks a legacy record.
+    """
+    errors: list[str] = []
+    if "prefix" in data:
+        prefix = merged.get("prefix", "")
+        unchanged = existing is not None and prefix == civilite.canonical_prefix(
+            existing.get("prefix", ""))
+        if (not civilite.is_known(prefix) and not unchanged
+                and provenance.current_via() != "dav"):
+            errors.append(PREFIX_INVALID)
+    if "occupation" in data and merged.get("occupation", "") not in VALID_OCCUPATIONS:
+        errors.append(OCCUPATION_INVALID)
+    return errors
+
+
+def fold_job_role(title: str, role: str) -> str:
+    """« Poste ou profession » holding what « Fonction » said too.
+
+    ``job_role`` left the schema (module docstring); its text is kept in
+    ``job_title``: alone when the title is empty, dropped when the title
+    already contains it, else appended after an em dash. Idempotent — the
+    edit form shows the folded title, which the save folds again. Shared
+    with the one-shot migration script, so the two can never fold
+    differently.
+    """
+    title = (title or "").strip()
+    role = (role or "").strip()
+    if not role or role.casefold() in title.casefold():
+        return title
+    if not title:
+        return role
+    return f"{title} — {role}"
+
+
+def _retire_job_role(doc: dict) -> None:
+    """Fold a stored ``job_role`` into ``job_title`` and drop the key — on
+    the full document every writer ``set()``s, so a save made before the
+    migration script ran never loses the « Fonction » text."""
+    role = doc.pop("job_role", None)
+    if isinstance(role, str) and role.strip():
+        doc["job_title"] = fold_job_role(
+            civilite.as_text(doc.get("job_title", "")), role)
+
+
 def display_name(partie: dict) -> str:
-    """Compute a human-readable display name."""
-    if partie.get("type") == "organization":
-        return partie.get("organization_name", "")
-    parts = [
-        partie.get("prefix", ""),
-        partie.get("first_name", ""),
-        partie.get("last_name", ""),
-    ]
-    return " ".join(p for p in parts if p).strip()
+    """Compute a human-readable display name: the title, the first and the
+    last name (never the suffix — dossier snapshots copy this)."""
+    return civilite.full_name(partie, honorific=True)
+
+
+def formal_name(partie: dict) -> str:
+    """:func:`display_name` followed by the honorific suffix
+    (« L'hon. Marie Côté, j.c.s. ») — the fiche's heading, nothing else."""
+    name = display_name(partie)
+    suffix = civilite.as_text(partie.get("suffix", ""))
+    if partie.get("type") != "organization" and suffix and name:
+        return f"{name}, {suffix}"
+    return name
 
 
 def _migrate_mandataires(partie: Optional[dict]) -> Optional[dict]:
@@ -492,7 +593,8 @@ def create_partie(
 
     data = _normalize(data)
     merged = {**_default_doc(), **_sanitize_data(data)}
-    errors = _validate(merged)
+    _retire_job_role(merged)
+    errors = _validate(merged) + _vocabulary_errors(data, merged, None)
     if errors:
         return None, errors
 
@@ -641,16 +743,12 @@ def list_parties(
             filtered = []
             for c in results:
                 searchable = " ".join(
-                    [
-                        c.get("first_name", ""),
-                        c.get("last_name", ""),
-                        c.get("organization_name", ""),
-                        c.get("trade_name", ""),
-                        c.get("email", ""),
-                        c.get("phone_cell", ""),
-                        c.get("phone_home", ""),
-                        c.get("phone_work", ""),
-                    ]
+                    civilite.as_text(c.get(key, ""))
+                    for key in (
+                        "first_name", "last_name", "organization_name",
+                        "trade_name", "email", "phone_cell", "phone_home",
+                        "phone_work",
+                    )
                 ).lower()
                 if term in searchable:
                     filtered.append(c)
@@ -867,9 +965,14 @@ def _update_partie(
     if expected_etag is None and kyc_source == kyc.SOURCE_MCP:
         expected_etag = concurrency.etag_of(existing)
 
+    # Identity is the model's (Rules 6 and 11): a vCard PUT carries its UID
+    # and a caller may echo an id — neither ever replaces the stored one.
+    for key in ("id", "vcard_uid", "dav_href"):
+        data.pop(key, None)
     data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}
-    errors = _validate(merged)
+    _retire_job_role(merged)
+    errors = _validate(merged) + _vocabulary_errors(data, merged, existing)
     if errors:
         return None, errors, 0
     errors = _mandataire_fitness_errors(partie_id, existing, merged)
@@ -1554,16 +1657,23 @@ def partie_to_vcard(partie: dict) -> str:
     # VERSION — force 4.0
     card.add("version").value = "4.0"
 
-    # FN (formatted name)
+    # FN (formatted name) — a person's WITHOUT the title (2026-10-30): the
+    # phone lists contacts by FN, and « M. », « Mme », « Me » filed most of
+    # them under M. The title travels in N, which DavX5 shows as « Préfixe ».
     fn = display_name(partie)
+    if partie.get("type") != "organization":
+        fn = civilite.full_name(partie, honorific=False) or fn
     card.add("fn").value = fn
 
-    # N (structured name)
+    # N (structured name): family; given; additional (« Autres prénoms »);
+    # honorific prefix (the title); honorific suffix (RFC 6350 §6.2.2).
     n = card.add("n")
     n.value = vobject.vcard.Name(
-        family=partie.get("last_name", ""),
-        given=partie.get("first_name", ""),
-        prefix=partie.get("prefix", ""),
+        family=civilite.as_text(partie.get("last_name", "")),
+        given=civilite.as_text(partie.get("first_name", "")),
+        additional=civilite.as_text(partie.get("middle_name", "")),
+        prefix=civilite.as_text(partie.get("prefix", "")),
+        suffix=civilite.as_text(partie.get("suffix", "")),
     )
 
     # ORG
@@ -1584,13 +1694,10 @@ def partie_to_vcard(partie: dict) -> str:
         if jour is not None:
             card.add("bday").value = jour.strftime("%Y%m%d")
 
-    # TITLE
+    # TITLE — the « Poste ou profession ». ROLE (« Fonction ») left the
+    # schema with job_role and is no longer written.
     if partie.get("job_title"):
         card.add("title").value = partie["job_title"]
-
-    # ROLE
-    if partie.get("job_role"):
-        card.add("role").value = partie["job_role"]
 
     # EMAIL
     if partie.get("email"):
@@ -1615,13 +1722,16 @@ def partie_to_vcard(partie: dict) -> str:
             tel.value = partie[field]
             tel.type_param = tel_type
 
-    # ADR — home
+    # ADR — home. Written only when the block holds a LOCATION (street,
+    # unit, city or postal code): province and country alone are the
+    # defaults every record carries, and emitting them showed an address
+    # « Québec, Canada » on the phone for a contact who has none. Not
+    # writing one erases nothing: the parser omits an ADR it did not get.
     home_parts = [
         partie.get("address_street", ""),
+        partie.get("address_unit", ""),
         partie.get("address_city", ""),
-        partie.get("address_province", ""),
         partie.get("address_postal_code", ""),
-        partie.get("address_country", ""),
     ]
     if any(home_parts):
         adr = card.add("adr")
@@ -1635,13 +1745,12 @@ def partie_to_vcard(partie: dict) -> str:
         )
         adr.type_param = "HOME"
 
-    # ADR — work
+    # ADR — work (same rule as home)
     work_parts = [
         partie.get("work_address_street", ""),
+        partie.get("work_address_unit", ""),
         partie.get("work_address_city", ""),
-        partie.get("work_address_province", ""),
         partie.get("work_address_postal_code", ""),
-        partie.get("work_address_country", ""),
     ]
     if any(work_parts):
         adr = card.add("adr")
@@ -1672,6 +1781,11 @@ def partie_to_vcard(partie: dict) -> str:
         if hasattr(updated, "strftime"):
             card.add("rev").value = updated.strftime("%Y%m%dT%H%M%SZ")
 
+    # PRONOUNS (RFC 9554), and X-PRONOUN for the clients that predate it.
+    if partie.get("pronouns"):
+        card.add("pronouns").value = partie["pronouns"]
+        card.add("x-pronoun").value = partie["pronouns"]
+
     # Serialize to string, then append vCard 4.0 properties that vobject
     # doesn't natively support.
     vcf = card.serialize()
@@ -1679,14 +1793,12 @@ def partie_to_vcard(partie: dict) -> str:
     # Force VERSION:4.0 (vobject defaults to 3.0)
     vcf = vcf.replace("VERSION:3.0", "VERSION:4.0")
 
-    # Append LANG, GENDER, X-PRONOUN before the final END:VCARD
+    # Append LANG, GENDER before the final END:VCARD
     extra_lines = []
     if partie.get("language"):
         extra_lines.append(f"LANG:{partie['language']}")
     if partie.get("gender"):
         extra_lines.append(f"GENDER:{partie['gender']}")
-    if partie.get("pronouns"):
-        extra_lines.append(f"X-PRONOUN:{partie['pronouns']}")
 
     if extra_lines:
         vcf = vcf.replace(
@@ -1701,12 +1813,17 @@ def vcard_to_partie(vcard_str: str) -> dict:
     card = vobject.readOne(vcard_str)
     data: dict = {}
 
-    # N
+    # N — every component is set when N is present (the phone sends the
+    # whole name). A multi-valued component arrives as a list and is joined
+    # with spaces, as DavX5 joins it; the title is canonicalized by the
+    # model (_normalize). An RFC 9554 N (seven components) reads as five.
     if hasattr(card, "n"):
         n = card.n.value
-        data["last_name"] = getattr(n, "family", "")
-        data["first_name"] = getattr(n, "given", "")
-        data["prefix"] = getattr(n, "prefix", "")
+        data["last_name"] = civilite.as_text(getattr(n, "family", ""))
+        data["first_name"] = civilite.as_text(getattr(n, "given", ""))
+        data["middle_name"] = civilite.as_text(getattr(n, "additional", ""))
+        data["prefix"] = civilite.as_text(getattr(n, "prefix", ""))
+        data["suffix"] = civilite.as_text(getattr(n, "suffix", ""))
 
     # ORG
     if hasattr(card, "org"):
@@ -1714,11 +1831,9 @@ def vcard_to_partie(vcard_str: str) -> dict:
         if isinstance(org_val, list) and org_val:
             data["organization"] = org_val[0]
 
-    # TITLE, ROLE
+    # TITLE. A ROLE is ignored: « Fonction » left the schema.
     if hasattr(card, "title"):
         data["job_title"] = card.title.value
-    if hasattr(card, "role"):
-        data["job_role"] = card.role.value
 
     # BDAY — la clé est OMISE quand la propriété est absente, jamais mise à
     # None : update_partie fusionne {**existing, **data}, donc une clé
@@ -1831,14 +1946,20 @@ def vcard_to_partie(vcard_str: str) -> dict:
     if hasattr(card, "uid"):
         data["vcard_uid"] = card.uid.value
 
-    # Parse raw lines for LANG, GENDER, X-PRONOUN (not supported by vobject)
+    # PRONOUNS (RFC 9554) wins over the older X-PRONOUN; vobject parses
+    # both with their parameters and unfolded. Neither present: no key.
+    for prop in ("pronouns", "x-pronoun"):
+        lines = card.contents.get(prop) or []
+        if lines:
+            data["pronouns"] = str(lines[0].value or "").strip()
+            break
+
+    # Parse raw lines for LANG, GENDER (not supported by vobject)
     for line in vcard_str.splitlines():
         upper_line = line.upper()
         if upper_line.startswith("LANG:"):
             data["language"] = line.split(":", 1)[1].strip()
         elif upper_line.startswith("GENDER:"):
             data["gender"] = line.split(":", 1)[1].strip()
-        elif upper_line.startswith("X-PRONOUN:"):
-            data["pronouns"] = line.split(":", 1)[1].strip()
 
     return data

@@ -183,8 +183,8 @@ from services import rendez_vous as rendez_vous_service
 from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, budget_math, deadlines, docx_templatize, kyc, pdf_text,
-    phases, recurrence, storage_identity, taxonomie,
+    analyse_blocs, budget_math, civilite, deadlines, docx_templatize, kyc,
+    pdf_text, phases, recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import extract_placeholders, validate_template
@@ -2400,17 +2400,24 @@ def get_partie(args: dict) -> dict:
         "type": p.get("type", ""),
         "contact_role": p.get("contact_role", ""),
         "display_name": partie_model.display_name(p),
-        "prefix": p.get("prefix", ""),
-        "first_name": p.get("first_name", ""),
-        "last_name": p.get("last_name", ""),
+        # A component a phone sent multi-valued is stored as a list on a
+        # legacy record: the card's contract is a string.
+        "prefix": civilite.as_text(p.get("prefix", "")),
+        "first_name": civilite.as_text(p.get("first_name", "")),
+        "middle_name": civilite.as_text(p.get("middle_name", "")),
+        "last_name": civilite.as_text(p.get("last_name", "")),
+        "suffix": civilite.as_text(p.get("suffix", "")),
         "organization_name": p.get("organization_name", ""),
         "trade_name": p.get("trade_name", ""),
         "governing_law": p.get("governing_law", ""),
         "language": p.get("language", ""),
         "gender": p.get("gender", ""),
         "pronouns": p.get("pronouns", ""),
-        "job_title": p.get("job_title", ""),
-        "job_role": p.get("job_role", ""),
+        "occupation": p.get("occupation", ""),
+        # A « Fonction » the migration has not folded yet reads folded.
+        "job_title": partie_model.fold_job_role(
+            civilite.as_text(p.get("job_title", "")),
+            civilite.as_text(p.get("job_role", ""))),
         "organization": p.get("organization", ""),
         "email": p.get("email", ""),
         "email_work": p.get("email_work", ""),
@@ -5238,11 +5245,11 @@ def get_import_audit(args: dict) -> dict:
 # mandataires, NI birth_date : une machine n'atteste pas qu'une identité a
 # été vérifiée, et un `mandataires: []` partiel effacerait la liste.
 _PARTIE_TEXT_FIELDS = (
-    "prefix", "first_name", "last_name", "organization_name", "trade_name",
-    "governing_law", "language", "gender", "pronouns", "job_title",
-    "job_role", "organization", "email", "email_work", "phone_home",
-    "phone_cell", "phone_work", "fax", "bar_number", "company_neq", "notes",
-    "legacy_ref",
+    "prefix", "first_name", "middle_name", "last_name", "suffix",
+    "organization_name", "trade_name", "governing_law", "language", "gender",
+    "pronouns", "occupation", "job_title", "organization", "email",
+    "email_work", "phone_home", "phone_cell", "phone_work", "fax",
+    "bar_number", "company_neq", "notes", "legacy_ref",
 )
 
 

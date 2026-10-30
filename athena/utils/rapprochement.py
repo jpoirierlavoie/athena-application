@@ -19,13 +19,16 @@ import re
 import unicodedata
 from typing import Iterable, NamedTuple
 
+from utils import civilite
+
 # Formes juridiques et civilités : présentes ou non selon qui saisit, elles
 # feraient rater « Béton Nord » ↔ « Béton Nord inc. ». Écartées des DEUX côtés.
+# Les jetons des titres sont ajoutés plus bas depuis utils/civilite, la seule
+# liste (« L'hon. » donne « l » et « hon ») — jamais recopiés ici.
 _MOTS_VIDES = {
     "inc", "ltee", "ltd", "limitee", "limited", "cie", "compagnie", "corp",
     "corporation", "enr", "senc", "sencrl", "srl", "sec", "co",
     "les", "le", "la", "l", "de", "du", "des", "d", "et", "the", "of",
-    "me", "m", "mme", "dr", "dre",
 }
 
 # En deçà, un jeton ne discrimine rien (« Le », « St »).
@@ -47,6 +50,11 @@ def _plier(texte: str) -> str:
         if unicodedata.category(c) != "Mn"
     )
     return re.sub(r"[^a-z0-9]+", " ", sans_accent.lower()).strip()
+
+
+_MOTS_VIDES |= {
+    jeton for titre in civilite.PREFIXES for jeton in _plier(titre).split()
+}
 
 
 def jetons(nom: str) -> set[str]:

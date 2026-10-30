@@ -93,7 +93,7 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.role_label}}` | Capitalized role label (Demandeur, Défendeur, …) |
 | `{{dossier.demandeur}}` | Demandeur name(s), **bare** (no honorific) — alias of `{{dossier.demandeurs}}` below |
 | `{{dossier.defendeur}}` | Défendeur name(s), **bare** — alias of `{{dossier.defendeurs}}` below |
-| `{{dossier.demandeur_avec_civilite}}` | Demandeur name(s) **with** Me/M./Mme |
+| `{{dossier.demandeur_avec_civilite}}` | Demandeur name(s) **with** honorific |
 | `{{dossier.defendeur_avec_civilite}}` | Défendeur name(s) **with** honorific |
 | `{{dossier.adresse_demandeur}}` | One-line address of the demandeur side |
 | `{{dossier.adresse_defendeur}}` | One-line address of the défendeur side |
@@ -189,7 +189,7 @@ Each of the three slots exposes the **same 14 fields**. Replace `<slot>` with
 | Placeholder | Value |
 |---|---|
 | `{{<slot>.nom_complet}}` | Full name, **bare** (no honorific); organizations → legal name |
-| `{{<slot>.nom_complet_avec_civilite}}` | Full name **with** honorific (accented `…_civilité` also works) |
+| `{{<slot>.nom_complet_avec_civilite}}` | Full name **with** honorific — the contact's title (`utils/civilite.py`), never the honorific suffix (« Ad. E. », « j.c.s. ») nor the other given names (accented `…_civilité` also works) |
 | `{{<slot>.prenom}}` | First name (individuals only) |
 | `{{<slot>.nom}}` | Last name (individuals only) |
 | `{{<slot>.organisation}}` | Organization name |

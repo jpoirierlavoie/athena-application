@@ -462,7 +462,8 @@ def put_resource(partie_id: str) -> Response:
         return Response("Bad Request — invalid vCard", status=400)
 
     if existing:
-        # Update
+        # Update. The parser hands over the card's UID: the model drops it
+        # (Rule 11 — a contact's UID never changes after creation).
         updated, errors = update_partie(partie_id, data)
         if errors:
             return _refused(partie_id, errors)

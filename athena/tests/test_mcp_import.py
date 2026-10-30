@@ -471,15 +471,18 @@ def test_le_type_ne_se_change_pas_en_correction():
 
 
 def test_les_vocabulaires_non_valides_par_le_modele_sont_bornes_au_schema():
-    """VALID_PREFIXES / LANGUAGES / GENDERS / PRONOUNS sont déclarés dans le
-    modèle et JAMAIS vérifiés par son _validate : le formulaire web les
-    contraint par un <select>, le modèle non. Sur le chemin du connecteur,
-    l'enum du schéma est donc l'UNIQUE garde."""
+    """VALID_LANGUAGES / GENDERS / PRONOUNS sont déclarés dans le modèle et
+    JAMAIS vérifiés par son _validate : le formulaire web les contraint par un
+    <select>, le modèle non. Sur le chemin du connecteur, l'enum du schéma est
+    donc l'UNIQUE garde. Le titre et l'occupation sont vérifiés par le modèle
+    depuis le 2026-10-30 (_vocabulary_errors) ; leur enum reste épinglée au
+    même vocabulaire."""
     import models.partie as partie_model
 
     props = tools.TOOLS["create_partie"]["input_schema"]["properties"]
     for field, vocab in (
         ("prefix", partie_model.VALID_PREFIXES),
+        ("occupation", partie_model.VALID_OCCUPATIONS),
         ("language", partie_model.VALID_LANGUAGES),
         ("gender", partie_model.VALID_GENDERS),
         ("pronouns", partie_model.VALID_PRONOUNS),
@@ -487,6 +490,37 @@ def test_les_vocabulaires_non_valides_par_le_modele_sont_bornes_au_schema():
         # Le modèle admet « » (absence) ; l'enum du connecteur ne l'expose
         # pas — on omet le paramètre pour ne rien dire.
         assert set(props[field]["enum"]) == {v for v in vocab if v}
+
+
+def test_chaque_champ_du_schema_atteint_le_modele():
+    """Un champ que le schéma accepte et que le gestionnaire ne relaie pas
+    serait reçu puis jeté en silence (2026-10-30 : middle_name, suffix,
+    occupation)."""
+    adresses = {f"{bloc}_{cle}" for bloc in ("address", "work_address")
+                for cle in handlers._ADDRESS_KEYS}
+    relaye = set(handlers._PARTIE_TEXT_FIELDS) | adresses | {"contact_role"}
+    for name in ("create_partie", "update_partie"):
+        props = set(tools.TOOLS[name]["input_schema"]["properties"])
+        # The write protocol's own arguments, and the two identity keys the
+        # handler reads itself.
+        props -= {"idempotency_key", "expected_etag", "partie_id", "type"}
+        assert props <= relaye, (name, props - relaye)
+
+
+def test_la_fonction_n_est_plus_adressable():
+    """« Fonction » (vCard ROLE) a quitté le schéma : le connecteur ne peut
+    plus l'écrire, et la carte lue la montre repliée dans le poste."""
+    for name in ("create_partie", "update_partie"):
+        assert "job_role" not in tools.TOOLS[name]["input_schema"]["properties"]
+    assert "job_role" not in handlers._PARTIE_TEXT_FIELDS
+
+
+def test_les_nouveaux_champs_atteignent_le_modele(contacts):
+    handlers.create_partie({**_INDIV, "prefix": "Dre", "middle_name": "Anne",
+                            "suffix": "Ad. E.", "occupation": "retraite"})
+    created = contacts["created"]
+    assert (created["prefix"], created["middle_name"], created["suffix"],
+            created["occupation"]) == ("Dre", "Anne", "Ad. E.", "retraite")
 
 
 # ── update_partie ──────────────────────────────────────────────────────────

@@ -22,7 +22,9 @@ from tz import to_mtl
 # models.* (see the literal-enum comment below).
 from utils import analyse_taxonomies as _tax
 from utils import docx_templatize as _templatize
+from utils import civilite as _civilite
 from utils import kyc as _kyc
+from utils import occupations as _occupations
 from utils import phases
 from utils import recurrence
 
@@ -1103,11 +1105,14 @@ _CONTACT_ROLES = [
 ]
 _PARTIE_TYPES = ["individual", "organization"]
 
-# Lot Q. These four are declared in models/partie.py and NEVER checked by its
-# _validate — the web form constrains them with a <select>, the model does
-# not. On the connector's path the schema enum is therefore the ONLY guard:
-# without it « gender: banana » persists silently onto a vCard.
-_PARTIE_PREFIXES = ["Me", "M.", "Mme"]
+# Lot Q. Language, gender and pronouns are declared in models/partie.py and
+# NEVER checked by its _validate — the web form constrains them with a
+# <select>, the model does not. On the connector's path the schema enum is
+# therefore the ONLY guard: without it « gender: banana » persists silently
+# onto a vCard. The title and the occupation are checked by the model too
+# (2026-10-30); their enums derive from the pure vocabularies.
+_PARTIE_PREFIXES = list(_civilite.PREFIXES)
+_PARTIE_OCCUPATIONS = list(_occupations.OCCUPATIONS)
 _PARTIE_LANGUAGES = ["fr", "en", "es"]
 _PARTIE_GENDERS = ["M", "F", "O", "N", "U"]
 _PARTIE_PRONOUNS = ["il/lui", "elle", "iel", "he/him", "she/her", "they/them"]
@@ -1125,10 +1130,9 @@ def _address_props(prefix: str, which: str) -> dict:
             "type": "string",
             "maxLength": 200,
             "description": (
-                f"{which} address — {key}. The SIX keys of a block must be "
-                "supplied together (unit and postal_code may be empty "
-                "strings); a partial block would be completed with "
-                "Montréal / Québec / Canada defaults."
+                f"{which} address — {key}. Send the six keys of the block "
+                "together (unit, postal_code may be empty): a partial block "
+                "is completed with Montréal / Québec / Canada."
             ),
         }
         for key in _ADDRESS_KEYS
@@ -1140,12 +1144,16 @@ def _partie_identity_props() -> dict:
     return {
         "prefix": {
             "type": "string", "enum": _PARTIE_PREFIXES,
-            "description": "Civility of a natural person.",
+            "description": "Honorific title (vCard N prefix).",
         },
         "first_name": {"type": "string", "maxLength": 200,
                        "description": "Given name (natural person)."},
+        "middle_name": {"type": "string", "maxLength": 200,
+                        "description": "Other given names."},
         "last_name": {"type": "string", "maxLength": 200,
                       "description": "Family name — REQUIRED on an individual."},
+        "suffix": {"type": "string", "maxLength": 100,
+                   "description": "Honorific suffix: Ad. E., j.c.s."},
         "organization_name": {
             "type": "string", "maxLength": 300,
             "description": (
@@ -1162,13 +1170,13 @@ def _partie_identity_props() -> dict:
         "gender": {"type": "string", "enum": _PARTIE_GENDERS,
                    "description": "vCard GENDER."},
         "pronouns": {"type": "string", "enum": _PARTIE_PRONOUNS,
-                     "description": "vCard X-PRONOUN."},
+                     "description": "vCard PRONOUNS."},
+        "occupation": {"type": "string", "enum": _PARTIE_OCCUPATIONS,
+                       "description": "Occupation (art. 14). Not on the vCard."},
         "job_title": {"type": "string", "maxLength": 200,
-                      "description": "vCard TITLE."},
-        "job_role": {"type": "string", "maxLength": 200,
-                     "description": "vCard ROLE."},
+                      "description": "Position or profession (vCard TITLE)."},
         "organization": {"type": "string", "maxLength": 300,
-                         "description": "Employer (vCard ORG)."},
+                         "description": "Employer, business or school (vCard ORG)."},
         "email": {"type": "string", "maxLength": 254,
                   "description": "Personal email; normalised to lowercase."},
         "email_work": {"type": "string", "maxLength": 254,

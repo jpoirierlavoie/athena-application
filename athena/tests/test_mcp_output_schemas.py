@@ -503,6 +503,25 @@ def test_get_partie_both_branches_conform(monkeypatch):
     _conforms("get_partie", handlers.get_partie({"partie_id": "absent"}))
 
 
+def test_get_partie_list_valued_name_and_legacy_role_conform(monkeypatch):
+    """A phone stored name components as LISTS before the model joined them
+    (2026-10-30): the card's contract is a string. A « Fonction » the
+    migration has not folded yet reads inside job_title; the key is gone."""
+    doc = {**_partie_doc(), "prefix": ["Dr."], "first_name": ["Jean", "Paul"],
+           "job_title": "Avocat", "job_role": "Associé"}
+    monkeypatch.setattr(handlers.partie_model, "get_partie", lambda i: doc)
+    monkeypatch.setattr(handlers.partie_model, "get_partie_strict", lambda i: doc)
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_for_partie",
+                        lambda i: [])
+    payload = handlers.get_partie({"partie_id": "p1"})
+    _conforms("get_partie", payload)
+    card = payload["partie"]
+    assert (card["prefix"], card["first_name"]) == ("Dr.", "Jean Paul")
+    assert card["job_title"] == "Avocat — Associé"
+    assert "job_role" not in card
+    assert (card["middle_name"], card["suffix"], card["occupation"]) == ("", "", "")
+
+
 def test_get_partie_list_valued_address_is_coerced_to_string(monkeypatch):
     """The CardDAV PUT path can store a LIST in an address field (vobject
     parses an unescaped ADR comma as a list; models/partie sanitizes only

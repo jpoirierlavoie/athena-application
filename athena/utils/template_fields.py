@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
-from utils import taxonomie
+from utils import civilite, taxonomie
 from utils.format_fr import format_cents_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
@@ -231,17 +231,13 @@ def fallback_value(name: str, is_auto: bool) -> str:
 # ── Partie helpers ──────────────────────────────────────────────────────
 
 def _display_name(partie: dict) -> str:
-    """Full name WITH the honorific — mirror of models.partie.display_name.
+    """Full name WITH the honorific — what models.partie.display_name
+    returns (both read ``utils.civilite.full_name``).
 
     Used only by the ``…_avec_civilite`` twin fields; the default name
-    fields use :func:`_nom_bare`. Kept local so this module stays importable
-    without the Firestore client.
+    fields use :func:`_nom_bare`. Never the honorific suffix.
     """
-    if partie.get("type") == "organization":
-        return partie.get("organization_name", "")
-    parts = [partie.get("prefix", ""), partie.get("first_name", ""),
-             partie.get("last_name", "")]
-    return " ".join(p for p in parts if p).strip()
+    return civilite.full_name(partie, honorific=True)
 
 
 def _nom_bare(partie: dict) -> str:
@@ -251,26 +247,17 @@ def _nom_bare(partie: dict) -> str:
     civility is opt-in via the ``…_avec_civilite`` twin field. Organizations
     have no honorific, so this equals their legal name.
     """
-    if partie.get("type") == "organization":
-        return partie.get("organization_name", "")
-    parts = [partie.get("first_name", ""), partie.get("last_name", "")]
-    return " ".join(p for p in parts if p).strip()
-
-
-# Honorific prefixes that models.partie.display_name prepends to a person's
-# name. The demandeur/défendeur position fields resolve from the stored
-# snapshot name (which already carries the prefix), so the default strips a
-# leading one; the "_avec_civilite" twin keeps it.
-_CIVILITY_PREFIXES = ("Me", "Mme", "M.")
+    return civilite.full_name(partie, honorific=False)
 
 
 def _strip_civility_prefix(name: str) -> str:
-    """Drop a leading honorific (Me / Mme / M.) from a display name."""
-    stripped = name.strip()
-    for prefix in _CIVILITY_PREFIXES:
-        if stripped.startswith(prefix + " "):
-            return stripped[len(prefix) + 1:].strip()
-    return stripped
+    """Drop a leading title of ``utils.civilite`` from a display name.
+
+    The demandeur/défendeur position fields resolve from the stored snapshot
+    name (which already carries the title), so the default strips it; the
+    ``_avec_civilite`` twin keeps it.
+    """
+    return civilite.strip_prefix(name)
 
 
 _ADDRESS_COMPONENTS = ("street", "unit", "city", "province", "postal_code", "country")
@@ -810,7 +797,8 @@ def _individual_field(key: str) -> Callable[[dict], Optional[str]]:
     def fn(partie: dict) -> Optional[str]:
         if partie.get("type") == "organization":
             return None
-        return partie.get(key) or None
+        # A name component a phone sent multi-valued is a list; joined.
+        return civilite.as_text(partie.get(key)) or None
 
     return fn
 
@@ -859,7 +847,7 @@ def _firm_field(key: str) -> Callable[[_Context], Optional[str]]:
 
 def _partie_fields(slot: str) -> dict[str, tuple[Optional[str], Callable]]:
     return {
-        # Bare by default; the twin keeps the honorific (Me / M. / Mme).
+        # Bare by default; the twin keeps the honorific title.
         f"{slot}.nom_complet": (slot, _partie(slot, _nom_bare)),
         f"{slot}.nom_complet_avec_civilite": (slot, _partie(slot, _display_name)),
         f"{slot}.prenom": (slot, _partie(slot, _individual_field("first_name"))),

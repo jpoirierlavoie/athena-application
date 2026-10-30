@@ -19,7 +19,7 @@ from dav.sync import bump_ctag, record_tombstone
 from models import concurrency
 from models.audit_event import record_deletion
 from tz import to_mtl
-from utils import kyc
+from utils import civilite, kyc, occupations
 from utils.format_fr import format_date_fr
 from utils.logging_setup import log_partie_event
 from utils.template_fields import selected_address, selected_email
@@ -42,6 +42,8 @@ from models.partie import (
     create_partie,
     delete_partie,
     display_name,
+    fold_job_role,
+    formal_name,
     get_partie,
     list_parties,
     list_parties_page,
@@ -72,7 +74,9 @@ def _form_data() -> dict:
         # Individual
         "prefix": f.get("prefix", ""),
         "first_name": f.get("first_name", "").strip(),
+        "middle_name": f.get("middle_name", "").strip(),
         "last_name": f.get("last_name", "").strip(),
+        "suffix": f.get("suffix", "").strip(),
         # <input type="date"> → « AAAA-MM-JJ » ; le modèle la fixe à minuit
         # UTC, et une chaîne vide efface la date (_validate la remet à None).
         "birth_date": f.get("birth_date", "").strip(),
@@ -84,9 +88,9 @@ def _form_data() -> dict:
         "language": f.get("language", ""),
         "gender": f.get("gender", ""),
         "pronouns": f.get("pronouns", ""),
-        # Professional coordinates
+        # Occupation and professional coordinates
+        "occupation": f.get("occupation", ""),
         "job_title": f.get("job_title", "").strip(),
-        "job_role": f.get("job_role", "").strip(),
         "organization": f.get("organization", "").strip(),
         # Personal contact
         "email": f.get("email", "").strip(),
@@ -122,6 +126,29 @@ def _form_data() -> dict:
         "mandataires": _parse_mandataires_json(f.get("mandataires_json", "")),
         # Notes
         "notes": f.get("notes", "").strip(),
+    }
+
+
+def _form_context(partie: Optional[dict]) -> dict[str, Any]:
+    """The vocabularies every render of ``parties/form.html`` needs.
+
+    ``prefix_extra`` is a stored title the vocabulary does not know — one a
+    phone sent, kept by the model — offered as its own selected option, so
+    re-saving the form re-posts it unchanged instead of erasing it.
+    """
+    prefix = civilite.as_text((partie or {}).get("prefix", ""))
+    return {
+        # A legacy « Fonction » shows already folded into the title — what
+        # the save will store (models.partie._retire_job_role).
+        "job_title_value": fold_job_role(
+            civilite.as_text((partie or {}).get("job_title", "")),
+            civilite.as_text((partie or {}).get("job_role", ""))),
+        "prefix_labels": civilite.PREFIX_LABELS,
+        "prefix_value": prefix,
+        "prefix_extra": "" if civilite.is_known(prefix) else prefix,
+        "occupation_labels": occupations.OCCUPATION_LABELS,
+        "organization_labels": occupations.ORGANIZATION_LABELS,
+        "organization_label_default": occupations.ORGANIZATION_LABEL_DEFAULT,
     }
 
 
@@ -343,7 +370,8 @@ def mandataire_search() -> str:
 def _compliance_signer() -> str:
     """« Me X » — le nom du juriste, sans dupliquer une civilité présente."""
     nom = (cabinet_dict().get("nom") or "").strip()
-    if not nom or nom.lower().startswith("me "):
+    titre, _, reste = nom.partition(" ")
+    if not nom or (reste and civilite.canonical_prefix(titre) == "Me"):
         return nom
     return f"Me {nom}"
 
@@ -450,6 +478,18 @@ def partie_detail(partie_id: str) -> str:
         )
 
     partie["_display_name"] = display_name(partie)
+    # The heading carries the honorific suffix (« …, j.c.s. »), and the
+    # occupation and organization rows their labels: composed here, the
+    # template owns no vocabulary.
+    partie["_nom_entete"] = formal_name(partie)
+    partie["_occupation_label"] = occupations.occupation_label(
+        partie.get("occupation", ""))
+    partie["_organization_label"] = occupations.organization_label(
+        partie.get("occupation", ""))
+    # A « Fonction » the migration has not folded yet still shows, folded.
+    partie["_poste"] = fold_job_role(
+        civilite.as_text(partie.get("job_title", "")),
+        civilite.as_text(partie.get("job_role", "")))
     dossiers = list_dossiers_for_partie(partie_id)
     mandataires = _hydrate_mandataires(partie.get("mandataires"))
     return render_template(
@@ -506,6 +546,7 @@ def partie_new() -> str:
         role_labels=ROLE_LABELS,
         mandataires=[],
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
+        **_form_context(None),
     )
 
 
@@ -526,6 +567,7 @@ def partie_create() -> str:
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
             kyc_presumed=_kyc_presumed(None),
+            **_form_context(data),
         )
 
     bump_ctag("parties")
@@ -560,6 +602,7 @@ def partie_edit(partie_id: str) -> str:
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         kyc_presumed=_kyc_presumed(partie),
         is_dossier_client=_is_dossier_client(partie_id),
+        **_form_context(partie),
     )
 
 
@@ -594,6 +637,7 @@ def partie_update(partie_id: str) -> str:
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
             kyc_presumed=_kyc_presumed(get_partie(partie_id)),
             is_dossier_client=_is_dossier_client(partie_id),
+            **_form_context(data),
         )
 
     bump_ctag("parties")

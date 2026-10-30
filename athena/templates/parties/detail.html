@@ -84,7 +84,7 @@
         </span>
       </div>
       <div class="flex-1 min-w-0">
-        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ partie._display_name }}</h1>
+        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ partie._nom_entete }}</h1>
         {% set badge_colors = {
           'client': 'bg-indigo-100 text-indigo-700',
           'avocat_adverse': 'bg-amber-100 text-amber-700',
@@ -122,6 +122,9 @@
         <p class="text-sm text-gray-500 mt-1">
           Né(e) le {{ partie.birth_date.strftime('%Y-%m-%d') }}
         </p>
+        {% endif %}
+        {% if partie.type != 'organization' and partie.middle_name %}
+        <p class="text-sm text-gray-500 mt-1">Autres prénoms : {{ partie.middle_name }}</p>
         {% endif %}
       </div>
     </div>
@@ -190,26 +193,26 @@
 
     {# ── Professional contact info ─────────────────────────────── #}
     {% set has_work_address = partie.work_address_street or partie.work_address_city %}
-    {% set has_work_contact = partie.job_title or partie.job_role or partie.organization
+    {% set has_work_contact = partie.occupation or partie._poste or partie.organization
                               or partie.email_work or partie.phone_work or partie.fax %}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-3">{% if partie.type == 'organization' %}Coordonnées de l'entreprise{% else %}Coordonnées professionnelles{% endif %}</h2>
       <dl class="space-y-2 text-sm">
-        {% if partie.job_title %}
+        {% if partie._occupation_label %}
         <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Titre</dt>
-          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.job_title }}</dd>
+          <dt class="text-gray-500">Occupation</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie._occupation_label }}</dd>
         </div>
         {% endif %}
-        {% if partie.job_role %}
+        {% if partie._poste %}
         <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Fonction</dt>
-          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.job_role }}</dd>
+          <dt class="text-gray-500">Poste ou profession</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie._poste }}</dd>
         </div>
         {% endif %}
         {% if partie.organization %}
         <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Organisation</dt>
+          <dt class="text-gray-500">{{ partie._organization_label if partie.type != 'organization' else 'Organisation' }}</dt>
           <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.organization }}</dd>
         </div>
         {% endif %}

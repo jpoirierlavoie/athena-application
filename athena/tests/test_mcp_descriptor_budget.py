@@ -52,6 +52,13 @@ listed): 258 955 bytes, the six accounting tools 19 680, the largest still
 `update_partie` at 7 721. The write grant now sees all 88 tools (description
 + inputSchema only: ≈ 241 000 bytes).
 
+Measured again 2026-10-30, after the contacts' titles and occupation (three
+new optional properties on create_partie / update_partie — middle_name,
+suffix, occupation —, the prefix enum of eight titles, job_role gone): the
+twelve address-property descriptions were trimmed to make room, and
+`update_partie`, still the largest, went from 7 721 to 7 691 bytes
+(`create_partie` 7 477); 261 833 bytes in total.
+
 Tool COUNTS are pinned in test_mcp_tools.py, once; this file pins bytes only.
 """
 

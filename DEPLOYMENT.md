@@ -4135,6 +4135,57 @@ Notes:
   l'application.
 
 ---
+- **Contact titles, occupation and the vCard (2026-10-30).** A natural
+  person's title is one of `utils/civilite.PREFIX_LABELS` (M., Mme, Me, Dr,
+  Dre, Pr, Pre, L'hon.), plus two new parts of vCard `N`: « Autres
+  prénoms » (`middle_name`) and the honorific « Suffixe » (`suffix`: Ad. E.,
+  j.c.s.). « Occupation » (`occupation`, `utils/occupations.py` — art. 14 of
+  the lawyers' accounting regulation) is new and never serialized;
+  « Titre professionnel » became « Poste ou profession » (`job_title`,
+  TITLE) and « Fonction » (`job_role`, ROLE) left the schema: every save
+  folds a stored one into `job_title` (`partie.fold_job_role`), never drops
+  it. A title the phone sends is normalized (« Dr. » → « Dr ») and an
+  unknown one kept as received — the web and the connector store keys only.
+  The vCard: FN without the title (the phone no longer files most contacts
+  under « M »), N with every component, no ROLE, no ADR for an empty
+  address (the phantom « Québec, Canada »), PRONOUNS beside X-PRONOUN; an
+  update PUT never replaces the UID (Rule 11). The connector:
+  `create_partie` / `update_partie` gain `middle_name`, `suffix`,
+  `occupation` and lose `job_role` (a call that still sends it is refused);
+  `get_partie` reads the three new keys — still 88 tools. No index, no
+  dependency, no Tailwind recompile (compiled classes only), no DAV account
+  re-add, no §11 train (the consent text's read paragraph already covers
+  contacts). In order:
+  1. *Before the push*: `python -m scripts.migrate_contact_titles` à blanc
+     from this release's checkout (ADC, inline variables, §14). Read the
+     « Fonction » pairs and the unknown titles with the lawyer.
+  2. *The push.* Pause scheduled Claude tasks for the deploy window: a
+     same-key retry carrying `job_role` would be refused by the new schema.
+  3. *Once this release serves*: `python -m scripts.migrate_contact_titles
+     --appliquer --resynchroniser`, then à blanc again — it must read
+     « Rien à faire. ». The resync restamps EVERY contact: DavX5 downloads
+     a card again only when its ETag (the record's `etag`) changes, and the
+     serialization changed for nearly all of them.
+  4. *curl* (DavX5 fails silently): `getctag` of `/dav/addressbook/` moved;
+     a GET of a titled contact shows `FN:` without the title, `N:…;Me;`, no
+     `ROLE:`, no `ADR;` when it has no address, `PRONOUNS:` and
+     `X-PRONOUN:` when it has pronouns. The throw-away contact recipe, with
+     `If-Match`, a different `UID:` and `N:Curl;Test;Anne;L'hon.;j.c.s.`,
+     answers 204 and the GET that follows keeps the original UID.
+  5. *On the device*: contacts sort by first name; the title, the suffix and
+     the other given names show in the name editor; a suffix typed on the
+     phone reaches the fiche.
+  6. *Word*: a letter using `{{destinataire.nom_complet_avec_civilite}}` for
+     a contact titled « L'hon. » opens without repair (Change Impact item 3).
+  7. *The claude.ai plugin « athena »*: the registry fingerprint changed —
+     `python -m scripts.exporter_plugin_athena --check`, then rebuild and
+     deliver it through the `athena-plugin` mirror the same day
+     (`plugin/athena/README.md`).
+  A rollback: under the older code, never save in the web form a contact
+  titled « L'hon. » (its hand-quoted `x-data` breaks on the apostrophe and
+  the form posts an empty mandataires list) or Dr / Dre / Pr / Pre (the
+  older `<select>` has no such option and erases the title); the
+  `job_role` folded by the script stays folded.
 
 ## 16. Troubleshooting
 

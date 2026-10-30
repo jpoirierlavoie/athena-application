@@ -81,7 +81,7 @@ def _text(value: Any) -> str:
 
 
 def _name_forms(name: Any) -> list[str]:
-    """A snapshot name as stored, and without its civility (Me / Mme / M.)."""
+    """A snapshot name as stored, and without its title (utils.civilite)."""
     shown = _text(name)
     if not shown:
         return []
