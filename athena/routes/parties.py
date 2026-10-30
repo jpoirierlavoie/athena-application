@@ -22,7 +22,7 @@ from tz import to_mtl
 from utils import civilite, kyc, occupations
 from utils.format_fr import format_date_fr
 from utils.logging_setup import log_partie_event
-from utils.template_fields import selected_address, selected_email
+from utils.template_fields import selected_address, selected_email, selected_phone
 from pagination import (
     PAGE_SIZE,
     cursor_pagination,
@@ -277,6 +277,9 @@ def partie_list() -> str:
     # as open (D7), which the template alone could not know.
     for p in parties:
         p["_display_name"] = display_name(p)
+        # The row's email and phone follow the documents' choice of block.
+        p["_courriel"] = selected_email(p)
+        p["_telephone"] = selected_phone(p)
         p["_kyc_open"] = (
             p.get("contact_role") == "client"
             and not kyc.is_decided(p, kyc.FIELD_IDENTITY)
@@ -486,6 +489,10 @@ def partie_detail(partie_id: str) -> str:
         partie.get("occupation", ""))
     partie["_organization_label"] = occupations.organization_label(
         partie.get("occupation", ""))
+    # « Appeler » / « Courriel » reach the person where the documents write
+    # to them — personal first for a natural person (template_fields).
+    partie["_quick_phone"] = selected_phone(partie)
+    partie["_quick_email"] = selected_email(partie)
     # A « Fonction » the migration has not folded yet still shows, folded.
     partie["_poste"] = fold_job_role(
         civilite.as_text(partie.get("job_title", "")),

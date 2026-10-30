@@ -651,22 +651,45 @@ def test_la_date_fournie_est_conservee_et_la_due_date_en_derive(store):
 # deux adresses différentes selon la surface qui émet.
 
 
-def test_l_adresse_de_facturation_prefere_le_bloc_professionnel():
-    partie = {
-        "type": "individual", "first_name": "Jean", "last_name": "Tremblay",
-        "address_street": "1 rue Personnelle", "address_city": "Laval",
-        "work_address_street": "450 rue Sainte-Catherine Ouest",
-        "work_address_unit": "300", "work_address_city": "Montréal",
-        "work_address_province": "Québec", "work_address_postal_code": "H3B 1A7",
-    }
-    assert invoice.billing_address_from(partie) == {
-        "name": "Jean Tremblay",
-        "street": "450 rue Sainte-Catherine Ouest",
-        "unit": "300",
-        "city": "Montréal",
-        "province": "Québec",
-        "postal_code": "H3B 1A7",
-    }
+_DEUX_BLOCS = {
+    "type": "individual", "contact_role": "client",
+    "first_name": "Jean", "last_name": "Tremblay",
+    "address_street": "1 rue Personnelle", "address_city": "Laval",
+    "address_province": "Québec", "address_postal_code": "H7A 1A1",
+    "work_address_street": "450 rue Sainte-Catherine Ouest",
+    "work_address_unit": "300", "work_address_city": "Montréal",
+    "work_address_province": "Québec", "work_address_postal_code": "H3B 1A7",
+}
+_BUREAU = {
+    "name": "Jean Tremblay",
+    "street": "450 rue Sainte-Catherine Ouest",
+    "unit": "300",
+    "city": "Montréal",
+    "province": "Québec",
+    "postal_code": "H3B 1A7",
+}
+
+
+def test_la_facture_d_une_personne_physique_va_a_son_adresse_personnelle():
+    """Décision de l'avocat du 2026-10-30 : le bloc professionnel porte
+    l'adresse de l'EMPLOYEUR d'un client salarié — la facture partait chez
+    lui. Le bloc personnel l'emporte désormais (template_fields)."""
+    got = invoice.billing_address_from(dict(_DEUX_BLOCS))
+    assert got["street"] == "1 rue Personnelle" and got["city"] == "Laval"
+
+
+def test_un_role_professionnel_et_une_personne_morale_gardent_le_bureau():
+    avocat = {**_DEUX_BLOCS, "contact_role": "avocat_adverse"}
+    assert invoice.billing_address_from(avocat) == _BUREAU
+    morale = {**_DEUX_BLOCS, "type": "organization",
+              "organization_name": "Béton Nord inc."}
+    assert invoice.billing_address_from(morale) == {
+        **_BUREAU, "name": "Béton Nord inc."}
+
+
+def test_sans_adresse_personnelle_la_facture_retombe_sur_le_bureau():
+    partie = {**_DEUX_BLOCS, "address_street": "", "address_city": ""}
+    assert invoice.billing_address_from(partie) == _BUREAU
 
 
 def test_l_adresse_de_facturation_retombe_sur_le_bloc_personnel():

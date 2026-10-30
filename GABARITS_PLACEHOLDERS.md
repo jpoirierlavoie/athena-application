@@ -200,7 +200,7 @@ Each of the three slots exposes the **same 14 fields**. Replace `<slot>` with
 | `{{<slot>.pays}}` | Country |
 | `{{<slot>.adresse_complete}}` | One-line full address |
 | `{{<slot>.courriel}}` | Email (work vs. personal per selected address) |
-| `{{<slot>.telephone}}` | Phone, formatted (work → cell → home) |
+| `{{<slot>.telephone}}` | Phone, formatted, per selected address (cell → home → work, or work first) |
 | `{{<slot>.numero_barreau}}` | Bar number |
 
 > **Address selection (preference + fallback):** the contact's role decides
@@ -211,8 +211,12 @@ Each of the three slots exposes the **same 14 fields**. Replace `<slot>` with
 > the contact form hides the personal block for an organization (its address
 > can only be entered under « Adresse »/professional), while the client portal
 > writes a company's address into the personal one. Both are legitimate.
-> The email follows the block that was selected; the phone does not (it has its
-> own work → cell → home order). Affects every address/email field on the slot.
+> The email and the phone follow the block that was selected: a natural
+> person written to at home gets cell → home → work, the work block (and an
+> organization) work → cell → home — since 2026-10-30, when the work block of
+> a client began to hold an EMPLOYER's coordinates and letters printed the
+> employer's switchboard. The invoice's billing address uses the same choice
+> for a natural person. Affects every address/email/phone field on the slot.
 
 ### `cabinet.*` (your firm)
 

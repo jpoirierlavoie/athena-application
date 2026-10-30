@@ -331,6 +331,41 @@ def selected_address(partie: dict) -> dict[str, str]:
     return _selected_address(partie)[0]
 
 
+def uses_work_block(partie: dict) -> bool:
+    """Whether *partie* is written to at its WORK coordinates — the block
+    :func:`selected_address` chose.
+
+    A natural person's PERSONAL coordinates come first (the lawyer's
+    decision of 2026-10-30: once the work block holds an employer's
+    coordinates, a client's letters and invoices must not go to the
+    workplace), unless the person acts in a professional role
+    (``_WORK_PREFERRED_ROLES``: a lawyer, an expert, a bailiff, a notary is
+    written to at the office); the other block is the fallback.
+    """
+    return _selected_address(partie)[1]
+
+
+def _phone_order(partie: dict) -> tuple[str, ...]:
+    """The phone fields in the order the selected block calls for.
+
+    An organization keeps the work line first, whatever the block — its
+    number lives in ``phone_work`` (the form offers no other).
+    """
+    if partie.get("type") == "organization" or uses_work_block(partie):
+        return ("phone_work", "phone_cell", "phone_home")
+    return ("phone_cell", "phone_home", "phone_work")
+
+
+def selected_phone(partie: dict) -> str:
+    """The number to call or print for *partie*, as stored (E.164) — the
+    same authority as the address and the email; ``""`` when none."""
+    for key in _phone_order(partie):
+        number = (partie.get(key) or "").strip()
+        if number:
+            return number
+    return ""
+
+
 def selected_email(partie: dict) -> str:
     """The email that goes with :func:`selected_address` — same authority.
 
@@ -368,14 +403,16 @@ def _one_line_address(addr: dict[str, str]) -> Optional[str]:
 
 
 def _telephone(partie: dict) -> Optional[str]:
-    for key in ("phone_work", "phone_cell", "phone_home"):
-        number = (partie.get(key) or "").strip()
-        if number:
-            try:
-                return format_phone_display(number)
-            except Exception:
-                return number
-    return None
+    """The number that goes with the selected block (:func:`selected_phone`),
+    formatted. Was work-first for everyone: a client's letters printed the
+    employer's switchboard."""
+    number = selected_phone(partie)
+    if not number:
+        return None
+    try:
+        return format_phone_display(number)
+    except Exception:
+        return number
 
 
 # ── Resolution context ──────────────────────────────────────────────────

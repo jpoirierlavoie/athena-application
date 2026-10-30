@@ -548,11 +548,23 @@ def test_selected_address_is_the_public_authority():
     assert selected_address(_individu())["street"] == "12 rue Principale"
 
 
-def test_telephone_preference_work_then_cell_then_home():
+def test_telephone_follows_the_selected_block():
+    """Personal first for a natural person (the lawyer's decision of
+    2026-10-30 — a client's letters printed the employer's switchboard);
+    the work line first for a professional role and an organization."""
     p = _individu(phone_work="+15145550001", phone_cell="+15145550002")
-    assert "555-0001" in _resolve(["client.telephone"], client=p)["client.telephone"]
-    p = _individu(phone_work="", phone_cell="+15145550002")
     assert "555-0002" in _resolve(["client.telephone"], client=p)["client.telephone"]
+    p = _individu(phone_work="+15145550001", phone_cell="", phone_home="+15145550003")
+    assert "555-0003" in _resolve(["client.telephone"], client=p)["client.telephone"]
+    p = _individu(phone_work="+15145550001", phone_cell="")
+    assert "555-0001" in _resolve(["client.telephone"], client=p)["client.telephone"]
+    p = _individu(contact_role="avocat_adverse", phone_work="+15145550001",
+                  phone_cell="+15145550002", work_address_street="1 rue du Palais",
+                  work_address_city="Montréal")
+    assert "555-0001" in _resolve(["client.telephone"], client=p)["client.telephone"]
+    p = _individu(type="organization", organization_name="Béton Nord inc.",
+                  phone_work="+15145550001", phone_cell="+15145550002")
+    assert "555-0001" in _resolve(["client.telephone"], client=p)["client.telephone"]
 
 
 # ── resolve_values omission + firm/date ─────────────────────────────────

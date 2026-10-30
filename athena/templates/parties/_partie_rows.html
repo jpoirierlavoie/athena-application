@@ -36,9 +36,10 @@
           {{ role_labels.get(c.contact_role, 'Autre') }}
         </span>
       </div>
-      {# Contact info line — professional first, fall back to personal #}
-      {% set list_email = c.email_work or c.email %}
-      {% set list_phone = c.phone_work or c.phone_cell or c.phone_home %}
+      {# Contact info line — the coordinates the route chose
+         (template_fields: personal first for a natural person). #}
+      {% set list_email = c._courriel %}
+      {% set list_phone = c._telephone %}
       {% if list_email or list_phone %}
       <div class="text-xs text-gray-500 mt-1 truncate">
         {% if list_email %}{{ list_email }}{% endif %}

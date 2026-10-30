@@ -557,23 +557,28 @@ def billing_address_from(partie: dict) -> dict:
     snapshots — the same client billed at two different addresses depending
     on which surface issued the invoice is exactly the failure this prevents.
 
-    Behaviour is deliberately UNCHANGED: work address first, personal
-    fallback, province defaulting to « QC ».
-    ``utils.template_fields.selected_address`` is the ONE authority on which
-    block a given ROLE should try first, and this function predates it and
-    does work-then-personal unconditionally. Reconciling the two would MOVE
-    the address of existing invoices and is a separate decision — do not
-    « fix » it here. Note also the shape: {name, street, unit, city,
-    province, postal_code}. ``utils/invoice_docx._partie_from_billing_address``
-    maps ``billing["name"]`` into the recipient of the Word note d'honoraires,
-    and ``selected_address`` returns no ``name`` key at all — swapping to it
-    would produce documents with a blank addressee.
+    The BLOCK: a natural person's is the one
+    ``utils.template_fields.uses_work_block`` chooses — personal first,
+    unless a professional role — the lawyer's decision of 2026-10-30 (an
+    employee client's invoice went to the employer's address). An
+    organization keeps the older rule: work address first, personal
+    fallback. Issued invoices keep their frozen snapshot; a brouillon moves
+    only on « rafraîchir l'adresse ». Province defaults to « QC ».
+    Note the shape: {name, street, unit, city, province, postal_code}.
+    ``utils/invoice_docx._partie_from_billing_address`` maps
+    ``billing["name"]`` into the recipient of the Word note d'honoraires,
+    and ``selected_address`` returns no ``name`` key at all — so the block
+    is chosen there, and the snapshot built here.
     """
     from models.partie import display_name
+    from utils.template_fields import uses_work_block
 
     name = display_name(partie)
-    # Prefer work address if available, fall back to personal
-    if partie.get("work_address_street"):
+    if partie.get("type") != "organization":
+        work = uses_work_block(partie)
+    else:
+        work = bool(partie.get("work_address_street"))
+    if work:
         return {
             "name": name,
             "street": partie.get("work_address_street", ""),

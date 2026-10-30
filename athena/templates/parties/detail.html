@@ -129,9 +129,10 @@
       </div>
     </div>
 
-    {# Quick action buttons — prefer professional, fall back to personal #}
-    {% set quick_phone = partie.phone_work or partie.phone_cell or partie.phone_home %}
-    {% set quick_email = partie.email_work or partie.email %}
+    {# Quick action buttons — the coordinates the route chose
+       (template_fields: personal first for a natural person). #}
+    {% set quick_phone = partie._quick_phone %}
+    {% set quick_email = partie._quick_email %}
     <div class="flex gap-3 mt-4 pt-4 border-t border-gray-100">
       {% if quick_phone %}
       <a href="tel:{{ quick_phone }}"

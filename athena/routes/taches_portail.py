@@ -34,7 +34,7 @@ from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_portail_event
-from utils.template_fields import selected_address
+from utils.template_fields import selected_address, selected_phone, uses_work_block
 from utils.validators import format_phone_display
 
 logger = logging.getLogger(__name__)
@@ -181,13 +181,14 @@ def _client_expediteur(invitation: dict, partie: dict | None) -> dict:
             "telephone": "",
             "courriel": courriel_client,
         }
-    telephone = (
-        partie.get("phone_cell") or partie.get("phone_home")
-        or partie.get("phone_work") or ""
-    )
+    telephone = selected_phone(partie)
+    # A natural person's employer shows under their name only when the
+    # accusé is addressed to the work block (template_fields — personal
+    # first since 2026-10-30).
     organisation = (
         partie.get("organization")
-        if partie.get("type") != "organization" else ""
+        if partie.get("type") != "organization" and uses_work_block(partie)
+        else ""
     )
     return {
         "nom": display_name(partie) or invitation.get("client_name") or courriel_client,

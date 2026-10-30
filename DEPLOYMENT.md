@@ -4186,6 +4186,23 @@ Notes:
   the form posts an empty mandataires list) or Dr / Dre / Pr / Pre (the
   older `<select>` has no such option and erases the title); the
   `job_role` folded by the script stays folded.
+- **Personal coordinates first (2026-10-30).** Once « Occupation » made a
+  client's work block hold an EMPLOYER's coordinates, the lawyer decided
+  that a natural person is written to at home: `template_fields`
+  (`uses_work_block`, `selected_phone`, beside `selected_address` and
+  `selected_email`) is the one authority, and a natural person's personal
+  block comes first unless the contact acts in a professional role
+  (`avocat_adverse`, `expert`, `huissier`, `notaire`); an organization keeps
+  the work block first. It now also decides the invoice's billing snapshot
+  (`invoice.billing_address_from`, web and connector), the phone of every
+  gabarit (`{{<slot>.telephone}}` — cell → home → work at home), the fiche's
+  « Appeler » / « Courriel », the contact list's line and the portal's
+  accusé (no employer line under a client's name). Issued invoices keep
+  their frozen address; a brouillon moves only on « rafraîchir l'adresse ».
+  No index, no dependency, no recompile, no DAV or connector change. After
+  the push: a note d'honoraires drafted for a client holding both blocks
+  carries the home address, and a letter's `{{client.telephone}}` the cell
+  number (Word, by hand — Change Impact item 3).
 
 ## 16. Troubleshooting
 
