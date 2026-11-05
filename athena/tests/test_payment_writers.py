@@ -10,6 +10,13 @@ exactly two places, both MODELS, each inside its own Firestore transaction:
 * `models/admin_ledger` — an encaissement stages its payment in the entry's
   own commit, and a reversal reduces it the same way.
 
+Beside them, one hand-run script the lawyer decided on 2026-11-05:
+`scripts/reclassify_as_invoice_receipt.py` turns ONE administration entry
+into an invoice's encaissement OUTSIDE the models (a declared exception, its
+docstring says so) and stages this very computation for that invoice in the
+same guarded batch as the entry — the model's arithmetic, never a
+restatement of it.
+
 `services/encaissements.py` (`projeter_paiement` / `reduire_paiement`) is
 DELETED: it projected the payment AFTER the ledger commit, with a separate
 read-then-absolute write, from three callers (`routes/admin_ledger.py`,
@@ -215,10 +222,13 @@ def test_payment_updates_is_staged_only_by_the_two_models(sweep):
     """Lot 5a opened exactly the door it named: the ledger transaction in
     models/admin_ledger.py stages the payment of an encaissement (and the
     reduction of a reversed one) in its own commit. Keyed by relative path:
-    `routes/admin_ledger.py` is NOT on this list, nor any service."""
+    `routes/admin_ledger.py` is NOT on this list, nor any service. The one
+    script beside the two models is the reclassification the module
+    docstring names."""
     assert _referencing(sweep, [_PAYMENT_COMPUTATION]) == {
         "models/invoice.py",
         "models/admin_ledger.py",
+        "scripts/reclassify_as_invoice_receipt.py",
     }
 
 
