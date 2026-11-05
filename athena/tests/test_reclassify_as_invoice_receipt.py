@@ -653,6 +653,10 @@ def _stray(extra_payloads):
      "contrôle 6"),
     (lambda plan: {f"admin_transactions/{plan.spec.entry_id}": {"kind": "recette_autre"}},
      "contrôle 3"),
+    (lambda plan: {f"trust_transactions/{plan.world.store.trust_rows[0]['id']}":
+                   {"description": "Écrite par erreur"}}, "contrôle 6"),
+    (lambda plan: {f"admin_reconciliations/{plan.world.store.recs[0]['id']}":
+                   {"notes": "Écrite par erreur"}}, "contrôle 6"),
 ])
 def test_the_controls_catch_a_write_gone_astray(fake, bench, cli, monkeypatch, extra, control):
     monkeypatch.setattr(rx, "_plan_writes", _stray(extra))

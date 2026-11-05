@@ -365,6 +365,28 @@ def _load_json(path: Path, what: str) -> tuple[dict, str]:
     return data, hashlib.sha256(raw).hexdigest()
 
 
+def _parse_untouchables(raw_list) -> list:
+    """``[(path, etag)]`` of the plan's « intouchables » — documents the run
+    must find exactly as the plan states them, and leave so."""
+    if not isinstance(raw_list, list):
+        raise RunRefused("plan mal formé : « intouchables » doit être une liste")
+    untouchables = []
+    for i, item in enumerate(raw_list):
+        where = f"intouchables[{i}]"
+        if not isinstance(item, dict):
+            raise RunRefused(f"plan mal formé : « {where} » doit être un objet")
+        _exact_keys(item, ("chemin", "etag"), where)
+        path, etag = item["chemin"], item["etag"]
+        parts = path.split("/") if isinstance(path, str) else []
+        if len(parts) != 2 or parts[0] not in _READ_COLLECTIONS or not _addressable(parts[1]):
+            raise RunRefused(f"plan mal formé : « {where}.chemin » doit être « collection/id » "
+                             f"dans {', '.join(_READ_COLLECTIONS)}")
+        if not isinstance(etag, str) or not etag:
+            raise RunRefused(f"plan mal formé : « {where}.etag » doit être un texte non vide")
+        untouchables.append((path, etag))
+    return untouchables
+
+
 def parse_plan(data: dict) -> Spec:
     """The plan's form, judged before any read — any defect refuses."""
     _exact_keys({k: v for k, v in data.items() if k != "note"},
@@ -391,23 +413,7 @@ def parse_plan(data: dict) -> Spec:
     invoice_target = _exact_keys(_object(facture, "cible", "facture."), INVOICE_TARGETS,
                                  "facture.cible")
 
-    untouchables = []
-    raw_list = data.get("intouchables")
-    if not isinstance(raw_list, list):
-        raise RunRefused("plan mal formé : « intouchables » doit être une liste")
-    for i, item in enumerate(raw_list):
-        where = f"intouchables[{i}]"
-        if not isinstance(item, dict):
-            raise RunRefused(f"plan mal formé : « {where} » doit être un objet")
-        _exact_keys(item, ("chemin", "etag"), where)
-        path, etag = item["chemin"], item["etag"]
-        parts = path.split("/") if isinstance(path, str) else []
-        if len(parts) != 2 or parts[0] not in _READ_COLLECTIONS or not _addressable(parts[1]):
-            raise RunRefused(f"plan mal formé : « {where}.chemin » doit être « collection/id » "
-                             f"dans {', '.join(_READ_COLLECTIONS)}")
-        if not isinstance(etag, str) or not etag:
-            raise RunRefused(f"plan mal formé : « {where}.etag » doit être un texte non vide")
-        untouchables.append((path, etag))
+    untouchables = _parse_untouchables(data.get("intouchables"))
 
     encours = _exact_keys(_object(data, "encours", ""), ("avant", "apres"), "encours")
     periode = _exact_keys(_object(data, "periode", ""), ("du", "au"), "periode")
@@ -614,6 +620,15 @@ def _control_others(rows: list, accounts: dict, recs: list, invoices: list,
     return out
 
 
+def _merged(collection: str, docs: Optional[list], payloads: Optional[dict]) -> Optional[list]:
+    """*docs* (each carrying its ``id``) merged with *payloads* by path: the
+    simulation sees a payload on ANY document read, not only on the ones a
+    plan means to write — a write gone astray must show in the controls."""
+    if docs is None or not payloads:
+        return docs
+    return [rla._merge(doc, payloads.get(f"{collection}/{doc.get('id')}")) for doc in docs]
+
+
 def compute_controls(world: World, scope: Scope, payloads: Optional[dict] = None) -> dict:
     """The six controls and check 10, on the documents read — merged with
     *payloads* (by path) for the simulation."""
@@ -621,6 +636,8 @@ def compute_controls(world: World, scope: Scope, payloads: Optional[dict] = None
     rows = store.control_rows(payloads)
     accounts = store.control_accounts(payloads)
     invoices = world.invoices(payloads)
+    recs = _merged(RECS, store.recs, payloads)
+    trust_rows = _merged(TRUST_TX, store.trust_rows, payloads)
     skip = frozenset((f"{TX}/{scope.entry_id}", f"{INVOICES}/{scope.invoice_id}"))
     unreadable_invoices = Impossible(f"factures illisibles ({store.invoices_error})")
     unreadable_trust = Impossible(f"registre du fidéicommis illisible ({store.trust_error})")
@@ -630,13 +647,12 @@ def compute_controls(world: World, scope: Scope, payloads: Optional[dict] = None
         "3": rla._attempt(_control_results, rows, scope.period),
         "4": (rla._attempt(_control_invoice, invoices, rows, scope.invoice_id, world.lines)
               if invoices is not None else unreadable_invoices),
-        "5": rla._attempt(_control_lock, rows, accounts, store.recs, scope),
-        "6": (rla._attempt(_control_others, rows, accounts, store.recs, invoices,
-                           store.trust_rows, skip)
-              if invoices is not None and store.trust_rows is not None
+        "5": rla._attempt(_control_lock, rows, accounts, recs, scope),
+        "6": (rla._attempt(_control_others, rows, accounts, recs, invoices, trust_rows, skip)
+              if invoices is not None and trust_rows is not None
               else (unreadable_invoices if invoices is None else unreadable_trust)),
-        "10": (rla._attempt(rla._control_fee_candidates, store.trust_rows, rows)
-               if store.trust_rows is not None else unreadable_trust),
+        "10": (rla._attempt(rla._control_fee_candidates, trust_rows, rows)
+               if trust_rows is not None else unreadable_trust),
     }
 
 
@@ -758,6 +774,19 @@ def _compare(label: str, doc: dict, expected: dict, table: list, differences: li
         if not ok:
             differences.append(f"{label}, {name} : le plan attend {_v(want)}, la base porte "
                                f"{_v(have)}")
+
+
+def _compare_untouchables(untouchables: list, table: list, differences: list) -> None:
+    """Each untouchable read strictly, its etag the one the plan states."""
+    for path, etag in untouchables:
+        snap = _snapshot(path)
+        doc = snap.to_dict() if snap.exists else None
+        have = (doc or {}).get("etag") if doc is not None else "(introuvable)"
+        ok = doc is not None and have == etag
+        table.append(("Intouchable", path, etag, have, ok))
+        if not ok:
+            differences.append(f"intouchable {path} : le plan attend l'etag {etag}, la base "
+                               f"porte {have}")
 
 
 def _entry_refusals(entry: dict, spec: Spec) -> list:
@@ -905,15 +934,7 @@ def prepare(plan_path: Path) -> Plan:
                   "solde_cents": spec.balance}, plan.table, plan.differences)
         if isinstance(floor, Impossible):
             plan.differences.append(f"plancher de conciliation incalculable ({floor.reason})")
-        for path, etag in spec.untouchables:
-            snap = _snapshot(path)
-            doc = snap.to_dict() if snap.exists else None
-            have = (doc or {}).get("etag") if doc is not None else "(introuvable)"
-            ok = doc is not None and have == etag
-            plan.table.append(("Intouchable", path, etag, have, ok))
-            if not ok:
-                plan.differences.append(f"intouchable {path} : le plan attend l'etag {etag}, "
-                                        f"la base porte {have}")
+        _compare_untouchables(spec.untouchables, plan.table, plan.differences)
         plan.refusals += _entry_refusals(entry, spec)
         plan.refusals += _target_refusals(spec, invoice)
         plan.refusals += _invoice_refusals(account, invoice, entry.get("amount") or 0)
