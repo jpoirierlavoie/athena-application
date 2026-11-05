@@ -74,12 +74,14 @@
           {% for l in o.lignes %}
           <tr class="{{ 'bg-amber-50' if l.differe }}">
             <td class="py-2 px-2 text-gray-500">{{ l.libelle }}</td>
-            <td class="py-2 px-2 text-gray-700">{{ l.actuel or "—" }}</td>
-            <td class="py-2 px-2 text-gray-900">{{ l.soumis or "—" }}</td>
+            <td class="py-2 px-2 text-gray-700">{{ l.actuel_affiche or "—" }}</td>
+            <td class="py-2 px-2 text-gray-900">{{ l.soumis_affiche or "—" }}</td>
             <td class="py-2 text-center">
               {% if l.applicable %}
               <input type="checkbox" name="appliquer" value="{{ l.champ }}" checked
                      class="rounded border-gray-300">
+              {% elif l.non_reconnu %}
+              <span class="text-xs text-amber-700">non reconnue</span>
               {% else %}
               <span class="text-xs text-gray-300">—</span>
               {% endif %}
@@ -94,7 +96,9 @@
       {% for l in o.lignes %}
       <div class="flex justify-between gap-4 py-1.5">
         <dt class="text-gray-500">{{ l.libelle }}</dt>
-        <dd class="text-gray-900 text-right">{{ l.soumis or "—" }}</dd>
+        <dd class="text-gray-900 text-right">
+          {{ l.soumis_affiche or "—" }}{% if l.non_reconnu %} <span class="text-xs text-amber-700">(non reconnue, non versée)</span>{% endif %}
+        </dd>
       </div>
       {% endfor %}
     </dl>

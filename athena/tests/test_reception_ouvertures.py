@@ -624,3 +624,142 @@ def test_une_date_absente_n_efface_pas_celle_au_dossier(monkeypatch):
               for l in rc._comparaison({"date_naissance": ""}, partie)}
     assert lignes["date_naissance"]["applicable"] is False
     assert lignes["date_naissance"]["actuel"] == "1985-03-17"
+
+
+# ── Occupation (2026-11-05) ──────────────────────────────────────────────
+
+
+def _avec(**donnees) -> dict:
+    env = _enveloppe()
+    env["donnees"] = {**env["donnees"], **donnees}
+    return env
+
+
+def test_creer_verse_l_occupation_le_poste_et_l_employeur(web, scene, monkeypatch):
+    monkeypatch.setattr(rc, "_lire_enveloppe", lambda i, b: _avec(
+        occupation="salarie", poste="Technicien", employeur="Hydro-Exemple"))
+    _post(web, "/reception/ouvertures/inv1/b1/creer")
+    fiche = scene["crees"][0]
+    assert fiche["occupation"] == "salarie"
+    assert fiche["job_title"] == "Technicien"
+    assert fiche["organization"] == "Hydro-Exemple"
+
+
+def test_une_occupation_inconnue_n_est_pas_versee_et_le_message_le_dit(
+    web, scene, monkeypatch
+):
+    """Une enveloppe plus ancienne que le vocabulaire : le modèle refuserait
+    l'occupation, et avec elle toute la fiche. Elle est écartée, la fiche est
+    créée, et le juriste lit pourquoi."""
+    from urllib.parse import unquote_plus
+
+    monkeypatch.setattr(rc, "_lire_enveloppe",
+                        lambda i, b: _avec(occupation="pdg", poste="Chef"))
+    rep = _post(web, "/reception/ouvertures/inv1/b1/creer")
+    fiche = scene["crees"][0]
+    assert "occupation" not in fiche
+    assert fiche["job_title"] == "Chef"
+    assert "occupation transmise n'est pas reconnue" in unquote_plus(
+        rep.headers["Location"])
+
+
+def test_la_comparaison_lit_l_occupation_par_son_libelle():
+    lignes = {l["champ"]: l for l in rc._comparaison(
+        {"occupation": "etudiant", "employeur": "Université Exemple"},
+        {"occupation": "salarie", "organization": "Hydro-Exemple"},
+    )}
+    occ = lignes["occupation"]
+    assert (occ["actuel_affiche"], occ["soumis_affiche"]) == (
+        "Salarié(e)", "Étudiant(e)")
+    assert occ["applicable"] is True
+    # Le libellé de l'employeur suit l'occupation TRANSMISE.
+    assert lignes["employeur"]["libelle"] == "Établissement d'enseignement"
+
+
+def test_une_occupation_inconnue_n_est_jamais_proposee():
+    occ = next(l for l in rc._comparaison({"occupation": "pdg"}, {})
+               if l["champ"] == "occupation")
+    assert occ["non_reconnu"] is True
+    assert occ["applicable"] is False
+    assert occ["soumis_affiche"] == "pdg"
+
+
+def test_appliquer_l_occupation_cochee(web, scene_liee, monkeypatch):
+    monkeypatch.setattr(rc, "_lire_enveloppe", lambda i, b: _avec(
+        occupation="etudiant", employeur="Université Exemple"))
+    _post(web, "/reception/ouvertures/inv1/b1/appliquer",
+          {"appliquer": ["occupation", "employeur"]})
+    _pid, valeurs = scene_liee["maj"][0]
+    assert valeurs == {"occupation": "etudiant",
+                       "organization": "Université Exemple"}
+
+
+def test_une_occupation_inconnue_cochee_par_un_formulaire_forge_n_ecrit_rien(
+    web, scene_liee, monkeypatch
+):
+    monkeypatch.setattr(rc, "_lire_enveloppe",
+                        lambda i, b: _avec(occupation="pdg"))
+    _post(web, "/reception/ouvertures/inv1/b1/appliquer",
+          {"appliquer": ["occupation"]})
+    assert scene_liee["maj"] == []
+
+
+def test_la_vue_cote_a_cote_affiche_les_libelles(web, monkeypatch):
+    from flask import render_template
+
+    monkeypatch.setattr(rc.pi, "lister_invitations",
+                        lambda **k: [_inv(partie_id="p1")])
+    monkeypatch.setattr(rc, "_lire_enveloppe", lambda i, b: _avec(
+        occupation="retraite", poste="Enseignante"))
+    monkeypatch.setattr(rc, "list_parties", lambda **k: [])
+    monkeypatch.setattr(rc, "get_partie", lambda pid: {
+        "id": pid, "last_name": "Tremblay", "occupation": "pdg"})
+    ctx = rc._contexte_ouvertures()
+    with web.application.test_request_context():
+        html = render_template("reception/_ouvertures.html",
+                               csrf_token=lambda: "t", **ctx)
+    assert "Retraité(e)" in html
+    assert "Poste ou profession" in html
+    assert ">pdg<" in html                 # la valeur au dossier, telle quelle
+    assert 'value="occupation" checked' in html
+
+
+def test_le_prefill_d_une_personne_physique_porte_son_occupation():
+    prefill = rc.pi.prefill_depuis_partie({
+        "type": "individual", "last_name": "Tremblay",
+        "occupation": "salarie", "job_title": "Technicien",
+        "organization": "Hydro-Exemple",
+        "work_address_street": "75 boulevard Exemple",
+        "phone_work": "+15145550001", "email_work": "t@hydro.example",
+    })
+    assert (prefill["occupation"], prefill["job_title"],
+            prefill["organization"]) == ("salarie", "Technicien",
+                                         "Hydro-Exemple")
+    # Jamais les coordonnées de l'employeur : le portail ne les recueille pas.
+    for interdit in ("work_address_street", "phone_work", "email_work"):
+        assert interdit not in prefill
+    morale = rc.pi.prefill_depuis_partie({
+        "type": "organization", "organization_name": "Béton Nord inc.",
+        "occupation": "salarie", "job_title": "X", "organization": "Y",
+    })
+    for cle in ("occupation", "job_title", "organization"):
+        assert cle not in morale
+
+
+def test_les_trois_tables_du_formulaire_s_accordent():
+    """Formulaire du portail ↔ table de Réception ↔ préremplissage : un champ
+    ajouté à l'un sans l'autre serait collecté sans jamais être versé, ou
+    prérempli dans une case qui n'existe pas."""
+    import client.routes as portail
+
+    formulaire = set(portail._CHAMPS_INTAKE) - {
+        "nature", "parties_adverses", "consentement"}
+    cibles = {champ: cible for champ, cible, _l in rc._CORRESPONDANCE}
+    assert formulaire | {"courriel"} == set(cibles)
+    for cle_contact, champ in portail._PREFILL_VERS_FORMULAIRE.items():
+        assert cibles[champ] == cle_contact
+    plein = rc.pi.prefill_depuis_partie(
+        {cle: "x" for cle in (*portail._PREFILL_VERS_FORMULAIRE, "email")}
+        | {"type": "individual"})
+    assert set(plein) <= set(portail._PREFILL_VERS_FORMULAIRE) | {"type", "email"}
+    assert set(portail._PREFILL_VERS_FORMULAIRE) <= set(plein)

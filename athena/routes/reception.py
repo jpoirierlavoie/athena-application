@@ -72,7 +72,7 @@ from routes import edit_conflict
 from security import sanitize
 from services import portail_emission as emission
 from services import rendez_vous
-from utils import rapprochement, storage_identity
+from utils import occupations, rapprochement, storage_identity
 from utils.logging_setup import log_bookings_event, log_portail_event
 
 logger = logging.getLogger(__name__)
@@ -276,7 +276,22 @@ _CORRESPONDANCE = (
     ("adresse_province", "address_province", "Province"),
     ("adresse_code_postal", "address_postal_code", "Code postal"),
     ("adresse_pays", "address_country", "Pays"),
+    # Section professionnelle de la fiche (2026-11-05). Le libellé de
+    # l'employeur suit l'occupation : _comparaison le recompose.
+    ("occupation", "occupation", "Occupation"),
+    ("poste", "job_title", "Poste ou profession"),
+    ("employeur", "organization", occupations.ORGANIZATION_LABEL_DEFAULT),
 )
+
+
+def _occupation_versable(valeur: str) -> bool:
+    """Une occupation transmise n'est versée que si le vocabulaire la connaît.
+
+    Le portail refuse toute autre valeur à la saisie ; une enveloppe plus
+    ancienne que le vocabulaire en vigueur peut toutefois en porter une, que
+    le modèle refuserait — et avec elle toute la fiche.
+    """
+    return valeur in occupations.OCCUPATIONS
 
 
 def _comparaison(donnees: dict, partie: Optional[dict]) -> list[dict]:
@@ -285,8 +300,11 @@ def _comparaison(donnees: dict, partie: Optional[dict]) -> list[dict]:
     ``applicable`` n'est vrai que pour les champs qui DIFFÈRENT et dont la
     valeur soumise n'est pas vide : c'est ce qui pré-coche les cases (§5.3).
     Un champ soumis vide ne propose jamais d'effacer une valeur au dossier —
-    le silence d'un client n'est pas une rétractation.
+    le silence d'un client n'est pas une rétractation. L'occupation se lit
+    par son libellé (``*_affiche``) ; une occupation que le vocabulaire ne
+    connaît pas est montrée ``non_reconnu`` et jamais proposée.
     """
+    occupation_soumise = (donnees.get("occupation") or "").strip()
     lignes = []
     for champ, cible, libelle in _CORRESPONDANCE:
         soumis = (donnees.get(champ) or "").strip()
@@ -306,14 +324,25 @@ def _comparaison(donnees: dict, partie: Optional[dict]) -> list[dict]:
                 actuel = str(valeur)
         if not soumis and not actuel:
             continue
+        actuel_affiche, soumis_affiche, non_reconnu = actuel, soumis, False
+        if champ == "occupation":
+            actuel_affiche = occupations.occupation_label(actuel) or actuel
+            soumis_affiche = occupations.occupation_label(soumis) or soumis
+            non_reconnu = bool(soumis) and not _occupation_versable(soumis)
+        elif champ == "employeur":
+            libelle = occupations.organization_label(
+                occupation_soumise or (partie or {}).get("occupation") or "")
         lignes.append({
             "champ": champ,
             "cible": cible,
             "libelle": libelle,
             "actuel": actuel,
             "soumis": soumis,
+            "actuel_affiche": actuel_affiche,
+            "soumis_affiche": soumis_affiche,
+            "non_reconnu": non_reconnu,
             "differe": bool(soumis) and soumis != actuel,
-            "applicable": bool(soumis) and soumis != actuel,
+            "applicable": bool(soumis) and soumis != actuel and not non_reconnu,
         })
     return lignes
 
@@ -1274,6 +1303,8 @@ def _valeurs_choisies(donnees: dict) -> dict:
     for champ, cible, _libelle in _CORRESPONDANCE:
         if champ in choisis:
             valeur = (donnees.get(champ) or "").strip()
+            if champ == "occupation" and not _occupation_versable(valeur):
+                continue
             if valeur:
                 valeurs[cible] = valeur
     return valeurs
@@ -1349,6 +1380,10 @@ def ouverture_creer(inv_id: str, batch: str):
         for champ, cible, _l in _CORRESPONDANCE
         if (donnees.get(champ) or "").strip()
     }
+    occupation_ecartee = False
+    if "occupation" in valeurs and not _occupation_versable(valeurs["occupation"]):
+        del valeurs["occupation"]
+        occupation_ecartee = True
     valeurs["type"] = (
         "organization" if donnees.get("nature") == "morale" else "individual"
     )
@@ -1378,6 +1413,9 @@ def ouverture_creer(inv_id: str, batch: str):
     log_portail_event("intake_partie_creee", invitation_id=inv_id, batch=batch,
                       adverses_crees=crees)
     message = "Fiche créée — vérifiez et complétez-la."
+    if occupation_ecartee:
+        message += (" L'occupation transmise n'est pas reconnue : "
+                    "choisissez-la sur la fiche.")
     if crees:
         message += f" {crees} contact(s) « partie adverse » créé(s)."
     # url_for encode le message ; une concaténation le casserait au premier

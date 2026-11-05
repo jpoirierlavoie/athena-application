@@ -4203,6 +4203,23 @@ Notes:
   the push: a note d'honoraires drafted for a client holding both blocks
   carries the home address, and a letter's `{{client.telephone}}` the cell
   number (Word, by hand — Change Impact item 3).
+- **Occupation at the portal's intake (2026-11-05).** The intake form asks a
+  natural person for « Occupation » (required, the keys of
+  `utils/occupations.py`), « Poste ou profession » and the employer's name —
+  never the employer's coordinates. The portal REFUSES (422, nothing
+  written) an occupation outside the vocabulary, and a position or employer
+  name over its cap or holding a tag (`client/routes._BALISE_RE`, pinned to
+  `security.TAG_RE`); it blanks the three for a legal person and the
+  employer for an occupation in `WITHOUT_EMPLOYER`. Réception files them
+  as `occupation`, `job_title` and `organization` (`_CORRESPONDANCE`), shows
+  the occupation's label, and never offers or files an occupation the
+  vocabulary does not know. A linked contact's invitation prefill carries
+  the three. A client whose form was loaded before the push is told, on
+  « Transmettre », to reload: the draft survives. No index, rule, secret,
+  queue, consent-version or dependency change. After the push, at 375 px:
+  an intake invitation to a test address, « Salarié(e) » names the field
+  « Employeur », « Retraité(e) » hides it, and Réception shows the label and
+  files the three fields.
 
 ## 16. Troubleshooting
 

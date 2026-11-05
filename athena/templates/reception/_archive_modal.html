@@ -51,7 +51,7 @@
           {% for l in lot.lignes %}
           <div class="flex justify-between gap-4 px-3 py-2">
             <dt class="text-gray-500">{{ l.libelle }}</dt>
-            <dd class="text-gray-900 text-right break-all min-w-0">{{ l.soumis or "—" }}</dd>
+            <dd class="text-gray-900 text-right break-all min-w-0">{{ l.soumis_affiche or "—" }}</dd>
           </div>
           {% endfor %}
           {% for a in lot.adverses %}

@@ -11,6 +11,7 @@ Error messages are GENERIC on purpose (« Invitation invalide ou expirée »)
 
 import json
 import logging
+import re
 from datetime import date, datetime, timezone
 
 from flask import (
@@ -41,6 +42,7 @@ from client.config import (
     STATUTS_FERMES,
 )
 from client.services import invitations, stockage, taches
+from utils import occupations
 from utils.logging_setup import log_portail_event
 from utils.validators import normalize_email
 
@@ -157,6 +159,7 @@ _PAGE_DU_TYPE = {
 # versement est décidé. « parties_adverses » est traité à part (liste).
 _CHAMPS_INTAKE = (
     "nature", "prenom", "nom", "date_naissance", "denomination", "neq",
+    "occupation", "poste", "employeur",
     "langue", "telephone", "telephone2",
     "adresse_rue", "adresse_app", "adresse_ville",
     "adresse_province", "adresse_code_postal", "adresse_pays",
@@ -186,6 +189,9 @@ _PREFILL_VERS_FORMULAIRE = {
     "last_name": "nom",
     "organization_name": "denomination",
     "company_neq": "neq",
+    "occupation": "occupation",
+    "job_title": "poste",
+    "organization": "employeur",
     "language": "langue",
     "phone_cell": "telephone",
     "phone_home": "telephone2",
@@ -210,6 +216,8 @@ def _depuis_prefill(prefill: dict) -> dict:
         brouillon["nature"] = "physique"
     if brouillon.get("langue") not in ("fr", "en"):
         brouillon.pop("langue", None)
+    if brouillon.get("occupation") not in occupations.OCCUPATIONS:
+        brouillon.pop("occupation", None)
     return brouillon
 
 
@@ -742,6 +750,61 @@ def _nettoyer_etape(charge: dict) -> dict:
     return propre
 
 
+# Les champs de l'occupation (2026-11-05) sont un chemin d'écriture NEUF : ce
+# que le service principal altérerait au versement — une troncature, une
+# balise que ``security.sanitize`` retire, une occupation hors vocabulaire —
+# est REFUSÉ ici, rien n'est écrit, et le client lit pourquoi. Les champs plus
+# anciens gardent le bornage de _texte. Le portail n'importe pas ``security`` :
+# le motif est recopié, et un test l'épingle à ``security.TAG_RE``.
+_BALISE_RE = re.compile(r"<[^<>]*>")
+_LIBRES_REFUSES = {
+    "poste": "Poste ou profession",
+    "employeur": occupations.ORGANIZATION_LABEL_DEFAULT,
+}
+
+
+def _refus_charge(charge: dict) -> str:
+    """Le message français d'un refus, ou « » si la charge est recevable."""
+    if "occupation" in charge:
+        valeur = charge.get("occupation")
+        if not isinstance(valeur, str) or (
+            valeur.strip() and valeur.strip() not in occupations.OCCUPATIONS
+        ):
+            return ("Occupation non reconnue. Rechargez la page : vos "
+                    "réponses sont conservées.")
+    for cle, libelle in _LIBRES_REFUSES.items():
+        if cle not in charge:
+            continue
+        valeur = charge.get(cle)
+        if not isinstance(valeur, str):
+            return f"Réponse invalide au champ « {libelle} »."
+        maxi = INTAKE_CHAMP_MAX_PAR_NOM.get(cle, INTAKE_CHAMP_MAX)
+        if len(valeur.strip()) > maxi:
+            return f"Le champ « {libelle} » dépasse {maxi} caractères."
+        if _BALISE_RE.search(valeur):
+            return (f"Le champ « {libelle} » ne peut pas contenir de texte "
+                    "entre « < » et « > ».")
+    return ""
+
+
+def _donnees_pertinentes(brouillon: dict) -> dict:
+    """Ce que l'enveloppe retient, selon la nature et l'occupation.
+
+    L'assistant masque l'occupation d'une personne morale et l'employeur
+    d'une occupation qui n'en a pas (``occupations.WITHOUT_EMPLOYER``) ; une
+    valeur saisie avant la bascule resterait sinon au brouillon et serait
+    proposée au versement comme une réponse du client. Le poste, lui, reste :
+    la profession d'une personne retraitée la distingue d'un homonyme.
+    """
+    propre = dict(brouillon)
+    if (propre.get("nature") or "physique") == "morale":
+        for cle in ("occupation", "poste", "employeur"):
+            propre[cle] = ""
+    elif propre.get("occupation") in occupations.WITHOUT_EMPLOYER:
+        propre["employeur"] = ""
+    return propre
+
+
 def _brouillon_trop_gros(brouillon: dict) -> bool:
     """La session du portail EST le témoin ``pa_portail``.
 
@@ -769,8 +832,16 @@ def _valider_final(brouillon: dict) -> list[str]:
     if nature == "morale":
         if not brouillon.get("denomination"):
             erreurs.append("La dénomination sociale est requise.")
-    elif not brouillon.get("nom"):
-        erreurs.append("Le nom de famille est requis.")
+    else:
+        if not brouillon.get("nom"):
+            erreurs.append("Le nom de famille est requis.")
+        # Exigée de l'avocat (art. 14 du Règlement sur la comptabilité et les
+        # normes d'exercice professionnel des avocats). Une page chargée avant
+        # l'ajout du champ ne l'affiche pas : d'où la consigne de recharger.
+        if brouillon.get("occupation") not in occupations.OCCUPATIONS:
+            erreurs.append("L'occupation est requise. Si le champ n'apparaît "
+                           "pas, rechargez la page : vos réponses sont "
+                           "conservées.")
     if not brouillon.get("telephone"):
         erreurs.append("Un numéro de téléphone est requis.")
     # Facultative — mais si elle est là, elle doit être exploitable : une date
@@ -810,12 +881,20 @@ def page_ouverture():
         # Borne le sélecteur de date natif : on ne naît pas demain.
         aujourdhui=datetime.now(timezone.utc).date().isoformat(),
         deja_soumis=bool(invitation.get("soumissions")),
+        occupation_labels=occupations.OCCUPATION_LABELS,
+        organization_labels=occupations.ORGANIZATION_LABELS,
+        organization_label_default=occupations.ORGANIZATION_LABEL_DEFAULT,
+        sans_employeur=sorted(occupations.WITHOUT_EMPLOYER),
+        employeur_max=INTAKE_CHAMP_MAX_PAR_NOM["employeur"],
     )
 
 
 @portail_bp.post("/api/intake/etape")
 def api_intake_etape():
     charge = request.get_json(silent=True) or {}
+    refus = _refus_charge(charge)
+    if refus:
+        return jsonify({"erreur": refus}), 422
     fusionne = {**_brouillon(), **_nettoyer_etape(charge)}
     fusionne.pop("courriel", None)      # jamais du client : il vient du doc
     if _brouillon_trop_gros(fusionne):
@@ -836,6 +915,9 @@ def api_intake_finaliser():
     invitation = g.invitation
     inv_id = invitation["id"]
     charge = request.get_json(silent=True) or {}
+    refus = _refus_charge(charge)
+    if refus:
+        return jsonify({"erreur": refus}), 422
     # La dernière étape porte l'état complet : un client qui a rechargé la page
     # et repris son brouillon local doit pouvoir soumettre sans avoir rejoué
     # chaque étape côté serveur.
@@ -850,6 +932,7 @@ def api_intake_finaliser():
     erreurs = _valider_final(brouillon)
     if erreurs:
         return jsonify({"erreur": " ".join(erreurs)}), 422
+    brouillon = _donnees_pertinentes(brouillon)
 
     # L'intake ne passe jamais par api_televersement, seul frappeur de batch :
     # il frappe le sien à la finalisation.

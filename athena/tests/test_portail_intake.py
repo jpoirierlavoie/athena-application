@@ -44,6 +44,7 @@ from client.config import (  # noqa: E402
     INTAKE_PRECISION_MAX,
 )
 from client.services import invitations, stockage, taches  # noqa: E402
+from utils import occupations  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -95,6 +96,7 @@ def _post_json(web, path, payload):
 def _complet(**over) -> dict:
     charge = {
         "nature": "physique", "prenom": "Jean", "nom": "Tremblay",
+        "occupation": "salarie",
         "langue": "fr", "telephone": "514 555-1234",
         "adresse_rue": "10 rue Principale", "adresse_ville": "Montréal",
         "parties_adverses": [{"nom": "Béton Nord inc.", "precision": ""}],
@@ -219,8 +221,16 @@ def test_un_brouillon_trop_gros_est_refuse_en_francais(web, connecte):
     saturant = {
         cle: "É" * (INTAKE_CHAMP_MAX_PAR_NOM.get(cle, INTAKE_CHAMP_MAX) + 50)
         for cle in routes._CHAMPS_INTAKE
-        if cle not in ("parties_adverses", "consentement")
+        if cle not in ("parties_adverses", "consentement", "occupation")
+        and cle not in routes._LIBRES_REFUSES
     }
+    # Les champs de l'occupation REFUSENT un dépassement au lieu de le
+    # tronquer : saturés à leur borne exacte, et l'occupation la plus longue.
+    saturant.update({
+        cle: "É" * INTAKE_CHAMP_MAX_PAR_NOM.get(cle, INTAKE_CHAMP_MAX)
+        for cle in routes._LIBRES_REFUSES
+    })
+    saturant["occupation"] = max(occupations.OCCUPATIONS, key=len)
     saturant["consentement"] = True
     saturant["parties_adverses"] = [
         {"nom": "É" * (INTAKE_NOM_MAX + 50),
@@ -239,6 +249,9 @@ def test_un_formulaire_realiste_passe_tres_largement(web, connecte):
     accentué, avec le maximum de parties adverses, reste loin du plafond."""
     realiste = {
         "nature": "physique", "prenom": "Jean-François", "nom": "Tremblay",
+        "occupation": "travailleur_autonome",
+        "poste": "Entrepreneur général en rénovation résidentielle",
+        "employeur": "Rénovations Jean-François Tremblay et Associés inc.",
         "langue": "fr", "telephone": "514 555-1234",
         "telephone2": "438 555-9876",
         "adresse_rue": "1250, boulevard René-Lévesque Ouest",
@@ -525,3 +538,163 @@ def test_le_prefill_remplit_le_pays(web, connecte, monkeypatch):
     }))
     page = web.get("/ouverture").get_data(as_text=True)
     assert 'value="Belgique"' in page
+
+
+# ── Occupation (2026-11-05) ──────────────────────────────────────────────
+# Exigée de l'avocat (art. 14 du Règlement sur la comptabilité et les normes
+# d'exercice professionnel des avocats). Un chemin d'écriture neuf : ce que le
+# service principal altérerait au versement est REFUSÉ, jamais corrigé.
+
+
+def test_l_occupation_le_poste_et_l_employeur_atteignent_l_enveloppe(
+    web, connecte, monkeypatch
+):
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    rep = _post_json(web, "/api/intake/finaliser", _complet(
+        occupation="etudiant", poste="Doctorante en chimie",
+        employeur="Université Exemple",
+    ))
+    assert rep.status_code == 200
+    _i, _b, envelope = ecrit.call_args[0]
+    donnees = envelope["donnees"]
+    assert (donnees["occupation"], donnees["poste"], donnees["employeur"]) == (
+        "etudiant", "Doctorante en chimie", "Université Exemple")
+
+
+def test_l_occupation_est_exigee_d_une_personne_physique(
+    web, connecte, monkeypatch
+):
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    rep = _post_json(web, "/api/intake/finaliser", _complet(occupation=""))
+    assert rep.status_code == 422
+    assert "occupation" in rep.get_json()["erreur"].lower()
+    ecrit.assert_not_called()
+
+
+def test_une_page_d_avant_le_champ_dit_de_recharger(web, connecte, monkeypatch):
+    """Une page chargée avant le déploiement n'a pas le champ : la charge
+    n'a pas la clé. Le client doit savoir quoi faire, et ne rien perdre."""
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", mock.Mock())
+    charge = _complet()
+    del charge["occupation"]
+    # Les étapes de l'ancienne page passent (la clé est absente, pas fausse)…
+    assert _post_json(web, "/api/intake/etape", charge).status_code == 200
+    # … la transmission, elle, s'arrête et dit quoi faire.
+    rep = _post_json(web, "/api/intake/finaliser", charge)
+    assert rep.status_code == 422
+    assert "rechargez la page" in rep.get_json()["erreur"]
+    with web.session_transaction() as s:
+        assert s["intake"]["nom"] == "Tremblay"       # brouillon conservé
+
+
+def test_une_personne_morale_n_a_ni_occupation_ni_employeur(
+    web, connecte, monkeypatch
+):
+    """Un résidu saisi avant la bascule vers « Entreprise » ne doit pas être
+    proposé au versement comme une réponse."""
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    rep = _post_json(web, "/api/intake/finaliser", _complet(
+        nature="morale", denomination="Béton Sud inc.", nom="",
+        occupation="salarie", poste="Technicien", employeur="Hydro-Exemple",
+    ))
+    assert rep.status_code == 200
+    donnees = ecrit.call_args[0][2]["donnees"]
+    assert donnees["occupation"] == donnees["poste"] == donnees["employeur"] == ""
+
+
+def test_sans_employeur_l_employeur_saisi_avant_est_ecarte(
+    web, connecte, monkeypatch
+):
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    _post_json(web, "/api/intake/finaliser", _complet(
+        occupation="retraite", poste="Infirmière", employeur="CIUSSS Exemple",
+    ))
+    donnees = ecrit.call_args[0][2]["donnees"]
+    assert donnees["employeur"] == ""
+    assert donnees["poste"] == "Infirmière"      # la profession reste
+
+
+@pytest.mark.parametrize("valeur", ["pdg", "Salarié(e)", 3, None])
+def test_une_occupation_hors_vocabulaire_est_refusee(web, connecte, valeur):
+    rep = _post_json(web, "/api/intake/etape",
+                     {"nom": "Tremblay", "occupation": valeur})
+    assert rep.status_code == 422
+    assert "occupation" in rep.get_json()["erreur"].lower()
+    with web.session_transaction() as s:
+        assert "intake" not in s                  # rien n'est écrit
+
+
+@pytest.mark.parametrize("cle", ["poste", "employeur"])
+def test_un_champ_trop_long_est_refuse_et_non_tronque(web, connecte, cle):
+    maxi = INTAKE_CHAMP_MAX_PAR_NOM.get(cle, INTAKE_CHAMP_MAX)
+    rep = _post_json(web, "/api/intake/etape", {cle: "x" * (maxi + 1)})
+    assert rep.status_code == 422
+    assert str(maxi) in rep.get_json()["erreur"]
+    with web.session_transaction() as s:
+        assert "intake" not in s
+    assert _post_json(web, "/api/intake/etape",
+                      {cle: "x" * maxi}).status_code == 200
+    with web.session_transaction() as s:
+        assert s["intake"][cle] == "x" * maxi
+
+
+@pytest.mark.parametrize("cle", ["poste", "employeur"])
+def test_une_balise_est_refusee_et_non_retiree(web, connecte, monkeypatch, cle):
+    """``security.sanitize`` la retirerait au versement : le client croirait
+    avoir transmis ce qu'il a tapé."""
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    rep = _post_json(web, "/api/intake/finaliser",
+                     _complet(**{cle: "Chef <b>cuisinier</b>"}))
+    assert rep.status_code == 422
+    assert "<" in rep.get_json()["erreur"]
+    ecrit.assert_not_called()
+
+
+def test_le_motif_des_balises_est_celui_du_service_principal():
+    import security
+
+    assert routes._BALISE_RE.pattern == security.TAG_RE.pattern
+
+
+def test_la_borne_de_l_occupation_suit_le_vocabulaire():
+    assert INTAKE_CHAMP_MAX_PAR_NOM["occupation"] == max(
+        len(cle) for cle in occupations.OCCUPATIONS)
+
+
+def _options_occupation(page: str) -> list[str]:
+    import re
+
+    debut = page.index('<select id="occupation"')
+    bloc = page[debut:page.index("</select>", debut)]
+    return re.findall(r'<option value="([^"]*)"', bloc)
+
+
+def test_l_assistant_offre_exactement_le_vocabulaire(web, connecte):
+    page = web.get("/ouverture").get_data(as_text=True)
+    assert _options_occupation(page) == ["", *occupations.OCCUPATIONS]
+    for libelle in occupations.OCCUPATION_LABELS.values():
+        assert libelle.replace("'", "&#39;") in page
+    assert 'data-champ="poste"' in page and 'data-champ="employeur"' in page
+
+
+def test_le_prefill_remplit_l_occupation_le_poste_et_l_employeur(
+    web, connecte, monkeypatch
+):
+    monkeypatch.setattr(invitations, "lire", lambda i: _invitation(prefill={
+        "type": "individual", "last_name": "Tremblay",
+        "occupation": "retraite", "job_title": "Enseignante",
+        "organization": "CSS Exemple",
+    }))
+    page = web.get("/ouverture").get_data(as_text=True)
+    assert '<option value="retraite" selected>' in page
+    assert 'value="Enseignante"' in page and 'value="CSS Exemple"' in page
+
+
+def test_une_occupation_inconnue_du_prefill_n_est_pas_reprise():
+    brouillon = routes._depuis_prefill({"type": "individual", "occupation": "pdg"})
+    assert "occupation" not in brouillon

@@ -101,6 +101,12 @@ def prefill_depuis_partie(partie: Optional[dict]) -> Optional[dict]:
     conformité/KYC, ni liaison de dossier — et pas la date de naissance non
     plus, que le client retapera. Ce sont ses propres coordonnées, qu'il ne
     verra qu'après s'être authentifié sur son invitation.
+
+    L'occupation, le poste et l'employeur d'une personne physique (2026-11-05)
+    en font partie au même titre : ce sont ses réponses, que le formulaire lui
+    redemande. Jamais les coordonnées de l'employeur, que le portail ne
+    recueille pas. Réserve connue : un employeur qui serait aussi partie
+    adverse reste nommé dans l'invitation, comme l'adresse du client l'est.
     """
     if not partie:
         return None
@@ -111,6 +117,8 @@ def prefill_depuis_partie(partie: Optional[dict]) -> Optional[dict]:
         "address_street", "address_unit", "address_city",
         "address_province", "address_postal_code", "address_country",
     )
+    if partie.get("type") != "organization":
+        champs += ("occupation", "job_title", "organization")
     instantane = {c: partie.get(c) or "" for c in champs}
     return {c: v for c, v in instantane.items() if v}
 

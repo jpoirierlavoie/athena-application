@@ -18,6 +18,8 @@ import os
 from functools import lru_cache
 from typing import NamedTuple, Optional
 
+from utils.occupations import OCCUPATIONS
+
 # ── Annexe C ─────────────────────────────────────────────────────────────
 
 PORTAIL_HOST = os.environ.get("PORTAIL_HOST", "portail.poirierlavoie.ca")
@@ -70,7 +72,8 @@ CHUNK_MIB = 8                   # multiple of 256 KiB (GCS resumable protocol)
 # donc le client perd sa session en plein formulaire, alors que son lien à
 # usage unique est déjà consommé. INTAKE_BROUILLON_MAX est la ceinture : le
 # serveur refuse une étape en français plutôt que de laisser le témoin
-# déborder. Pire cas des bornes ci-dessous ≈ 2,4 Ko sérialisés.
+# déborder. Le pire cas des bornes ci-dessous dépasse ce plafond : la
+# ceinture le refuse, et tests/test_portail_intake.py mesure ce qui passe.
 INTAKE_MAX_ADVERSES = 5
 INTAKE_NOM_MAX = 120
 # La spec L3 §7 disait 200. Mesure faite (test_portail_intake), le pire cas à
@@ -90,6 +93,9 @@ INTAKE_CHAMP_MAX_PAR_NOM = {
     "adresse_pays": 60,
     "adresse_code_postal": 10,
     "date_naissance": 10,       # AAAA-MM-JJ
+    # Une clé de utils/occupations, jamais un libellé : la plus longue suffit.
+    "occupation": max(len(cle) for cle in OCCUPATIONS),
+    "employeur": INTAKE_NOM_MAX,
 }
 # Plafond DUR, en octets UTF-8 du brouillon sérialisé. Il ne double pas les
 # bornes par champ ci-dessus, il les CEINTURE : celles-ci bornent chaque
