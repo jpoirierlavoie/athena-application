@@ -838,8 +838,8 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
     if spec.note:
         out += ["", f"Note du plan : {spec.note}"]
     out += ["", "## État", "",
-            f"- Lignes : {plan.count(PENDING)} à appliquer, {plan.count(DONE)} déjà "
-            f"appliquée(s), {plan.count(REFUSED)} refusée(s)."]
+            (f"- Lignes : {plan.count(PENDING)} à appliquer, {plan.count(DONE)} déjà "
+             f"appliquée(s), {plan.count(REFUSED)} refusée(s).")]
     blocking = plan.blocking + list(refusal or [])
     if blocking:
         out.append("- **L'application est refusée** :")
@@ -879,26 +879,26 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
         for write in sorted(plan.writes, key=lambda w: w.ligne):
             payload = plan.payloads[write.path]
             trail = payload["revisions"][-1]
-            out += [f"### Ligne {write.ligne} — écriture `{write.doc_id}` "
-                    f"(séq. {write.before.get('sequence')})", ""]
+            out += [(f"### Ligne {write.ligne} — écriture `{write.doc_id}` "
+                     f"(séq. {write.before.get('sequence')})"), ""]
             out += rx._table(("Champ", "Avant", "Après"),
                              [(f"`{k}`", rx._v(old), rx._v(new))
                               for k, (old, new) in write.changes.items()])
             out += ["",
-                    f"Estampilles : `updated_at`, `etag`, `updated_via` = "
-                    f"`{payload.get('updated_via')}` ; `revisions` : "
-                    f"{len(write.before.get('revisions') or [])} → {len(payload['revisions'])}, "
-                    f"motif « {trail['motif']} », via `{trail['via']}`.", ""]
+                    (f"Estampilles : `updated_at`, `etag`, `updated_via` = "
+                     f"`{payload.get('updated_via')}` ; `revisions` : "
+                     f"{len(write.before.get('revisions') or [])} → {len(payload['revisions'])}, "
+                     f"motif « {trail['motif']} », via `{trail['via']}`."), ""]
         out.append("Aucun compte, aucune conciliation, aucune autre écriture n'est écrit.")
     else:
         out.append("Aucun.")
 
     out += ["", "## 4. Champs employés", "",
-            "- La ventilation tient dans `net_amount`, `gst_amount` et `qst_amount` ; le modèle "
-            "ne stocke aucun mode de ventilation. « sans_taxe » de `record_admin_entry` vaut "
-            "net = montant, TPS = 0, TVQ = 0.",
-            "- Provenance : `script` — `updated_via` et `via` du fil, sous "
-            "`provenance.writing_via`, comme les migrations du 7 octobre et du 5 novembre.",
+            ("- La ventilation tient dans `net_amount`, `gst_amount` et `qst_amount` ; le modèle "
+             "ne stocke aucun mode de ventilation. « sans_taxe » de `record_admin_entry` vaut "
+             "net = montant, TPS = 0, TVQ = 0."),
+            ("- Provenance : `script` — `updated_via` et `via` du fil, sous "
+             "`provenance.writing_via`, comme les migrations du 7 octobre et du 5 novembre."),
             "", "## 5. Verrou, conciliations, déclarations", ""]
     lock_before = rx._get(plan.before, "4")
     lock_after = rx._get(plan.simulated, "4")
@@ -913,10 +913,10 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
             + " — une conciliation garde des montants bruts (relevé, livre, en circulation) "
               "et les identifiants cochés, jamais une ventilation : aucune ne fige le net, "
               "la TPS ou la TVQ.",
-            "- Périodes de déclaration de TPS/TVQ : le modèle n'en enregistre aucune ; aucun "
-            "total de taxes n'est figé par période.",
-            "- Ni le plancher, ni la dernière conciliation, ni aucune conciliation ne sont "
-            "écrits."]
+            ("- Périodes de déclaration de TPS/TVQ : le modèle n'en enregistre aucune ; aucun "
+             "total de taxes n'est figé par période."),
+            ("- Ni le plancher, ni la dernière conciliation, ni aucune conciliation ne sont "
+             "écrits.")]
 
     out += ["", "## 6. Contrôles", ""]
     out += _render_controls(plan.scope, plan.store.accounts, plan.before, plan.simulated, real)
@@ -924,9 +924,9 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
                                else "; ".join(plan.gaps + plan.impossible))]
 
     out += ["", "## 7. Caches", "",
-            "Aucun à recalculer : les totaux de taxes et de dépenses se calculent à la lecture "
-            "(`results_statement`), et le seul solde dénormalisé, "
-            "`admin_accounts.ledger_balance`, ne bouge pas (même montant).",
+            ("Aucun à recalculer : les totaux de taxes et de dépenses se calculent à la lecture "
+             "(`results_statement`), et le seul solde dénormalisé, "
+             "`admin_accounts.ledger_balance`, ne bouge pas (même montant)."),
             "", "## 8. Suite", ""]
     if not plan.writes:
         out.append("Rien à écrire.")
@@ -983,8 +983,8 @@ def _summary(plan: Plan, mode: str) -> list:
         f"Rectification de ventilation — {mode}",
         f"Projet : {plan.project}",
         f"Plan : {plan.path} (SHA-256 {plan.sha})",
-        f"Lignes : {plan.count(PENDING)} à appliquer, {plan.count(DONE)} déjà appliquée(s), "
-        f"{plan.count(REFUSED)} refusée(s)",
+        (f"Lignes : {plan.count(PENDING)} à appliquer, {plan.count(DONE)} déjà appliquée(s), "
+         f"{plan.count(REFUSED)} refusée(s)"),
         "Intouchables : " + ("concordent" if not plan.differences
                              else f"{len(plan.differences)} écart(s)"),
         "Contrôles simulés : " + ("conformes" if not plan.gaps and not plan.impossible else
@@ -1066,11 +1066,11 @@ def _run_restore(report: Path, source: Path, approved: Optional[str]) -> int:
                                    f"- Sauvegarde : `{source}`\n\n**Refusé — rien n'a été "
                                    f"écrit** : {exc}\n",
                            [f"Refusé — rien n'a été écrit : {exc}"], 1)
-    head = [f"Restauration — {'à blanc' if approved is None else 'application'}",
+    head = [(f"Restauration — {'à blanc' if approved is None else 'application'}"),
             f"Projet : {plan.project}",
             f"Sauvegarde : {plan.path} (SHA-256 {plan.sha})",
-            f"État : {plan.state} ; documents à écrire : {len(plan.writes)} ; "
-            f"refus : {len(plan.blocking)}",
+            (f"État : {plan.state} ; documents à écrire : {len(plan.writes)} ; "
+             f"refus : {len(plan.blocking)}"),
             f"Empreinte : {plan.fingerprint}"]
     if approved is None:
         if plan.blocking:

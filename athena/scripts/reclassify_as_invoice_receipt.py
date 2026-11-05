@@ -341,8 +341,8 @@ def _exact_keys(values: dict, names: tuple, where: str) -> dict:
     missing = [n for n in names if n not in values]
     extra = sorted(set(values) - set(names), key=str)
     if missing or extra:
-        parts = ([f"manque {', '.join(missing)}"] if missing else []) + (
-            [f"inconnu {', '.join(map(str, extra))}"] if extra else [])
+        parts = ([(f"manque {', '.join(missing)}")] if missing else []) + (
+            [(f"inconnu {', '.join(map(str, extra))}")] if extra else [])
         raise RunRefused(f"plan mal formé : « {where} » — {' ; '.join(parts)}")
     return values
 
@@ -1402,41 +1402,41 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
                           [(f"`{k}`", _v(_aware(old)), _v(_aware(new)))
                            for k, (old, new) in write.changes.items()])
             stamps = ", ".join(f"`{k}`" for k in ("updated_at", "etag", "updated_via"))
-            out += ["", f"Estampilles : {stamps} — `updated_via` = "
-                        f"`{payload.get('updated_via')}`, etag `{payload.get('etag')}`."]
+            out += ["", (f"Estampilles : {stamps} — `updated_via` = "
+                         f"`{payload.get('updated_via')}`, etag `{payload.get('etag')}`.")]
             if write.role == "écriture":
                 trail = payload["revisions"][-1]
-                out += ["", f"Entrée ajoutée au fil (`revisions` : "
-                            f"{len(entry.get('revisions') or [])} → {len(payload['revisions'])}) :",
-                        f"- via `{trail['via']}`, motif « {trail['motif']} »",
-                        f"- updated_at_before : {_v(trail['updated_at_before'])}",
-                        f"- source_sha256 : `{trail['source_sha256']}`", ""]
+                out += ["", (f"Entrée ajoutée au fil (`revisions` : "
+                             f"{len(entry.get('revisions') or [])} → {len(payload['revisions'])}) :"),
+                        (f"- via `{trail['via']}`, motif « {trail['motif']} »"),
+                        (f"- updated_at_before : {_v(trail['updated_at_before'])}"),
+                        (f"- source_sha256 : `{trail['source_sha256']}`"), ""]
             else:
                 kept = [k for k in INVOICE_TARGETS if k not in write.business]
                 if kept:
                     out += ["", "Inchangé : " + ", ".join(
                         f"`{k}` ({_v(_aware(invoice.get(k)))})" for k in kept) + "."]
-                out += ["", f"`payment_basis` (dérivé de `amount_paid`) : « recorded » avant "
-                            f"et après. Le solde (`balance_of`) passe de "
-                            f"{rla._money(invoice_model.balance_of(invoice))} à "
-                            f"{rla._money(invoice_model.balance_of({**invoice, **payload}))}.", ""]
-        out += ["Le compte n'est pas écrit (aucun argent ne bouge) ; aucune conciliation, "
-                "aucune autre écriture, aucune autre facture n'est écrite."]
+                out += ["", (f"`payment_basis` (dérivé de `amount_paid`) : « recorded » avant "
+                             f"et après. Le solde (`balance_of`) passe de "
+                             f"{rla._money(invoice_model.balance_of(invoice))} à "
+                             f"{rla._money(invoice_model.balance_of({**invoice, **payload}))}."), ""]
+        out += [("Le compte n'est pas écrit (aucun argent ne bouge) ; aucune conciliation, "
+                 "aucune autre écriture, aucune autre facture n'est écrite.")]
     else:
         out.append("Aucun." if plan.state != DONE else "Aucun : la migration est déjà appliquée.")
 
     out += ["", "## 3. Champs employés", "",
-            f"- Nature : `kind` ({_v(entry.get('kind'))} → {_v(spec.entry_target['kind'])}).",
-            "- Lien avec la facture : `invoice_id`, avec `invoice_number`, `dossier_id`, "
-            "`dossier_file_number` et `dossier_title` copiés de la facture.",
-            "- Montant payé : `amount_paid` sur la facture, seul stocké ; le solde est "
-            "`invoice.balance_of` (dérivé) ; `payment_basis` est dérivé par le connecteur ; "
-            "la cohérence avec le journal est le contrôle 8 de l'intégrité (Σ des encaissements "
-            "liés debout = `amount_paid`).",
-            f"- `paid_date` : l'application y mettrait la date de l'écriture "
-            f"({_v(plan.model_paid_date)}) ; le plan retient {_v(spec.invoice_target['paid_date'])}.",
-            "- Provenance : `script` — `updated_via` des deux documents et `via` du fil, sous "
-            "`provenance.writing_via`, comme les migrations du 7 et du 30 octobre.",
+            (f"- Nature : `kind` ({_v(entry.get('kind'))} → {_v(spec.entry_target['kind'])})."),
+            ("- Lien avec la facture : `invoice_id`, avec `invoice_number`, `dossier_id`, "
+             "`dossier_file_number` et `dossier_title` copiés de la facture."),
+            ("- Montant payé : `amount_paid` sur la facture, seul stocké ; le solde est "
+             "`invoice.balance_of` (dérivé) ; `payment_basis` est dérivé par le connecteur ; "
+             "la cohérence avec le journal est le contrôle 8 de l'intégrité (Σ des encaissements "
+             "liés debout = `amount_paid`)."),
+            (f"- `paid_date` : l'application y mettrait la date de l'écriture "
+             f"({_v(plan.model_paid_date)}) ; le plan retient {_v(spec.invoice_target['paid_date'])}."),
+            ("- Provenance : `script` — `updated_via` des deux documents et `via` du fil, sous "
+             "`provenance.writing_via`, comme les migrations du 7 et du 30 octobre."),
             "", "## 4. Fil de révisions de l'écriture, avant", ""]
     out += _render_trail(entry)
 
@@ -1450,8 +1450,8 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
             + (", ".join(f"`{k}`" for k in plan.reconciliation_keys) or "aucun")
             + " — une conciliation garde des totaux et les identifiants cochés, jamais la "
               "nature ni la contrepartie d'une écriture.",
-            "- Ni `last_reconciliation_date`, ni le plancher, ni aucune conciliation ne sont "
-            "écrits."]
+            ("- Ni `last_reconciliation_date`, ni le plancher, ni aucune conciliation ne sont "
+             "écrits.")]
 
     out += ["", "## 6. Contrôles", ""]
     out += _render_controls(plan.scope, plan.before, plan.simulated, real, spec.account_id)
@@ -1463,17 +1463,17 @@ def render_report(plan: Plan, *, mode: str, approved: Optional[str] = None,
                     f"{fee} : {old} → {new}" for fee, old, new in changes)) + "."]
 
     out += ["", "## 7. Caches", "",
-            "Aucun à recalculer : le modèle ne garde ni totaux par période ni encours stockés "
-            "(`results_statement`, `owner_equity` et l'encours se calculent à la lecture), et "
-            "le seul solde dénormalisé, `admin_accounts.ledger_balance`, ne bouge pas (même "
-            "montant, même sens).",
+            ("Aucun à recalculer : le modèle ne garde ni totaux par période ni encours stockés "
+             "(`results_statement`, `owner_equity` et l'encours se calculent à la lecture), et "
+             "le seul solde dénormalisé, `admin_accounts.ledger_balance`, ne bouge pas (même "
+             "montant, même sens)."),
             "", "## 8. Trace", "",
-            "- Écriture : l'entrée ajoutée à son fil (`revisions`), avec le motif et chaque "
-            "valeur avant et après.",
-            "- Facture : aucun historique comparable (pas de fil ; `notes` s'imprime sur la "
-            "facture ; `audit_events` ne journalise que les suppressions). L'écriture apparaît "
-            "dans le bloc « Paiements » de la facture ; ce rapport et la sauvegarde gardent "
-            "l'avant et l'après de la facture.",
+            ("- Écriture : l'entrée ajoutée à son fil (`revisions`), avec le motif et chaque "
+             "valeur avant et après."),
+            ("- Facture : aucun historique comparable (pas de fil ; `notes` s'imprime sur la "
+             "facture ; `audit_events` ne journalise que les suppressions). L'écriture apparaît "
+             "dans le bloc « Paiements » de la facture ; ce rapport et la sauvegarde gardent "
+             "l'avant et l'après de la facture."),
             "", "## 9. Suite", ""]
     if plan.state == PENDING and not plan.writes:
         out.append("Rien ne peut s'écrire tant que les refus ci-dessus tiennent.")
@@ -1601,8 +1601,8 @@ def _run_migration(report: Path, source: Path, backup_dir: Optional[Path],
         return rla._finish(report, render_report(plan, mode="à blanc"), summary, 0)
 
     if plan.state == DONE:
-        summary = _summary(plan, "application") + ["Rien à écrire : la migration est déjà "
-                                                   "appliquée."]
+        summary = _summary(plan, "application") + [("Rien à écrire : la migration est déjà "
+                                                    "appliquée.")]
         return rla._finish(report, render_report(plan, mode="application", approved=approved,
                                                  outcome="Rien à écrire."), summary, 0)
     refusal = []
@@ -1653,11 +1653,11 @@ def _run_restore(report: Path, source: Path, approved: Optional[str]) -> int:
                                    f"- Sauvegarde : `{source}`\n\n**Refusé — rien n'a été "
                                    f"écrit** : {exc}\n",
                            [f"Refusé — rien n'a été écrit : {exc}"], 1)
-    head = [f"Restauration — {'à blanc' if approved is None else 'application'}",
+    head = [(f"Restauration — {'à blanc' if approved is None else 'application'}"),
             f"Projet : {plan.project}",
             f"Sauvegarde : {plan.path} (SHA-256 {plan.sha})",
-            f"État : {plan.state} ; documents à écrire : {len(plan.writes)} ; "
-            f"refus : {len(plan.blocking)}",
+            (f"État : {plan.state} ; documents à écrire : {len(plan.writes)} ; "
+             f"refus : {len(plan.blocking)}"),
             f"Empreinte : {plan.fingerprint}"]
     if approved is None:
         if plan.blocking:
