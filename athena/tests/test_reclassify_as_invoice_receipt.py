@@ -590,6 +590,8 @@ def test_a_second_run_finds_the_migration_applied_and_writes_nothing(fake, bench
     code, out, report, fingerprint = cli.dry(plan_path)
     assert code == 0, report
     assert "« déjà appliquée »" in report
+    assert "rien n'est à écrire : la migration est déjà appliquée" in out
+    assert "--appliquer" not in out          # nothing to approve, nothing offered
     code, out, report = cli.apply(plan_path, fingerprint)
     assert code == 0
     assert "Rien à écrire : la migration est déjà appliquée." in out

@@ -1571,8 +1571,12 @@ def _run_migration(report: Path, source: Path, backup_dir: Optional[Path],
             summary.append(f"L'application serait refusée ({len(plan.blocking)} motif(s), voir "
                            f"le rapport). Rien n'a été écrit.")
             return rla._finish(report, render_report(plan, mode="à blanc"), summary, 1)
-        summary.append("À blanc : rien n'a été écrit. Pour écrire, après approbation : "
-                       f"--sauvegarde DOSSIER --appliquer {plan.fingerprint}")
+        if plan.state == DONE:
+            summary.append("À blanc : rien n'a été écrit, et rien n'est à écrire : la "
+                           "migration est déjà appliquée.")
+        else:
+            summary.append("À blanc : rien n'a été écrit. Pour écrire, après approbation : "
+                           f"--sauvegarde DOSSIER --appliquer {plan.fingerprint}")
         return rla._finish(report, render_report(plan, mode="à blanc"), summary, 0)
 
     if plan.state == DONE:
