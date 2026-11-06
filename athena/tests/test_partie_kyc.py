@@ -8,13 +8,13 @@ non vérifié à côté d'un horodatage frais, l'incohérence exacte relevée pa
 l'audit MCP.
 
 Invariant épinglé ici : date présente ⇔ statut décidé. L'estampille ne se pose
-que sur une transition VERS un statut décidé (vérifié / exempté, et pour le
+que sur une transition VERS un statut décidé (identifié / vérifié, et pour le
 contrôle des conflits vérifié / conflit_détecté — le contrôle A eu lieu) ; un
-statut soumis « non_vérifié » force la date à None, ce qui auto-répare les
-documents antérieurs au correctif à leur prochaine édition KYC. Le tout est
-conditionné à la PRÉSENCE de la clé : une mise à jour partielle qui ne porte
-pas le champ ne touche jamais la date (sur un set plein-document, injecter un
-défaut EST une suppression).
+statut soumis « non_vérifié » (« À faire ») force la date à None, ce qui
+auto-répare les documents antérieurs au correctif à leur prochaine édition
+KYC. Le tout est conditionné à la PRÉSENCE de la clé : une mise à jour
+partielle qui ne porte pas le champ ne touche jamais la date (sur un set
+plein-document, injecter un défaut EST une suppression).
 
 Tests purs : modèle importé, Firestore bouchonné (motif de
 test_partie_naissance.py).
@@ -24,6 +24,13 @@ décide (``kyc_source`` : « juriste » | « mcp », SANS défaut) : les tests
 d'origine passent donc « juriste », la source du formulaire web — changement
 délibéré (une transition sans source est refusée). La seconde moitié du
 fichier épingle les règles de la provenance.
+
+Vocabulaire de 2026-11 (D1-D3) — l'identité se lit « Identifié », « Vérifié »
+ou « À faire » (la clé ``non_vérifié`` est gardée) ; « identifié » est DÉCIDÉ,
+et « exempté » est RETIRÉ : un « exempté » stocké se lit « identifié » avec sa
+date, sa source et sa confirmation. La dernière partie du fichier épingle le
+vocabulaire (``utils/kyc``), cette lecture, la purge à la prochaine sauvegarde
+du document entier, et les refus qui l'entourent.
 """
 
 import os
@@ -87,12 +94,14 @@ def test_transition_vers_verifie_estampille(monkeypatch):
     assert ecrit["identity_verified_date"] != ANCIEN
 
 
-def test_transition_vers_exempte_estampille(monkeypatch):
+def test_transition_vers_identifie_estampille(monkeypatch):
+    """« Identifié » est une décision (D2) : sa transition se date."""
     ecrit = _maj(
         monkeypatch,
         _partie(identity_verified="non_vérifié"),
-        {"identity_verified": "exempté"},
+        {"identity_verified": "identifié"},
     )
+    assert ecrit["identity_verified"] == "identifié"
     assert ecrit["identity_verified_date"] is not None
 
 
@@ -303,7 +312,7 @@ def test_a_web_status_change_is_the_lawyer_s_decision(magasin):
     pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
 
     _doc, erreurs = pm.update_partie(
-        "p1", {"identity_verified": "exempté"}, kyc_source="juriste")
+        "p1", {"identity_verified": "identifié"}, kyc_source="juriste")
 
     assert erreurs == []
     stored = _stored(magasin)
@@ -332,14 +341,14 @@ def test_claude_can_never_change_the_lawyer_s_attestation(magasin):
     pm.update_kyc_status("p1", "identity_verified", "vérifié", source="juriste")
     before = _stored(magasin)
 
-    for status, notes in (("exempté", None), ("non_vérifié", None),
+    for status, notes in (("identifié", None), ("non_vérifié", None),
                           ("vérifié", "Ajout de Claude.")):
         doc, erreurs = pm.update_kyc_status(
             "p1", "identity_verified", status, notes=notes, source="mcp")
         assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION], status
     # …through update_partie too (the rule lives in the model).
     doc, erreurs = pm.update_partie(
-        "p1", {"identity_verified": "exempté"}, kyc_source="mcp")
+        "p1", {"identity_verified": "identifié"}, kyc_source="mcp")
     assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION]
     assert _stored(magasin) == before
 
@@ -349,14 +358,14 @@ def test_a_confirmed_inscription_is_the_lawyer_s_too(magasin):
     pm.confirm_kyc_status("p1", "identity_verified", par="juriste",
                           expected_etag=_stored(magasin)["etag"])
     doc, erreurs = pm.update_kyc_status(
-        "p1", "identity_verified", "exempté", source="mcp")
+        "p1", "identity_verified", "identifié", source="mcp")
     assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION]
 
 
 def test_claude_may_correct_its_own_presumed_inscription(magasin):
     pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
     _doc, erreurs = pm.update_kyc_status(
-        "p1", "identity_verified", "exempté", source="mcp")
+        "p1", "identity_verified", "identifié", source="mcp")
     assert erreurs == []
     assert kyc.is_presumed(_stored(magasin), "identity_verified")
 
@@ -493,7 +502,7 @@ def test_an_inscription_landing_after_the_page_is_never_confirmed_unseen(
     """Claude re-inscribes between the render and the click: the page's
     etag is stale, so the confirmation is refused."""
     etag = _presumed(magasin)
-    pm.update_kyc_status("p1", "identity_verified", "exempté", source="mcp")
+    pm.update_kyc_status("p1", "identity_verified", "identifié", source="mcp")
 
     doc, erreurs = pm.confirm_kyc_status(
         "p1", "identity_verified", par="juriste", expected_etag=etag)
@@ -537,10 +546,10 @@ def test_confirm_works_on_a_contact_with_an_invalid_legacy_field(magasin):
 def test_a_lawyer_decision_landing_before_claude_s_commit_is_never_reverted(
     magasin,
 ):
-    """The lawyer decides « exempté » between update_partie's read and its
+    """The lawyer decides « identifié » between update_partie's read and its
     commit. On f5033ec the blind set() wrote Claude's presumed « vérifié »
     over it; now the write is compare-and-set against its read and refused."""
-    rival = {**_stored(magasin), "identity_verified": "exempté",
+    rival = {**_stored(magasin), "identity_verified": "identifié",
              "identity_verified_source": "juriste",
              "identity_verified_date": ANCIEN, "etag": "e-juriste"}
 
@@ -556,7 +565,7 @@ def test_a_lawyer_decision_landing_before_claude_s_commit_is_never_reverted(
 
     assert doc is None and erreurs == [concurrency.STALE_ETAG_ERROR]
     stored = _stored(magasin)
-    assert stored["identity_verified"] == "exempté"
+    assert stored["identity_verified"] == "identifié"
     assert stored["etag"] == "e-juriste"
     assert kyc.is_decided(stored, "identity_verified")
 
@@ -594,3 +603,333 @@ def test_claude_s_notes_never_land_on_a_confirmation_made_in_between(
     stored = _stored(magasin)
     assert stored["identity_verified_notes"] == notes_before
     assert kyc.is_decided(stored, "identity_verified")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Vocabulaire de 2026-11 (D1-D3) — « Identifié », « Vérifié », « À faire »
+# ══════════════════════════════════════════════════════════════════════
+#
+# « Identifié » est une décision (D2) ; « exempté » est RETIRÉ (D3) : stocké,
+# il se lit « identifié » sans que sa provenance bouge, la prochaine
+# sauvegarde du document entier l'écrit ainsi, et plus rien ne l'inscrit.
+
+CONFIRME = datetime(2026, 6, 21, 9, 30, tzinfo=timezone.utc)
+
+
+def _provenance(doc: dict, field: str = kyc.FIELD_IDENTITY) -> dict:
+    """The four provenance keys of *field* — what the retirement must keep
+    byte-identical (a presumed inscription stays presumed, a confirmed one
+    confirmed, the lawyer's stays his)."""
+    return {key: doc.get(key) for key in (
+        kyc.date_key(field), kyc.source_key(field),
+        kyc.confirmed_at_key(field), kyc.confirmed_by_key(field))}
+
+
+# ── The vocabulary — utils/kyc, the one source ───────────────────────────
+
+
+def test_the_statuses_read_in_d1_order():
+    """The form's options and the connector's description iterate these
+    tuples: their order IS the display order. « À faire » keeps the key
+    ``non_vérifié`` (``à_faire`` is a task status)."""
+    assert kyc.IDENTITY_STATUSES == ("identifié", "vérifié", "non_vérifié")
+    assert kyc.CONFLICT_STATUSES == ("non_vérifié", "vérifié", "conflit_détecté")
+    assert kyc.STATUSES == {kyc.FIELD_IDENTITY: kyc.IDENTITY_STATUSES,
+                            kyc.FIELD_CONFLICT: kyc.CONFLICT_STATUSES}
+    assert kyc.NON_VERIFIE == "non_vérifié"
+
+
+def test_identifie_and_verifie_decide_the_identity_check():
+    assert kyc.DECIDED == {
+        kyc.FIELD_IDENTITY: ("identifié", "vérifié"),
+        kyc.FIELD_CONFLICT: ("vérifié", "conflit_détecté"),
+    }
+    for field in kyc.FIELDS:
+        # Decided statuses belong to their check, and « À faire » never
+        # decides anything.
+        assert set(kyc.DECIDED[field]) < set(kyc.STATUSES[field]), field
+        assert kyc.NON_VERIFIE not in kyc.DECIDED[field], field
+
+
+def test_the_labels_are_the_fiche_s_four_words():
+    assert kyc.STATUS_LABELS == {
+        "identifié": "Identifié",
+        "vérifié": "Vérifié",
+        "non_vérifié": "À faire",
+        "conflit_détecté": "Conflit détecté",
+    }
+    # One label per status of either check: none missing, none retired.
+    assert set(kyc.STATUS_LABELS) == (
+        set(kyc.IDENTITY_STATUSES) | set(kyc.CONFLICT_STATUSES))
+
+
+def test_a_retired_status_names_a_current_successor():
+    assert kyc.RETIRED_STATUSES == {
+        kyc.FIELD_IDENTITY: {"exempté": "identifié"},
+        kyc.FIELD_CONFLICT: {},
+    }
+    for field, retired in kyc.RETIRED_STATUSES.items():
+        for old, successor in retired.items():
+            assert successor in kyc.STATUSES[field], (field, old)
+            assert old not in kyc.STATUSES[field], (field, old)
+            assert old not in kyc.STATUS_LABELS, (field, old)
+    # « exempté » was DECIDED: a successor that did not decide would reopen
+    # every attestation the lawyer recorded with it.
+    assert (kyc.RETIRED_STATUSES[kyc.FIELD_IDENTITY]["exempté"]
+            in kyc.DECIDED[kyc.FIELD_IDENTITY])
+
+
+def test_canonical_status_rewrites_only_a_retired_key():
+    assert kyc.canonical_status(kyc.FIELD_IDENTITY, "exempté") == "identifié"
+    for value in kyc.IDENTITY_STATUSES + ("à_vérifier", ""):
+        assert kyc.canonical_status(kyc.FIELD_IDENTITY, value) == value
+    # The conflict check never had « exempté »: there, an unknown value,
+    # kept as it is — never a successor it does not have.
+    for value in kyc.CONFLICT_STATUSES + ("exempté", "à_vérifier", ""):
+        assert kyc.canonical_status(kyc.FIELD_CONFLICT, value) == value
+    # An unknown FIELD is a programming error, as everywhere in utils/kyc.
+    with pytest.raises(ValueError):
+        kyc.canonical_status("statut", "exempté")
+
+
+@pytest.mark.parametrize("valeur", [["exempté"], {"statut": "exempté"}, None],
+                         ids=["liste", "dictionnaire", "none"])
+def test_canonical_status_returns_a_non_string_unchanged(valeur):
+    """It runs on STORED data inside the readers: whatever a hand edit left
+    there comes back as it is, never raises."""
+    for field in kyc.FIELDS:
+        assert kyc.canonical_status(field, valeur) is valeur
+
+
+def test_choices_pair_each_status_with_its_label_in_order():
+    assert kyc.choices(kyc.FIELD_IDENTITY) == (
+        ("identifié", "Identifié"), ("vérifié", "Vérifié"),
+        ("non_vérifié", "À faire"))
+    assert kyc.choices(kyc.FIELD_CONFLICT) == (
+        ("non_vérifié", "À faire"), ("vérifié", "Vérifié"),
+        ("conflit_détecté", "Conflit détecté"))
+    for field in kyc.FIELDS:
+        assert kyc.choices(field) == tuple(
+            (key, kyc.STATUS_LABELS[key]) for key in kyc.STATUSES[field])
+
+
+def test_stored_status_reads_exempte_as_identifie():
+    legacy = {kyc.FIELD_IDENTITY: "exempté"}
+    assert kyc.stored_status(legacy, kyc.FIELD_IDENTITY) == "identifié"
+    # Every judgment reads through it: the lawyer's « exempté » stays his
+    # decided attestation, Claude's stays presumed.
+    assert kyc.is_decided(legacy, kyc.FIELD_IDENTITY)
+    presumed = {**legacy, kyc.source_key(kyc.FIELD_IDENTITY): kyc.SOURCE_MCP}
+    assert kyc.is_presumed(presumed, kyc.FIELD_IDENTITY)
+    assert not kyc.is_decided(presumed, kyc.FIELD_IDENTITY)
+    # Absent or blank is « À faire »; the conflict check keeps its unknown
+    # « exempté » as it is.
+    assert kyc.stored_status({}, kyc.FIELD_IDENTITY) == kyc.NON_VERIFIE
+    assert kyc.stored_status(None, kyc.FIELD_IDENTITY) == kyc.NON_VERIFIE
+    assert kyc.stored_status(
+        {kyc.FIELD_CONFLICT: "exempté"}, kyc.FIELD_CONFLICT) == "exempté"
+
+
+def test_the_check_names_map_onto_the_two_fields():
+    """record_kyc_status's ``check`` enum and its handler both derive from
+    this mapping: it names each field, once."""
+    assert kyc.CHECK_FIELDS == {"identity": kyc.FIELD_IDENTITY,
+                                "conflict": kyc.FIELD_CONFLICT}
+    assert set(kyc.CHECK_FIELDS.values()) == set(kyc.FIELDS)
+    assert len(set(kyc.CHECK_FIELDS.values())) == len(kyc.CHECK_FIELDS)
+
+
+# ── A stored « exempté » — read, saved, refused (fake store) ─────────────
+
+# The classes the migration script reports, each with its provenance: the
+# lawyer's (before lot 4a, then through the form), Claude's presumed one,
+# Claude's confirmed one.
+_EXEMPTE = {
+    "ancien": dict(identity_verified_source=""),
+    "juriste": dict(identity_verified_source="juriste"),
+    "presume": dict(identity_verified_source="mcp"),
+    "confirme": dict(identity_verified_source="mcp",
+                     identity_verified_confirmed_at=CONFIRME,
+                     identity_verified_confirmed_by="juriste"),
+}
+
+
+@pytest.fixture(params=list(_EXEMPTE))
+def exempte(request, monkeypatch):
+    """A contact still stored « exempté » (the script has not run)."""
+    fake = install(monkeypatch, pm)
+    fake.seed("parties/p1", _partie(
+        identity_verified="exempté", identity_verified_date=ANCIEN,
+        etag="e0", **_EXEMPTE[request.param]))
+    return fake
+
+
+def test_every_reader_gives_identifie_with_its_provenance(exempte):
+    stored = exempte.peek("parties/p1")
+
+    for read in (pm.get_partie("p1"), pm.get_partie_strict("p1"),
+                 pm.get_parties_bulk(["p1"])["p1"]):
+        assert read[kyc.FIELD_IDENTITY] == "identifié"
+        assert _provenance(read) == _provenance(stored)
+        # Its class is unchanged: presumed stays presumed, decided decided.
+        for judge in (kyc.is_presumed, kyc.is_decided):
+            assert (judge(read, kyc.FIELD_IDENTITY)
+                    == judge(stored, kyc.FIELD_IDENTITY)), judge.__name__
+        assert read[kyc.FIELD_CONFLICT] == stored[kyc.FIELD_CONFLICT]
+
+    # A read never writes: the store still holds the retired key.
+    assert exempte.peek("parties/p1") == stored
+    assert exempte.commits == []
+
+
+def test_an_unrelated_save_stores_identifie_with_its_provenance(exempte):
+    """The purge: an email-only update — no compliance key, no source —
+    writes the whole document, and the successor with it."""
+    before = exempte.peek("parties/p1")
+
+    _doc, erreurs = pm.update_partie("p1", {"email": "a@b.ca"})
+
+    assert erreurs == []
+    after = exempte.peek("parties/p1")
+    assert after["email"] == "a@b.ca"
+    assert after[kyc.FIELD_IDENTITY] == "identifié"
+    assert _provenance(after) == _provenance(before)
+
+
+@pytest.mark.parametrize("stocke", ["exempté", "identifié"])
+def test_a_stale_page_posting_exempte_stamps_nothing(monkeypatch, stocke):
+    """A form page rendered before the release still offers « Exempté ».
+    Re-saving it is no transition: the attestation keeps its date and its
+    author — and the retired key is never written again."""
+    fake = install(monkeypatch, pm)
+    fake.seed("parties/p1", _partie(
+        identity_verified=stocke, identity_verified_date=ANCIEN,
+        identity_verified_source="juriste", etag="e0"))
+    before = fake.peek("parties/p1")
+
+    _doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "exempté", "email": "a@b.ca"},
+        expected_etag="e0", kyc_source="juriste")
+
+    assert erreurs == []
+    after = fake.peek("parties/p1")
+    assert after[kyc.FIELD_IDENTITY] == "identifié"
+    assert after["identity_verified_date"] == ANCIEN
+    assert _provenance(after) == _provenance(before)
+
+
+def test_exempte_posted_from_a_faire_is_the_lawyer_s_identifie(magasin):
+    """The one transition a stale page can still make: from « À faire »,
+    its « Exempté » is the lawyer's decision — stored as its successor."""
+    _doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "exempté"}, kyc_source="juriste")
+
+    assert erreurs == []
+    stored = _stored(magasin)
+    assert stored[kyc.FIELD_IDENTITY] == "identifié"
+    assert stored["identity_verified_source"] == "juriste"
+    assert stored["identity_verified_date"] is not None
+    assert kyc.is_decided(stored, kyc.FIELD_IDENTITY)
+
+
+@pytest.mark.parametrize("source", kyc.VALID_SOURCES)
+def test_update_kyc_status_refuses_the_retired_status(magasin, source):
+    """Nothing inscribes « exempté » any more — the lawyer's path no more
+    than Claude's."""
+    before = _stored(magasin)
+
+    doc, erreurs = pm.update_kyc_status(
+        "p1", kyc.FIELD_IDENTITY, "exempté", source=source)
+
+    assert doc is None and erreurs == ["Statut invalide."]
+    assert _stored(magasin) == before and magasin.commits == []
+
+
+@pytest.mark.parametrize("stocke, source", [
+    ("identifié", "juriste"), ("identifié", ""), ("exempté", ""),
+    ("exempté", "juriste"),
+])
+def test_claude_never_writes_over_the_lawyer_s_identifie(
+    monkeypatch, stocke, source,
+):
+    """D2: « Identifié » is the lawyer's attestation like « Vérifié » — and
+    a legacy « exempté » he recorded stays one after the retirement."""
+    fake = install(monkeypatch, pm)
+    fake.seed("parties/p1", _partie(
+        identity_verified=stocke, identity_verified_date=ANCIEN,
+        identity_verified_source=source, etag="e0"))
+    before = fake.peek("parties/p1")
+
+    # Every status of the check — the stored one with notes, a notes-only
+    # write, which carries no transition.
+    for status in kyc.IDENTITY_STATUSES:
+        notes = "Ajout de Claude." if status == "identifié" else None
+        doc, erreurs = pm.update_kyc_status(
+            "p1", kyc.FIELD_IDENTITY, status, notes=notes, source="mcp")
+        assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION], status
+    # …through update_partie too (the rule lives in the model).
+    doc, erreurs = pm.update_partie(
+        "p1", {kyc.FIELD_IDENTITY: "vérifié"}, kyc_source="mcp")
+    assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION]
+
+    assert fake.peek("parties/p1") == before and fake.commits == []
+
+
+def test_claude_s_identifie_is_presumed_until_the_lawyer_confirms(magasin):
+    _doc, erreurs = pm.update_kyc_status(
+        "p1", kyc.FIELD_IDENTITY, "identifié", source="mcp")
+
+    assert erreurs == []
+    inscribed = _stored(magasin)
+    assert inscribed[kyc.FIELD_IDENTITY] == "identifié"
+    assert inscribed["identity_verified_source"] == "mcp"
+    assert inscribed["identity_verified_date"] is not None
+    assert kyc.is_presumed(inscribed, kyc.FIELD_IDENTITY)
+    assert not kyc.is_decided(inscribed, kyc.FIELD_IDENTITY)
+
+    _doc, erreurs = pm.confirm_kyc_status(
+        "p1", kyc.FIELD_IDENTITY, par="juriste",
+        expected_etag=inscribed["etag"])
+
+    assert erreurs == []
+    confirmed = _stored(magasin)
+    assert kyc.is_decided(confirmed, kyc.FIELD_IDENTITY)
+    assert not kyc.is_presumed(confirmed, kyc.FIELD_IDENTITY)
+    assert confirmed["identity_verified_confirmed_by"] == "juriste"
+    # Confirming never re-dates the inscription.
+    assert (confirmed["identity_verified_date"]
+            == inscribed["identity_verified_date"])
+
+
+@pytest.mark.parametrize("valeur", [["vérifié"], {"statut": "exempté"}],
+                         ids=["liste", "dictionnaire"])
+def test_a_non_string_stored_status_never_raises(monkeypatch, valeur):
+    """A hand edit can leave a list or a map in a status field. The readers
+    now look every stored status up in RETIRED_STATUSES, and that bare
+    lookup RAISES on such a value — so each must pass it through unchanged:
+    read, judged (never decided) and re-saved, without raising."""
+    # The guards are load-bearing: unguarded, the lookup raises.
+    for field in kyc.FIELDS:
+        with pytest.raises(TypeError):
+            kyc.RETIRED_STATUSES[field].get(valeur)
+    fake = install(monkeypatch, pm)
+    fake.seed("parties/p1", _partie(
+        identity_verified=valeur, conflict_check=valeur, etag="e0"))
+
+    for read in (pm.get_partie_strict("p1"), pm.get_partie("p1"),
+                 pm.get_parties_bulk(["p1"])["p1"]):
+        for field in kyc.FIELDS:
+            assert read[field] == valeur
+            status = kyc.stored_status(read, field)
+            assert isinstance(status, str)
+            assert status not in kyc.DECIDED[field]
+            assert not kyc.is_decided(read, field)
+            assert not kyc.is_presumed(read, field)
+    assert pm._migrate_kyc(None) is None
+
+    _doc, erreurs = pm.update_partie("p1", {"email": "a@b.ca"})
+
+    assert erreurs == []
+    stored = fake.peek("parties/p1")
+    assert stored["email"] == "a@b.ca"
+    assert all(stored[field] == valeur for field in kyc.FIELDS)

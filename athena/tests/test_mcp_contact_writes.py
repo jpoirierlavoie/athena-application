@@ -12,6 +12,10 @@
   juriste a consignée ou confirmée. Ses notes s'AJOUTENT sous une ligne
   datée, et la chaîne STOCKÉE entière est vérifiée (le piège de TAG_RE qui
   enjambe la jointure).
+* Le vocabulaire de 2026-11 (section 4) : « identifié » s'inscrit présumé
+  comme « vérifié » ; « exempté », retiré, n'est plus ni offert ni accepté,
+  et une valeur héritée se lit « identifié » — décidée, donc hors de portée
+  du connecteur quand le juriste l'a consignée.
 
 Tout passe par le vrai client Firestore au-dessus du faux serveur partagé ;
 on relit ce qui est STOCKÉ.
@@ -20,6 +24,7 @@ on relit ce qui est STOCKÉ.
 import logging
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timezone
 from unittest import mock
@@ -242,15 +247,19 @@ def test_a_stale_version_is_refused_and_writes_nothing(db, represented):
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_an_inscription_is_presumed_and_says_so(db, caplog):
+@pytest.mark.parametrize("status", kyc.DECIDED[kyc.FIELD_IDENTITY])
+def test_an_inscription_is_presumed_and_says_so(db, caplog, status):
+    """Every DECIDED identity status Claude inscribes is presumed — the
+    2026-11 « identifié » exactly as « vérifié »: Claude's, unconfirmed,
+    the coverage check left open."""
     _contact(db, "p1", "Jean", "Tremblay")
     before = _ctag(db)
     with caplog.at_level(logging.INFO, logger="pallas.partie"):
         payload = handlers.record_kyc_status({
-            "partie_id": "p1", "check": "identity", "status": "vérifié"})
+            "partie_id": "p1", "check": "identity", "status": status})
 
     stored = _stored(db, "p1")
-    assert stored["identity_verified"] == "vérifié"
+    assert stored["identity_verified"] == status
     assert stored["identity_verified_source"] == "mcp"
     assert stored["identity_verified_confirmed_at"] is None
     assert stored["identity_verified_date"] is not None
@@ -262,6 +271,7 @@ def test_an_inscription_is_presumed_and_says_so(db, caplog):
     assert payload["kyc"]["confirmation_required"] is True
     assert payload["kyc"]["source"] == "mcp"
     assert payload["kyc"]["status_before"] == "non_vérifié"
+    assert payload["kyc"]["status_after"] == status
     assert any("PRÉSUMÉE" in w and "à confirmer" in w
                for w in payload["warnings"])
     events = [r.json_fields for r in caplog.records
@@ -289,10 +299,46 @@ def test_the_coverage_report_keeps_an_inscription_open(db):
     assert "inscrite(s) par Claude" in findings[0]["detail"]
 
 
+@pytest.mark.parametrize("status", kyc.DECIDED[kyc.FIELD_IDENTITY])
+def test_the_coverage_report_keeps_an_identity_inscription_open_until_confirmed(
+        db, status):
+    """The identity variant, over every decided identity status: Claude's
+    « identifié » (2026-11) is PRESUMED like its « vérifié » — the finding
+    stays open and names Claude — and only the lawyer's « Confirmer »
+    closes it (the model call the fiche's route makes: web provenance,
+    ``par=juriste``)."""
+    _contact(db, "p1", "Jean", "Tremblay")
+    _dossier, errors = dossier_model.create_dossier({
+        "file_number": "2026-001", "title": "Tremblay c. Roy",
+        "clients": [{"id": "p1", "name": "Jean Tremblay",
+                     "roles": ["demandeur"]}]})
+    assert errors == []
+    handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
+                                "status": status})
+
+    def findings():
+        report = handlers.get_coverage_report(
+            {"checks": ["IDENTITE_NON_VERIFIEE"]})
+        assert report["data_completeness"]["kyc_checked"] is True
+        return [f for i in report["items"] for f in i["findings"]]
+
+    open_ = findings()
+    assert [f["code"] for f in open_] == ["IDENTITE_NON_VERIFIEE"]
+    assert "Dont 1 inscrite(s) par Claude" in open_[0]["detail"]
+
+    with provenance.writing_via("web"):
+        _doc, errors = partie_model.confirm_kyc_status(
+            "p1", kyc.FIELD_IDENTITY, par=kyc.SOURCE_JURISTE,
+            expected_etag=_stored(db, "p1")["etag"])
+    assert errors == []
+    assert _stored(db, "p1")["identity_verified"] == status
+    assert findings() == []
+
+
 @pytest.mark.parametrize("stored", [
     # The lawyer decided it (legacy: no source at all).
     {"identity_verified": "vérifié", "identity_verified_date": DT},
-    {"identity_verified": "exempté", "identity_verified_date": DT,
+    {"identity_verified": "identifié", "identity_verified_date": DT,
      "identity_verified_source": "juriste"},
     # Claude inscribed it, the lawyer CONFIRMED it: his attestation now.
     {"identity_verified": "vérifié", "identity_verified_date": DT,
@@ -301,7 +347,7 @@ def test_the_coverage_report_keeps_an_inscription_open(db):
 ])
 @pytest.mark.parametrize("call", [
     {"status": "non_vérifié"},
-    {"status": "exempté"},
+    {"status": "identifié"},
     {"status": "vérifié", "notes": "Ajout sur une décision du juriste."},
 ])
 def test_record_kyc_status_never_changes_or_confirms_the_lawyer_s_attestation(
@@ -340,7 +386,7 @@ def test_a_lawyer_decision_landing_before_the_commit_is_never_overwritten(db, mo
         if not fired:
             fired.append(True)
             db.external_write("parties/p1", {
-                **db.peek("parties/p1"), "identity_verified": "exempté",
+                **db.peek("parties/p1"), "identity_verified": "identifié",
                 "identity_verified_source": "juriste", "etag": "e-juriste"})
         return doc
 
@@ -349,7 +395,7 @@ def test_a_lawyer_decision_landing_before_the_commit_is_never_overwritten(db, mo
         handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
                                     "status": "vérifié"})
     stored = _stored(db, "p1")
-    assert stored["identity_verified"] == "exempté"
+    assert stored["identity_verified"] == "identifié"
     assert stored["identity_verified_source"] == "juriste"
 
 
@@ -358,8 +404,8 @@ def test_claude_may_change_or_withdraw_its_own_presumed_inscription(db):
     handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
                                 "status": "vérifié"})
     handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
-                                "status": "exempté"})
-    assert _stored(db, "p1")["identity_verified"] == "exempté"
+                                "status": "identifié"})
+    assert _stored(db, "p1")["identity_verified"] == "identifié"
     assert kyc.is_presumed(_stored(db, "p1"), kyc.FIELD_IDENTITY)
 
     payload = handlers.record_kyc_status({"partie_id": "p1",
@@ -370,7 +416,10 @@ def test_claude_may_change_or_withdraw_its_own_presumed_inscription(db):
     assert stored["identity_verified_source"] == ""
     assert stored["identity_verified_date"] is None
     assert payload["kyc"]["presumed"] is False
-    assert any("retirée" in w for w in payload["warnings"])
+    # The withdrawal names the status as the fiche labels it (2026-11).
+    assert any("retirée" in w and "redevient « À faire »" in w
+               for w in payload["warnings"])
+    assert not any("non vérifiée" in w for w in payload["warnings"])
 
 
 def test_notes_are_appended_under_a_dated_line_never_replacing(db):
@@ -412,11 +461,22 @@ def test_notes_past_the_stored_ceiling_are_refused_never_truncated(db):
             "notes": "y" * 600})
 
 
-def test_a_status_outside_the_check_s_vocabulary_is_refused_by_name(db):
+@pytest.mark.parametrize("check, status, allowed", [
+    ("identity", "conflit_détecté", "identifié, vérifié, non_vérifié."),
+    # « identifié » is the identity check's alone; the status enum is ONE
+    # list for both checks, so the schema lets it through and the handler
+    # refuses it here.
+    ("conflict", "identifié", "non_vérifié, vérifié, conflit_détecté."),
+], ids=["identity", "conflict"])
+def test_a_status_outside_the_check_s_vocabulary_is_refused_by_name(
+        db, check, status, allowed):
     _contact(db, "p1", "Jean", "Tremblay")
-    with pytest.raises(tools.ToolArgumentError, match="exempté"):
-        handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
-                                    "status": "conflit_détecté"})
+    before = _stored(db, "p1")
+    with pytest.raises(tools.ToolArgumentError,
+                       match=re.escape(f"« {check} », {allowed}")):
+        handlers.record_kyc_status({"partie_id": "p1", "check": check,
+                                    "status": status})
+    assert _stored(db, "p1") == before
 
 
 def test_the_status_enum_is_derived_from_the_model_vocabulary():
@@ -527,16 +587,20 @@ def _fiche_view(partie: dict) -> dict:
         return parties_routes._kyc_view(partie)
 
 
-def test_the_presumed_warning_quotes_the_fiche_as_it_is_composed(db):
+@pytest.mark.parametrize("status", kyc.DECIDED[kyc.FIELD_IDENTITY])
+def test_the_presumed_warning_quotes_the_fiche_as_it_is_composed(db, status):
     """The warning promised « Vérifié (présumé) — inscrit par Claude, à
     confirmer », a line the fiche never shows: it renders the badge and
-    « inscrit par Claude le <jour> — à confirmer ». Quoted as composed."""
+    « inscrit par Claude le <jour> — à confirmer ». Quoted as composed —
+    for every decided identity status, so the 2026-11 « identifié » reads
+    « Identifié (présumé) » in both."""
     _contact(db, "p1", "Jean", "Tremblay")
     payload = handlers.record_kyc_status({
-        "partie_id": "p1", "check": "identity", "status": "vérifié"})
+        "partie_id": "p1", "check": "identity", "status": status})
 
     view = _fiche_view(_stored(db, "p1"))["identite"]
     assert view["presumed"] is True
+    assert view["label"] == f"{kyc.STATUS_LABELS[status]} (présumé)"
     warning = next(w for w in payload["warnings"] if "PRÉSUMÉE" in w)
     assert f"« {view['label']} »" in warning
     assert f"« {view['attribution']} »" in warning
@@ -657,3 +721,158 @@ def test_a_detected_conflict_is_the_caller_s_to_report(db):
     description = tools.TOOLS["record_kyc_status"]["description"]
     assert "is reported to the lawyer" not in description
     assert "tell the lawyer at once — nothing notifies him" in description
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. The 2026-11 vocabulary — « identifié » enters, « exempté » retires
+#    (utils/kyc: RETIRED_STATUSES, CHECK_FIELDS, choices)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_exempte_is_neither_offered_nor_accepted(db):
+    """« exempté » is RETIRED: the status enum no longer offers it, the
+    schema check endpoint._tools_call runs before any handler refuses it,
+    and the handler — the line behind the schema — refuses it naming its
+    successor « identifié », writing nothing. Fails on 2b0fbdc: the enum
+    offered it and the handler inscribed a presumed exemption."""
+    schema = tools.TOOLS["record_kyc_status"]["input_schema"]
+    assert "exempté" not in schema["properties"]["status"]["enum"]
+    errors = tools.validate_args(schema, {
+        "partie_id": "p1", "check": "identity", "status": "exempté"})
+    assert len(errors) == 1, errors
+    assert errors[0].startswith("`status` must be one of:"), errors
+    assert "'identifié'" in errors[0]
+
+    _contact(db, "p1", "Jean", "Tremblay")
+    before = _stored(db, "p1")
+    db.reset_logs()
+    with pytest.raises(tools.ToolArgumentError, match="identifié"):
+        handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
+                                    "status": "exempté"})
+    assert db.commits == []
+    assert _stored(db, "p1") == before
+
+
+@pytest.mark.parametrize("provenance_keys, source, presumed, confirmed_at", [
+    # The lawyer's, recorded before provenance existed: no source at all.
+    ({}, "juriste", False, None),
+    # Claude's, still presumed.
+    ({"identity_verified_source": "mcp"}, "mcp", True, None),
+    # Claude's, confirmed by the lawyer.
+    ({"identity_verified_source": "mcp", "identity_verified_confirmed_at": DT,
+      "identity_verified_confirmed_by": "juriste"}, "mcp", False, DT),
+], ids=["lawyer", "presumed", "confirmed"])
+def test_get_partie_reads_a_stored_exemption_as_identifie(
+        db, provenance_keys, source, presumed, confirmed_at):
+    """A stored « exempté » — until the migration script runs, or from a
+    restored backup — reads « identifié » on the card get_partie returns,
+    never a status record_kyc_status no longer accepts; its date, source
+    and confirmation are KEPT: Claude's presumed one stays presumed, the
+    lawyer's stays his. The read writes nothing. Fails on 2b0fbdc, which
+    knew no retired status: the card said « exempté »."""
+    _contact(db, "p1", "Jean", "Tremblay", identity_verified="exempté",
+             identity_verified_date=DT, **provenance_keys)
+    db.reset_logs()
+
+    card = handlers.get_partie({"partie_id": "p1"})["partie"]
+
+    assert card["identity_verified"] == "identifié"
+    assert card["identity_verified_date"] == tools.iso_mtl(DT)
+    assert card["identity_verified_source"] == source
+    assert card["identity_verified_presumed"] is presumed
+    assert card["identity_verified_confirmed_at"] == tools.iso_mtl(confirmed_at)
+    assert db.commits == []
+    assert _stored(db, "p1")["identity_verified"] == "exempté"
+
+
+@pytest.mark.parametrize("stored", [
+    # The lawyer's, recorded before provenance existed: no source at all.
+    {},
+    {"identity_verified_source": "juriste"},
+], ids=["legacy-no-source", "juriste"])
+@pytest.mark.parametrize("call", [
+    {"status": "identifié"},
+    {"status": "vérifié"},
+    {"status": "non_vérifié"},
+    {"status": "identifié", "notes": "Ajout sur une décision du juriste."},
+], ids=["successor", "verifie", "withdrawal", "notes"])
+def test_a_legacy_lawyer_exemption_is_still_his_attestation(db, stored, call):
+    """« exempté » left the vocabulary, not the store: the lawyer's stored
+    one reads « identifié », DECIDED, so every connector write over it —
+    its successor too, a withdrawal, notes alone — is refused as his
+    attestation, and nothing is written. Read raw, it would be a status no
+    vocabulary knows: an undecided check Claude could overwrite. Fails on
+    2b0fbdc for the « identifié » calls: that vocabulary refused the status
+    by name, never as the lawyer's attestation."""
+    _contact(db, "p1", "Jean", "Tremblay", identity_verified="exempté",
+             identity_verified_date=DT, **stored)
+    before = _stored(db, "p1")
+    with pytest.raises(tools.ToolArgumentError) as err:
+        handlers.record_kyc_status({"partie_id": "p1", "check": "identity",
+                                    **call})
+    assert err.value.reason == "kyc_lawyer_attestation"
+    assert _stored(db, "p1") == before
+
+
+@pytest.mark.parametrize("status", ["exempté", "identifié"],
+                         ids=["legacy-exempte", "identifie"])
+def test_the_lawyer_s_identification_closes_the_coverage_check_under_either_key(
+        db, status):
+    """Through the real handler — get_parties_bulk, then the coverage
+    predicates: a client the lawyer recorded « exempté » (kept in the store
+    until the migration script runs) reads « identifié », DECIDED — no
+    false manquement on a deontological check. A control client « À
+    faire » in another dossier proves the check ran. Fails on 2b0fbdc for
+    « identifié »: that vocabulary did not know it, and raised
+    IDENTITE_NON_VERIFIEE over the lawyer's identification."""
+    _contact(db, "p1", "Jean", "Tremblay", identity_verified=status,
+             identity_verified_date=DT, identity_verified_source="juriste")
+    _contact(db, "p2", "Anne", "Gagnon")
+    for number, pid, name in (("2026-001", "p1", "Jean Tremblay"),
+                              ("2026-002", "p2", "Anne Gagnon")):
+        _dossier, errors = dossier_model.create_dossier({
+            "file_number": number, "title": f"{name} c. Roy",
+            "clients": [{"id": pid, "name": name, "roles": ["demandeur"]}]})
+        assert errors == []
+
+    report = handlers.get_coverage_report(
+        {"checks": ["IDENTITE_NON_VERIFIEE"]})
+
+    assert report["data_completeness"]["kyc_checked"] is True
+    flagged = [(item["file_number"], [f["code"] for f in item["findings"]])
+               for item in report["items"]]
+    assert flagged == [("2026-002", ["IDENTITE_NON_VERIFIEE"])]
+
+
+def test_the_status_description_derives_every_label_and_names_no_retired_status():
+    """The tool's texts are DERIVED from utils/kyc (one source per list):
+    the status description lists each check's statuses in display order,
+    each with the label the fiche shows; the description names the decided
+    list, and « À faire » as the fiche's label of non_vérifié. Nothing in
+    the tool names the retired « exempté ». Fails on 2b0fbdc: a
+    hand-written « identity: non_vérifié, vérifié, exempté. » without a
+    single label."""
+    spec = tools.TOOLS["record_kyc_status"]
+    status_text = spec["input_schema"]["properties"]["status"]["description"]
+    for check, field in kyc.CHECK_FIELDS.items():
+        listed = ", ".join(f"{key} (« {label} »)"
+                           for key, label in kyc.choices(field))
+        assert f"{check}: {listed}." in status_text, check
+    decided = ", ".join(dict.fromkeys(
+        kyc.DECIDED[kyc.FIELD_IDENTITY] + kyc.DECIDED[kyc.FIELD_CONFLICT]))
+    assert f"a decided status — {decided} — whose" in spec["description"]
+    todo = kyc.STATUS_LABELS[kyc.NON_VERIFIE]
+    assert f"{kyc.NON_VERIFIE} (« {todo} ») withdraws" in spec["description"]
+    assert "exempt" not in repr(spec).lower()
+
+
+def test_the_check_names_come_from_the_kyc_module_alone():
+    """record_kyc_status's `check` enum and its handler's map were two hand
+    copies of one mapping; both read utils/kyc.CHECK_FIELDS now, which names
+    every compliance field. Fails on 2b0fbdc: no CHECK_FIELDS there — a
+    literal ["identity", "conflict"] beside a dict of the handler's own."""
+    check = tools.TOOLS["record_kyc_status"]["input_schema"]["properties"][
+        "check"]
+    assert check["enum"] == list(kyc.CHECK_FIELDS)
+    assert handlers._KYC_CHECK_FIELDS is kyc.CHECK_FIELDS
+    assert sorted(kyc.CHECK_FIELDS.values()) == sorted(kyc.FIELDS)

@@ -9,7 +9,7 @@ accounting regulation), never serialized. ``job_title`` is the « Poste ou
 profession » (vCard TITLE); ``organization`` names the employer, the
 business or the school the work coordinates belong to.
 
-Two declared exceptions to « the model validates a whitelist »:
+Three declared exceptions to « the model validates a whitelist »:
 
 * a title received over CardDAV is NORMALIZED (« Dr. » → « Dr »,
   ``civilite.canonical_prefix``), and one this vocabulary does not know is
@@ -18,7 +18,15 @@ Two declared exceptions to « the model validates a whitelist »:
   stored title unchanged (``_vocabulary_errors``);
 * ``job_role`` (« Fonction », vCard ROLE) left the schema: a stored one is
   folded into ``job_title`` by every write (``_retire_job_role``) and by the
-  one-shot ``scripts/migrate_contact_titles.py``, never dropped.
+  one-shot ``scripts/migrate_contact_titles.py``, never dropped;
+* a RETIRED compliance status (``utils/kyc.RETIRED_STATUSES``: « exempté »,
+  2026-11) is never written again: the single-record readers give its
+  successor (``_migrate_kyc``), so the next full-document save
+  (``_update_partie``) purges it — ``confirm_kyc_status`` writes a partial
+  update and leaves it to the script —, and a payload carrying one, from a
+  form page rendered before the release, is normalized to its successor
+  (``_normalize``). The connector's schema and handler refuse it first, and
+  ``scripts/migrate_compliance_statuses.py`` rewrote the stored ones.
 """
 
 import logging
@@ -167,14 +175,14 @@ def _default_doc() -> dict:
         # lawyer, every record before lot 4a); *_confirmed_* the lawyer's
         # « Confirmer » of a Claude inscription (D7, utils/kyc.py). All
         # model-owned: popped from every caller payload by _normalize.
-        "identity_verified": "non_vérifié",
+        "identity_verified": kyc.NON_VERIFIE,
         "identity_verified_date": None,
         "identity_verified_notes": "",
         "identity_verified_source": "",
         "identity_verified_confirmed_at": None,
         "identity_verified_confirmed_by": "",
         "kyc_document_ids": [],
-        "conflict_check": "non_vérifié",
+        "conflict_check": kyc.NON_VERIFIE,
         "conflict_check_date": None,
         "conflict_check_notes": "",
         "conflict_check_source": "",
@@ -444,6 +452,12 @@ def _normalize(data: dict) -> dict:
     for key in kyc.PROVENANCE_KEYS:
         data.pop(key, None)
 
+    # A RETIRED status (module docstring) becomes its successor — only a key
+    # the caller sent, and only a string; the stored one is migrated on read.
+    for field in kyc.FIELDS:
+        if isinstance(data.get(field), str):
+            data[field] = kyc.canonical_status(field, data[field])
+
     return data
 
 
@@ -544,6 +558,25 @@ def _migrate_mandataires(partie: Optional[dict]) -> Optional[dict]:
             partie["mandataires"] = []
     for legacy_key in ("mandataire_id", "mandataire_kind", "mandataire_notes"):
         partie.pop(legacy_key, None)
+    return partie
+
+
+def _migrate_kyc(partie: Optional[dict]) -> Optional[dict]:
+    """Read a RETIRED compliance status as its successor (module docstring).
+
+    Only the status changes; its date, source and confirmation are kept
+    byte-identical, so a presumed Claude inscription stays presumed and a
+    confirmed one stays confirmed. The next full-document ``set()`` stores
+    the successor. The list and search readers do not need it: their rows
+    reach a status only through ``kyc.stored_status``, which reads it the
+    same way, and the vCard carries none.
+    """
+    if not isinstance(partie, dict):
+        return partie
+    for field in kyc.FIELDS:
+        value = partie.get(field)
+        if isinstance(value, str):
+            partie[field] = kyc.canonical_status(field, value)
     return partie
 
 
@@ -667,7 +700,8 @@ def get_parties_bulk(partie_ids: list[str]) -> dict[str, dict]:
         result: dict[str, dict] = {}
         for snap in db.get_all(refs):
             if snap.exists:
-                result[snap.id] = _migrate_mandataires(snap.to_dict())
+                result[snap.id] = _migrate_kyc(
+                    _migrate_mandataires(snap.to_dict()))
         return result
     except Exception as exc:
         logger.warning("get_parties_bulk failed: %s", exc)
@@ -679,7 +713,7 @@ def get_partie(partie_id: str) -> Optional[dict]:
     try:
         doc = db.collection(COLLECTION).document(partie_id).get()
         if doc.exists:
-            return _migrate_mandataires(doc.to_dict())
+            return _migrate_kyc(_migrate_mandataires(doc.to_dict()))
     except Exception as exc:
         logger.warning("get_partie failed for %s: %s", sanitize_log_value(partie_id), exc)
     return None
@@ -692,12 +726,13 @@ def get_partie_strict(partie_id: str) -> Optional[dict]:
     For a caller whose ``None`` means something — the connector's contact
     writes of lot 4b, whose « Contact introuvable » would otherwise answer an
     outage and send the caller hunting for (or re-creating) a contact that
-    exists. Same shape as ``get_partie`` (mandataires migrated); the
+    exists. Same shape as ``get_partie`` (mandataires and a retired
+    compliance status migrated); the
     ``dossier.get_dossier_strict`` precedent."""
     doc = db.collection(COLLECTION).document(partie_id).get()
     if not doc.exists:
         return None
-    return _migrate_mandataires(doc.to_dict() or {})
+    return _migrate_kyc(_migrate_mandataires(doc.to_dict() or {}))
 
 
 def list_parties_strict() -> list[dict]:
@@ -985,8 +1020,8 @@ def _update_partie(
     # KYC stamps (PA-D07, D7 — utils/kyc.apply_status_transition): each
     # *_date answers « when was the CURRENT decided status inscribed »,
     # never « when was the field last touched », and only a TRANSITION
-    # moves the provenance. « non_vérifié » clears date, source and
-    # confirmation, so the invariant date-present ⇔ status-decided
+    # moves the provenance. « non_vérifié » (« À faire ») clears date,
+    # source and confirmation, so the invariant date-present ⇔ status-decided
     # self-heals pre-fix rows on their next KYC edit. Presence-gated: a
     # partial update that does not carry the key never touches the check
     # (on a full-document set, injecting a default IS a deletion).

@@ -1190,7 +1190,7 @@ _SECOND_ARGS = {
     "reopen_task": {"status": "à_faire"},
     "update_dossier_party": {"roles": ["intervenant"]},
     "update_partie_mandataire": {"notes": "Procuration révoquée"},
-    "record_kyc_status": {"status": "exempté"},
+    "record_kyc_status": {"status": "identifié"},
     "edit_analyse": {"operations": [{"bloc": "D", "mode": "append",
                                      "content": "Deuxième version"}]},
     # Another key: the same key with other arguments is refused as a

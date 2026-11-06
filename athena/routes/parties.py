@@ -118,9 +118,9 @@ def _form_data() -> dict:
         "bar_number": f.get("bar_number", "").strip(),
         "company_neq": f.get("company_neq", "").strip(),
         # Compliance (only when contact_role == client)
-        "identity_verified": f.get("identity_verified", "non_vérifié"),
+        "identity_verified": f.get("identity_verified", kyc.NON_VERIFIE),
         "identity_verified_notes": f.get("identity_verified_notes", "").strip(),
-        "conflict_check": f.get("conflict_check", "non_vérifié"),
+        "conflict_check": f.get("conflict_check", kyc.NON_VERIFIE),
         "conflict_check_notes": f.get("conflict_check_notes", "").strip(),
         # Mandataires (parsed from a JSON-encoded list submitted by the form)
         "mandataires": _parse_mandataires_json(f.get("mandataires_json", "")),
@@ -135,8 +135,18 @@ def _form_context(partie: Optional[dict]) -> dict[str, Any]:
     ``prefix_extra`` is a stored title the vocabulary does not know — one a
     phone sent, kept by the model — offered as its own selected option, so
     re-saving the form re-posts it unchanged instead of erasing it.
+
+    The compliance selects follow the same rule, for a sharper reason: the
+    identity list OPENS on « Identifié », a decided status (D1's order), so
+    a select whose value matched no option would post it as the lawyer's
+    attestation. Each current value is therefore marked ``selected`` on the
+    server (``kyc_selected``) — a page whose Alpine never ran still posts
+    the stored status — and a stored value outside the vocabulary is
+    offered as its own option (``kyc_extra``), so a save re-posts it
+    unchanged (``kyc.apply_status_transition`` keeps it).
     """
     prefix = civilite.as_text((partie or {}).get("prefix", ""))
+    kyc_selected = {f: kyc.stored_status(partie, f) for f in kyc.FIELDS}
     return {
         # A legacy « Fonction » shows already folded into the title — what
         # the save will store (models.partie._retire_job_role).
@@ -149,6 +159,13 @@ def _form_context(partie: Optional[dict]) -> dict[str, Any]:
         "occupation_labels": occupations.OCCUPATION_LABELS,
         "organization_labels": occupations.ORGANIZATION_LABELS,
         "organization_label_default": occupations.ORGANIZATION_LABEL_DEFAULT,
+        "kyc_choices": {f: kyc.choices(f) for f in kyc.FIELDS},
+        "kyc_selected": kyc_selected,
+        "kyc_extra": {
+            f: value for f, value in kyc_selected.items()
+            if value not in kyc.STATUSES[f]
+        },
+        "kyc_todo": kyc.NON_VERIFIE,
     }
 
 
@@ -383,10 +400,12 @@ def _compliance_signer() -> str:
 _KYC_CHECKS = (("identite", kyc.FIELD_IDENTITY),
                ("conflit", kyc.FIELD_CONFLICT))
 _KYC_FIELD_BY_SLUG = dict(_KYC_CHECKS)
+# One badge per status of kyc.STATUS_LABELS (pinned): « Identifié » takes
+# the blue « Exempté » had — decided, yet distinct from Vérifié's green.
 _KYC_BADGES = {
-    "non_vérifié": "bg-orange-100 text-orange-700",
+    "identifié": "bg-blue-100 text-blue-700",
     "vérifié": "bg-green-100 text-green-700",
-    "exempté": "bg-blue-100 text-blue-700",
+    "non_vérifié": "bg-orange-100 text-orange-700",
     "conflit_détecté": "bg-red-100 text-red-700",
 }
 # A presumed status is NOT decided: amber, never the green of a verified

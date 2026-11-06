@@ -55,17 +55,24 @@ SIGNALEMENT = "signalement"
 # is the « ghost » case the audit reported.
 CLOSED_STATUSES = ("fermé", "archivé")
 
-# `identity_verified` has THREE decided states, not two: « exempté » is a
-# legitimate terminal outcome (a client the regulation exempts), and the
-# mandate's literal rule (≠ vérifié) would raise a false manquement on it —
-# on a deontological check, which is where a false positive costs the most
-# credibility. « conflit_détecté » is likewise decided: the check WAS run.
+# `identity_verified` has TWO decided states (utils/kyc, D2): « identifié »
+# — the identification every file owes (art. 13-14), verification being
+# owed only when funds are handled (art. 20-21) — and « vérifié ». The
+# mandate's literal rule (≠ vérifié) would raise a false manquement on the
+# first — on a deontological check, which is where a false positive costs
+# the most credibility. A stored « exempté » (retired) reads as « identifié »
+# through kyc.stored_status. « conflit_détecté » is likewise decided: the
+# check WAS run.
 #
 # Re-exported from utils/kyc (pure — this module still imports no model).
 # These are the decided STATUSES; whether a check is decided also depends on
 # its provenance (kyc.is_decided — a presumed inscription is not).
 IDENTITY_DECIDED = kyc.DECIDED[kyc.FIELD_IDENTITY]
 CONFLICT_DECIDED = kyc.DECIDED[kyc.FIELD_CONFLICT]
+# « « Identifié » ou « Vérifié » » — the identity check's detail names the
+# decided statuses as the fiche labels them, derived from the one source.
+_IDENTITY_DECIDED_LABELS = " ou ".join(
+    f"« {kyc.STATUS_LABELS[status]} »" for status in IDENTITY_DECIDED)
 
 
 def _judicial(dossier: dict) -> bool:
@@ -233,7 +240,7 @@ def _presumed_conflict_clause(unresolved: list) -> str:
     detected = sum(
         1 for c in unresolved
         if kyc.is_presumed(c, kyc.FIELD_CONFLICT)
-        and c.get(kyc.FIELD_CONFLICT) == "conflit_détecté"
+        and kyc.stored_status(c, kyc.FIELD_CONFLICT) == "conflit_détecté"
     )
     if not detected:
         return ""
@@ -268,8 +275,8 @@ def _identite_non_verifiee(d: dict, ctx: dict) -> Optional[str]:
     if not unresolved:
         return None
     return (
-        f"Identité non vérifiée pour {len(unresolved)} client(s). "
-        "« Exempté » compte comme décidé — à consigner dans la fiche."
+        f"Identité à faire pour {len(unresolved)} client(s) : "
+        f"{_IDENTITY_DECIDED_LABELS} se consigne dans la fiche."
         + _KYC_CONNECTOR_CLAUSE
         + _presumed_clause(unresolved, kyc.FIELD_IDENTITY)
     )
@@ -294,7 +301,7 @@ CHECKS: tuple = (
     ("SIGN_ABSENTE", MANQUEMENT, "Aucune signification consignée", _sign_absente, None),
     ("SIGN_PARTIELLE", MANQUEMENT, "Signification partielle", _sign_partielle, None),
     ("CONFLIT_NON_VERIFIE", MANQUEMENT, "Vérification des conflits non faite", _conflit_non_verifie, "kyc"),
-    ("IDENTITE_NON_VERIFIEE", MANQUEMENT, "Identité non vérifiée", _identite_non_verifiee, "kyc"),
+    ("IDENTITE_NON_VERIFIEE", MANQUEMENT, "Identité à faire", _identite_non_verifiee, "kyc"),
     ("CLIENT_INTROUVABLE", MANQUEMENT, "Client introuvable", _client_introuvable, "kyc"),
     ("PRESCRIPTION_A_VERIFIER", SIGNALEMENT, "Prescription non qualifiée", _prescription_a_verifier, None),
     ("TAXONOMIE_A_VALIDER", SIGNALEMENT, "Taxonomie à valider", _taxonomie_a_valider, None),

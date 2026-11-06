@@ -1393,6 +1393,19 @@ _MANDATAIRE_KINDS = [
 # The handler refuses a value outside the chosen check's vocabulary.
 _KYC_STATUSES = list(dict.fromkeys(
     _kyc.IDENTITY_STATUSES + _kyc.CONFLICT_STATUSES))
+# record_kyc_status's check names, its per-check statuses with the labels the
+# fiche shows, and its decided list — DERIVED as well (one source per list),
+# so its description can never name a status the vocabulary dropped
+# (« exempté », 2026-11).
+_KYC_CHECK_NAMES = list(_kyc.CHECK_FIELDS)
+_KYC_STATUS_TEXT = " ".join(
+    f"{check}: "
+    + ", ".join(f"{key} (« {label} »)" for key, label in _kyc.choices(field))
+    + "."
+    for check, field in _kyc.CHECK_FIELDS.items()
+)
+_KYC_DECIDED_TEXT = ", ".join(dict.fromkeys(
+    _kyc.DECIDED[_kyc.FIELD_IDENTITY] + _kyc.DECIDED[_kyc.FIELD_CONFLICT]))
 
 # Analyse documentaire — DÉRIVÉS eux aussi, du même précédent.
 # `utils/analyse_taxonomies` est pur (aucun import de modèle, aucun client
@@ -5509,13 +5522,15 @@ TOOLS: dict[str, dict] = {
             "— à confirmer » —, and still reported OPEN by get_coverage_report "
             "until the lawyer clicks « Confirmer » in the application — this "
             "connector never confirms one. REFUSED on a check the lawyer "
-            "decided or confirmed (get_partie: a decided status whose "
+            f"decided or confirmed (get_partie: a decided status — "
+            f"{_KYC_DECIDED_TEXT} — whose "
             "`*_presumed` is false): only he changes his attestation. Only "
             "for a client (contact_role client, or a client of a dossier). "
             "`notes` are APPENDED under a dated « [AAAA-MM-JJ — inscrit par "
             "Claude] » line, never replacing the stored ones. The status "
             "already stored with no notes writes nothing; non_vérifié "
-            "withdraws your own presumed inscription. A detected conflict "
+            "(« À faire ») withdraws your own presumed inscription. A "
+            "detected conflict "
             "you inscribe: tell the lawyer at once — nothing notifies him "
             "(the fiche shows it in red)."
         ),
@@ -5524,7 +5539,7 @@ TOOLS: dict[str, dict] = {
             "properties": {
                 "partie_id": _id("The client's contact id (UUIDv4)."),
                 "check": {
-                    "type": "string", "enum": ["identity", "conflict"],
+                    "type": "string", "enum": _KYC_CHECK_NAMES,
                     "description": (
                         "identity = identity verification; conflict = "
                         "conflict-of-interest check."
@@ -5533,8 +5548,12 @@ TOOLS: dict[str, dict] = {
                 "status": {
                     "type": "string", "enum": _KYC_STATUSES,
                     "description": (
-                        "identity: non_vérifié, vérifié, exempté. conflict: "
-                        "non_vérifié, vérifié, conflit_détecté."
+                        _KYC_STATUS_TEXT
+                        + " For identity, identifié = the client is "
+                        "identified (the particulars are on file) without a "
+                        "document check; vérifié = the identity was checked "
+                        "against reliable, independent documents. Inscribe "
+                        "either only on the lawyer's instruction."
                     ),
                 },
                 "notes": {

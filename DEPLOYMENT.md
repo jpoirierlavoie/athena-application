@@ -4220,6 +4220,68 @@ Notes:
   an intake invitation to a test address, « Salarié(e) » names the field
   « Employeur », « Retraité(e) » hides it, and Réception shows the label and
   files the three fields.
+- **Compliance statuses « Identifié », « Vérifié », « À faire » (2026-11-06).**
+  The identity check reads « Identifié » (`identifié`, new: the client is
+  identified — the particulars of art. 14 on file — without a document
+  check), « Vérifié » or « À faire »; the conflict check « À faire »,
+  « Vérifié » or « Conflit détecté ». « À faire » labels the kept key
+  `non_vérifié` of both checks (`à_faire` is a task status). « Identifié »
+  is DECIDED like « Vérifié » (`utils/kyc.DECIDED`): it closes
+  `IDENTITE_NON_VERIFIEE` (label « Identité à faire », code unchanged),
+  removes the list's dot, earns « le … par Me … », and Claude may only
+  inscribe it presumed. « Exempté » is retired: from this release on, a
+  stored one reads « Identifié » everywhere, with its date, source and
+  confirmation (`kyc.stored_status`, `partie._migrate_kyc`, purged by the
+  next full-document save), and `scripts/migrate_compliance_statuses.py`
+  rewrites the rest; the map stays for restored backups. The same script
+  repairs the fiches created through the form with a decided status before
+  1d33b1a (the 2026-09-29 push), which store no `*_date` and therefore show
+  no attribution: it sets `*_date = created_at` — the instant the fixed
+  creation stamps — on a decided check holding no date, no source and no
+  `created_via`, and only lists every other anomaly. The connector:
+  `record_kyc_status`'s status enum loses `exempté` and gains `identifié`,
+  and its descriptions derive from `utils/kyc`; no tool added or removed,
+  no consent change (the consent text names no status, and Claude still only
+  inscribes a presumed one). No index, no dependency, no recompile (compiled
+  classes only), no DAV account re-add, no §11 train (Change Impact items 1,
+  2 and 6). In order:
+  1. *Before the push*: `python -m scripts.migrate_compliance_statuses` à
+     blanc from this release's checkout (ADC, inline variables, §14). Read
+     « Exempté » → « Identifié » by class, the undated decisions with their
+     creation day, and « À examiner » with the lawyer.
+  2. *The push.* Pause scheduled Claude tasks for the deploy window: a
+     same-key retry of a pre-deploy `record_kyc_status` call carrying
+     `exempté` would be refused by the new schema instead of replayed. Wait
+     until this release serves 100 % (`gcloud app versions list
+     --service=default`).
+  3. *At 375 px*: a former « Exempté » client reads « Identifié » in blue
+     with « le … par Me … »; « Nouveau contact » opens on « À faire » in both
+     selects; the identity select lists Identifié, Vérifié, À faire; an
+     « Identifié » client has no dot in the contact list.
+  4. *Only now*: `python -m scripts.migrate_compliance_statuses --appliquer`,
+     then à blanc again — it must read « Rien à faire. ». Open a fiche whose
+     date was filled in (« le <jour de création> par Me … ») and a converted
+     one. An « À examiner » line is settled by hand on its fiche: set « À
+     faire », save, then the true status.
+  5. *curl* (DavX5 fails silently): `getctag` of `/dav/addressbook/` moved —
+     the script restamps the rows it writes and bumps the CTag in each batch;
+     on the device, edit a migrated contact: it syncs, no 412.
+  6. Resume the scheduled tasks.
+  7. *The claude.ai plugin « athena »*: the registry fingerprint changed —
+     `python -m scripts.exporter_plugin_athena --check`, then the follow-up
+     commit « Greffon 1.3.0 » (its recipe also stops Claude from saying
+     « identifié » of a presumed inscription), rebuilt and delivered through
+     the `athena-plugin` mirror the same day (`plugin/athena/README.md`).
+  A rollback: once this release has served, never go below it. It stores
+  « identifié » from its first save — any save of a former « Exempté »
+  client (web, phone, Réception, connector), any « Identifié » chosen or
+  inscribed —, long before `--appliquer`, and the older code reads
+  « identifié » as undecided (a false manquement, the dot, and Claude may
+  overwrite it) while its form erases it on any save. If a rollback is ever
+  unavoidable: stop every connector write first — pausing the scheduled
+  tasks is not enough, interactive sessions write too
+  (`python -m scripts.revoke_mcp_tokens`) — and save no client fiche on the
+  older version until the roll forward.
 
 ## 16. Troubleshooting
 

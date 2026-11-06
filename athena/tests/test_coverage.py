@@ -6,7 +6,8 @@ bouchon. C'est la raison d'être du module séparé.
 
 Les trois amendements à la table du mandat sont épinglés ici, parce qu'ils
 sont des décisions de fond et non des détails d'implantation :
-« exempté » compte comme décidé, la signification se compte PAR PARTIE
+« identifié » compte comme décidé — tout comme un « exempté » hérité, statut
+qu'il remplace depuis 2026-11 —, la signification se compte PAR PARTIE
 ADVERSE, et CLIENT_INTROUVABLE existe pour qu'un contact supprimé ne se
 lise pas comme un client vérifié.
 """
@@ -144,12 +145,22 @@ def test_une_signification_au_propre_client_ne_masque_pas_un_defendeur():
 # ── Déontologie : les trois amendements ─────────────────────────────────
 
 
-def test_exempte_compte_comme_decide():
+def test_identifie_compte_comme_decide():
     """La règle littérale du mandat (≠ vérifié) produirait un FAUX
-    manquement sur un client légitimement exempté — sur un contrôle
-    réglementaire, là où un faux positif coûte le plus cher."""
-    exempte = {"identity_verified": "exempté", "conflict_check": "vérifié"}
-    assert "IDENTITE_NON_VERIFIEE" not in _codes(_d(), _ctx(clients=[exempte]))
+    manquement sur un client identifié sans vérification documentaire —
+    l'identification est due dans tout dossier (art. 13-14), la
+    vérification seulement quand l'avocat manie des fonds (art. 20-21) —
+    sur un contrôle réglementaire, là où un faux positif coûte le plus
+    cher. « exempté », retiré en 2026-11, se lit « identifié » : une valeur
+    héritée (avant la migration, ou d'une sauvegarde restaurée) ne devient
+    pas un manquement. Le prédicat reçoit l'enregistrement tel quel : c'est
+    kyc.stored_status qui la lit, pas seulement les lecteurs du modèle.
+    Échoue sur 2b0fbdc : « identifié » n'y était pas décidé."""
+    identifie = {"identity_verified": "identifié", "conflict_check": "vérifié"}
+    assert "IDENTITE_NON_VERIFIEE" not in _codes(_d(), _ctx(clients=[identifie]))
+    exempte_herite = {"identity_verified": "exempté", "conflict_check": "vérifié"}
+    assert "IDENTITE_NON_VERIFIEE" not in _codes(
+        _d(), _ctx(clients=[exempte_herite]))
     non_verifie = {"identity_verified": "non_vérifié", "conflict_check": "vérifié"}
     assert "IDENTITE_NON_VERIFIEE" in _codes(_d(), _ctx(clients=[non_verifie]))
 
@@ -372,7 +383,7 @@ def test_a_presumed_detected_conflict_is_named_never_only_non_faite():
 
 
 def test_a_confirmed_inscription_closes_the_check():
-    confirmed = _client(identity_verified="exempté",
+    confirmed = _client(identity_verified="identifié",
                         identity_verified_source="mcp",
                         identity_verified_confirmed_at="2026-09-28")
     assert "IDENTITE_NON_VERIFIEE" not in _codes(
@@ -402,3 +413,44 @@ def test_coverage_still_imports_no_model():
     } | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
          for a in n.names}
     assert not {m for m in imported if m == "models" or m.startswith("models.")}
+
+
+# ── 2026-11 : « Identifié », « Vérifié », « À faire » ─────────────────────
+
+
+def test_le_detail_d_identite_nomme_identifie_ou_verifie_jamais_exempte():
+    """« Exempté » a quitté le vocabulaire : le detail ne peut plus l'offrir
+    comme une issue que la fiche n'affiche plus. Il dit « Identité à
+    faire », comme la fiche, et nomme les deux statuts qui closent le
+    contrôle tels qu'elle les libelle. Échoue sur 2b0fbdc : « Identité non
+    vérifiée pour 2 client(s). « Exempté » compte comme décidé — à
+    consigner dans la fiche. »"""
+    ctx = _ctx(clients=[_client(identity_verified="non_vérifié"),
+                        _client(identity_verified="non_vérifié")])
+    detail = _finding(_d(client_ids=["p1", "p2"]), ctx,
+                      "IDENTITE_NON_VERIFIEE")["detail"]
+    assert detail.startswith(
+        "Identité à faire pour 2 client(s) : « Identifié » ou « Vérifié » "
+        "se consigne dans la fiche."), detail
+    assert "exempt" not in detail.lower()
+    # La clause du connecteur suit, inchangée.
+    assert "record_kyc_status" in detail
+
+
+def test_le_libelle_devient_identite_a_faire_mais_le_code_reste():
+    """Le LIBELLÉ suit la fiche ; le CODE est une clé que lisent les
+    appelants — le filtre `checks` de get_coverage_report, que la recette
+    « dossiers » du greffon passe tel quel : renommé, cet appel serait
+    refusé. Il reste IDENTITE_NON_VERIFIEE, un manquement qui dépend des
+    fiches clients (« kyc »). Échoue sur 2b0fbdc : le libellé y était
+    « Identité non vérifiée »."""
+    assert coverage.LABEL_BY_CODE["IDENTITE_NON_VERIFIEE"] == "Identité à faire"
+    (entry,) = [c for c in coverage.CHECKS if c[0] == "IDENTITE_NON_VERIFIEE"]
+    assert entry[1] == coverage.MANQUEMENT and entry[4] == "kyc"
+    assert "IDENTITE_NON_VERIFIEE" in coverage.ALL_CODES
+    finding = _finding(
+        _d(client_ids=["p1"]),
+        _ctx(clients=[_client(identity_verified="non_vérifié")]),
+        "IDENTITE_NON_VERIFIEE")
+    assert finding["label"] == "Identité à faire"
+    assert finding["severity"] == coverage.MANQUEMENT

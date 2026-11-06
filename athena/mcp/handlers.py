@@ -5597,10 +5597,9 @@ def _update_partie_mandataire_impl(args: dict) -> dict:
 
 # ── record_kyc_status (WRITE — ATTEST, PRESUMED) ─────────────────────────
 
-_KYC_CHECK_FIELDS = {
-    "identity": kyc.FIELD_IDENTITY,
-    "conflict": kyc.FIELD_CONFLICT,
-}
+# The tool's check names → fields: the one mapping of utils/kyc, which the
+# registry's enum derives from too.
+_KYC_CHECK_FIELDS = kyc.CHECK_FIELDS
 # models/partie sanitizes every string at 2000: a combined text past it
 # would be TRUNCATED in silence — refused instead, before the model.
 _KYC_NOTES_CEILING = 2000
@@ -5685,7 +5684,8 @@ def _record_kyc_status_impl(args: dict) -> dict:
         raise ToolArgumentError("`partie_id` est requis.")
     field = _KYC_CHECK_FIELDS.get(args.get("check"))
     if field is None:
-        raise ToolArgumentError("`check` : identity ou conflict.")
+        raise ToolArgumentError(
+            "`check` : " + " ou ".join(_KYC_CHECK_FIELDS) + ".")
     status = str(args.get("status") or "")
     if status not in kyc.STATUSES[field]:
         raise ToolArgumentError(
@@ -5784,7 +5784,7 @@ def _record_kyc_status_impl(args: dict) -> dict:
             and status_before in kyc.DECIDED[field]):
         warnings.append(
             "Votre inscription présumée est retirée : la vérification "
-            "redevient « non vérifiée »."
+            f"redevient « {kyc.STATUS_LABELS[kyc.NON_VERIFIE]} »."
         )
     if wrote:
         try:

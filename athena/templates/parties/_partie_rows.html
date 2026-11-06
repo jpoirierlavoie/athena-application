@@ -22,7 +22,8 @@
         {# Open identity indicator — route-computed (`_kyc_open`): a
            presumed Claude inscription is still open (D7). #}
         {% if c._kyc_open %}
-        <span class="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="{{ 'Identité inscrite par Claude — à confirmer' if c._kyc_presumed else 'Identité non vérifiée' }}"></span>
+        {% set kyc_dot = 'Identité inscrite par Claude — à confirmer' if c._kyc_presumed else 'Identité à faire' %}
+        <span class="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" role="img" aria-label="{{ kyc_dot }}" title="{{ kyc_dot }}"></span>
         {% endif %}
       </div>
       <div class="flex items-center gap-2">

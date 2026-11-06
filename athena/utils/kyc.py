@@ -5,6 +5,23 @@ import — so the model (``models/partie.py``), the coverage report
 (``mcp/coverage.py``, which must import no model), the partie routes and,
 from lot 4b, the connector's enums all read ONE definition.
 
+Vocabulary (2026-11, D1-D3). The identity check reads « Identifié »
+(``identifié``: the client is identified — the particulars of art. 14 of
+the lawyers' accounting regulation are on file — without a document check),
+« Vérifié » (``vérifié``: the identity was checked against reliable,
+independent documents, art. 20-23) or « À faire ». The conflict check reads
+« À faire », « Vérifié » or « Conflit détecté ». « À faire » labels the KEPT
+key ``non_vérifié`` of both checks: ``à_faire`` is already a task status
+(``models/task.py``), and a stored key changes only through a one-shot
+migration. « exempté » is RETIRED, succeeded by « identifié »
+(``RETIRED_STATUSES``): every judgment reads the successor
+(:func:`stored_status`), the model's single-record readers rewrite it
+(``models.partie._migrate_kyc``, purged by the next full-document save), a
+payload carrying it is normalized (``models.partie._normalize``), nothing
+offers it, and ``scripts/migrate_compliance_statuses.py`` rewrote the
+stored ones. The map stays: a restored backup or a page rendered before the
+release still reads right.
+
 Why provenance exists. A decided status is a professional attestation: the
 fiche renders it « le … par Me … », and the coverage report's two
 deontological checks treat it as done. Until lot 4a nothing recorded WHO
@@ -32,8 +49,9 @@ The rules, all enforced by :func:`apply_status_transition`:
   no confirmation needed;
 * a transition by the connector (``mcp``) is PRESUMED until confirmed, and
   is refused outright on a status the lawyer decided or confirmed;
-* « non_vérifié » clears the date, the source and the confirmation — the
-  PA-D07 invariant « date present ⇔ status decided » self-heals on it.
+* « non_vérifié » (« À faire ») clears the date, the source and the
+  confirmation — the PA-D07 invariant « date present ⇔ status decided »
+  self-heals on it.
 
 :func:`is_presumed` / :func:`is_decided` are the two readings every consumer
 shares: a presumed status is NOT decided, so the coverage report keeps the
@@ -49,33 +67,54 @@ FIELD_IDENTITY = "identity_verified"
 FIELD_CONFLICT = "conflict_check"
 FIELDS: tuple[str, ...] = (FIELD_IDENTITY, FIELD_CONFLICT)
 
+# The connector's name for each check (record_kyc_status's ``check``): its
+# enum, its handler and its description all derive from this one mapping.
+CHECK_FIELDS: dict[str, str] = {
+    "identity": FIELD_IDENTITY,
+    "conflict": FIELD_CONFLICT,
+}
+
 NON_VERIFIE = "non_vérifié"
 
-IDENTITY_STATUSES: tuple[str, ...] = ("non_vérifié", "vérifié", "exempté")
+# Display order (D1): the form's options and the connector's description
+# iterate these tuples.
+IDENTITY_STATUSES: tuple[str, ...] = ("identifié", "vérifié", "non_vérifié")
 CONFLICT_STATUSES: tuple[str, ...] = ("non_vérifié", "vérifié", "conflit_détecté")
 STATUSES: dict[str, tuple[str, ...]] = {
     FIELD_IDENTITY: IDENTITY_STATUSES,
     FIELD_CONFLICT: CONFLICT_STATUSES,
 }
 
-# `identity_verified` has THREE decided states, not two: « exempté » is a
-# legitimate terminal outcome (a client the regulation exempts). And
+# `identity_verified` has TWO decided states (D2): « identifié » — the
+# regulation's identification (art. 13-14), owed in every file, while the
+# verification of art. 20 is owed only when the lawyer handles funds for
+# the client, and fees, disbursements, advances and settlements are exempt
+# (art. 21) — and « vérifié ». Either closes the coverage report's check.
 # « conflit_détecté » is decided too: the check WAS run; its outcome is a
 # conflict.
 DECIDED: dict[str, tuple[str, ...]] = {
-    FIELD_IDENTITY: ("vérifié", "exempté"),
+    FIELD_IDENTITY: ("identifié", "vérifié"),
     FIELD_CONFLICT: ("vérifié", "conflit_détecté"),
+}
+
+# A retired status → its successor (module docstring). Never offered, never
+# written again; read as its successor wherever it is still stored.
+RETIRED_STATUSES: dict[str, dict[str, str]] = {
+    FIELD_IDENTITY: {"exempté": "identifié"},
+    FIELD_CONFLICT: {},
 }
 
 SOURCE_JURISTE = "juriste"
 SOURCE_MCP = "mcp"
 VALID_SOURCES: tuple[str, ...] = (SOURCE_JURISTE, SOURCE_MCP)
 
-# French labels of the statuses, for the fiche's badges.
+# French labels of the statuses: the fiche's badges, the form's options and
+# the connector's description. « non_vérifié » reads « À faire » for both
+# checks (the key is kept: module docstring).
 STATUS_LABELS: dict[str, str] = {
-    "non_vérifié": "Non vérifié",
+    "identifié": "Identifié",
     "vérifié": "Vérifié",
-    "exempté": "Exempté",
+    "non_vérifié": "À faire",
     "conflit_détecté": "Conflit détecté",
 }
 
@@ -126,10 +165,34 @@ def _check_field(field: str) -> None:
         raise ValueError(f"unknown KYC field: {field!r}")
 
 
-def stored_status(partie: Optional[dict], field: str) -> str:
-    """The status as stored, « non_vérifié » when absent (a legacy record)."""
+def canonical_status(field: str, value):
+    """*value* with a retired status replaced by its successor.
+
+    Anything else — a current key, an unknown string, a non-string a hand
+    edit left in the store — comes back unchanged: this runs on stored data
+    inside the model's readers, so it never raises on what it is given.
+    """
     _check_field(field)
-    return str((partie or {}).get(field) or NON_VERIFIE)
+    if not isinstance(value, str):
+        return value
+    return RETIRED_STATUSES[field].get(value, value)
+
+
+def choices(field: str) -> tuple[tuple[str, str], ...]:
+    """``(key, label)`` for each status of *field*, in display order — the
+    edit form's options and the connector's description."""
+    _check_field(field)
+    return tuple((key, STATUS_LABELS[key]) for key in STATUSES[field])
+
+
+def stored_status(partie: Optional[dict], field: str) -> str:
+    """The status the record holds — a retired key read as its successor;
+    « non_vérifié » when absent (a legacy record)."""
+    _check_field(field)
+    raw = (partie or {}).get(field)
+    if not raw:
+        return NON_VERIFIE
+    return canonical_status(field, str(raw))
 
 
 def source_of(partie: Optional[dict], field: str) -> str:
@@ -196,8 +259,19 @@ def apply_status_transition(
         return None
     old = stored_status(existing, field)
     if new not in STATUSES[field]:
-        if new == (existing or {}).get(field):
-            return None  # a legacy value, re-submitted unchanged
+        stored = (existing or {}).get(field)
+        if new == stored or (stored is not None
+                             and not isinstance(stored, str)
+                             and new == str(stored)):
+            # A legacy value re-submitted unchanged: the edit form offers it
+            # as its own option (routes/parties._form_context) — a non-string
+            # a hand edit stored can only be offered and posted as its text.
+            # The record keeps the STORED value as it was: *merged* holds the
+            # posted one as the writer's sanitizer rewrote it, and a stored
+            # « <b>vérifié</b> » stripped to « vérifié » would become a
+            # decided status nobody chose. Legacy data never locks a record.
+            merged[field] = stored
+            return None
         return INVALID_STATUS
     changed = new != old
     if changed:
