@@ -9,13 +9,16 @@ sniffe une sonde de 512 octets et ingère par copie côté serveur
 """
 
 import json
+import logging
 import os
 import pathlib
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
+from google.api_core import exceptions as gexc
 
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ATHENA)
@@ -26,9 +29,12 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
+    from models import concurrency
     import routes.documents as rd
 
 from flask import Flask  # noqa: E402
+
+from tests._fake_firestore import install  # noqa: E402
 
 
 @pytest.fixture()
@@ -338,14 +344,20 @@ def test_televersement_accepte_des_metadonnees_valides(web, monkeypatch):
 def test_le_formulaire_envoie_les_metadonnees_a_l_ouverture():
     """Source pin: the page sends the four fields with the session-open
     request, not only with the finalization — otherwise the check above
-    never sees them."""
+    never sees them.
+
+    Narrowed deliberately (2026-11, the uncertain finalization): the slice
+    ran up to the finalization's URL, and traiter now reads the
+    finalization's fields once, between the two — the pin would have stayed
+    green with the fields gone from the session-open request. It now ends
+    where that request's answer is read."""
     chemin = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "templates", "documents", "upload.html",
     )
     html = pathlib.Path(chemin).read_text(encoding="utf-8")
-    ouverture = html[html.index("documents.api_televersement"):
-                     html.index('documents.api_finaliser")')]
+    debut = html.index("documents.api_televersement")
+    ouverture = html[debut:html.index("ouverture.json()", debut)]
     for champ in ("category", "tags", "display_name", "document_date"):
         assert f"{champ}: this.champ('{champ}')" in ouverture, champ
 
@@ -354,7 +366,10 @@ def _staging_consomme(monkeypatch):
     from google.cloud.exceptions import NotFound
 
     blob = mock.MagicMock()
-    blob.reload.side_effect = NotFound("404 staging")
+    # The text names the object, as the service's does: the client's file
+    # name is its last segment.
+    blob.reload.side_effect = NotFound(
+        f"404 No such object: staging/u1/{_SEG}/Passeport Tremblay.pdf")
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
@@ -365,36 +380,396 @@ def _staging_consomme(monkeypatch):
     return ingest
 
 
-def test_finaliser_rejoue_rend_le_document_deja_verse(web, monkeypatch):
+@pytest.fixture()
+def magasin(monkeypatch):
+    """The REAL document readers over the fake Firestore
+    (tests/_fake_firestore: the real client, a fake server) — the replay
+    branch reads the reserved id through ``get_document_strict``, and a
+    mocked reader would hide which one it calls."""
+    return install(monkeypatch, rd.document_model)
+
+
+def _deja_verse(magasin, dossier_id="d1"):
+    magasin.seed(f"documents/{_SEG}", {
+        **rd.document_model._default_doc(), "id": _SEG,
+        "dossier_id": dossier_id, "display_name": "Pièce", "etag": "e0",
+    })
+
+
+def _rejoue(web):
+    return _post(web, "/documents/api/finaliser", {
+        "objet": f"staging/u1/{_SEG}/Passeport Tremblay.pdf",
+        "name": "Passeport Tremblay.pdf", "dossier_id": "d1"})
+
+
+def test_finaliser_rejoue_rend_le_document_deja_verse(web, magasin, monkeypatch):
     """The same finalization arriving AGAIN after the first consumed the
     staging object: the reserved id says it landed. « Introuvable » would
-    have invited a second upload of the same file."""
+    have invited a second upload of the same file. Rewritten deliberately
+    (2026-11): the reserved id is now read STRICTLY, on the fake store, no
+    longer through a patched fail-open reader."""
     ingest = _staging_consomme(monkeypatch)
-    monkeypatch.setattr(rd, "get_document",
-                        lambda i: {"id": i, "dossier_id": "d1"}
-                        if i == _SEG else None)
+    _deja_verse(magasin)
 
-    reponse = _post(web, "/documents/api/finaliser", {
-        "objet": f"staging/u1/{_SEG}/piece.pdf", "name": "piece.pdf",
-        "dossier_id": "d1"})
+    reponse = _rejoue(web)
 
     assert reponse.status_code == 200
     assert reponse.get_json() == {"ok": True, "document_id": _SEG}
     ingest.assert_not_called()
 
 
-@pytest.mark.parametrize("existant", [None, {"dossier_id": "autre"}])
+@pytest.mark.parametrize("existant", [None, "autre"])
 def test_finaliser_sans_document_verse_reste_introuvable(
-    web, monkeypatch, existant,
+    web, magasin, monkeypatch, caplog, existant,
 ):
     _staging_consomme(monkeypatch)
-    monkeypatch.setattr(
-        rd, "get_document",
-        lambda i: {"id": i, **existant} if existant else None)
+    if existant:
+        _deja_verse(magasin, dossier_id=existant)
+    caplog.set_level(logging.INFO)
 
-    reponse = _post(web, "/documents/api/finaliser", {
-        "objet": f"staging/u1/{_SEG}/piece.pdf", "name": "piece.pdf",
-        "dossier_id": "d1"})
+    reponse = _rejoue(web)
 
     assert reponse.status_code == 422
     assert "introuvable" in reponse.get_json()["erreur"]
+    # The class, never the traceback: the error's text names the staging
+    # object, whose last segment is the client's file name.
+    lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
+              if r.name == rd.logger.name]
+    assert lignes == [("documents: staging blob reload failed: NotFound", None)]
+
+
+def test_une_reprise_dont_la_lecture_echoue_est_incertaine_jamais_un_refus(
+    web, magasin, monkeypatch, caplog,
+):
+    """Fails on the old code: the replay branch read the reserved id with
+    the FAIL-OPEN ``get_document``, so a read failure passed for « no
+    document » — a 422 « Fichier téléversé introuvable. Réessayez. » about
+    an upload that may have landed, inviting the lawyer to file it a second
+    time. Fails on round 1 too: its 503 READ_UNAVAILABLE_ERROR said « Rien
+    n'a été enregistré », a refusal to the page, which re-sent the file
+    through a NEW upload — a second document when this request was the
+    network's replay of a finalization that had filed it. Now: the strict
+    reader, a 503 that says the outcome is unknown (``incertain``, with the
+    page's one sentence: the page re-posts once), one ERROR with ids only
+    and no traceback, nothing filed by this call."""
+    ingest = _staging_consomme(monkeypatch)
+    _deja_verse(magasin)
+
+    def _panne(*_a, **_kw):
+        raise gexc.ServiceUnavailable("firestore indisponible")
+
+    monkeypatch.setattr(magasin._fake_server, "batch_get_documents", _panne)
+    caplog.set_level(logging.INFO)
+
+    reponse = _rejoue(web)
+
+    assert reponse.status_code == 503
+    assert reponse.get_json() == {"erreur": _INCERTAIN, "incertain": True}
+    assert concurrency.READ_UNAVAILABLE_ERROR not in reponse.get_data(
+        as_text=True)
+    ingest.assert_not_called()
+    lignes = [(r.getMessage(), r.json_fields)
+              for r in caplog.records if r.name == "pallas.unexpected"]
+    assert lignes == [("documents: reserved document unreadable", {
+        "event": "unexpected", "document_id": _SEG,
+        "error_type": "ServiceUnavailable"})]
+    assert not any(r.exc_info for r in caplog.records)
+    assert not any("Tremblay" in r.getMessage() for r in caplog.records)
+
+
+def test_un_echec_de_relecture_du_staging_ne_journalise_que_sa_classe(
+    web, monkeypatch, caplog,
+):
+    """Fails on the old code: a staging reload failing other than NotFound
+    (a Storage 503) was logged by ``logger.exception``, a traceback whose
+    error text names the staging object — its last segment is the client's
+    file name. Still the 422 « introuvable » (this call filed nothing); the
+    one line now carries the class only."""
+    blob = mock.MagicMock()
+    blob.reload.side_effect = gexc.ServiceUnavailable(
+        f"503 GET staging/u1/{_SEG}/Passeport Tremblay.pdf")
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(rd, "get_dossier",
+                        lambda d: {"id": d, "file_number": "2026-001"})
+    ingest = mock.Mock()
+    monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
+    caplog.set_level(logging.DEBUG)
+
+    reponse = _rejoue(web)
+
+    assert reponse.status_code == 422
+    assert reponse.get_json() == {
+        "erreur": "Fichier téléversé introuvable. Réessayez."}
+    ingest.assert_not_called()
+    lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
+              if r.name == rd.logger.name]
+    assert lignes == [
+        ("documents: staging blob reload failed: ServiceUnavailable", None)]
+    for r in caplog.records:
+        textes = (r.getMessage(), repr(r.exc_info or ""), r.exc_text or "",
+                  repr(getattr(r, "json_fields", "")))
+        assert not any("Tremblay" in t for t in textes), r
+
+
+# ── La page : une finalisation dont la réponse se perd (2026-11) ─────────
+#
+# Source pins of the page's half of the replay contract above, mirroring the
+# proofs-of-identity dialog (tests/test_pieces_identite_routes.py). The
+# behaviour itself — a dropped answer settled by the re-post, both dropped
+# left « incertain » and never re-sent, a gateway's 502 — was driven in
+# headless Chrome against the real blueprint; CI cannot run a browser.
+
+_UPLOAD = pathlib.Path(_ATHENA) / "templates" / "documents" / "upload.html"
+# Spelled out: compared to the route's constant, a test would raise
+# AttributeError on the old code instead of failing on what it pins.
+_INCERTAIN = (
+    "Le versement n'a pas pu être confirmé : vérifiez la liste des "
+    "documents du dossier ; s'il n'y figure pas, retirez-le de cette "
+    "liste (×) et ajoutez-le de nouveau."
+)
+_CONFIG = re.compile(
+    r'<script type="application/json" id="televersement-config">(.*?)</script>',
+    re.S)
+
+
+def _method(source: str, name: str) -> str:
+    """One method of an object literal, from its name to its closing brace
+    (no brace of these methods sits unbalanced in a string or a comment)."""
+    m = re.search(rf"^ *(?:async )?{name}\([^)]*\) \{{", source, re.M)
+    assert m, name
+    depth = 0
+    for i in range(source.index("{", m.start()), len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[m.start():i + 1]
+    raise AssertionError(f"{name}: unbalanced")
+
+
+def _block(source: str, opener: str) -> str:
+    """The block *opener* starts, to the brace that closes its last ``{``."""
+    assert opener.endswith("{"), opener
+    start = source.index(opener)
+    depth = 0
+    for i in range(start + len(opener) - 1, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:i + 1]
+    raise AssertionError(f"{opener}: unbalanced")
+
+
+def test_une_reponse_de_finalisation_perdue_est_incertaine_jamais_un_refus():
+    """Fails on the old page: its finalization was inline, and a REJECTED
+    fetch — the answer lost, the document perhaps filed — fell to the
+    outer catch, « erreur réseau — réessayez », a refusal the next submit
+    re-sent through a NEW upload: a second copy of the document. So did a
+    2xx whose body could not be read, and a gateway's 5xx page.
+
+    finaliser answers ``incertain`` for those three only: a rejected fetch;
+    a 2xx whose body could not be READ (cut after its headers — a body that
+    is not JSON at all is a SyntaxError, a refusal); a 5xx that is not the
+    endpoint's JSON (no ``erreur``). The endpoint's own 5xx keep their
+    sentence, and a 4xx — or a 200 that is not the JSON (a refused token,
+    an expired session's login page) — filed nothing: a refusal.
+
+    Fails on the round-1 page too, whose verdict forced ``incertain:
+    false``: the endpoint's own « incertain » (a replay whose read of the
+    reserved id failed — the document perhaps filed) became a refusal the
+    next submit re-sent. The verdict now carries it, as the proofs
+    dialog's does."""
+    source = _UPLOAD.read_text(encoding="utf-8")
+    finaliser = _method(source, "finaliser")
+    assert finaliser.count("fetch(") == 1
+    guarded = _block(finaliser, "try {")
+    assert "fin = await fetch('{{ url_for(\"documents.api_finaliser\") }}'" in guarded
+    caught = _block(finaliser, "} catch (e) {")
+    assert "return { ok: false, incertain: true, erreur: '' };" in caught
+    parsed = finaliser.index("const resultat = await fin.json()")
+    verdict = finaliser.index("ok: fin.ok && resultat.ok === true,")
+    assert "illisible = !(e instanceof SyntaxError);" in finaliser
+    lost_body = _block(finaliser, "if (fin.ok && illisible) {")
+    foreign = _block(finaliser, "if (fin.status >= 500 && !resultat.erreur) {")
+    for branch in (lost_body, foreign):
+        assert "return { ok: false, incertain: true, erreur: '' };" in branch
+        assert parsed < finaliser.index(branch) < verdict
+    assert finaliser.count(
+        "return { ok: false, incertain: true, erreur: '' };") == 3
+    assert "incertain: resultat.incertain === true," in finaliser[verdict:]
+    assert "incertain: false" not in finaliser
+    assert "erreur: resultat.erreur || ''," in finaliser[verdict:]
+    # The verdict is finaliser's only way out after its three uncertain
+    # branches: an early return for a non-ok answer would drop the
+    # endpoint's own « incertain » (a replay whose read failed) and make
+    # it a refusal, re-sent by the next submit.
+    assert finaliser.count("return") == 5
+    tail = finaliser[finaliser.index(foreign) + len(foreign):]
+    assert tail.count("return") == 1
+    assert tail.lstrip().startswith("return {")
+
+
+def test_la_page_reprend_une_finalisation_incertaine_une_fois_apres_deux_secondes():
+    """Fails on the old page (no re-post, no « incertain »). ``incertain``
+    gets ONE more finalization, ~2 s later — the SAME one: its fields read
+    once, before the first post — and only an ``ok`` re-post replaces the
+    first answer. Any other leaves the file « incertain » with the honest
+    sentence, never « rejeté ». A failure BEFORE any finalization (the
+    session, an interrupted PUT) filed nothing: it stays « rejeté »."""
+    source = _UPLOAD.read_text(encoding="utf-8")
+    traiter = _method(source, "traiter")
+    assert traiter.count("this.finaliser(f, dossierId)") == 2
+    assert "while" not in traiter
+    branch = _block(traiter, "if (resultat.incertain) {")
+    repost = branch.index("resultat = await this.finaliser(f, dossierId);")
+    assert branch.index("setTimeout(r, 2000)") < repost
+    kept = _block(branch, "if (!resultat.ok) {")
+    assert branch.index(kept) > repost
+    assert "f.statut = 'incertain'; f.motif = CONFIG.incertain;" in kept
+    assert "return;" in kept and "rejeté" not in kept
+    # Nothing decides the file between the first finalization and the
+    # uncertain branch, and the refusal comes AFTER that branch: a refusal
+    # judged first would turn a lost answer back into « rejeté », re-sent.
+    first = traiter.index("let resultat = await this.finaliser(f, dossierId);")
+    between = traiter[first:traiter.index(branch)]
+    assert "f.statut" not in between and "return" not in between
+    after = traiter[traiter.index(branch) + len(branch):]
+    assert "f.statut = 'rejeté'" in _block(after, "if (!resultat.ok) {")
+    # The same finalization: the fields are read ONCE, before the first
+    # post, and finaliser reads none of its own.
+    assert traiter.index("f.champs = {") < traiter.index("this.finaliser(")
+    assert "this.champ(" not in _method(source, "finaliser")
+    assert "...f.champs" in _method(source, "finaliser")
+    # Only what precedes the finalization can end « erreur réseau ».
+    pre = _block(traiter, "try {")
+    assert "this.televerser(f, donnees.url)" in pre and "finaliser" not in pre
+    caught = _block(traiter, "} catch (e) {")
+    assert "f.statut = 'rejeté'" in caught and "return;" in caught
+    assert traiter.index(caught) < traiter.index("this.finaliser(")
+
+
+def test_un_fichier_incertain_ne_repart_jamais_et_garde_la_page():
+    """Fails on the old page. A later « Téléverser » (re)sends only a file
+    never sent or REFUSED — never an « incertain » one: re-sent, it would
+    open a new upload and file a second document. A batch leaving a file
+    refused or uncertain keeps the page, each line in the banner (name and
+    reason); only a batch entirely filed redirects. With nothing left to
+    send, the uncertain line stays rather than « select a file »."""
+    source = _UPLOAD.read_text(encoding="utf-8")
+    soumettre = _method(source, "soumettre")
+    attente = _block(soumettre,
+                     "const attente = this.files.filter(function (f) {")
+    assert "f.statut === 'en attente' || f.statut === 'rejeté'" in attente
+    assert "incertain" not in attente
+    lignes = _method(source, "lignesEchec")
+    assert "f.statut === 'rejeté' || f.statut === 'incertain'" in lignes
+    assert "f.name + ' : ' + (f.motif || 'refusé')" in lignes
+    rien = _block(soumettre, "if (!attente.length) {")
+    assert "this.lignesEchec()" in rien and "traiter" not in rien
+    assert "const echecs = this.lignesEchec();" in soumettre
+    assert soumettre.count("this.traiter(") == 1   # the attente loop only
+    assert source.count("this.traiter(") == 1      # nothing else calls it
+    assert "window.location" in _block(soumettre, "if (!echecs.length) {")
+    assert soumettre.rstrip("}").rstrip().endswith("this.erreurs = echecs;")
+    # The row reads the sentence alone, in amber — before the generic
+    # « statut · taille », which would hide it.
+    etiquette = _method(source, "etiquette")
+    incertain = etiquette.index(
+        "if (f.statut === 'incertain') { return f.motif; }")
+    assert incertain < etiquette.index("return f.statut + ' · '")
+    assert ("(file.statut === 'incertain' ? 'text-amber-700' : 'text-gray-500')"
+            in source)
+
+
+def test_la_phrase_incertaine_n_a_qu_une_source(web_rendu):
+    """Fails on the round-1 page: the sentence was a literal in its script
+    — a copy the endpoint could not share — and it told the lawyer to
+    « téléverser de nouveau » a file that « Téléverser » never re-sends.
+    ONE constant now, ``routes/documents.UPLOAD_UNCERTAIN``: the replay
+    branch answers it, and the page receives it in its JSON config (CSP:
+    server data never inside the script). It names the page's real way to
+    send the file again: the row's remove button (×), then the file added
+    anew — a NEW upload."""
+    html = web_rendu.get("/documents/upload?dossier_id=d1").get_data(
+        as_text=True)
+    configs = _CONFIG.findall(html)
+    assert len(configs) == 1
+    assert json.loads(configs[0]) == {"incertain": _INCERTAIN}
+    assert getattr(rd, "UPLOAD_UNCERTAIN", None) == _INCERTAIN
+    source = _UPLOAD.read_text(encoding="utf-8")
+    assert "pas pu être confirmé" not in source            # no second copy
+    assert "document.getElementById('televersement-config').textContent" in (
+        _block(source, "function uploadForm() {"))
+    assert "retirez-le de cette liste (×) et ajoutez-le de nouveau" in _INCERTAIN
+    for mot in ("téléversez", "réessayez", "refus"):
+        assert mot not in _INCERTAIN, mot
+
+
+def test_le_bouton_retirer_offre_une_cible_de_44_px(web_rendu):
+    """Fails on the old page: the row's remove button — the way to send
+    again a file left « incertain », which its sentence names — was a bare
+    16 px glyph, 17 × 26 px at 375 px (Rule 9 asks 44). Now p-3 around a
+    20 px glyph (21 px rendered: 12 + 21 + 12), the proofs dialog's icon
+    buttons; icon-only, it keeps its aria-label and its title."""
+    from utils.icons import ms
+
+    html = web_rendu.get("/documents/upload?dossier_id=d1").get_data(
+        as_text=True)
+    assert html.count('aria-label="Retirer le fichier"') == 1
+    libelle = html.index('aria-label="Retirer le fichier"')
+    bouton = html[html.rindex("<button", 0, libelle):
+                  html.index("</button>", libelle)]
+    assert 'title="Retirer le fichier"' in bouton
+    classes = set(re.search(r' class="([^"]*)"', bouton).group(1).split())
+    assert {"inline-flex", "items-center", "justify-center", "p-3"} <= classes
+    assert str(ms("close", 20)) in bouton
+
+
+def _escape_css(cls: str) -> str:
+    b = "\\"
+    for raw, esc in ((b, b * 2), (":", b + ":"), (".", b + "."),
+                     ("/", b + "/"), ("[", b + "["), ("]", b + "]")):
+        cls = cls.replace(raw, esc)
+    return cls
+
+
+def _not_compiled(classes) -> list[str]:
+    css = next(pathlib.Path(_ATHENA).glob("static/vendor/app.*.css")).read_text(
+        encoding="utf-8")
+    absent = []
+    for c in sorted(classes):
+        needle = "." + _escape_css(c)
+        hits = [m.end() for m in re.finditer(re.escape(needle), css)]
+        if not any(i >= len(css) or not (css[i].isalnum() or css[i] in "-_\\")
+                   for i in hits):
+            absent.append(c)
+    return absent
+
+
+def _classes(markup: str) -> set[str]:
+    """Every class the markup can apply: the static ``class="…"`` lists and
+    the literals of the ``:class`` expressions."""
+    found = {c for block in re.findall(r'(?<![\w:@-])class="([^"]*)"', markup)
+             for c in block.split()}
+    for expr in re.findall(r':class="([^"]*)"', markup):
+        for literal in re.findall(r"[?:]\s*'([^']+)'", expr):
+            found |= set(literal.split())
+    return found
+
+
+def test_le_formulaire_n_emploie_que_des_classes_compilees(web_rendu):
+    """A class absent from the compiled stylesheet silently does not apply
+    (Change Impact 6): the amber of an « incertain » row included."""
+    html = web_rendu.get("/documents/upload?dossier_id=d1").get_data(as_text=True)
+    debut = html.index('<form class="space-y-6"')
+    form = html[debut:html.index("</form>", debut)]
+    classes = _classes(form)
+    assert {"text-red-600", "text-green-700", "text-amber-700",
+            "text-gray-500", "bg-red-50"} <= classes            # non-vacuous
+    assert _not_compiled(classes) == []
+    assert _not_compiled({"min-h-11", "shrink-0"}) == ["min-h-11", "shrink-0"]

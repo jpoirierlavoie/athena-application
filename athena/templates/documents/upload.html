@@ -108,11 +108,16 @@
                 <div class="flex-1 min-w-0">
                   <p class="text-sm text-gray-900 truncate" x-text="file.name"></p>
                   <p class="text-xs"
-                     :class="file.statut === 'rejeté' ? 'text-red-600' : (file.statut === 'versé' ? 'text-green-700' : 'text-gray-500')"
+                     :class="file.statut === 'rejeté' ? 'text-red-600' : (file.statut === 'versé' ? 'text-green-700' : (file.statut === 'incertain' ? 'text-amber-700' : 'text-gray-500'))"
                      x-text="etiquette(file)"></p>
                 </div>
-                <button type="button" @click="removeFile(index)" x-show="!submitting" title="Retirer le fichier" aria-label="Retirer le fichier" class="text-gray-400 hover:text-red-500">
-                  {{ ms('close', 16) }}
+                {# « Retirer » — 44 px au moins (Règle 9) : p-3 autour d'un
+                   glyphe de 20 px, comme les boutons-icônes du dialogue des
+                   preuves d'identité. C'est aussi le chemin que nomme la
+                   phrase d'un fichier « incertain » : retiré, puis ajouté de
+                   nouveau, il repart par un NOUVEAU téléversement. #}
+                <button type="button" @click="removeFile(index)" x-show="!submitting" title="Retirer le fichier" aria-label="Retirer le fichier" class="inline-flex items-center justify-center p-3 text-gray-400 rounded-lg hover:text-red-500 hover:bg-gray-100">
+                  {{ ms('close', 20) }}
                 </button>
               </div>
               <div x-show="file.statut === 'en cours'" class="mt-2 h-1.5 bg-gray-200 rounded-full">
@@ -185,17 +190,34 @@
 
 </div>
 
+{# Les données du serveur que lit le script ci-dessous (CSP : jamais une
+   valeur du serveur dans le script) — document_upload_form les compose.
+   « incertain » : la phrase d'un fichier dont le versement n'a pu être
+   confirmé, de source unique (routes/documents.UPLOAD_UNCERTAIN), que
+   api_finaliser répond aussi. #}
+<script type="application/json" id="televersement-config">{{ televersement_config|tojson }}</script>
 <script nonce="{{ csp_nonce }}">
 // Téléversement DIRECT-à-GCS (2026-08-12) : ouverture d'une session
 // reprenable via /documents/api/televersement, PUT des octets par tranches
 // de 8 Mio vers storage.googleapis.com (avec reprise sur 308), puis
 // /documents/api/finaliser qui sniffe et ingère par copie côté serveur.
 // Les octets ne transitent jamais par l'application (plafond App Engine
-// de 32 Mo par requête).
+// de 32 Mo par requête). Une finalisation dont la réponse se perd n'est
+// jamais un refus : le fichier devient « incertain » (finaliser, traiter)
+// et ne repart plus — le renvoyer verserait le document une seconde fois.
 function uploadForm() {
+  // #televersement-config : la phrase d'un fichier dont le versement n'a pu
+  // être confirmé (CONFIG.incertain) vient du serveur, jamais d'ici.
+  const CONFIG = JSON.parse(
+    document.getElementById('televersement-config').textContent);
   const CHUNK = 8 * 1024 * 1024;
   return {
-    files: [],   // {file, name, size, statut, pct, motif, objet}
+    // {file, name, size, statut, pct, motif, objet, champs} — statut :
+    // 'en attente', 'en cours', 'versé', 'rejeté' (rien n'est versé : le
+    // fichier repart au prochain envoi) ou 'incertain' (le versement n'a pu
+    // être confirmé : le document est peut-être versé — il ne repart
+    // jamais ; retiré puis ajouté de nouveau, c'est un nouveau fichier).
+    files: [],
     dragOver: false,
     submitting: false,
     erreurs: [],
@@ -233,6 +255,7 @@ function uploadForm() {
     etiquette(f) {
       if (f.statut === 'en cours') { return f.pct + ' %'; }
       if (f.statut === 'rejeté') { return 'rejeté : ' + (f.motif || ''); }
+      if (f.statut === 'incertain') { return f.motif; }
       return f.statut + ' · ' + this.formatSize(f.size);
     },
 
@@ -248,19 +271,39 @@ function uploadForm() {
       };
     },
 
+    // La ligne de chaque fichier non versé : refusé (« rejeté », rien n'est
+    // versé) ou non confirmé (« incertain », il l'est peut-être).
+    lignesEchec() {
+      return this.files.filter(function (f) {
+        return f.statut === 'rejeté' || f.statut === 'incertain';
+      }).map(function (f) { return f.name + ' : ' + (f.motif || 'refusé'); });
+    },
+
     async soumettre() {
       if (this.submitting) { return; }
       this.erreurs = [];
       const dossierId = this.champ('dossier_id');
       if (!dossierId) { this.erreurs = ['Veuillez sélectionner un dossier.']; return; }
+      // Ne part — ou ne repart — qu'un fichier jamais envoyé, ou REFUSÉ :
+      // rien n'en est versé. Jamais un « incertain » : il est peut-être
+      // versé, et le renvoyer ouvrirait un NOUVEAU téléversement, donc un
+      // second document.
       const attente = this.files.filter(function (f) {
         return f.statut === 'en attente' || f.statut === 'rejeté';
       });
-      if (!attente.length) { this.erreurs = ['Veuillez sélectionner au moins un fichier.']; return; }
+      if (!attente.length) {
+        // Rien à envoyer : un fichier resté « incertain » garde sa ligne,
+        // plutôt que « sélectionnez un fichier ».
+        const restes = this.lignesEchec();
+        this.erreurs = restes.length ? restes : ['Veuillez sélectionner au moins un fichier.'];
+        return;
+      }
       this.submitting = true;
       for (const f of attente) { await this.traiter(f, dossierId); }
       this.submitting = false;
-      const echecs = this.files.filter(function (f) { return f.statut === 'rejeté'; });
+      // Un fichier refusé ou incertain garde la page, sa raison à côté ;
+      // seul un lot entièrement versé s'en va.
+      const echecs = this.lignesEchec();
       if (!echecs.length) {
         // Repli : le navigateur de documents FILTRÉ au dossier (et au
         // dossier de classement) du téléversement — la sémantique de
@@ -275,12 +318,12 @@ function uploadForm() {
         window.location = this.champ('return_to') || repli;
         return;
       }
-      this.erreurs = echecs.map(function (f) { return f.name + ' : ' + (f.motif || 'refusé'); });
+      this.erreurs = echecs;
     },
 
     async traiter(f, dossierId) {
+      f.statut = 'en cours'; f.pct = 0; f.motif = '';
       try {
-        f.statut = 'en cours'; f.pct = 0; f.motif = '';
         const ouverture = await fetch('{{ url_for("documents.api_televersement") }}', {
           method: 'POST', headers: this.entetes(),
           // Les métadonnées partent AVEC l'ouverture : le serveur les juge
@@ -295,26 +338,101 @@ function uploadForm() {
           }),
         });
         const donnees = await ouverture.json().catch(function () { return {}; });
-        if (!ouverture.ok) { f.statut = 'rejeté'; f.motif = donnees.erreur || 'refusé'; return; }
+        // Une session expirée répond la page de connexion, un jeton refusé
+        // un 400 HTML : ni l'une ni l'autre ne porte d'URL.
+        if (!ouverture.ok || !donnees.url) {
+          f.statut = 'rejeté'; f.motif = donnees.erreur || 'refusé';
+          return;
+        }
         f.objet = donnees.objet;
         await this.televerser(f, donnees.url);
-        const fin = await fetch('{{ url_for("documents.api_finaliser") }}', {
+      } catch (e) {
+        // AVANT toute finalisation — la session ne s'est pas ouverte, ou
+        // les octets ne sont pas tous parvenus à GCS : rien n'est versé,
+        // le fichier repartira au prochain envoi.
+        f.statut = 'rejeté'; f.motif = 'erreur réseau — réessayez';
+        return;
+      }
+      // Lus UNE fois : la reprise ci-dessous doit être LA MÊME
+      // finalisation (même objet, mêmes champs), jamais une qui porterait
+      // ce qui a été saisi entre-temps.
+      f.champs = {
+        folder_id: this.champ('folder_id'),
+        category: this.champ('category'),
+        tags: this.champ('tags'),
+        display_name: this.champ('display_name'),
+        document_date: this.champ('document_date'),
+      };
+      let resultat = await this.finaliser(f, dossierId);
+      if (resultat.incertain) {
+        // L'issue est inconnue : la réponse s'est perdue en route
+        // (finaliser : une connexion coupée, un corps illisible, la page
+        // d'une passerelle), ou le serveur n'a pu la lire (son
+        // « incertain »). Une finalisation de plus, ~2 s plus tard —
+        // l'identifiant réservé la rend idempotente : api_finaliser répond
+        // à une reprise par le document déjà versé — ne tranche que si
+        // elle répond ok. Toute autre réponse laisse l'incertitude : le
+        // document est peut-être versé, jamais « rejeté ». Une seule fois.
+        await new Promise(function (r) { setTimeout(r, 2000); });
+        resultat = await this.finaliser(f, dossierId);
+        if (!resultat.ok) {
+          f.statut = 'incertain'; f.motif = CONFIG.incertain;
+          return;
+        }
+      }
+      if (!resultat.ok) {
+        f.statut = 'rejeté'; f.motif = resultat.erreur || 'refusé';
+        return;
+      }
+      f.statut = 'versé'; f.pct = 100;
+    },
+
+    // Une finalisation dont la réponse n'est jamais revenue (connexion
+    // coupée, téléphone qui change de réseau) a peut-être versé le
+    // document : elle est « incertaine », jamais un refus. De même un 2xx
+    // dont le corps n'a pu être LU (perdu après son statut), et un 5xx qui
+    // n'est pas le JSON de ce point d'entrée — la page 502, 504 ou 524
+    // d'une passerelle, un 500 HTML levé après le versement : leur issue
+    // est inconnue aussi. traiter la reprend une fois. Les 5xx du point
+    // d'entrée portent leur phrase et la gardent — son « incertain » (une
+    // reprise dont il n'a pu lire l'identifiant réservé : le document est
+    // peut-être versé) passe tel quel, et traiter le reprend aussi ; un
+    // 4xx, ou un 200 dont le corps n'est pas du JSON du tout (un jeton
+    // refusé, la page de connexion d'une session expirée), n'a rien versé :
+    // un refus. Les règles de finaliser dans
+    // templates/parties/_pieces_identite_gestion.html.
+    async finaliser(f, dossierId) {
+      let fin;
+      try {
+        fin = await fetch('{{ url_for("documents.api_finaliser") }}', {
           method: 'POST', headers: this.entetes(),
           body: JSON.stringify({
-            objet: f.objet, name: f.name, dossier_id: dossierId,
-            folder_id: this.champ('folder_id'),
-            category: this.champ('category'),
-            tags: this.champ('tags'),
-            display_name: this.champ('display_name'),
-            document_date: this.champ('document_date'),
+            objet: f.objet, name: f.name, dossier_id: dossierId, ...f.champs,
           }),
         });
-        const resultat = await fin.json().catch(function () { return {}; });
-        if (!fin.ok) { f.statut = 'rejeté'; f.motif = resultat.erreur || 'refusé'; return; }
-        f.statut = 'versé'; f.pct = 100;
       } catch (e) {
-        f.statut = 'rejeté'; f.motif = 'erreur réseau — réessayez';
+        return { ok: false, incertain: true, erreur: '' };
       }
+      // Un corps qui n'est pas du JSON (une page étrangère) se lit {} :
+      // une SyntaxError. Tout autre échec : le corps n'a pu être LU, la
+      // réponse s'est perdue après son statut — un 2xx a peut-être versé
+      // le document.
+      let illisible = false;
+      const resultat = await fin.json().catch(function (e) {
+        illisible = !(e instanceof SyntaxError);
+        return {};
+      });
+      if (fin.ok && illisible) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      if (fin.status >= 500 && !resultat.erreur) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      return {
+        ok: fin.ok && resultat.ok === true,
+        incertain: resultat.incertain === true,
+        erreur: resultat.erreur || '',
+      };
     },
 
     // Jumeaux à l'identique : templates/parties/_pieces_identite_gestion.html (putTranche, interrogerDecalage, televerser) — épinglés par tests/test_pieces_identite_routes.py.

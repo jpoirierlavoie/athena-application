@@ -31,12 +31,14 @@ from models.document import (
     ALLOWED_EXTENSIONS,
     CATEGORY_CHOICES,
     CATEGORY_LABELS,
+    DELETE_NOT_FOUND,
     MAX_FILE_SIZE,
     VALID_CATEGORIES,
     build_folder_zip_url,
     delete_document,
     format_file_size,
     get_document,
+    get_document_strict,
     get_file_icon,
     get_signed_url,
     UPLOAD_DEFAULT_CATEGORY,
@@ -51,6 +53,7 @@ from models import concurrency
 from routes import edit_conflict
 from routes._helpers import is_htmx
 from utils import storage_identity
+from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 from models.folder import (
@@ -226,7 +229,13 @@ def document_detail(document_id: str) -> str:
     """Render the document detail/viewer page."""
     doc = get_document(document_id)
     if not doc:
-        return redirect(url_for("documents.document_list"))
+        # A refusal sent to this page (?erreur=, document_delete's) whose
+        # document cannot be shown — gone, or its read still failing — goes
+        # on to the browser, which prints it: it is never dropped on the
+        # way, which would leave the lawyer on a list with no word of it.
+        erreur = sanitize(request.args.get("erreur", ""), max_length=300)
+        return redirect(url_for("documents.document_list",
+                                erreur=erreur or None))
 
     doc["_file_size_fmt"] = format_file_size(doc.get("file_size", 0))
     doc["_file_icon"] = get_file_icon(doc.get("file_type", ""))
@@ -307,6 +316,19 @@ def folder_zip():
 
 # ── Upload ────────────────────────────────────────────────────────────────
 
+# What the upload page says of a file whose filing could not be confirmed —
+# its single source. api_finaliser answers it (503, ``incertain``) when a
+# replayed finalization cannot read the reserved id, and the page receives
+# it through its JSON config for an answer lost on the way. It names the
+# page's real way to send that file again — its row's « Retirer le
+# fichier » (×), then the file added anew — since « Téléverser » never
+# re-sends a file left « incertain ».
+UPLOAD_UNCERTAIN = (
+    "Le versement n'a pas pu être confirmé : vérifiez la liste des "
+    "documents du dossier ; s'il n'y figure pas, retirez-le de cette "
+    "liste (×) et ajoutez-le de nouveau."
+)
+
 
 @documents_bp.route("/upload", methods=["GET"])
 @login_required
@@ -339,6 +361,9 @@ def document_upload_form() -> str:
         return_to=safe_internal_redirect(
             request.args.get("return_to", ""), ""
         ),
+        # What the page's script reads from the server, in a <script
+        # type="application/json"> (CSP: no server value in the script).
+        televersement_config={"incertain": UPLOAD_UNCERTAIN},
     )
 
 
@@ -475,21 +500,40 @@ def api_finaliser():
     try:
         blob = storage.bucket().blob(objet)
         blob.reload()
-    except NotFound:
+    except NotFound as exc:
         # The same finalization, arriving AGAIN after the first one
-        # consumed the staging object (a request replayed by the network).
-        # The reserved id says whether the upload landed: answer with its
-        # document rather than « introuvable », which would invite the
-        # lawyer to upload the file a second time.
-        deja = get_document(document_id)
+        # consumed the staging object (a request replayed by the network,
+        # or the upload page's one re-post of a finalization whose answer
+        # it lost). The reserved id says whether the upload landed: answer
+        # with its document rather than « introuvable », which would invite
+        # the lawyer to upload the file a second time. Read STRICTLY, for
+        # the same reason: a failed read is not « no document ».
+        try:
+            deja = get_document_strict(document_id)
+        except Exception as read_exc:
+            log_unexpected("documents: reserved document unreadable",
+                           exc_info=False,
+                           document_id=sanitize_log_value(document_id),
+                           error_type=type(read_exc).__name__)
+            # The outcome is UNKNOWN — this may be the replay of a
+            # finalization that filed the document —, never « Rien n'a été
+            # enregistré » (READ_UNAVAILABLE_ERROR), which the page would
+            # take for a refusal and re-send through a NEW upload: a second
+            # document. ``incertain``: the page re-posts once, and keeps
+            # this sentence unless the re-post settles it.
+            return jsonify({"erreur": UPLOAD_UNCERTAIN, "incertain": True}), 503
         if deja and deja.get("dossier_id") == dossier_id:
             return jsonify({"ok": True, "document_id": deja["id"]})
-        logger.exception("documents: staging blob reload failed")
+        # The class only, never the traceback: a Storage error's text names
+        # the staging object, whose last segment is the client's file name.
+        logger.error("documents: staging blob reload failed: %s",
+                     type(exc).__name__)
         return jsonify({
             "erreur": "Fichier téléversé introuvable. Réessayez."
         }), 422
-    except Exception:
-        logger.exception("documents: staging blob reload failed")
+    except Exception as exc:
+        logger.error("documents: staging blob reload failed: %s",
+                     type(exc).__name__)
         return jsonify({
             "erreur": "Fichier téléversé introuvable. Réessayez."
         }), 422
@@ -931,38 +975,61 @@ def document_move_bulk() -> str:
 @documents_bp.route("/<document_id>/delete", methods=["POST"])
 @login_required
 def document_delete(document_id: str) -> str:
-    """Delete a document and redirect (caller-supplied URL or document browser)."""
-    doc = get_document(document_id)
-    dossier_id = doc.get("dossier_id", "") if doc else ""
-    folder_id = doc.get("folder_id") if doc else None
+    """Delete a document and redirect (caller-supplied URL or document browser).
+
+    Every outcome lands on a page that says it — always a redirect, since
+    htmx swaps 2xx only (Rule 8): a deletion, or a document already gone
+    (« Document introuvable. »), goes to the browser (``return_to`` when
+    safe); any other refusal goes back to the document's own page, its
+    French reason in the banner (``?erreur=``). A refusal used to redirect
+    to the browser as if the document were gone — it was still there — and
+    answered htmx a 422 fragment no page ever showed.
+
+    The ONE audit row comes from the record the model deleted
+    (``deleted_out``), on success only: two concurrent deletions journal
+    once, and a blip of the fail-open read below no longer journals a
+    deletion with no dossier and no title.
+    """
+    # The navigation target only — where the browser was, for a document
+    # already gone. Never the audit row: fail-open, it reads a blip as {}.
+    seen = get_document(document_id) or {}
     return_to = request.form.get("return_to", "")
 
-    success, error = delete_document(document_id)
+    deleted: dict = {}
+    success, error = delete_document(document_id, deleted_out=deleted)
 
     if success:
         # Append-only deletion trail (PA-G06) — the Storage blob is gone
         # with the delete; the trail records only that it existed.
         record_deletion(
             "document", document_id,
-            dossier_id=dossier_id,
-            title=(doc or {}).get("display_name", ""),
-            status=(doc or {}).get("category", ""),
+            dossier_id=deleted.get("dossier_id") or "",
+            title=deleted.get("display_name") or "",
+            status=deleted.get("category") or "",
         )
 
-    if dossier_id:
-        fallback = url_for("documents.document_list", dossier_id=dossier_id, folder_id=folder_id or "")
+    if success or error == DELETE_NOT_FOUND:
+        where = deleted or seen
+        dossier_id = where.get("dossier_id") or ""
+        if dossier_id:
+            fallback = url_for("documents.document_list", dossier_id=dossier_id,
+                               folder_id=where.get("folder_id") or "")
+        else:
+            fallback = url_for("documents.document_list")
+        target = safe_internal_redirect(return_to, fallback)
     else:
-        fallback = url_for("documents.document_list")
-    target = safe_internal_redirect(return_to, fallback)
+        # Back on the document, its « Retour » unchanged: the return_to the
+        # page carried, once proven internal.
+        back = safe_internal_redirect(return_to, "") if return_to else ""
+        target = url_for(
+            "documents.document_detail", document_id=document_id,
+            erreur=error, return_to=back or None,
+        )
 
+    resp = redirect(target)
     if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    return redirect(target)
+        resp.headers["HX-Redirect"] = target
+    return resp
 
 
 # ── Folder CRUD routes ───────────────────────────────────────────────────

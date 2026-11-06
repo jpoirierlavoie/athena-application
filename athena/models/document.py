@@ -1946,20 +1946,67 @@ def confirmer_categorie(
     return doc, []
 
 
-def delete_document(document_id: str) -> tuple[bool, str]:
-    """Delete a document from both Firebase Storage and Firestore."""
-    existing = get_document(document_id)
+# The refusals of `delete_document`. The web route sends DELETE_NOT_FOUND to
+# the browser (the document is gone either way) and every other one back to
+# the document's page, in its banner.
+DELETE_NOT_FOUND = "Document introuvable."
+DELETE_FILE_FAILED = "Erreur lors de la suppression du fichier. Veuillez réessayer."
+DELETE_FAILED = "Erreur lors de la suppression. Veuillez réessayer."
+
+
+def delete_document(
+    document_id: str, *, deleted_out: Optional[dict] = None,
+) -> tuple[bool, str]:
+    """Delete a document: its file in Storage, then its record. Returns
+    ``(success, error_message)``.
+
+    The read is STRICT (the ``models/task.delete_task`` precedent): a failed
+    read logs « document delete: read failed » and refuses with
+    ``concurrency.READ_UNAVAILABLE_ERROR``, nothing deleted — the fail-open
+    read answered a blip with « Document introuvable. » about a document
+    that was still there. Absent → :data:`DELETE_NOT_FOUND`.
+
+    The file goes first, by a plain ``blob.delete()``: the bucket keeps the
+    non-current copy for 180 days, deliberately for documents. A file
+    already gone (``NotFound``) proceeds, so a record whose file vanished
+    never becomes undeletable; any other failure refuses
+    (:data:`DELETE_FILE_FAILED`), the record untouched.
+
+    The record is then deleted EXACTLY ONCE, in a transaction that reads it
+    (the ``models/piece_identite.delete_proof`` precedent): absent by then —
+    another call deleted it — → :data:`DELETE_NOT_FOUND`, never a second
+    success, so two concurrent deletions leave one audit row. A transaction
+    that RAISED is settled by re-reading the record, since a commit's answer
+    can be lost after it landed: gone after this call staged the delete → a
+    success (the « document delete failed » ERROR then rides beside it);
+    gone while nothing was staged → :data:`DELETE_NOT_FOUND`; still there →
+    :data:`DELETE_FAILED`; unreadable → :data:`DELETE_FAILED` and the
+    WARNING « delete_document: outcome unreadable for %s: %s ». A record
+    left behind its deleted file is completed by the next « Supprimer »
+    (the file then answers ``NotFound``).
+
+    ``deleted_out`` (keyword-only, the ``delete_task`` precedent): on
+    success, receives the record this call deleted, as its transaction read
+    it. A caller takes its audit row from HERE, never from its own earlier
+    read — a fail-open one in the web route, whose blip journaled a deletion
+    with no dossier and no title. Logs carry ids and exception classes only:
+    a Storage error's text names the object, whose last segment is the
+    client's file name.
+    """
+    try:
+        existing = get_document_strict(document_id)
+    except Exception as exc:
+        log_unexpected("document delete: read failed", exc_info=False,
+                       document_id=sanitize_log_value(document_id),
+                       error_type=type(exc).__name__)
+        return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
-        return False, "Document introuvable."
+        return False, DELETE_NOT_FOUND
 
     storage_path = existing.get("storage_path", "")
-
-    # Delete from Firebase Storage
     if storage_path:
         try:
-            bucket = storage.bucket()
-            blob = bucket.blob(storage_path)
-            blob.delete()
+            storage.bucket().blob(storage_path).delete()
         except NotFound:
             # Blob already gone — treat as deleted and proceed with the
             # Firestore delete so the metadata never becomes undeletable.
@@ -1967,17 +2014,51 @@ def delete_document(document_id: str) -> tuple[bool, str]:
                 "delete_document: blob already missing for document %s",
                 sanitize_log_value(document_id),
             )
-        except Exception:
-            log_unexpected("document file delete failed")
-            return False, "Erreur lors de la suppression du fichier. Veuillez réessayer."
+        except Exception as exc:
+            log_unexpected("document file delete failed", exc_info=False,
+                           document_id=sanitize_log_value(document_id),
+                           error_type=type(exc).__name__)
+            return False, DELETE_FILE_FAILED
 
-    # Delete from Firestore
+    ref = db.collection(COLLECTION).document(document_id)
+    staged: dict = {}
+
+    @firestore.transactional
+    def _remove(transaction) -> None:
+        staged.clear()
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused([DELETE_NOT_FOUND])
+        transaction.delete(ref)
+        staged["doc"] = _migrate_category(snap.to_dict() or {})
+
     try:
-        db.collection(COLLECTION).document(document_id).delete()
-        return True, ""
-    except Exception:
-        log_unexpected("document delete failed")
-        return False, "Erreur lors de la suppression. Veuillez réessayer."
+        _remove(db.transaction())
+    except _Refused as refusal:
+        return False, refusal.errors[0]
+    except Exception as exc:
+        # The class, never the traceback (the delete_proof precedent).
+        log_unexpected("document delete failed", exc_info=False,
+                       document_id=sanitize_log_value(document_id),
+                       error_type=type(exc).__name__)
+        # A commit that raised may have landed, its answer lost: the
+        # record's absence says so — but only an attempt that STAGED the
+        # delete can have removed it.
+        try:
+            still = ref.get().exists
+        except Exception as read_exc:
+            logger.warning(
+                "delete_document: outcome unreadable for %s: %s",
+                sanitize_log_value(document_id), type(read_exc).__name__,
+            )
+            return False, DELETE_FAILED
+        if still:
+            return False, DELETE_FAILED
+        if not staged:
+            return False, DELETE_NOT_FOUND
+    if deleted_out is not None:
+        deleted_out.update(staged.get("doc") or existing)
+    return True, ""
 
 
 def content_disposition(filename: str, *, inline: bool = False) -> str:
