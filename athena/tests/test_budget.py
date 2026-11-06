@@ -219,14 +219,20 @@ def test_view_without_budget():
 # ── cabinet ────────────────────────────────────────────────────────────────
 
 
-def test_cabinet_dict_carries_telecopieur():
+def test_cabinet_dict_carries_telecopieur(monkeypatch):
     """Le pied du PDF de budget est le SEUL consommateur vivant de
     `telecopieur` côté PDF ; le catalogue de gabarits l'a rejoint en
     2026-09-07 (défaut L4). Épinglé par dérivation, pas par un inventaire
-    écrit à la main : c'est un tel inventaire qui se périme."""
+    écrit à la main : c'est un tel inventaire qui se périme. La fiche du
+    cabinet est bouchonnée : lancé seul, ce test lisait settings/cabinet en
+    production (tests/conftest.py)."""
+    from models import settings as settings_model
     from utils.cabinet import CABINET_KEYS, cabinet_dict
 
-    assert "telecopieur" in cabinet_dict()
+    monkeypatch.setattr(
+        settings_model, "get_cabinet", lambda: {"telecopieur": "5145550000"}
+    )
+    assert "555" in cabinet_dict()["telecopieur"]
     assert set(cabinet_dict()) == set(CABINET_KEYS)
 
 

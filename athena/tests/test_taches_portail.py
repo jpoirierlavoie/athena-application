@@ -352,6 +352,9 @@ def test_soumise_divergence_taille_consignee_non_bloquante(web, monkeypatch):
 
 def test_soumise_sans_enveloppe_200(web, monkeypatch):
     monkeypatch.setattr(tp, "_bucket", lambda: _FakeBucket({}))
+    # Stubbed like the other tests: unstubbed, this read reached the
+    # production « portail » database (tests/conftest.py, 2026-11-06).
+    monkeypatch.setattr(tp.pi, "lire_invitation", lambda i: dict(_inv()))
     assert _post_evenement(
         web, {"event": "soumise", "invitation_id": "inv1", "batch": "b1"}
     ).status_code == 200

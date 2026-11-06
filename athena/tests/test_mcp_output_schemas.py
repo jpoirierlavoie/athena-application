@@ -316,6 +316,11 @@ def test_get_agenda_conforms(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 7)
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
                         lambda: 150000)
+    # The live-dossier join (_live_dossiers) is a get_all: stubbed, or it
+    # reads whatever models.db is — production, in a targeted run, until
+    # tests/conftest.py pinned it.
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk",
+                        lambda ids: {"d1": _dossier_doc()})
     # The hearing row must reach the payload — get_agenda judges each row by
     # its civil day since lot 1a, so « today » is frozen on the fixture's day
     # (without it the row is dropped and the branch goes unchecked).
