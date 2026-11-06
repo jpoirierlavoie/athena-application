@@ -26,6 +26,13 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Like its neighbours: test_factures_emises… imports routes.trust, whose
+# config.py refuses to load without these — set until now only by whichever
+# file had run first.
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 
 # ── Conditional third-party stubs ─────────────────────────────────────────

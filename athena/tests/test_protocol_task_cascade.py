@@ -204,8 +204,18 @@ def _missing(imports) -> list[str]:
     for filename, line, module, name in imports:
         with mock.patch("google.cloud.firestore.Client"):
             target = importlib.import_module(module)
-        if not hasattr(target, name):
-            out.append(f"models/{filename}:{line} {module}.{name}")
+            if hasattr(target, name):
+                continue
+            # ``from models import trust`` imports the submodule when nothing
+            # has yet; hasattr sees it only after something has, so a bare
+            # hasattr passed or failed by which test file ran first.
+            try:
+                importlib.import_module(f"{module}.{name}")
+                continue
+            except ModuleNotFoundError as exc:
+                if exc.name != f"{module}.{name}":
+                    raise
+        out.append(f"models/{filename}:{line} {module}.{name}")
     return out
 
 
@@ -229,6 +239,24 @@ def test_the_sweep_flags_a_planted_missing_name():
                for line, module, name in _imports_in(planted)]
     assert _missing(imports) == [
         "models/planted.py:3 models.protocol.not_there_yet"]
+
+
+def test_the_sweep_tells_an_unloaded_submodule_from_a_missing_one(monkeypatch):
+    """``from models import <submodule>`` names a real module that may not
+    be loaded yet — it must pass whatever ran before — or no module at all,
+    which must be caught. audit_event is unloaded here (restored after);
+    re-importing it only builds a logger and a constant."""
+    import models
+
+    monkeypatch.delitem(sys.modules, "models.audit_event", raising=False)
+    monkeypatch.delattr(models, "audit_event", raising=False)
+    planted = (
+        "def f():\n"
+        "    from models import audit_event, not_a_model_yet\n"
+    )
+    imports = [("planted.py", line, module, name)
+               for line, module, name in _imports_in(planted)]
+    assert _missing(imports) == ["models/planted.py:2 models.not_a_model_yet"]
 
 
 def test_every_in_function_model_import_names_an_existing_attribute():
