@@ -1,8 +1,9 @@
 """utils/pdf_text.py — bounded document text extraction (Phase N).
 
 Pure module: no Firestore, no Flask. PDF fixtures are built with reportlab
-(already a pinned dependency) and pypdf's own writer (encryption); the .docx
-fixtures are hand-built zips, the docx_fill test style.
+(already a pinned dependency) and pypdf's own writer (encryption, hand-built
+fonts and content streams); the .docx fixtures are hand-built zips, the
+docx_fill test style.
 """
 
 import io
@@ -18,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import pdf_text  # noqa: E402
 from utils.pdf_text import (  # noqa: E402
     DocumentTextError,
+    PageText,
     extract_docx_text,
     extract_pdf_pages,
 )
@@ -252,6 +254,67 @@ def test_the_filter_lets_every_other_pypdf_diagnostic_through():
     assert keep(record("Advanced encoding %(enc)s not implemented yet")) is True
     assert keep(record("Skipping broken line %(line)r")) is True
     assert keep(record(pdf_text.FONTTOOLS_NOTICE_PREFIX + " … %(ft)s")) is False
+
+
+# ── pypdf's stream filter cap (pypdf ≥ 6.20.0) ──────────────────────────────
+
+def _pdf_with_stacked_filters(filters: int) -> bytes:
+    """Three pages, « Page 1 » to « Page 3 »; page 2's content stream is
+    deflated ``filters`` times, its /Filter naming /FlateDecode as often."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    resources = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({
+            NameObject("/F1"): writer._add_object(font),
+        }),
+    })
+    for number in range(1, 4):
+        page = writer.add_blank_page(612, 792)
+        page[NameObject("/Resources")] = resources
+        content = DecodedStreamObject()
+        content.set_data(f"BT /F1 12 Tf 72 720 Td (Page {number}) Tj ET".encode())
+        if number == 2:
+            for _ in range(filters):
+                content = content.flate_encode()  # one more /FlateDecode
+        page[NameObject("/Contents")] = writer._add_object(content)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def test_page_past_a_pypdf_stream_cap_is_isolated_not_fatal():
+    """A page past pypdf's 16-filter stream cap (new in 6.20.0) fails alone;
+    the control at 16 proves the fixture decodes, so only the cap trips it."""
+    # 16 is pypdf.Configuration.stream_filters_maximum_length's default.
+    at_cap = extract_pdf_pages(_pdf_with_stacked_filters(16))
+    assert [p.text for p in at_cap.pages] == ["Page 1", "Page 2", "Page 3"], (
+        "16 stacked filters no longer decode: did pypdf lower "
+        "Configuration.stream_filters_maximum_length? Re-check requirements.in"
+    )
+    assert at_cap.warnings == []
+
+    result = extract_pdf_pages(_pdf_with_stacked_filters(17))
+    assert result.readable is True
+    assert result.page_count == 3
+    assert result.pages == [
+        PageText(page=1, text="Page 1", has_text=True, page_truncated=False),
+        PageText(page=2, text="", has_text=False, page_truncated=False),
+        PageText(page=3, text="Page 3", has_text=True, page_truncated=False),
+    ], (
+        "17 stacked filters decoded: did pypdf raise or drop "
+        "Configuration.stream_filters_maximum_length? Re-check requirements.in"
+    )
+    assert result.pages_without_text == [2]
+    assert result.warnings == ["page_extraction_failed:2"]
+    assert result.truncated is False
+    assert result.next_page is None
 
 
 # ── .docx extraction ────────────────────────────────────────────────────────

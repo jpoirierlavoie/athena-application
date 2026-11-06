@@ -14,9 +14,10 @@ This module is the tracing counterpart to ``logging_setup.py``:
   instrumentation example.
 * PII controls (see ``OBSERVABILITY.md`` § "PII controls in traces"):
   instrumentation hooks strip query strings from captured URLs, a
-  sanitizing exporter wrapper scrubs every exported span's string
-  attributes with the logging layer's redaction patterns, and the manual
-  helpers drop ``SENSITIVE_KEYS`` attributes and scrub string values.
+  sanitizing exporter wrapper scrubs every string in every exported span
+  attribute (inside mappings and nested sequences too, bytes decoded) with
+  the logging layer's redaction patterns, and the manual helpers drop
+  ``SENSITIVE_KEYS`` attributes and scrub values the same way.
 
 Sampling defaults to 10% in production (the ``TRACE_SAMPLE_RATIO`` env
 var overrides — set to ``"1.0"`` for a debugging session, ``"0.0"`` to
@@ -30,9 +31,10 @@ memory pressure shows up post-deploy.
 
 import logging
 import os
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Iterable, Iterator, Optional, Sequence
+from typing import Any, Callable, Iterable, Iterator, Optional
 from urllib.parse import urlsplit
 
 from flask import Flask, request as flask_request
@@ -199,10 +201,12 @@ def _install_propagator() -> None:
 #      uid / dossier / filename).
 #   2. ``_SanitizingSpanExporter`` re-checks every span at export time:
 #      query strings stripped from URL-like keys, plus the same email /
-#      phone / postal scrub the logging ``RedactionFilter`` applies.
+#      phone / postal scrub the logging ``RedactionFilter`` applies, on
+#      every string at any depth of a value (see
+#      ``_sanitize_attribute_value``).
 #   3. The manual helpers (``span`` / ``add_attributes`` /
 #      ``firestore_span``) drop ``SENSITIVE_KEYS`` attributes and scrub
-#      string values (see ``_guard_attribute``).
+#      values by the same walk (see ``_guard_attribute``).
 
 # Attribute keys whose values are URLs / targets and may carry a query
 # string (old and new HTTP semantic conventions).
@@ -216,6 +220,21 @@ _URL_ATTRIBUTE_KEYS: frozenset = frozenset(
         "url.query",
     }
 )
+
+# Deepest nesting the scrub walks into an attribute value (a mapping or a
+# list/tuple holding another, and so on). A legitimate value nests a level or
+# two; whatever sits deeper is replaced by ``_TOO_DEEP``, so the walk ends on
+# any value, a caller's cyclic one included. Unbounded, it would raise
+# RecursionError: at export inside the per-span except, which ships the span
+# UNSANITIZED; at set time on a cyclic value, which would then cost its
+# attribute. 16 also leaves room under protobuf's default 100-level parse
+# limit: an OTLP request holding a mapping nested 32 deep no longer parses
+# back (checked with protobuf 6.33).
+_MAX_ATTRIBUTE_DEPTH: int = 16
+_TOO_DEEP: str = "<truncated, too deep>"
+# What the exporter ships in place of an attribute whose scrub raised: that
+# attribute fails closed, the span's others keep their scrub.
+_UNSANITIZABLE: str = "<unsanitizable>"
 
 
 def _strip_query(value: str) -> str:
@@ -232,31 +251,95 @@ def _scrub_string(value: str) -> str:
     return _REDACTION._redact_string(value)
 
 
-def _sanitize_attribute_value(key: str, value: Any) -> Any:
-    """Sanitize a single span attribute value for export."""
+def _decode_bytes(value: bytes) -> str:
+    """Decode a bytes value so the string scrub can read it.
+
+    UTF-8, as SDK 1.44.0 decoded bytes itself before 1.45.0 began storing
+    them as given. An undecodable byte becomes U+FFFD instead of raising
+    (1.44.0 dropped such an attribute), so the rest is still scrubbed.
+    """
+    return value.decode("utf-8", errors="replace")
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    """Exact whole-key match, case-insensitive, as the logging layer's."""
+    return isinstance(key, str) and key.lower() in SENSITIVE_KEYS
+
+
+def _sanitize_attribute_value(key: str, value: Any, depth: int = 0) -> Any:
+    """Sanitize a single span attribute value for export.
+
+    Since SDK 1.45.0 a value may be a mapping, a nested sequence or bytes,
+    all stored as given (1.44.0 dropped the first two and decoded bytes), so
+    this walks every mapping value and every level of list/tuple, decoding
+    bytes first: each string inside takes the same path as a plain string
+    value. A mapping's keys are field names, like attribute keys: kept
+    verbatim, each governing its own value (a URL key inside a mapping loses
+    its query too), while a sequence's items fall under the sequence's key.
+    ``url.query`` holds nothing but a query, so it is blanked whatever its
+    shape (a mapping of parsed arguments included).
+    """
+    if depth > _MAX_ATTRIBUTE_DEPTH:
+        return _TOO_DEEP
+    if key == "url.query" and value is not None:
+        return ""
+    if isinstance(value, bytes):
+        value = _decode_bytes(value)
     if isinstance(value, str):
         if key in _URL_ATTRIBUTE_KEYS:
-            value = "" if key == "url.query" else _strip_query(value)
+            value = _strip_query(value)
         return _scrub_string(value)
+    if isinstance(value, Mapping):
+        return {
+            k: _sanitize_attribute_value(k, v, depth + 1)
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return tuple(
-            _scrub_string(v) if isinstance(v, str) else v for v in value
+            _sanitize_attribute_value(key, v, depth + 1) for v in value
         )
     return value
 
 
-def _guard_attribute(key: str, value: Any) -> Optional[Any]:
+def _guard_attribute(key: str, value: Any, depth: int = 0) -> Optional[Any]:
     """Cheap PII guard for hand-written span attributes.
 
     Returns ``None`` (meaning: drop the attribute) when the key is in the
     logging layer's :data:`SENSITIVE_KEYS`; scrubs email / phone / postal
-    matches from string values otherwise.
+    matches from string values otherwise. Walks a value as the SDK will
+    store it: bytes, bytearray and memoryview decoded (the SDK would keep
+    the last two as tuples of byte values, which no regex reads), every
+    mapping value and every item of any sequence reached, a mapping key
+    judged by the name the SDK gives it (``str()`` of a non-string key);
+    an entry whose key is sensitive is dropped, as such an attribute is.
+    Any other type is dropped too: SDK 1.45 would store its ``str()``
+    (1.44.0 dropped it), and a repr is free text — ``request.headers``
+    renders as « Authorization: Basic … ».
     """
-    if isinstance(key, str) and key.lower() in SENSITIVE_KEYS:
+    if _is_sensitive_key(key):
         return None
+    if depth > _MAX_ATTRIBUTE_DEPTH:
+        return _TOO_DEEP
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        value = _decode_bytes(bytes(value))
     if isinstance(value, str):
         return _scrub_string(value)
-    return value
+    if isinstance(value, Mapping):
+        guarded = {}
+        for k, v in value.items():
+            name = k if isinstance(k, str) else str(k)
+            if _is_sensitive_key(name):
+                continue
+            safe = _guard_attribute(name, v, depth + 1)
+            if safe is None and v is not None:
+                continue  # a type the SDK would str(): dropped
+            guarded[name] = safe
+        return guarded
+    if isinstance(value, Sequence):
+        return tuple(_guard_attribute(key, v, depth + 1) for v in value)
+    return None
 
 
 def _override_url_attributes(span_obj: Any, path: str) -> None:
@@ -336,8 +419,9 @@ class _SanitizingSpanExporter(SpanExporter):
     """Defense-in-depth PII scrub applied to every span before export.
 
     Strips query strings from URL-like attribute keys and applies the
-    logging email / phone / postal redaction to all string attribute
-    values, then delegates to the wrapped exporter (Cloud Trace in
+    logging email / phone / postal redaction to every string in an
+    attribute value, at any depth of mappings and sequences, bytes decoded
+    first; then delegates to the wrapped exporter (Cloud Trace in
     production, console in dev).
     """
 
@@ -356,10 +440,21 @@ class _SanitizingSpanExporter(SpanExporter):
                 # ``_attributes`` slot on the readable snapshot.  We
                 # assign a *new* dict — never mutate the underlying
                 # BoundedAttributes shared with the live span.
-                span_obj._attributes = {
-                    k: _sanitize_attribute_value(k, v)
-                    for k, v in attrs.items()
-                }
+                sanitized = {}
+                for k, v in attrs.items():
+                    try:
+                        sanitized[k] = _sanitize_attribute_value(k, v)
+                    except Exception:
+                        # Fail closed for this attribute alone: the span's
+                        # others keep their scrub. Its key is a field name.
+                        sanitized[k] = _UNSANITIZABLE
+                        logger.error(
+                            "Span attribute sanitization FAILED for %r — "
+                            "replaced by a placeholder",
+                            k,
+                            exc_info=True,
+                        )
+                span_obj._attributes = sanitized
             except Exception:  # never block the export
                 # ERROR, not debug: this except is the ONLY thing between a
                 # broken scrub and PII reaching Cloud Trace, and the root
@@ -501,8 +596,9 @@ def span(name: str, **attributes: Any) -> Iterator[Any]:
     Attributes whose value is ``None`` are dropped so callers can pass
     optional fields directly without ``if v is not None`` ladders.
     Attributes whose key is in the logging layer's ``SENSITIVE_KEYS`` are
-    dropped, and string values are PII-scrubbed (cheap guard for
-    hand-written spans).
+    dropped, and string values are PII-scrubbed, inside mappings and
+    sequences too (cheap guard for hand-written spans, see
+    :func:`_guard_attribute`).
 
     Records the exception and sets ``Status(ERROR)`` if the wrapped block
     raises, then re-raises.
@@ -511,11 +607,12 @@ def span(name: str, **attributes: Any) -> Iterator[Any]:
         for k, v in attributes.items():
             if v is None:
                 continue
-            v = _guard_attribute(k, v)
-            if v is None:
-                continue
+            # The guard walks the caller's value, so it runs inside the try
+            # as well: an odd value costs its attribute, never the request.
             try:
-                s.set_attribute(k, v)
+                v = _guard_attribute(k, v)
+                if v is not None:
+                    s.set_attribute(k, v)
             except Exception:  # pragma: no cover — defensive against odd values
                 pass
         try:
@@ -566,11 +663,10 @@ def add_attributes(**attributes: Any) -> None:
     for k, v in attributes.items():
         if v is None:
             continue
-        v = _guard_attribute(k, v)
-        if v is None:
-            continue
-        try:
-            current.set_attribute(k, v)
+        try:  # guard inside the try, as in span()
+            v = _guard_attribute(k, v)
+            if v is not None:
+                current.set_attribute(k, v)
         except Exception:  # pragma: no cover
             pass
 
