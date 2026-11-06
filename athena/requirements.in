@@ -22,13 +22,33 @@ google-cloud-tasks==2.25.0
 # OSV-Scanner track direct deps only.
 requests==2.34.2
 # OpenTelemetry — distributed tracing → Cloud Trace via the OTLP endpoint.
-# Versions are PAIRED and must move together: the stable line (api/sdk 1.44.0)
-# ships alongside the beta contrib line (instrumentation 0.65b0), and each
-# instrumentation package hard-pins its siblings at `==0.65b0`. Bumping one
+# Versions are PAIRED and must move together: the stable line (api/sdk 1.45.2)
+# ships alongside the beta contrib line (instrumentation 0.66b2), and each
+# instrumentation package hard-pins its siblings at `==0.66b2`. Bumping one
 # alone is unresolvable — this is a single atomic edit, and Dependabot cannot
-# automate it (majors are not grouped; each per-package PR would conflict).
-opentelemetry-api==1.44.0
-opentelemetry-sdk==1.44.0
+# automate it: its minor/patch group leaves out pins that only resolve
+# together.
+# 1.44.0 -> 1.45.2 (2026-11-05) fixes the medium CVE-2026-114603
+# (GHSA-xcq7-p3pf-p88h): TraceState.from_header ran a quadratic regex over
+# the inbound W3C `tracestate`, with no length check first. Reachable: the
+# W3C propagator that tracing_setup installs parses it on both services
+# before any auth guard, on every request outside EXCLUDED_URLS that carries
+# a valid traceparent. gunicorn's 8190-byte header line bounded one value
+# (some 50-70 ms of CPU on 1.44.0, measured locally), but gunicorn joins
+# repeated lines into one value: the ~15 that fit under Cloudflare's 128 KB
+# request-header cap could hold the GIL for 0.7-1 s. Since 1.45.1 the parse
+# is linear and a value over 8192 characters is dropped with one fixed-text
+# WARNING (the traceparent is still honoured); 1.45.2 also ignores a
+# `traceparent` over 512 characters, with a WARNING too, and its sdk is the
+# patch paired with contrib 0.66b2.
+# Since 1.45.0, span attributes keep mappings and nested sequences, which
+# 1.44.0 dropped, bytes, which it decoded to str, and any other type as its
+# str(), which it dropped. utils/tracing_setup.py now scrubs inside all of
+# them and its guard drops the str()-ed kind (OBSERVABILITY.md, « PII
+# controls in traces »), but mapping KEYS are exported verbatim. Every call
+# site sets scalars today: keep it so.
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
 # Export goes to telemetry.googleapis.com over OTLP/gRPC (2026-07-30, replacing
 # the deprecated opentelemetry-exporter-gcp-trace). gRPC and not HTTP because
 # only the gRPC exporter takes `credentials=`, which is the ONLY auth path that
@@ -37,18 +57,23 @@ opentelemetry-sdk==1.44.0
 # retryable code: traces would stop while the app kept serving. grpcio is
 # already required by ten other packages (Firestore, Logging, Secret Manager,
 # Cloud Tasks…), so this adds no native weight.
-opentelemetry-exporter-otlp-proto-grpc==1.44.0
+# 1.45.2 brings one new transitive, opentelemetry-exporter-otlp-common 0.66b2:
+# the exporter's self-metrics module moved there from -proto-common. Pure
+# Python, Apache-2.0, requiring only opentelemetry-sdk; a no-op unless
+# OTEL_PYTHON_SDK_INTERNAL_METRICS_ENABLED is "true" (any case, blanks
+# stripped), which nothing here sets.
+opentelemetry-exporter-otlp-proto-grpc==1.45.2
 # Three upstream-maintained lines producing exactly MIGRATION.md's
 # composite_channel_credentials(ssl, metadata_call_credentials(AuthMetadataPlugin))
 # pattern. Beta, but trivially inlinable into tracing_setup.py if it ever
 # stalls. All of its deps (grpcio, google-auth, requests) are already locked.
-opentelemetry-exporter-credential-provider-gcp==0.65b0
+opentelemetry-exporter-credential-provider-gcp==0.66b2
 # NOT deprecated and NOT part of the exporter family — this is the
 # X-Cloud-Trace-Context propagator, which the OTLP migration leaves untouched.
 opentelemetry-propagator-gcp==1.12.0
-opentelemetry-instrumentation-flask==0.65b0
-opentelemetry-instrumentation-requests==0.65b0
-opentelemetry-instrumentation-jinja2==0.65b0
+opentelemetry-instrumentation-flask==0.66b2
+opentelemetry-instrumentation-requests==0.66b2
+opentelemetry-instrumentation-jinja2==0.66b2
 # Was transitive via the (now removed) GCP exporter; kept as a direct pin
 # because it supplies the GCP resource labels, and because the version
 # immediately below is a trap: 1.13.0 is YANKED upstream ("breaks imports" —
@@ -66,14 +91,37 @@ bcrypt==5.0.0
 python-dotenv==1.2.3
 reportlab==5.0.1
 # Pillow is a transitive dependency of reportlab (which only requires >=9.0.0).
-# Pinned explicitly here for CVE hygiene. 12.3.0 clears a batch of 2026
-# image-decoder advisories (CVE-2026-54059 / 54060 / 55379 / 55380 / 55798 /
-# 59199 / 59203 / 59205) on top of the earlier CVE-2023-44271 (Pillow <10),
-# CVE-2026-25990 (PSD OOB write) and CVE-2026-40192 (FITS GZIP decompression
-# bomb). None are reachable here — reportlab emits tabular PDFs and no
-# untrusted image is ever decoded (no `import PIL` anywhere) — so this is a
-# hygiene bump.
-Pillow==12.3.0
+# Pinned explicitly here for CVE hygiene. 12.3.0 -> 13.0.0 (2026-11-05)
+# closes the 41 GitHub advisories open against 12.3.0, and two more that
+# Pillow has published but GitHub has not yet imported (GHSA-xcvg-w56q-r89m,
+# GHSA-wqgw-9xfh-qf2g). Five are critical by GitHub's rating (Pillow's own
+# rates two): CVE-2026-112398 (FlashPix JPEG tiles), CVE-2026-96639
+# (multi-frame loaders reusing stale storage), CVE-2026-112403 (scaled
+# decode of a lossless JPEG), CVE-2026-112393 (a TIFF saved to a BytesIO)
+# and CVE-2026-112900 (an EPS file name injected into the Ghostscript
+# command line). The 36 others, high or medium by GitHub, are decoder
+# overflows and out-of-bounds reads, decompression-bomb bypasses, endless or
+# quadratic parses and encoder memory errors across Pillow's formats and its
+# PdfParser, plus memory errors in image operations (merge, transform,
+# quantize, rank filters, ImageMorph), font rendering (FreeType, PILfont)
+# and Arrow export.
+# None is reachable: each needs the app to call Pillow itself — to open,
+# save or transform an image, render text or append to a PDF — and nothing
+# does. No Athena module imports PIL, but reportlab does at import
+# (reportlab/lib/utils.py), and so does pypdf (pypdf/_page.py, when Pillow
+# is installed), so PIL.Image loads in a worker that builds a PDF or serves
+# any connector call (mcp/handlers.py imports utils/pdf_text.py) — yet no
+# image plugin ever registers. The builders (utils/*_pdf.py) draw text
+# tables only — no drawImage, ImageReader, Image flowable or logo — and
+# escape() every user string before Paragraph markup, so a typed
+# `<img src=...>` prints as text instead of reaching Image.open; pypdf's
+# extract_text() skips images, and get_document_text refuses image files
+# before any download.
+# 13.0.0 is a major release: its removals (Image._show,
+# ImageCmsProfile.product_name/product_info, ...) and the move of
+# get_child_images from Image to ImageFile touch no API reportlab 5.0.1 or
+# pypdf calls, and the PDF tests pass unchanged.
+Pillow==13.0.0
 Markdown==3.11
 # bleach is archived upstream; 6.4.0 is a security release clearing the
 # URI-scheme sanitization advisories (GHSA-gj48-438w-jh9v, GHSA-8rfp-98v4-mmr6)
@@ -149,34 +197,139 @@ urllib3==2.8.0
 # auth parsing (non-base64 characters refused), which dav/dav_auth.py reads
 # through request.authorization — a well-formed DavX5 header is unaffected.
 werkzeug==3.1.9
+# certifi arrives via requests (utils/graph.py, and google-auth's transport
+# under google-cloud-storage and firebase-admin) and via httpx/httpcore ←
+# firebase-admin, which builds no client here (see anyio); requests verifies
+# against certifi.where(), and nothing sets REQUESTS_CA_BUNDLE or
+# CURL_CA_BUNDLE, the two variables that would override it. 2026.10.23
+# closes the critical GHSA-6q48-6c7w-9gw2 (PYSEC-2026-4320, no CVE; fixed in
+# 2026.10.18): certifi trusted emSign ECC Root CA - G3, under which eMudhra
+# revoked eight intermediate CAs, six of them for TLS, whose private keys
+# anyone can recompute from the public certificates (the secret scalars are
+# tiny; CPython gh-160040), so anyone can sign a certificate for any host.
+# Reachable in principle: an attacker on-path between App Engine and
+# login.microsoftonline.com, graph.microsoft.com, storage.googleapis.com,
+# iamcredentials.googleapis.com, www.googleapis.com (the keys that verify
+# Firebase ID tokens) or identitytoolkit.googleapis.com could intercept
+# those calls. 2026.10.23 is the latest release: against 2026.4.22 the store
+# loses six roots (three emSign — ECC Root CA - G3, Root CA - C1, ECC Root
+# CA - C3 — Atos TrustedRoot 2011, SecureSign Root CA12 and Chunghwa
+# Telecom's ePKI Root Certification Authority) and gains four (SECOM TLS RSA
+# and ECC Root CA 2024, Telia RSA and EC TLS Root CA v3). On 2026-11-05 a
+# handshake from a workstation to each host above verified against it
+# alone, every chain ending at GTS Root R4 or DigiCert Global Root G2, in
+# both bundles.
+# NOT covered by this pin: gRPC verifies against grpcio's own bundled roots
+# (see grpcio below), and App Check's JWKS fetch (pyjwt's urllib) against the
+# OS store.
+certifi==2026.10.23
+# grpcio carries every gRPC call (Firestore, Secret Manager, Cloud Tasks,
+# Cloud Logging, the OTLP export) and verifies TLS against the roots bundled
+# in its own wheel (grpc/_cython/_credentials/roots.pem): no channel here
+# passes roots, and nothing sets GRPC_DEFAULT_SSL_ROOTS_FILE_PATH or
+# GRPC_USE_SYSTEM_ROOTS_OVER_LANGUAGE_CALLBACK (either would move it off
+# that bundle). 1.80.0's bundle (130 roots) still trusted emSign ECC Root
+# CA - G3 (see certifi above) and AAA Certificate Services, Sectigo's
+# cross-signer of the same eight intermediates. 1.80.1 (2026-11-05,
+# "[security] Update gRPC repo roots", grpc#43845) replaces it with
+# Chromium's root store (99 roots), which drops both and keeps GTS Root R1
+# and R4, the roots Google's endpoints chain to. No advisory covers it, so
+# no alert flagged it. Reachable in principle like certifi's, though the
+# path from App Engine to *.googleapis.com stays inside Google's network.
+# On 2026-11-05 a channel through 1.80.1's own roots reached READY from a
+# workstation to every endpoint the app dials (firestore, secretmanager,
+# cloudtasks, logging and telemetry.googleapis.com), each chain ending at
+# GTS Root R4, while a store missing Google's roots failed. Its two Python
+# fixes (a Health Watch DoS on gRPC servers, an asyncio interceptor leak)
+# touch nothing here: the app runs no gRPC server and no asyncio client.
+# grpcio-status moves with it: gRPC releases them in lockstep, and 1.80.1
+# requires grpcio>=1.80.1.
+grpcio==1.80.1
+grpcio-status==1.80.1
+# pyasn1 arrives only via pyasn1-modules ← google-auth, whose one importer of
+# either is google/auth/crypt/_python_rsa.py, the backend for keys of the
+# `rsa` package — a google-auth extra, not installed. google-auth parses
+# every key and certificate here with cryptography, and importing the
+# default app or the portal loads neither pyasn1 nor pyasn1_modules. 0.6.5
+# (2026-10-27) fixes four high, quadratic-CPU decoding bugs on
+# attacker-supplied ASN.1: CVE-2026-119194 (GHSA-fm9c-5rcf-2q5p, schemaless
+# containers), CVE-2026-119195 (GHSA-9m75-vc3g-4x39, constructed strings and
+# indefinite-length ANY), CVE-2026-119196 (GHSA-2qm8-x737-gmw5, constructed
+# BIT STRING) and CVE-2026-119197 (GHSA-mm57-4v3p-rchx, binary REAL). None
+# is reachable: no request's bytes ever reach pyasn1, since Firebase ID and
+# App Check tokens are JWTs verified through cryptography. A hygiene bump;
+# pyasn1-modules 0.4.2 accepts pyasn1>=0.6.1,<0.7.0.
+pyasn1==0.6.5
 # PDF text extraction, added 2026-08-26 for the MCP get_document_text tool
 # (the stdlib cannot read a PDF). Pure Python — no native libs, so App Engine
 # Standard safe. Sole consumer: utils/pdf_text.py. Its caller,
-# models/document.get_document_bytes, refuses a file above
-# DOCUMENT_TEXT_MAX_BYTES BEFORE any byte is downloaded (pypdf's parse memory
-# runs ~2-3x file size), and pdf_text isolates each page's extract_text() so
-# one malformed page never kills the call.
-# 6.16.2 -> 6.19.0 (2026-10-01) closes CVE-2026-102993 to CVE-2026-103000,
-# eight denial-of-service bugs on a crafted PDF (page labels, indirect-object
-# tokens, font mapping and parsing, FlateDecode, form fields, embedded
-# files). Reachable: a PDF a client sends through the portal, once versed,
-# is parsed by get_document_text, and the font, token and FlateDecode paths
-# lie under extract_text() — memory or CPU exhaustion of the worker serving
-# that call. 6.18.0 moved pypdf's limits into pypdf.Configuration with the
-# SAME defaults, and nothing here overrides them. What the fixes add are
-# caps of their own (64-byte indirect-object ids, ToUnicode tokens, at most
-# 256 /Widths on a simple font, FlateDecode recovery stopped at 5 MB): past
-# one, a malformed page comes back without text and with a
-# page_extraction_failed:<n> warning (at open, the file is refused
-# invalid_pdf). 6.17.0 also logs a WARNING (logger pypdf._cmap) per page for
-# each Type1C font without /ToUnicode, fontTools not being installed: noise
-# in Cloud Logging, the text unchanged, but formatting the font dictionary
-# was the dominant CPU cost on a crafted file. utils/pdf_text.py drops that
-# one message with a filter on the pypdf._cmap logger itself (one on the
-# parent "pypdf" logger would not apply: logger filters are not inherited).
-# Re-check its prefix at every pypdf bump; tests/test_pdf_text.py fails if
-# pypdf stops logging the notice under it.
-pypdf==6.19.0
+# mcp/handlers.get_document_text, reads the file through
+# models/document.get_document_bytes, which refuses one whose recorded
+# file_size exceeds DOCUMENT_TEXT_MAX_BYTES BEFORE any byte is downloaded
+# (pypdf's parse memory runs ~2-3x file size on ordinary PDFs; a crafted
+# page within every cap below still reaches some 200 MB), and pdf_text
+# isolates each page's extract_text() so one malformed page never kills the
+# call.
+# 6.19.0 -> 6.21.4 (2026-11-05) closes eighteen advisories (CVE-2026-113786,
+# -113789 to -113795, -115572, -115580, -115585, -119203 to -119209), all but
+# one denial of service on a crafted PDF. pdf_text opens a file with
+# PdfReader's defaults (strict=False), refuses it if encrypted, counts its
+# pages, then runs extract_text() page by page, so ten are REACHABLE through
+# any outside PDF filed in a dossier (from the portal through « Verser »,
+# uploaded, or through the connector). Nine strike at open or while counting
+# pages: a file cut inside its xref table or with no trailer looped forever
+# (-113794, -119203); an oversized xref subsection, repeated malformed xref
+# entries, a huge xref stream (-115580, -115585, -119209), a page shared by
+# many references (-119204), huge arrays or dictionaries (-113790), stacked
+# filters (-113795) and repeated references to one missing object (-115572)
+# ran long or exhausted memory. The last three strike again under
+# extract_text(), as do dense content streams (-113791). The other eight
+# need image extraction (-113786), form fields (-113789), page labels
+# (-119206), strict mode (-119207), an encrypted file's page count (-119208;
+# refused as encrypted first) or pypdf's editing API —
+# PdfWriter.find_outline_item (-113792), TreeObject.remove_child (-113793),
+# cloning (-119205) — none of which runs here.
+# The fixes add caps — 16 filters and 300 MB of decoding work per stream,
+# 100_000 items per array or dictionary, 2_000_000 tokens per content
+# stream, 2_000_000 xref-stream entries and 2_000_000 copied page-dictionary
+# entries per file, no standard xref subsection longer than the file can
+# hold — on top of 6.19.0's caps (64-byte object ids, ToUnicode tokens, 256
+# /Widths per simple font, FlateDecode recovery stopped at 5 MB), all left
+# at their defaults: nothing here overrides pypdf.Configuration or
+# PdfReader's xref_stream_maximum_entries. Past a cap in a page's own
+# content stream or fonts, the page comes back without text and with
+# page_extraction_failed:<n> (so would a real vector page of some 670_000
+# joined line segments, or 286_000 stroked one by one); past one in a form
+# XObject the page draws, pypdf drops that form's text with a WARNING and the
+# page passes unflagged. At open or while counting pages, the file is refused
+# invalid_pdf, except past the xref-stream cap in an older (/Prev) section,
+# which pypdf drops with a WARNING before opening the rest. The caps bound
+# each stream, not the call.
+# 6.20.0's text changes come along, and no secure version avoids them. On
+# 210 public PDFs (15,423 pages of codes, regulations, judgments and pypdf's
+# corpus), Word-produced judgments and LégisQuébec's acts extract
+# byte-identical, but wrapped table-cell lines now join with no separator
+# (upstream #4132), so tables and forms can glue words — 40 pairs on 14
+# pages, 28 of them in LégisQuébec regulations' mandatory forms (P-40.1,
+# r. 3: "Loi sur laprotection du consommateur"), others in the Criminal
+# Code's tables ("Banc de laReine"). #4124 restored 258 missing word gaps
+# (one pdfLaTeX document, counted in its two copies) and removed 14
+# spurious spaces, but split three words in C-25.01, r. 0.4's form ("reve
+# nu"). A classic-xref file (Word, scanners) also costs one more copy of
+# itself per call (#4239).
+# Since 2026-10-28 (upstream PR 4280, listed in the 6.21.4 notes) pypdf takes
+# pure performance bugs as public issues: the next slow-parse fix may come
+# with no advisory, hence no Dependabot alert.
+# Since 6.17.0, pypdf logs a WARNING (logger pypdf._cmap) per page for each
+# Type1C font without /ToUnicode, fontTools not being installed: noise in
+# Cloud Logging, the text unchanged, but formatting the font dictionary was
+# the dominant CPU cost on a crafted file. utils/pdf_text.py drops that one
+# message with a filter on the pypdf._cmap logger itself (one on the parent
+# "pypdf" logger would not apply: logger filters are not inherited). Checked
+# at 6.21.4: same logger, same prefix. Re-check its prefix at every pypdf
+# bump; tests/test_pdf_text.py fails if pypdf stops logging the notice under
+# that logger and prefix.
+pypdf==6.21.4
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its
 # pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the

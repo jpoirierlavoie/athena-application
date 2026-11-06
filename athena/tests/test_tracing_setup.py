@@ -440,6 +440,346 @@ def test_sanitizing_exporter_never_blocks_export_on_failure(caplog) -> None:
     ]
 
 
+# ── Layer 2, continued: the value shapes SDK 1.45 lets through ───────────
+#
+# Since opentelemetry-sdk 1.45.0 an attribute value may be a mapping, a nested
+# sequence or bytes, all stored as given; 1.44.0 dropped the first two and
+# decoded bytes to str, so the scrub had only ever met strings and flat
+# sequences of them. No call site sets such a value today: these tests keep
+# « Do not log PII » true for the first one that does.
+#
+# Each export carries the PII twice: nested, and as ``flat``, a plain string
+# attribute. A nested leaf must come out EQUAL to the scrubbed ``flat`` — the
+# same redaction as the str path, not merely some redaction — and no fragment
+# of the PII may reach the delegate anywhere.
+
+_PII = "écrire à jean.tremblay@example.com, 514-555-1234, H2T 1S6"
+_PII_FRAGMENTS = ("jean.tremblay@example.com", "514-555-1234", "H2T 1S6")
+
+
+def _assert_no_pii(attributes) -> None:
+    rendered = repr(dict(attributes))
+    for fragment in _PII_FRAGMENTS:
+        assert fragment not in rendered, f"{fragment} leaked: {rendered}"
+
+
+def _export_beside_flat_pii(**attributes):
+    """Export a span carrying *attributes* and ``flat=_PII`` through the
+    sanitizer; return what the delegate received and the scrubbed ``flat``."""
+    span_obj = _finished_span(flat=_PII, **attributes)
+    delegate = _CapturingExporter()
+    tracing_setup._SanitizingSpanExporter(delegate).export([span_obj])
+    exported = dict(delegate.batches[0][0].attributes)
+    _assert_no_pii(exported)
+    return exported, exported["flat"]
+
+
+def test_sanitizing_exporter_scrubs_mapping_values() -> None:
+    """A mapping value: each value scrubbed, each key kept verbatim — keys are
+    field names, like the attribute keys themselves — non-strings untouched."""
+    exported, scrubbed = _export_beside_flat_pii(
+        fields={"note": _PII, "count": 3, "ok": True}
+    )
+    assert exported["fields"] == {"note": scrubbed, "count": 3, "ok": True}
+
+
+def test_sanitizing_exporter_scrubs_nested_sequences() -> None:
+    exported, scrubbed = _export_beside_flat_pii(
+        rows=[[_PII, "plain"], [[_PII], 7]]
+    )
+    assert exported["rows"] == ((scrubbed, "plain"), ((scrubbed,), 7))
+
+
+def test_sanitizing_exporter_scrubs_mappings_and_sequences_in_each_other() -> None:
+    exported, scrubbed = _export_beside_flat_pii(
+        rows=[{"note": _PII}, {"notes": [_PII, [_PII]]}],
+        fields={"notes": [_PII, [{"note": _PII}]]},
+    )
+    assert exported["rows"] == (
+        {"note": scrubbed},
+        {"notes": (scrubbed, (scrubbed,))},
+    )
+    assert exported["fields"] == {"notes": (scrubbed, ({"note": scrubbed},))}
+
+
+def test_sanitizing_exporter_decodes_and_scrubs_bytes() -> None:
+    """bytes, bare or nested, are decoded as UTF-8 (the accents survive), then
+    scrubbed. An undecodable byte becomes U+FFFD: a strict decode would raise,
+    and a span whose scrub raised is exported UNSANITIZED."""
+    encoded = _PII.encode("utf-8")
+    exported, scrubbed = _export_beside_flat_pii(
+        raw=encoded,
+        fields={"raw": encoded},
+        rows=[encoded],
+        garbled=b"\xff" + encoded,
+    )
+    assert exported["raw"] == scrubbed
+    assert exported["fields"] == {"raw": scrubbed}
+    assert exported["rows"] == (scrubbed,)
+    assert exported["garbled"] == "\ufffd" + scrubbed
+
+
+def test_sanitizing_exporter_scrubs_values_the_sdk_turned_into_text() -> None:
+    """A value of any other type is str()-ed by SDK 1.45 when it is SET (1.44.0
+    dropped it), so it reaches the exporter as a string and takes the str path.
+    Characterization: it passes on the pre-1.45 scrubber too. It pins the SDK —
+    one that kept the object until encoding would slip it past the scrub."""
+
+    class _Contact:
+        def __str__(self) -> str:
+            return _PII
+
+    exported, scrubbed = _export_beside_flat_pii(contact=_Contact())
+    assert exported["contact"] == scrubbed
+
+
+def test_sanitizing_exporter_applies_the_url_rule_at_any_depth() -> None:
+    """A key means the same wherever it sits: inside a mapping, a URL key's
+    value loses its query (url.query is blanked); under a URL key, each item
+    of a sequence loses its own."""
+    span_obj = _finished_span(
+        **{
+            "request": {
+                "http.url": "https://h/p?q=Tremblay",
+                "url.query": "q=Tremblay",
+            },
+            "http.url": ("https://h/p?q=Tremblay", "https://h/o?q=Tremblay"),
+        }
+    )
+    delegate = _CapturingExporter()
+    tracing_setup._SanitizingSpanExporter(delegate).export([span_obj])
+    exported = delegate.batches[0][0].attributes
+    assert exported["request"] == {"http.url": "https://h/p", "url.query": ""}
+    assert exported["http.url"] == ("https://h/p", "https://h/o")
+
+
+def test_sanitizing_exporter_cuts_nesting_past_the_depth_cap(caplog) -> None:
+    """Past ``_MAX_ATTRIBUTE_DEPTH`` a value is replaced, never walked: a walk
+    deep enough to raise RecursionError would land in the per-span except,
+    which exports the span UNSANITIZED. The SDK's own recursive cleaner would
+    refuse this depth at set time, so the span is built directly — the
+    exporter must hold for any span it is handed."""
+    from opentelemetry.sdk.trace import ReadableSpan
+
+    deep: object = _PII
+    for _ in range(sys.getrecursionlimit() + 100):
+        deep = (deep,)
+    delegate = _CapturingExporter()
+    with caplog.at_level("ERROR", logger=tracing_setup.logger.name):
+        tracing_setup._SanitizingSpanExporter(delegate).export(
+            [ReadableSpan(name="s", attributes={"deep": deep})]
+        )
+    assert not caplog.records, "the scrub raised: the span shipped unsanitized"
+    value, levels = delegate.batches[0][0].attributes["deep"], 0
+    while isinstance(value, tuple):
+        (value,) = value
+        levels += 1
+    _assert_no_pii({"deep": value})
+    assert value == tracing_setup._TOO_DEEP
+    assert levels <= tracing_setup._MAX_ATTRIBUTE_DEPTH + 1
+
+
+def test_sanitizing_exporter_blanks_url_query_whatever_its_shape() -> None:
+    """``url.query`` holds nothing but a query, and a query can carry a
+    client's name, which no PII regex sees: it is blanked whatever its shape —
+    the mapping of parsed arguments SDK 1.45 now keeps included."""
+    span_obj = _finished_span(
+        **{
+            "url.query": {"q": "Tremblay"},
+            "request": {"url.query": ["q=Tremblay"]},
+        }
+    )
+    delegate = _CapturingExporter()
+    tracing_setup._SanitizingSpanExporter(delegate).export([span_obj])
+    exported = delegate.batches[0][0].attributes
+    assert exported["url.query"] == ""
+    assert exported["request"] == {"url.query": ""}
+
+
+def test_sanitizing_exporter_fails_closed_per_attribute(caplog) -> None:
+    """An attribute whose walk raises is replaced by a placeholder and logged
+    at ERROR, while the span's other attributes keep their scrub: one odd
+    value must not ship the whole span unsanitized. Built directly, as the SDK
+    would not store such a value — the exporter must hold for any span."""
+    from collections.abc import Mapping
+
+    from opentelemetry.sdk.trace import ReadableSpan
+
+    class _Exploding(Mapping):
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+        def __iter__(self):
+            raise RuntimeError("dictionary changed size during iteration")
+
+        def __len__(self) -> int:
+            return 1
+
+    delegate = _CapturingExporter()
+    with caplog.at_level("ERROR", logger=tracing_setup.logger.name):
+        tracing_setup._SanitizingSpanExporter(delegate).export(
+            [ReadableSpan(name="s", attributes={"odd": _Exploding(), "flat": _PII})]
+        )
+    exported = dict(delegate.batches[0][0].attributes)
+    assert exported["odd"] == tracing_setup._UNSANITIZABLE
+    _assert_no_pii(exported)
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+
+
+# ── Layer 3: the manual-span guard, on the same shapes ───────────────────
+
+
+def test_span_guard_scrubs_nested_and_bytes_values(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """``span()`` and ``add_attributes()`` scrub a mapping, a nested sequence
+    and bytes at SET time, by the same walk as the exporter. The module's
+    in-memory exporter sits behind no sanitizer: it sees the guard's work."""
+    encoded = _PII.encode("utf-8")
+    with span("op", flat=_PII, fields={"note": _PII, "raw": encoded}):
+        add_attributes(rows=[[_PII], {"notes": [encoded]}])
+    attrs = _provider.get_finished_spans()[-1].attributes
+    scrubbed = attrs["flat"]
+    assert attrs["fields"] == {"note": scrubbed, "raw": scrubbed}
+    assert attrs["rows"] == ((scrubbed,), {"notes": (scrubbed,)})
+    _assert_no_pii(attrs)
+
+
+def test_span_guard_drops_sensitive_keys_inside_mappings(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """A mapping's keys are field names, kept verbatim like attribute keys —
+    and, like an attribute key, one in ``SENSITIVE_KEYS`` (case-insensitive)
+    drops its entry, at any depth: a token is a secret no PII regex sees."""
+    with span(
+        "op",
+        fields={"token": "tok-123", "note": "ok"},
+        rows=[{"Password": "hunter2", "n": 1}],
+    ):
+        pass
+    attrs = _provider.get_finished_spans()[-1].attributes
+    assert attrs["fields"] == {"note": "ok"}
+    assert attrs["rows"] == ({"n": 1},)
+
+
+def test_span_survives_a_cyclic_attribute_value(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """A cyclic value is cut at the depth cap and still recorded: the walk
+    ends on it instead of recursing until RecursionError."""
+    cyclic: list = []
+    cyclic.append(cyclic)
+    with span("op", cyclic=cyclic):
+        pass
+    value, levels = _provider.get_finished_spans()[-1].attributes["cyclic"], 0
+    while isinstance(value, tuple):
+        (value,) = value
+        levels += 1
+    assert value == tracing_setup._TOO_DEEP
+    assert levels <= tracing_setup._MAX_ATTRIBUTE_DEPTH + 1
+
+
+def test_span_and_add_attributes_survive_a_value_whose_walk_raises(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """The guard iterates the caller's containers, so it runs inside the
+    try/except that shields ``set_attribute``: a value that raises while
+    walked — a dict another thread resizes mid-walk — costs its attribute,
+    never the request (tracing never breaks the app)."""
+    from collections.abc import Mapping
+
+    class _Resized(Mapping):
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+        def __iter__(self):
+            raise RuntimeError("dictionary changed size during iteration")
+
+        def __len__(self) -> int:
+            return 1
+
+    with span("op", resized=_Resized(), kept="ok"):
+        add_attributes(resized_too=_Resized(), kept_too="ok")
+    attrs = _provider.get_finished_spans()[-1].attributes
+    assert "resized" not in attrs and "resized_too" not in attrs
+    assert attrs["kept"] == "ok" and attrs["kept_too"] == "ok"
+
+
+def test_span_guard_drops_values_the_sdk_would_stringify(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """SDK 1.45 stores a value of any other type as its str() (1.44.0 dropped
+    it), and a repr is free text: request.headers renders as « Authorization:
+    Basic … », a credential no PII regex sees. The guard drops such a value,
+    as 1.44.0 did — a mapping entry too — and keeps a legitimate None."""
+    from datetime import datetime
+
+    from werkzeug.datastructures import Headers
+
+    headers = Headers({"Authorization": "Basic amVhbjpodW50ZXIy"})
+    with span(
+        "op",
+        hdrs=headers,
+        when=datetime(2026, 11, 5),
+        fields={"hdrs": headers, "n": 1, "none": None},
+        rows=[headers, "ok"],
+        kept="ok",
+    ):
+        add_attributes(hdrs_too=headers)
+    attrs = _provider.get_finished_spans()[-1].attributes
+    assert not {"hdrs", "when", "hdrs_too"} & set(attrs)
+    assert attrs["fields"] == {"n": 1, "none": None}
+    assert attrs["rows"] == (None, "ok")
+    assert attrs["kept"] == "ok"
+    assert "amVhbjpodW50ZXIy" not in repr(dict(attrs))
+
+
+def test_span_guard_walks_every_sequence_and_bytes_like(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """The SDK turns any Sequence into a tuple, and a bytearray or memoryview
+    into a tuple of byte values no regex reads: the guard walks the first like
+    a list and decodes the others like bytes, so no shape slips past it."""
+    from collections import UserList, deque
+
+    encoded = _PII.encode("utf-8")
+    with span(
+        "op",
+        flat=_PII,
+        rows=deque([{"token": "tok-1", "note": _PII}]),
+        items=UserList([{"password": "hunter2"}]),
+        raw=bytearray(encoded),
+        view=memoryview(encoded),
+    ):
+        pass
+    attrs = _provider.get_finished_spans()[-1].attributes
+    scrubbed = attrs["flat"]
+    assert attrs["rows"] == ({"note": scrubbed},)
+    assert attrs["items"] == ({},)
+    assert attrs["raw"] == scrubbed and attrs["view"] == scrubbed
+    _assert_no_pii(attrs)
+
+
+def test_span_guard_checks_keys_as_the_sdk_names_them(
+    _provider: InMemorySpanExporter,
+) -> None:
+    """The SDK str()s a non-string mapping key, so the guard judges a key by
+    that name: an Enum member that renders as « token » is a token key."""
+    import enum
+
+    class _Field(enum.Enum):
+        TOKEN = "token"
+        NOTE = "note"
+
+        def __str__(self) -> str:
+            return self.value
+
+    with span("op", fields={_Field.TOKEN: "tok-2", _Field.NOTE: "ok"}):
+        pass
+    attrs = _provider.get_finished_spans()[-1].attributes
+    assert attrs["fields"] == {"note": "ok"}
+
+
 # ── Layer 1: the three instrumentation hooks ─────────────────────────────
 
 
