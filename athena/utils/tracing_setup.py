@@ -19,10 +19,11 @@ This module is the tracing counterpart to ``logging_setup.py``:
   the logging layer's redaction patterns, and the manual helpers drop
   ``SENSITIVE_KEYS`` attributes and scrub values the same way.
 
-Sampling defaults to 10% in production (the ``TRACE_SAMPLE_RATIO`` env
-var overrides — set to ``"1.0"`` for a debugging session, ``"0.0"`` to
-disable).  Dev runs at 100% so every local request appears in the
-console exporter.
+Sampling defaults to 10% in production and in dev alike
+(``DEFAULT_SAMPLE_RATIO``; ``.env.example`` sets the same 0.1). The
+``TRACE_SAMPLE_RATIO`` env var overrides — set to ``"1.0"`` for a debugging
+session (in dev that switches to ``AlwaysOn``, so every local request
+reaches the console exporter), ``"0.0"`` to disable.
 
 Memory note: F2 = 256MB.  ``BatchSpanProcessor`` uses a bounded queue
 (default max 2048).  Tune via ``OTEL_BSP_MAX_QUEUE_SIZE`` if instance

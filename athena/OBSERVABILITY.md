@@ -465,7 +465,7 @@ Three things about this path are load-bearing:
 ### Sampling
 
 - Production: 10% of traces, `ParentBased(TraceIdRatioBased(0.1))` — child spans inherit the parent's decision so cross-service traces stay coherent.
-- Dev: 100% by default, `AlwaysOn`. Console exporter prints every span.
+- Dev: the same 10% by default (`DEFAULT_SAMPLE_RATIO`; `.env.example` sets `0.1`). `AlwaysOn` only when `TRACE_SAMPLE_RATIO` is `1.0`, and the console exporter then prints every span — set it locally to see them all.
 - Override via env var **`TRACE_SAMPLE_RATIO`** (clamped to `[0.0, 1.0]`). Set to `1.0` for a debugging session, `0.0` to disable.
 - **Warning:** `TRACE_SAMPLE_RATIO=1.0` multiplies trace egress ~10× — every request exports spans to Cloud Trace (more ingestion cost, more BatchSpanProcessor queue pressure on 256MB F2 instances, and a larger exfiltration surface for anything the sanitizing layers below might miss). Use it for short debugging windows only, then revert.
 

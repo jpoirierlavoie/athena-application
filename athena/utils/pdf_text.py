@@ -13,9 +13,13 @@ Honesty contract: a scanned page has no text layer, and this module never
 pretends otherwise — it reports ``has_text: False`` and lists the page in
 ``pages_without_text`` so the caller (the MCP get_document_text tool
 fallback, or the connector's model) can decide what to do. A page whose
-extraction FAILS (malformed, or past one of pypdf's parser limits) is listed
-the same way, and a ``page_extraction_failed:<n>`` warning is what tells it
-from a scan. There is no OCR here and none is implied. Binary content is
+extraction FAILS (malformed, or past one of pypdf's parser limits in its own
+content stream or fonts) is listed the same way, and a
+``page_extraction_failed:<n>`` warning is what tells it from a scan. A limit
+tripped inside a form XObject the page draws is NOT flagged: pypdf catches
+it itself, drops that form's text and logs a WARNING (logger
+``pypdf._page``), so a page whose only text sat in such a form reads exactly
+like a scan. There is no OCR here and none is implied. Binary content is
 never returned.
 
 Warnings are machine-stable English tokens (``page_extraction_failed:7``);
