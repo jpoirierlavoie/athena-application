@@ -82,3 +82,12 @@ def test_a_module_importing_models_unpatched_reaches_no_google_api():
     tail = "\n".join((run.stdout or "").splitlines()[-15:])
     assert run.returncode == 0, tail
     assert "opened a gRPC channel" not in run.stdout, tail
+
+
+def test_the_guard_compares_the_host_not_a_substring():
+    from tests.conftest import _is_google_api_host
+
+    assert _is_google_api_host("firestore.googleapis.com:443")
+    assert _is_google_api_host("dns:///logging.googleapis.com")
+    assert not _is_google_api_host("localhost:4317")  # the OTLP test server
+    assert not _is_google_api_host("googleapis.com.example.org:443")

@@ -52,14 +52,23 @@ from google.api_core import grpc_helpers
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 with mock.patch("google.cloud.firestore.Client"):
-    import models  # noqa: E402,F401  — models.db is a MagicMock from here on
+    import models  # noqa: E402
+
+assert isinstance(models.db, mock.MagicMock), type(models.db)
 
 _GOOGLE_API_TARGETS: list[str] = []
 _create_channel = grpc_helpers.create_channel
 
 
+def _is_google_api_host(target) -> bool:
+    """``firestore.googleapis.com:443``, ``dns:///logging.googleapis.com``:
+    the HOST is compared, never a substring of the whole target."""
+    host = str(target).rsplit("/", 1)[-1].rsplit(":", 1)[0].lower()
+    return host == "googleapis.com" or host.endswith(".googleapis.com")
+
+
 def _guarded_create_channel(target, *args, **kwargs):
-    if "googleapis.com" in str(target):
+    if _is_google_api_host(target):
         _GOOGLE_API_TARGETS.append(str(target))
         raise RuntimeError(f"tests never reach Google APIs ({target})")
     return _create_channel(target, *args, **kwargs)
