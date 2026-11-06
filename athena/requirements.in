@@ -136,11 +136,18 @@ Pillow==13.0.0
 # longer closes, so `**Faits : **texte` now shows its asterisks, as does a
 # mismatched run (`**mot*`); and `**` nested 32 deep no longer converts to
 # Word (the connector refuses it, a note print falls back to the raw text).
-# Fixed only in 3.11.3 (2026-11-05), whose own rendering changes want their
-# own review: text lost between mismatched backtick runs (`a `b`` c`
-# renders "a  c"), and quadratic parses — a note of 100,000 characters,
-# `#` then text, takes some 2 minutes of CPU to render.
-Markdown==3.11.2
+# 3.11.2 -> 3.11.3 (2026-11-06): of the same inputs, 169 render differently,
+# 150 of them the tests' generated fence-and-backtick strings (no test
+# asserts their output). Mismatched backtick runs pair anew, so the text
+# 3.11.2 lost between them shows (`a `b`` c` rendered "a <code></code> c"),
+# a link-reference definition followed by `===` no longer becomes a heading,
+# and long emphasis chains close as written (#1690). Unchanged: the link
+# schemes bleach lets through (the new `<scheme:...>` autolinks gain
+# nothing), and every Word fragment is well-formed. And the quadratic
+# parses are gone: a 100,000-character note of `#` then text renders in
+# 16 ms instead of 2 minutes, 5,000 reference definitions in 12 ms instead
+# of 12 s.
+Markdown==3.11.3
 # bleach is archived upstream; 6.4.0 is a security release clearing the
 # URI-scheme sanitization advisories (GHSA-gj48-438w-jh9v, GHSA-8rfp-98v4-mmr6)
 # and moving off the 6.3.0-only linkify email-DoS advisory (GHSA-g75f-g53v-794x).
