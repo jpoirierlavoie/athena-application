@@ -38,6 +38,7 @@ helper for a new domain), then document it in ``OBSERVABILITY.md``.
 """
 
 import contextvars
+import json
 import logging
 import os
 import re
@@ -185,8 +186,9 @@ class RedactionFilter(logging.Filter):
 
     Coverage: ``record.json_fields`` (recursively), dict messages, plain
     string messages, ``%``-style ``args`` (pre-interpolated so the scrub
-    sees the final message), and exception tracebacks (pre-rendered into
-    ``record.exc_text``).
+    sees the final message), exception tracebacks (pre-rendered into
+    ``record.exc_text``), and the request URL Cloud Logging attaches
+    (``record._http_request``), which loses its query string and fragment.
     """
 
     EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -266,7 +268,37 @@ class RedactionFilter(logging.Filter):
                 # Never let redaction break logging itself; worst case the
                 # handler renders the raw exc_info as before.
                 pass
+        self._strip_request_query(record)
         return True
+
+    @staticmethod
+    def _strip_request_query(record: logging.LogRecord) -> None:
+        """Drop the query string and fragment of the attached request URL.
+
+        google-cloud-logging's CloudLoggingFilter — added by
+        CloudLoggingHandler's own __init__, so it runs before this filter —
+        copies ``flask.request.url`` into ``record._http_request``, which
+        ships as the entry's ``httpRequest.requestUrl``. The query is free
+        text (a search, ``?q=Tremblay``, carries a client's name, which no
+        regex here matches), so it never leaves; the path stays. A new dict,
+        never the caller's: an ``extra={"http_request": ...}`` is copied in
+        as-is.
+        """
+        http_request = getattr(record, "_http_request", None)
+        if not isinstance(http_request, dict):
+            return
+        url = http_request.get("requestUrl")
+        if not isinstance(url, str):
+            return
+        stripped = url.split("?", 1)[0].split("#", 1)[0]
+        if stripped == url:
+            return
+        record._http_request = {**http_request, "requestUrl": stripped}
+        # The structured (stdout) handler prints this rendering instead.
+        if hasattr(record, "_http_request_str"):
+            record._http_request_str = json.dumps(
+                record._http_request, ensure_ascii=False
+            )
 
     def _redact_value(self, value: Any) -> Any:
         if isinstance(value, dict):

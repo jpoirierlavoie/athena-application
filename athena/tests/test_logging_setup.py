@@ -675,6 +675,83 @@ def test_production_uses_structured_cloud_logging_handler(flask_app, monkeypatch
     assert captured["name"] == "pallas-athena"
 
 
+def _cloud_logging_chain():
+    """The production chain without the network: the library's real
+    CloudLoggingHandler (whose __init__ adds its own CloudLoggingFilter), then
+    ContextFilter and RedactionFilter as init_app adds them, and a transport
+    that records what would be sent instead of sending it."""
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud.logging import Client, Resource
+    from google.cloud.logging.handlers import CloudLoggingHandler
+
+    sent: list[dict] = []
+
+    class _Transport:
+        def __init__(self, client, name, resource=None):
+            pass
+
+        def send(self, record, message, **kwargs):
+            # _http_request_str is the copy the structured (stdout) handler
+            # prints: it must say the same as the dict the API receives.
+            sent.append(
+                {**kwargs, "http_request_str": record._http_request_str}
+            )
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    client = Client(
+        project="athena-pallas", credentials=AnonymousCredentials()
+    )
+    handler = CloudLoggingHandler(
+        client, name="pallas-athena", transport=_Transport,
+        resource=Resource(type="global", labels={}),
+    )
+    handler.addFilter(ContextFilter())
+    handler.addFilter(RedactionFilter())
+    logger = logging.getLogger("test.cloud_logging_chain")
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    return logger, handler, sent
+
+
+def test_the_request_url_reaches_cloud_logging_without_its_query(flask_app):
+    # The library attaches flask.request.url, query string included, to every
+    # entry logged inside a request (httpRequest.requestUrl) — a field no
+    # regex of the scrub reads, and a name typed in a search (?q=Tremblay)
+    # would match none anyway. Fails if the library renames the attribute.
+    logger, _, sent = _cloud_logging_chain()
+    with flask_app.test_request_context(
+        "/parties/?q=Tremblay&courriel=jean@example.com#fiche",
+        headers={"User-Agent": "test-agent"},
+    ):
+        logger.warning("recherche")
+        logger.warning(
+            "fourni",
+            extra={"http_request": {
+                "requestMethod": "GET",
+                "requestUrl": "https://athena.example/parties/?q=Tremblay",
+            }},
+        )
+
+    inferred, supplied = (kw["http_request"] for kw in sent)
+    assert inferred["requestUrl"] == "http://localhost/parties/"
+    assert inferred["requestMethod"] == "GET"
+    assert inferred["userAgent"] == "test-agent"
+    assert supplied["requestUrl"] == "https://athena.example/parties/"
+    assert "Tremblay" not in repr(sent) and "jean@" not in repr(sent)
+
+
+def test_a_record_outside_a_request_carries_no_request_url(flask_app):
+    logger, _, sent = _cloud_logging_chain()
+    logger.warning("cron")
+    assert sent[0]["http_request"] is None
+
+
 def test_cloud_logging_message_parser_emits_json_fields_as_dict():
     # Proves the mechanism the fix relies on: the library's message parser
     # turns a record carrying json_fields into a dict payload (→ jsonPayload)
