@@ -33,7 +33,7 @@
 {{GEN:charger}}
 - **Déclencheur** : « vérifie les conflits ».
 - **Appels** : (1) les dossiers actifs : `get_coverage_report(checks=["CONFLIT_NON_VERIFIE", "IDENTITE_NON_VERIFIEE"])` ; un client : `get_partie(partie_id)` ; (2) confirmer, puis `record_kyc_status(partie_id, check, status, notes, expected_etag)`.
-- **Arrêt** : dire « inscrit, présumé », jamais « vérifié » ; l'obligation relève de deontologie-professionnelle.
+- **Arrêt** : dire « inscrit, présumé », jamais « vérifié » ni « identifié » ; l'obligation relève de deontologie-professionnelle.
 - **À éviter** : un `get_partie` par client pour un balayage.
 
 ## D6 Signification, événement de prescription
