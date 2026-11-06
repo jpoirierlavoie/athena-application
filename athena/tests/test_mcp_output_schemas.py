@@ -631,6 +631,58 @@ def test_list_deletions_conforms(monkeypatch):
     assert payload["items"][0]["title"] == "Produire la proposition"
 
 
+def test_list_deletions_never_shows_nor_counts_a_hidden_row(monkeypatch):
+    """D7 — the connector never reads a proof of identity, nor the trail
+    row its erasure leaves (one neutral row: the contact, « Preuve
+    d'identité », the file type). The real ``list_recent`` on the fake
+    store; the two NEWEST rows are hidden ones, so a filter applied after
+    the truncation count would show them, or claim ``truncated`` for a
+    list that is complete — both fail here."""
+    from datetime import timedelta
+
+    from models.audit_event import CONNECTOR_HIDDEN_ENTITY_TYPES
+    from tests._fake_firestore import install
+
+    fake = install(monkeypatch, handlers.audit_event_model)
+    rows = (  # newest first
+        ("h1", "piece_identite", "p1", "Preuve d'identité", "application/pdf"),
+        ("h2", "piece_identite", "p2", "Preuve d'identité", "image/jpeg"),
+        ("v1", "task", "t1", "Produire la proposition", "à_faire"),
+        ("v2", "note", "n1", "Note de rencontre", ""),
+        ("v3", "partie", "p3", "Paul Roy", "client"),
+    )
+    for rank, (eid, kind, entity, title, status) in enumerate(rows):
+        at = DT - timedelta(minutes=rank)
+        fake.seed(f"audit_events/{eid}", {
+            "id": eid, "at": at, "entity_type": kind, "entity_id": entity,
+            "dossier_id": "", "created_at": at,
+            "snapshot_min": {"title": title, "status": status},
+        })
+    assert "piece_identite" in CONNECTOR_HIDDEN_ENTITY_TYPES
+
+    complete = handlers.list_deletions({"limit": 3})
+    _conforms("list_deletions", complete)
+    assert [i["id"] for i in complete["items"]] == ["v1", "v2", "v3"]
+    assert complete["truncated"] is False and complete["count"] == 3
+
+    capped = handlers.list_deletions({"limit": 2})
+    assert [i["id"] for i in capped["items"]] == ["v1", "v2"]
+    assert capped["truncated"] is True
+
+    dated = handlers.list_deletions({"date_from": "2026-07-02"})
+    assert [i["id"] for i in dated["items"]] == ["v1", "v2", "v3"]
+
+    # Named outright — which the input schema refuses first —, still nothing.
+    schema = tools.TOOLS["list_deletions"]["input_schema"]
+    assert tools.validate_args(schema, {"entity_type": "piece_identite"})
+    named = handlers.list_deletions({"entity_type": "piece_identite"})
+    assert named["items"] == [] and named["truncated"] is False
+    for payload in (complete, capped, dated, named):
+        text = json.dumps(tools._jsonable(payload), ensure_ascii=False)
+        assert "piece_identite" not in text
+        assert "Preuve d'identité" not in text
+
+
 def test_list_protocol_steps_conforms(monkeypatch):
     protocol = {"id": "pr1", "title": "Protocole de l'instance",
                 "protocol_type": "cs_ordinaire", "status": "actif",

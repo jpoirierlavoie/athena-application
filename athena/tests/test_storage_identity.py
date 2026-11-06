@@ -570,6 +570,12 @@ def test_the_sweep_finds_the_builders_it_exists_for():
         "routes/documents.py:api_finaliser",
         "routes/admin_ledger.py:api_televersement",
         "routes/admin_ledger.py:api_recu",
+        # A contact's proofs of identity (lot 2 of the compliance work,
+        # 2026-11): their staging name and their object name, each built in
+        # ONE place, which the session, the filing and the stored-path
+        # check all call.
+        "models/piece_identite.py:staging_object",
+        "models/piece_identite.py:storage_path",
     ):
         assert expected in builders, expected
 
@@ -669,7 +675,11 @@ def test_every_caller_of_a_uid_taking_writer_obtains_the_uid_from_a_guard():
 def test_the_caller_sweep_finds_what_it_exists_for():
     writers, _, callers = _caller_scan()
     for expected in ("upload_document", "ingest_blob_as_document",
-                     "build_folder_zip_url", "create_template"):
+                     "build_folder_zip_url", "create_template",
+                     # A contact's proofs of identity (lot 2 of the
+                     # compliance work, 2026-11): the session and the filing
+                     # each re-check the uid they are handed.
+                     "open_proof_upload", "file_staged_proof"):
         assert expected in writers, expected
     # update_template takes no uid (it reuses the STORED one): not a writer.
     assert "update_template" not in writers
@@ -697,6 +707,11 @@ def test_the_caller_sweep_finds_what_it_exists_for():
         # owner uid itself (a released claim when it cannot).
         "mcp/handlers.py:_finalize_document_upload",
         "mcp/handlers.py:_create_uploaded_template",
+        # Lot 2 of the compliance work (2026-11): the « Gérer » dialog's two
+        # JSON endpoints obtain the uid from request_uid before handing it
+        # to the proofs model.
+        "routes/parties.py:id_proof_session",
+        "routes/parties.py:id_proof_finalize",
     ):
         assert expected in callers, expected
 

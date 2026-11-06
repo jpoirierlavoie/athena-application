@@ -585,11 +585,13 @@ def _delete_refused(error: str) -> Response:
     * the contact vanished between the two reads → 404;
     * the reference check could not RUN → 503 + ``Retry-After`` (not the
       client's fault: the same DELETE succeeds later);
-    * the store refused the write → 500 (``delete_partie`` already logged
-      an ``unexpected`` ERROR with the traceback);
+    * the store refused the write, or its outcome could not be read back →
+      500 (``delete_partie`` already logged an ``unexpected`` ERROR with
+      the traceback);
     * every other refusal is a CONFLICT with the contact's current state
-      (still linked to a dossier, or the mandataire of another contact) →
-      409 with the French reason in the body.
+      (still linked to a dossier, the mandataire of another contact, or
+      holding a proof of identity) → 409 with the French reason in the
+      body.
     """
     if error == PARTIE_NOT_FOUND:
         status, reason = 404, "introuvable"

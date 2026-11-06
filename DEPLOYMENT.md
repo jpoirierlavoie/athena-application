@@ -4282,6 +4282,46 @@ Notes:
   tasks is not enough, interactive sessions write too
   (`python -m scripts.revoke_mcp_tokens`) — and save no client fiche on the
   older version until the roll forward.
+- **Proofs of identity on the contact fiche (2026-11-06).** Under
+  « Conformité », a client's fiche — role « client » or client of a dossier,
+  and any fiche that holds a proof, so a role change never strands one —
+  lists its proofs of identity, each with « Consulter » (a redirect to a
+  15-minute signed URL, opened inline in a new tab; never embedded in the
+  page). « Gérer » uploads PDF, JPG or PNG files of 20 Mo at most, 20 per
+  contact, straight from the browser to GCS through
+  `staging/{uid}/identite/{id}/upload{ext}` (five segments: the documents,
+  receipt and connector finalizers refuse it, and it refuses theirs; §6.6's
+  `staging/` rule sweeps an abandoned one), renames the display name, and
+  deletes after a confirmation step. Records live in
+  `parties/{id}/pieces_identite/{id}` — a subcollection the contact owns, so
+  no write touches the contact's document, its etag or its CTag — and
+  objects in `users/{uid}/parties/{id}/pieces_identite/{id}{ext}`, with no
+  file name in the object name; no lifecycle rule may ever reach that
+  prefix. « Supprimer » erases the object BY GENERATION (no 180-day
+  non-current copy, only the bucket's 7-day soft delete; SECURITY.md) and
+  appends ONE `audit_events` row of type `piece_identite` titled « Preuve
+  d'identité ». The connector reaches none of it: no tool reads the
+  subcollection, and `list_deletions` filters those rows out
+  (`audit_event.CONNECTOR_HIDDEN_ENTITY_TYPES`) while its enum is unchanged.
+  A contact holding a proof refuses deletion (web banner, CardDAV 409).
+  Change Impact items 1, 2, 4, 5, 6 and 7 are touched, but no index, rule,
+  secret, queue, consent-version, plugin or dependency changes. After the
+  push:
+  1. *At 375 px, on the phone, in the browser and in the installed app*:
+     « Gérer » → « Ajouter des fichiers »: the picker offers the camera; a
+     photo and a PDF show their progress, then the list. Rename one.
+     « Consulter » opens each inline in a new tab, saved under its display
+     name. Delete one through its two-step confirmation.
+  2. *curl* (DavX5, §15-16): a DELETE of a test contact holding a proof
+     answers 409 with the French reason and the contact stays; delete its
+     proofs, then the contact: 204 and a tombstone.
+  3. *Logs*: `jsonPayload.event` in (`id_proof_filed`, `id_proof_renamed`,
+     `id_proof_deleted`) carries ids, type and size only; one
+     `audit_events` row of type `piece_identite` per deletion.
+  A rollback: once a proof has been filed, never go below this release —
+  the older `delete_partie` would delete a contact holding proofs, and
+  Firestore does not cascade: its records and objects would stay with no
+  path to them in the application.
 
 ## 16. Troubleshooting
 

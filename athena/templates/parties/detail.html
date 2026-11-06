@@ -316,15 +316,22 @@
   {# ── Compliance — a client, or a client of any dossier ─────────── #}
   {# Shown for a contact whose role is « client » AND for any contact that
      is a client of a dossier whatever its role (the coverage report checks
-     every dossier client). Everything is composed by the route
-     (`routes/parties._kyc_view`): the badge (AMBER « … (présumé) » for an
-     inscription Claude made and the lawyer has not confirmed — never the
-     green of a verified identity), the label, and the attribution line —
-     the signer's name is NEVER attached to a presumed inscription (D7). #}
-  {% if partie.contact_role == 'client' or is_dossier_client %}
+     every dossier client) — `conformite_kyc`, computed ONCE by the route.
+     Everything is composed by the route (`routes/parties._kyc_view`): the
+     badge (AMBER « … (présumé) » for an inscription Claude made and the
+     lawyer has not confirmed — never the green of a verified identity),
+     the label, and the attribution line — the signer's name is NEVER
+     attached to a presumed inscription (D7).
+     The card ALSO shows for a contact that holds a proof of identity
+     whatever its role (`preuves.visible`, `routes/parties._id_proofs_view`):
+     a role change must never strand confidential files out of reach — the
+     checks' grid then stays hidden, only the proofs show. A render that
+     composes no `preuves` (no route behind it) shows no proofs block. #}
+  {% if conformite_kyc or (preuves and preuves.visible) %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-4">Conformité</h2>
 
+    {% if conformite_kyc %}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       {% for check in [kyc_view.identite, kyc_view.conflit] %}
       <div>
@@ -358,6 +365,11 @@
       </div>
       {% endfor %}
     </div>
+    {% endif %}
+
+    {% if preuves and preuves.visible %}
+    {% include "parties/_pieces_identite.html" %}
+    {% endif %}
   </div>
   {% endif %}
 
@@ -415,7 +427,9 @@
        class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
     <div class="p-6">
       <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce contact ?</h3>
-      <p class="text-sm text-gray-600 mb-6">Cette action est irréversible. Toutes les données de ce contact seront supprimées.</p>
+      {# The model refuses to delete a contact holding a proof of identity
+         (models/partie.delete_partie): the sentence only informs. #}
+      <p class="text-sm text-gray-600 mb-6">Cette action est irréversible. Toutes les données de ce contact seront supprimées.{% if preuves and preuves.detenues %} Ce contact détient des preuves d'identité : supprimez-les d'abord dans la section Conformité, sinon la suppression sera refusée.{% endif %}</p>
       <div class="flex gap-3 justify-end">
         <button @click="open = false"
                 class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
@@ -432,4 +446,9 @@
     </div>
   </div>
 </div>
+
+{# ── « Gérer » — the proofs of identity (lot 2, 2026-11) ───────────── #}
+{% if preuves and preuves.visible %}
+{% include "parties/_pieces_identite_gestion.html" %}
+{% endif %}
 {% endblock %}

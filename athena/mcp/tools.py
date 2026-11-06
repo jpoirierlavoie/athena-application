@@ -2945,8 +2945,11 @@ TOOLS: dict[str, dict] = {
             "properties": {
                 "entity_type": {
                     "type": "string",
-                    # Kept in step with models/audit_event.VALID_ENTITY_TYPES
-                    # (hand-mirrored — the models/* import ban). Additive
+                    # Kept in step with VALID_ENTITY_TYPES minus
+                    # CONNECTOR_HIDDEN_ENTITY_TYPES (D7), both in
+                    # models/audit_event (hand-mirrored — the models/*
+                    # import ban): a hidden type is never offered here, and
+                    # list_deletions drops its rows. Additive
                     # input-enum growth is safe; the OUTPUT schema types
                     # entity_type as a plain string, so new values never
                     # violate the structuredContent contract.

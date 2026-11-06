@@ -2,9 +2,11 @@
 
 Every object the application stores lives under a uid-keyed prefix —
 ``users/{uid}/dossiers/…`` (documents), ``users/{uid}/templates/…``
-(gabarits), ``users/{uid}/administration/…`` (receipts), and
-``staging/{uid}/…`` (the direct-to-GCS upload sessions and the zip
-exports). Until 2026-09-25 each route read that uid as
+(gabarits), ``users/{uid}/administration/…`` (receipts),
+``users/{uid}/parties/…`` (a contact's proofs of identity,
+``models/piece_identite.py``), and ``staging/{uid}/…`` (the direct-to-GCS
+upload sessions — a proof of identity's under ``staging/{uid}/identite/…``
+— and the zip exports). Until 2026-09-25 each route read that uid as
 ``session.get("user_id", "unknown")``: under ``@login_required`` the
 fallback never fired, but it was a loaded default — a caller WITHOUT a
 browser session (the connector, a script, a future scheduled job) would

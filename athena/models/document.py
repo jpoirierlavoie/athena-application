@@ -1980,22 +1980,32 @@ def delete_document(document_id: str) -> tuple[bool, str]:
         return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
-def build_attachment_disposition(filename: str) -> str:
-    """RFC 6266 ``Content-Disposition`` value forcing a download of *filename*.
+def content_disposition(filename: str, *, inline: bool = False) -> str:
+    """RFC 6266 ``Content-Disposition`` value naming *filename*.
 
-    A double quote would malform the quoted-string, so it is dropped; the
-    plain filename= keeps an ASCII fallback and non-ASCII names travel in
-    filename*=UTF-8''. Callers strip control characters first.
+    ``attachment`` (a download) by default; ``inline=True`` asks the browser
+    to SHOW the file under that name instead — a proof of identity's
+    « Consulter » (``models/piece_identite.consult_url``). A double quote
+    would malform the quoted-string, so it is dropped; the plain filename=
+    keeps an ASCII fallback and non-ASCII names travel in
+    filename*=UTF-8''. Callers strip (or refuse) control characters first.
     """
     filename = (filename or "document").replace('"', "")
     ascii_name = (
         filename.encode("ascii", "ignore").decode("ascii").strip()
         or "document"
     )
-    disposition = f'attachment; filename="{ascii_name}"'
+    kind = "inline" if inline else "attachment"
+    disposition = f'{kind}; filename="{ascii_name}"'
     if filename != ascii_name:
         disposition += f"; filename*=UTF-8''{quote(filename, safe='')}"
     return disposition
+
+
+def build_attachment_disposition(filename: str) -> str:
+    """RFC 6266 ``Content-Disposition`` value forcing a download of *filename*
+    — :func:`content_disposition`'s default, byte for byte."""
+    return content_disposition(filename)
 
 
 def sign_blob_url(blob, query_params: dict[str, str],

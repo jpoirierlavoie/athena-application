@@ -2795,6 +2795,11 @@ def list_deletions(args: dict) -> dict:
     from the moment it shipped — silence about anything earlier, and an
     empty answer past the 200-event window means « not in the recent
     window », never « never deleted ».
+
+    D7: the rows of ``audit_event.CONNECTOR_HIDDEN_ENTITY_TYPES`` (a proof
+    of identity erased from a contact's fiche) never reach the connector —
+    dropped right after the read, BEFORE the date filter and the
+    ``truncated`` count, so neither a row nor its count leaks.
     """
     limit = _limit_arg(args, 25)
     rows = audit_event_model.list_recent(
@@ -2802,6 +2807,11 @@ def list_deletions(args: dict) -> dict:
         dossier_id=args.get("dossier_id"),
         limit=_FETCH_CAP,
     )
+    rows = [
+        r for r in rows
+        if r.get("entity_type")
+        not in audit_event_model.CONNECTOR_HIDDEN_ENTITY_TYPES
+    ]
     if args.get("date_from"):
         lo = _parse_iso_date(args["date_from"], "date_from")
         rows = [

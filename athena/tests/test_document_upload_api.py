@@ -261,6 +261,9 @@ def test_finaliser_refus_consomme_le_staging_aussi(web, monkeypatch):
 @pytest.mark.parametrize("objet", [
     # The zip exports live under the same staging prefix: not an upload.
     "staging/u1/exports/3f2b8c1e-9a4d-4c6b-8e2f-1a2b3c4d5e6f/lot.zip",
+    # A proof of identity's staging object (models/piece_identite): only
+    # its own finalizer files it, on a contact — never as a document.
+    "staging/u1/identite/3f2b8c1e-9a4d-4c6b-8e2f-1a2b3c4d5e6f/upload.pdf",
     "staging/u1/aaaa/piece.pdf",                                  # not a uuid4
     "staging/u1/3F2B8C1E-9A4D-4C6B-8E2F-1A2B3C4D5E6F/piece.pdf",  # not canonical
     "staging/u1/3f2b8c1e-9a4d-1c6b-8e2f-1a2b3c4d5e6f/piece.pdf",  # uuid1

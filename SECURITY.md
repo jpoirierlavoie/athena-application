@@ -103,5 +103,5 @@ Client data — the confidential material subject to professional secrecy — is
 
 - All access is logged via Cloud Logging; PII is **not** logged at the application level.
 - **Firestore:** native scheduled backups, daily (7-day retention) and weekly (14-week retention), stored in `northamerica-northeast1`.
-- **Firebase Storage:** object versioning enabled, with a 180-day non-current version retention policy. GCS bucket-level soft delete provides an additional 7-day window to undelete objects.
+- **Firebase Storage:** object versioning enabled, with a 180-day non-current version retention policy. GCS bucket-level soft delete provides an additional 7-day window to undelete objects. A client's proof of identity (`users/{uid}/parties/{id}/pieces_identite/`) is the exception: deleting it erases its version, so no non-current copy is kept — only the 7-day soft delete — while its Firestore record stays in the backups above until they expire.
 - Data subject rights (access, deletion, rectification) are handled manually by the maintainer.

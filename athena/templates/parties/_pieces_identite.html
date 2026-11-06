@@ -1,0 +1,55 @@
+{# Preuves d'identité — the list inside the fiche's Conformité card (lot 2
+   of the compliance work, 2026-11). Included by parties/detail.html when
+   the route made `preuves.visible`; everything is composed by the route
+   (`routes/parties._id_proofs_view`), the template computes nothing.
+
+   STATIC classes only, never a `:class`: this block sits inside the
+   Conformité slice whose classes tests/test_kyc_rendering.py checks
+   against the compiled stylesheet, with a regex that would also read a
+   `:class` expression. Every dynamic class lives in the dialog
+   (parties/_pieces_identite_gestion.html), outside that slice.
+
+   « Consulter » links to the app's own route, which redirects to a
+   15-minute signed URL minted on the click: no signed URL is ever
+   embedded in the page. A new tab: an inline PDF stays blank in a phone's
+   iframe. Targets measure 44 px or more (Rule 9). #}
+<section id="preuves-identite"{% if conformite_kyc %} class="mt-4 pt-4 border-t border-gray-100"{% endif %}>
+  <div class="flex items-center justify-between gap-3 mb-2">
+    <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide">Preuves d'identité</h3>
+    {# Opens the dialog (the delete button's dispatch pattern); the dialog
+       hands the focus back to this button when it closes. #}
+    <button type="button"
+            id="preuves-identite-gerer"
+            x-data
+            @click="$dispatch('open-gerer-preuves')"
+            aria-haspopup="dialog"
+            aria-controls="preuves-identite-dialogue"
+            class="inline-flex items-center justify-center gap-1.5 px-3 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      {{ ms('edit', 16) }}
+      Gérer
+    </button>
+  </div>
+  {# A failed read is never « aucune » (the dialog says the same). #}
+  {% if preuves.indisponible %}
+  <p class="text-xs text-gray-500">Liste indisponible pour le moment — rechargez la page.</p>
+  {% elif not preuves.liste %}
+  <p class="text-xs text-gray-400">Aucune preuve d'identité versée.</p>
+  {% else %}
+  <ul class="divide-y divide-gray-100">
+    {% for p in preuves.liste %}
+    <li class="flex items-center gap-3">
+      {% with kind=p.icone, variant='sm' %}{% include "components/_file_icon.html" %}{% endwith %}
+      <span class="flex-1 min-w-0 text-sm text-gray-900 truncate">{{ p.display_name }}</span>
+      <a href="{{ url_for('parties.id_proof_consult', partie_id=partie.id, proof_id=p.id) }}"
+         target="_blank"
+         rel="noopener"
+         aria-label="Consulter « {{ p.display_name }} »"
+         class="inline-flex items-center justify-center px-3 py-3 text-sm font-medium text-indigo-600 hover:text-indigo-700">Consulter</a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if preuves.tronquee %}
+  <p class="text-xs text-gray-500 mt-2">{{ preuves.tronquee_texte }}</p>
+  {% endif %}
+  {% endif %}
+</section>

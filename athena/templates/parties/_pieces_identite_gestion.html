@@ -1,0 +1,502 @@
+{# « Gérer » — a contact's proofs of identity (lot 2 of the compliance work,
+   2026-11): rename, delete in two steps, upload several files. Included
+   by parties/detail.html after the contact's delete dialog, when the route
+   made `preuves.visible`; composed by the route
+   (`routes/parties._id_proofs_view` and `_id_proofs_config`).
+
+   The rows' forms are plain POSTs that redirect back here (?gerer=1
+   reopens the dialog, the banner says what happened): no fragment, a
+   fresh etag after every action, and rename and delete still work where
+   the script never ran. The uploads are the script's: browser → GCS
+   directly, one file at a time, through the two JSON endpoints.
+
+   role="dialog" + aria-modal: the focus moves in when the dialog opens
+   (its « Fermer » button), Tab and Shift+Tab stay inside its panel
+   (`garderFocus`), and the focus goes back to « Gérer » when it closes;
+   within a row it follows the step that opens. Targets measure 44 px or
+   more (Rule 9): p-3 around a 20 px glyph, py-3 around a line of text.
+   Server data reaches the script only through the JSON block below (CSP:
+   no inline handler, no server value in the script). #}
+<script type="application/json" id="preuves-identite-config">{{ preuves_config|tojson }}</script>
+<div id="preuves-identite-dialogue"
+     x-data="preuvesIdentite()"
+     x-show="open"
+     x-cloak
+     @open-gerer-preuves.window="ouvrir()"
+     @keydown.escape.window="fermer()"
+     @keydown.tab.window="garderFocus($event)"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="preuves-identite-titre"
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  <div x-ref="panneau"
+       @click.outside="fermer()"
+       class="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
+    <div class="p-5 max-h-[80vh] overflow-y-auto">
+
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <h3 id="preuves-identite-titre" class="text-base font-semibold text-gray-900">Preuves d'identité</h3>
+        <button type="button"
+                x-ref="fermer"
+                @click="fermer()"
+                title="Fermer"
+                aria-label="Fermer"
+                class="inline-flex items-center justify-center p-3 text-gray-500 rounded-lg hover:bg-gray-100">
+          {{ ms('close', 20) }}
+        </button>
+      </div>
+
+      {# The fiche's own banners, repeated here: the overlay hides the ones
+         at the top of the page. #}
+      {% if preuves.ouvert and message %}
+      <div class="mb-4 px-4 py-3 text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg" role="status">
+        {{ message }}
+      </div>
+      {% endif %}
+      {% if preuves.ouvert and erreur %}
+      <div class="mb-4 px-4 py-3 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg" role="alert">
+        {{ erreur }}
+      </div>
+      {% endif %}
+
+      {# The card's three states, the same here: a failed read is never
+         « aucune », and a truncated list says so. #}
+      {% if preuves.indisponible %}
+      <p class="text-sm text-gray-500">Liste indisponible pour le moment — rechargez la page.</p>
+      {% elif not preuves.liste %}
+      <p class="text-sm text-gray-400">Aucune preuve d'identité versée.</p>
+      {% else %}
+      <ul class="divide-y divide-gray-100">
+        {% for p in preuves.liste %}
+        <li class="py-3" x-data="{ edition: false, suppression: false }">
+          <div x-show="!edition && !suppression" class="flex items-center gap-3">
+            {% with kind=p.icone, variant='sm' %}{% include "components/_file_icon.html" %}{% endwith %}
+            <div class="flex-1 min-w-0">
+              <p class="text-sm text-gray-900 truncate">{{ p.display_name }}</p>
+              <p class="text-xs text-gray-500">{{ p.taille }}{% if p.jour %} · versée le {{ p.jour }}{% endif %}</p>
+            </div>
+            <button type="button"
+                    data-preuve-renommer
+                    @click="edition = true; focaliser($el, 'input[name=display_name]')"
+                    title="Renommer"
+                    aria-label="Renommer « {{ p.display_name }} »"
+                    class="inline-flex items-center justify-center p-3 text-gray-700 rounded-lg hover:bg-gray-100">
+              {{ ms('edit', 20) }}
+            </button>
+            <button type="button"
+                    data-preuve-supprimer
+                    @click="suppression = true; focaliser($el, '[data-preuve-garder]')"
+                    title="Supprimer"
+                    aria-label="Supprimer « {{ p.display_name }} »"
+                    class="inline-flex items-center justify-center p-3 text-red-600 rounded-lg hover:bg-red-50">
+              {{ ms('delete', 20) }}
+            </button>
+          </div>
+
+          {# Rename — compare-and-set on THIS proof's etag. #}
+          <form x-show="edition" x-cloak method="post"
+                action="{{ url_for('parties.id_proof_rename', partie_id=partie.id, proof_id=p.id) }}"
+                class="space-y-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="expected_etag" value="{{ p.etag }}">
+            <label for="preuve-nom-{{ p.id }}" class="block text-sm font-medium text-gray-700">Nom du document</label>
+            <input id="preuve-nom-{{ p.id }}"
+                   type="text"
+                   name="display_name"
+                   value="{{ p.display_name }}"
+                   maxlength="{{ preuves.nom_max }}"
+                   required
+                   class="w-full px-3 py-3 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <div class="flex gap-3 justify-end">
+              <button type="button"
+                      @click="edition = false; focaliser($el, '[data-preuve-renommer]')"
+                      class="px-4 py-3 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+                Annuler
+              </button>
+              <button type="submit"
+                      class="px-4 py-3 text-sm font-medium rounded-lg bg-gray-900 text-white hover:bg-gray-800">
+                Enregistrer
+              </button>
+            </div>
+          </form>
+
+          {# Delete, the second step — the file is ERASED (D6). #}
+          <form x-show="suppression" x-cloak method="post"
+                action="{{ url_for('parties.id_proof_delete', partie_id=partie.id, proof_id=p.id) }}"
+                class="space-y-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="expected_etag" value="{{ p.etag }}">
+            <p class="text-sm text-gray-700">Supprimer « {{ p.display_name }} » ? Le fichier sera effacé définitivement.</p>
+            <div class="flex gap-3 justify-end">
+              <button type="button"
+                      data-preuve-garder
+                      @click="suppression = false; focaliser($el, '[data-preuve-supprimer]')"
+                      class="px-4 py-3 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+                Annuler
+              </button>
+              <button type="submit"
+                      class="px-4 py-3 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700">
+                Supprimer définitivement
+              </button>
+            </div>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if preuves.tronquee %}
+      <p class="text-xs text-gray-500 mt-2">{{ preuves.tronquee_texte }}</p>
+      {% endif %}
+      {% endif %}
+
+      {# ── Upload — browser → GCS, one file at a time ─────────────── #}
+      <div class="mt-4 pt-4 border-t border-gray-100">
+        {# The token the two JSON endpoints check (X-CSRFToken). It CARRIES
+           its value: the test apps run without CSRFProtect, so an empty
+           token would pass every test and refuse every upload in
+           production. #}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" x-ref="csrf">
+        {# No `capture` attribute: the phone's own picker already offers the
+           camera, the files and the scanner. The input is sr-only, so its
+           keyboard focus shows on the label: a border colour bound to it
+           (focusAjout), both colours already compiled — a focus-within
+           ring would need a stylesheet rebuild (Change Impact 6). The hover
+           darkens only an unfocused label: static, hover:border-gray-400
+           (compiled later) would hide the focus under the pointer. #}
+        <label class="flex items-center justify-center gap-2 w-full px-4 py-3 text-sm font-medium text-gray-700 bg-white border-2 border-dashed rounded-xl cursor-pointer"
+               :class="focusAjout ? 'border-indigo-600' : 'border-gray-300 hover:border-gray-400'">
+          {{ ms('upload', 20) }}
+          <span x-text="occupe ? 'Envoi en cours…' : 'Ajouter des fichiers'">Ajouter des fichiers</span>
+          <input type="file"
+                 multiple
+                 accept="{{ preuves.accept }}"
+                 class="sr-only"
+                 :disabled="occupe"
+                 @focus="focusAjout = true"
+                 @blur="focusAjout = false"
+                 @change="ajouter($event)">
+        </label>
+        <p class="text-xs text-gray-500 mt-2">{{ preuves.consignes }}</p>
+        <p class="text-xs text-gray-400 mt-1">{% if partie.type == 'organization' %}Ex. : l'état des renseignements du Registraire des entreprises.{% else %}Ex. : permis de conduire, passeport.{% endif %}</p>
+        {# The queue: each file's progress and outcome. The live region
+           announces a STATUS — « en cours » once, then « versé », the
+           refusal or the unconfirmed filing —, never each percentage: the
+           label is hidden from it while the bytes go up. #}
+        <ul aria-live="polite" class="mt-3 space-y-2">
+          <template x-for="(f, i) in fichiers" :key="i">
+            <li class="p-3 bg-gray-50 rounded-lg">
+              <p class="text-sm text-gray-900 truncate" x-text="f.name"></p>
+              <span class="sr-only" x-show="f.statut === 'en cours'">en cours</span>
+              <p class="text-xs"
+                 :class="f.statut === 'rejeté' ? 'text-red-600' : (f.statut === 'versé' ? 'text-green-700' : (f.statut === 'incertain' ? 'text-amber-700' : 'text-gray-500'))"
+                 :aria-hidden="f.statut === 'en cours'"
+                 x-text="etiquette(f)"></p>
+              <div x-show="f.statut === 'en cours'" aria-hidden="true" class="mt-2 h-1.5 bg-gray-200 rounded-full">
+                <div class="h-1.5 bg-indigo-600 rounded-full" :style="'width: ' + f.pct + '%'"></div>
+              </div>
+            </li>
+          </template>
+        </ul>
+        {# Shown when a file was filed and another refused or left
+           unconfirmed — the batch then stays on screen; closing reads the
+           fiche again (fermer), so the promise holds. #}
+        <p x-show="fichiers.some(f => f.statut === 'versé') && fichiers.some(f => f.statut === 'rejeté' || f.statut === 'incertain')" x-cloak
+           class="text-xs text-gray-500 mt-3">Les fichiers versés paraîtront dans la liste à la fermeture.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+// « Gérer » — a contact's proofs of identity. Each file goes browser → GCS
+// directly, never through the application (App Engine caps a request at
+// 32 MB): the session endpoint judges the name, the size, the contact and
+// the cap BEFORE a byte moves and opens a create-only resumable session;
+// the bytes go up in 8 MiB chunks (resumed on 308); the finalization
+// endpoint sniffs, copies and files the proof. One file at a time. Every
+// URL comes from the server (#preuves-identite-config): none is composed
+// here.
+function preuvesIdentite() {
+  const CONFIG = JSON.parse(
+    document.getElementById('preuves-identite-config').textContent);
+  const CHUNK = 8 * 1024 * 1024;
+  return {
+    open: CONFIG.ouvert === true,
+    occupe: false,
+    // The file input is sr-only: while it holds the keyboard focus, its
+    // label's border shows it.
+    focusAjout: false,
+    // {file, name, size, statut, pct, motif} — statut: 'en attente',
+    // 'en cours', 'versé', 'rejeté' or 'incertain' (the filing could not
+    // be confirmed: the proof may be there).
+    fichiers: [],
+
+    init() {
+      if (this.open) { this.$nextTick(() => this.focaliserDialogue()); }
+    },
+
+    ouvrir() {
+      this.open = true;
+      this.$nextTick(() => this.focaliserDialogue());
+    },
+
+    // The focus moves into the dialog when it opens…
+    focaliserDialogue() {
+      if (this.$refs.fermer) { this.$refs.fermer.focus(); }
+    },
+
+    // …and back to « Gérer » when it closes. While a file is on its way the
+    // dialog stays open: closing would abandon the queue mid-transfer.
+    // Once a file is filed — or its filing could not be confirmed —
+    // closing reads the fiche again: its list then shows whether the proof
+    // is there.
+    fermer() {
+      if (!this.open || this.occupe) { return; }
+      const relire = this.fichiers.some(function (f) {
+        return f.statut === 'versé' || f.statut === 'incertain';
+      });
+      if (relire) { this.recharger(CONFIG.fiche); return; }
+      this.open = false;
+      this.$nextTick(function () {
+        const gerer = document.getElementById('preuves-identite-gerer');
+        if (gerer) { gerer.focus(); }
+      });
+    },
+
+    // Reads the fiche again. location.assign() to the page's own path and
+    // query, a fragment added, only scrolls: no request, the list stays
+    // stale and the dialog open. That case sets the fragment in place and
+    // reloads; any other target is a plain navigation. Never assign() then
+    // reload(): the reload would cancel the navigation.
+    recharger(url) {
+      const cible = new URL(url, window.location.href);
+      if (cible.pathname === window.location.pathname
+          && cible.search === window.location.search) {
+        history.replaceState(null, '', cible.href);
+        window.location.reload();
+      } else {
+        window.location.assign(cible.href);
+      }
+    },
+
+    // aria-modal: Tab and Shift+Tab stay inside the panel. Tab wraps from
+    // its last control to the first, Shift+Tab from the first to the last,
+    // and a focus that has left the panel comes back in. Hand-written: a
+    // focus-trap plugin would be a new vendored asset. The listener sits on
+    // the window, so it runs while the dialog is closed too: hence the
+    // guard.
+    garderFocus(event) {
+      if (!this.open) { return; }
+      const panneau = this.$refs.panneau;
+      const cibles = Array.from(panneau.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )).filter(function (el) {
+        return !el.disabled && el.type !== 'hidden' && el.getClientRects().length > 0;
+      });
+      if (!cibles.length) { return; }
+      const premier = cibles[0];
+      const dernier = cibles[cibles.length - 1];
+      const actif = document.activeElement;
+      const dedans = panneau.contains(actif);
+      if (event.shiftKey) {
+        if (!dedans || actif === premier) { event.preventDefault(); dernier.focus(); }
+      } else if (!dedans || actif === dernier) {
+        event.preventDefault(); premier.focus();
+      }
+    },
+
+    // Within a row the focus follows the step: the control that opened it
+    // hides, so the focus moves to the step, and back on « Annuler ».
+    focaliser(el, selecteur) {
+      this.$nextTick(function () {
+        const cible = el.closest('li').querySelector(selecteur);
+        if (cible) { cible.focus(); }
+      });
+    },
+
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' o';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' Ko';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' Mo';
+    },
+
+    etiquette(f) {
+      if (f.statut === 'en cours') { return f.pct + ' %'; }
+      if (f.statut === 'rejeté') { return 'rejeté : ' + (f.motif || ''); }
+      if (f.statut === 'incertain') { return f.motif; }
+      return f.statut + ' · ' + this.formatSize(f.size);
+    },
+
+    entetes() {
+      return {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': this.$refs.csrf.value,
+      };
+    },
+
+    async ajouter(event) {
+      const choisis = Array.from(event.target.files || []);
+      event.target.value = '';
+      if (!choisis.length || this.occupe) { return; }
+      const debut = this.fichiers.length;
+      for (const fichier of choisis) {
+        this.fichiers.push({
+          file: fichier, name: fichier.name, size: fichier.size,
+          statut: 'en attente', pct: 0, motif: '',
+        });
+      }
+      this.occupe = true;
+      const lot = this.fichiers.slice(debut);
+      for (const f of lot) { await this.traiter(f); }
+      this.occupe = false;
+      // Every file of THIS batch filed: the fiche again, the dialog
+      // reopened on the new list (its rows carry the fresh etags). A
+      // refusal or an unconfirmed filing keeps the queue on screen, its
+      // reason beside the file; an earlier batch's never holds a later
+      // one back.
+      if (lot.every(function (f) { return f.statut === 'versé'; })) {
+        this.recharger(CONFIG.suivant);
+      }
+    },
+
+    async traiter(f) {
+      try {
+        f.statut = 'en cours'; f.pct = 0; f.motif = '';
+        const ouverture = await fetch(CONFIG.televersement, {
+          method: 'POST', headers: this.entetes(),
+          body: JSON.stringify({ name: f.name, size: f.size }),
+        });
+        const donnees = await ouverture.json().catch(function () { return {}; });
+        // An expired session answers the login page, a refused token an
+        // HTML 400: neither carries a URL.
+        if (!ouverture.ok || !donnees.url) {
+          f.statut = 'rejeté'; f.motif = donnees.erreur || 'refusé — rechargez la page';
+          return;
+        }
+        await this.televerser(f, donnees.url);
+        let resultat = await this.finaliser(f, donnees.objet);
+        if (resultat.incertain) {
+          // The outcome is unknown: the server KEPT both objects, or its
+          // answer was lost on the way (finaliser: a dropped connection, a
+          // gateway's page). One more finalization, about 2 s
+          // later — the reserved id makes it idempotent — settles it only
+          // when the store answers (rejoue, or verse). Any other answer
+          // keeps the FIRST one: a re-post that meets the same outage says
+          // « Rien n'a été enregistré » of a filing that may have landed.
+          // Once only.
+          const premier = resultat;
+          await new Promise(function (r) { setTimeout(r, 2000); });
+          resultat = await this.finaliser(f, donnees.objet);
+          if (!resultat.ok) {
+            f.statut = 'incertain'; f.motif = premier.erreur || CONFIG.incertain;
+            return;
+          }
+        }
+        if (!resultat.ok) {
+          f.statut = 'rejeté'; f.motif = resultat.erreur || 'refusé — rechargez la page';
+          return;
+        }
+        f.statut = 'versé'; f.pct = 100;
+      } catch (e) {
+        f.statut = 'rejeté'; f.motif = 'erreur réseau — réessayez';
+      }
+    },
+
+    // A finalization whose answer never came back (the connection dropped,
+    // the phone changed networks) may have filed the proof: it is
+    // « incertain », never a refusal. So is a 2xx whose body could not be
+    // read (lost after its status), and a 5xx that is not this endpoint's
+    // JSON — a gateway's 502, 504 or 524 page, an HTML 500 raised after the
+    // commit: their outcome is unknown too. traiter re-posts it once, which
+    // settles it when the store answers. The endpoint's own 5xx carry their
+    // sentence (« indisponible », « incertain ») and keep it; a 4xx, or a
+    // 200 whose body is not JSON at all (a refused token, an expired
+    // session's login page), filed nothing: a refusal.
+    async finaliser(f, objet) {
+      let fin;
+      try {
+        fin = await fetch(CONFIG.finaliser, {
+          method: 'POST', headers: this.entetes(),
+          body: JSON.stringify({ objet: objet, name: f.name }),
+        });
+      } catch (e) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      // A body that is not JSON (a foreign page) parses as {} — a
+      // SyntaxError. Any other failure: the body could not be READ, the
+      // answer was lost after its status — a 2xx may have filed the proof.
+      let illisible = false;
+      const resultat = await fin.json().catch(function (e) {
+        illisible = !(e instanceof SyntaxError);
+        return {};
+      });
+      if (fin.ok && illisible) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      if (fin.status >= 500 && !resultat.erreur) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      return {
+        ok: fin.ok && resultat.ok === true,
+        incertain: resultat.incertain === true,
+        erreur: resultat.erreur || '',
+      };
+    },
+
+    // Twins, verbatim: templates/documents/upload.html (putTranche, interrogerDecalage, televerser) — pinned by tests/test_pieces_identite_routes.py.
+    putTranche(f, url, debut) {
+      return new Promise(function (resolve, reject) {
+        const fin = Math.min(debut + CHUNK, f.size);
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('Content-Range',
+          'bytes ' + debut + '-' + (fin - 1) + '/' + f.size);
+        xhr.upload.onprogress = function (e) {
+          f.pct = Math.min(99, Math.round(((debut + e.loaded) / f.size) * 100));
+        };
+        xhr.onload = function () { resolve(xhr); };
+        xhr.onerror = function () { reject(new Error('réseau')); };
+        xhr.send(f.file.slice(debut, fin));
+      });
+    },
+
+    interrogerDecalage(f, url) {
+      // Reprise : PUT vide "bytes */total" → 308 + en-tête Range = déjà reçu.
+      return new Promise(function (resolve) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('Content-Range', 'bytes */' + f.size);
+        xhr.onload = function () {
+          if (xhr.status === 308) {
+            const range = xhr.getResponseHeader('Range');
+            resolve(range ? parseInt(range.split('-')[1], 10) + 1 : 0);
+          } else if (xhr.status === 200 || xhr.status === 201) {
+            resolve(f.size);
+          } else { resolve(0); }
+        };
+        xhr.onerror = function () { resolve(0); };
+        xhr.send();
+      });
+    },
+
+    async televerser(f, url) {
+      let debut = 0, tentatives = 0;
+      while (true) {
+        let xhr = null;
+        try { xhr = await this.putTranche(f, url, debut); } catch (e) { /* réseau */ }
+        if (xhr && (xhr.status === 200 || xhr.status === 201)) { return; }
+        if (xhr && xhr.status === 308) {
+          const range = xhr.getResponseHeader('Range');
+          debut = range ? parseInt(range.split('-')[1], 10) + 1 : debut + CHUNK;
+          tentatives = 0;
+          continue;
+        }
+        tentatives += 1;
+        if (tentatives > 3) { throw new Error('interrompu'); }
+        await new Promise(function (r) { setTimeout(r, 1000 * Math.pow(2, tentatives)); });
+        debut = await this.interrogerDecalage(f, url);
+        if (debut >= f.size && f.size > 0) { return; }
+      }
+    }
+  };
+}
+</script>

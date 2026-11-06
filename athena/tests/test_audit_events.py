@@ -154,19 +154,64 @@ def test_task_delete_route_records_the_trail(monkeypatch):
 
 
 # ── Parité modèle ↔ connecteur ──────────────────────────────────────────
+def _connector_enum() -> list:
+    from mcp.tools import TOOLS
+
+    return TOOLS["list_deletions"]["input_schema"]["properties"][
+        "entity_type"
+    ]["enum"]
+
+
 def test_the_mcp_entity_type_enum_mirrors_the_model_vocabulary():
     """mcp/tools.py recopie VALID_ENTITY_TYPES À LA MAIN — l'interdit
     d'importer models/* au démarrage l'y oblige. Sans cette épingle, une
     valeur ajoutée d'un seul côté devient silencieusement infiltrable :
     le connecteur refuse un filtre que le modèle écrit pourtant.
-    """
-    from mcp.tools import TOOLS
-    from models.audit_event import VALID_ENTITY_TYPES
 
-    enum = TOOLS["list_deletions"]["input_schema"]["properties"][
-        "entity_type"
-    ]["enum"]
-    assert set(enum) == set(VALID_ENTITY_TYPES)
+    Moins les types que le connecteur ne lit JAMAIS (D7 : une preuve
+    d'identité effacée) — l'énumération ne les offre pas.
+    """
+    from models.audit_event import (
+        CONNECTOR_HIDDEN_ENTITY_TYPES,
+        VALID_ENTITY_TYPES,
+    )
+
+    enum = _connector_enum()
+    assert set(enum) == set(VALID_ENTITY_TYPES) - CONNECTOR_HIDDEN_ENTITY_TYPES
+    assert len(enum) == len(set(enum))
+
+
+def test_the_hidden_types_are_journal_types_the_connector_cannot_name():
+    """D7 : la trace d'une preuve d'identité effacée est une ligne du
+    journal comme une autre (le vocabulaire la connaît), mais le filtre du
+    connecteur ne peut même pas la nommer — et le schéma ne bouge pas,
+    donc l'empreinte du registre (et le greffon) non plus."""
+    from models.audit_event import (
+        CONNECTOR_HIDDEN_ENTITY_TYPES,
+        VALID_ENTITY_TYPES,
+    )
+
+    assert "piece_identite" in CONNECTOR_HIDDEN_ENTITY_TYPES
+    assert isinstance(CONNECTOR_HIDDEN_ENTITY_TYPES, frozenset)
+    assert CONNECTOR_HIDDEN_ENTITY_TYPES <= set(VALID_ENTITY_TYPES)
+    assert CONNECTOR_HIDDEN_ENTITY_TYPES.isdisjoint(_connector_enum())
+
+
+def test_the_enum_s_comment_names_the_hidden_set():
+    """La copie à la main dit ce qu'elle recopie : le prochain type ajouté
+    à VALID_ENTITY_TYPES ne doit pas gagner l'énumération par un réflexe
+    « garder au pas » qui oublierait l'ensemble caché."""
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parent.parent
+              / "mcp" / "tools.py").read_text(encoding="utf-8")
+    at = source.index('"list_deletions": {')
+    block = source[at:source.index('"handler": "list_deletions"', at)]
+    comment = " ".join(
+        line.strip().lstrip("#").strip() for line in block.splitlines()
+        if line.strip().startswith("#"))
+    assert ("Kept in step with VALID_ENTITY_TYPES minus "
+            "CONNECTOR_HIDDEN_ENTITY_TYPES (D7)") in comment
 
 
 def test_a_deleted_series_is_journalled_as_one_row_not_one_per_occurrence():

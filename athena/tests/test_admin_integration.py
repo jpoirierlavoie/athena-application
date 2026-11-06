@@ -222,6 +222,8 @@ _STAGING_RECU = "staging/u1/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/recu.pdf"
     "staging/u1/mcp/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/upload.pdf",
     # A folder-zip export (models/document.build_folder_zip_url).
     "staging/u1/exports/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/dossier.pdf",
+    # A proof of identity's staging object (models/piece_identite).
+    "staging/u1/identite/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/upload.pdf",
     # Third segment not a canonical uuid4.
     "staging/u1/aaaa/recu.pdf",
     "staging/u1/3F2B8C1E-9D4A-4E6B-8F7A-1C2D3E4F5A6B/recu.pdf",

@@ -181,6 +181,11 @@ def _default_doc() -> dict:
         "identity_verified_source": "",
         "identity_verified_confirmed_at": None,
         "identity_verified_confirmed_by": "",
+        # LEGACY — always []: never written (no screen ever did, and the
+        # helper that could, link_kyc_document, left with no caller); kept
+        # because get_partie's shipped output schema requires the key.
+        # Proofs of identity live in parties/{id}/pieces_identite
+        # (models/piece_identite), which the connector never reads (D7).
         "kyc_document_ids": [],
         "conflict_check": kyc.NON_VERIFIE,
         "conflict_check_date": None,
@@ -413,8 +418,8 @@ def _normalize(data: dict) -> dict:
     # ONLY when the caller actually supplied the key. Writing it unconditionally
     # made every PARTIAL update destructive: update_partie merges
     # {**existing, **data}, so an injected empty list overwrote the stored
-    # mandataires. update_kyc_status and link_kyc_document already pass partial
-    # dicts, and the portal's field-by-field apply (L3) is partial by design.
+    # mandataires. update_kyc_status already passes a partial dict, and the
+    # portal's field-by-field apply (L3) is partial by design.
     if "mandataires" in data:
         raw_list = data.get("mandataires") or []
         if not isinstance(raw_list, list):
@@ -941,11 +946,11 @@ def update_partie(
     the stored etag is still that one — checked in a transaction — and
     returns ``[concurrency.STALE_ETAG_ERROR]`` otherwise, having written
     nothing. ``None`` is the unchanged single ``set()``: the CardDAV PUT,
-    a page rendered before its form carried an etag, and the three callers
-    that merge a PARTIAL payload onto the record read here — Réception's
-    field-by-field apply (``routes/reception``), ``update_kyc_status`` and
-    ``link_kyc_document`` — which name only what they change, so a later
-    field is never reverted by them.
+    a page rendered before its form carried an etag, and the callers that
+    merge a PARTIAL payload onto the record read here — Réception's
+    field-by-field apply (``routes/reception``) and ``update_kyc_status``
+    — which name only what they change, so a later field is never
+    reverted by them.
 
     Every representation that leaves the ``mandataires`` list — the web
     form posts it whole — is journaled in ``audit_events`` (``mandataire``)
@@ -1458,25 +1463,48 @@ def remove_partie_mandataire(
 # The three refusals of ``delete_partie`` that are NOT a reference
 # conflict. Constants, so a caller can map each to its own answer without
 # parsing French — the CardDAV DELETE answers 404 / 503 / 500 for these
-# and 409 for every other refusal (a dossier link, a represented contact),
-# whose text is dynamic and may NAME a contact.
+# and 409 « references » for every other refusal: a dossier link and a
+# represented contact, whose text is dynamic and may NAME a contact, and
+# PARTIE_HOLDS_ID_PROOFS below, a static refusal that names no one and
+# joins that 409 branch unchanged.
 PARTIE_NOT_FOUND = "Contact introuvable."
 PARTIE_DELETE_CHECK_UNAVAILABLE = (
     "Impossible de vérifier les références de ce contact. "
     "Veuillez réessayer."
 )
 PARTIE_DELETE_FAILED = "Erreur lors de la suppression. Veuillez réessayer."
+# A reference conflict like a dossier link or a represented contact (409
+# « references » on CardDAV), but held by the contact itself: its proofs
+# of identity (models/piece_identite), which Firestore would NOT delete
+# with it (a subcollection outlives its parent) — records and confidential
+# objects no screen would reach any more.
+PARTIE_HOLDS_ID_PROOFS = (
+    "Impossible de supprimer : ce contact détient des preuves d'identité. "
+    "Supprimez-les d'abord dans la section Conformité de sa fiche."
+)
+
+
+class _DeleteRefused(Exception):
+    """A refusal decided inside :func:`delete_partie`'s transaction — its
+    ``message`` is one of the static constants above (never a name)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 def delete_partie(partie_id: str) -> tuple[bool, str]:
     """Delete a partie. Returns (success, error_message).
 
     Refuses deletion while the partie is still referenced by a dossier
-    (as client or opposing party) or listed as a mandataire by another
-    partie — the FK safety check applies to every caller (UI + DAV).
-    A refusal message is either one of :data:`PARTIE_NOT_FOUND`,
-    :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`, :data:`PARTIE_DELETE_FAILED`,
-    or a reference conflict whose text may name the represented contacts —
+    (as client or opposing party), listed as a mandataire by another
+    partie, or holds a proof of identity (:data:`PARTIE_HOLDS_ID_PROOFS`:
+    the lawyer deletes those first, on the fiche — they would outlive the
+    contact, out of every screen's reach) — the FK safety check applies to
+    every caller (UI + DAV). A refusal message is either one of
+    :data:`PARTIE_NOT_FOUND`, :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`,
+    :data:`PARTIE_DELETE_FAILED`, :data:`PARTIE_HOLDS_ID_PROOFS`, or a
+    reference conflict whose text may name the represented contacts —
     never log it.
 
     The read is STRICT (review of the finitions, sync-3): the fail-open
@@ -1486,6 +1514,25 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
     next change). A failed read is :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`
     (503 + Retry-After there, a « réessayez » banner on the web): the
     deletion could not be checked, nothing was written.
+
+    The delete itself is ONE transaction that re-reads the contact and
+    re-checks its proofs THROUGH it (the ``models.dossier.delete_dossier``
+    precedent): a proof filed between the checks above and the commit
+    aborts the commit, and the re-run refuses — the proofs' own writer
+    re-reads the contact in ITS transaction, so neither can strand the
+    other. Its failure branches are delete_dossier's:
+
+    * a read INSIDE the transaction fails →
+      :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`, nothing written;
+    * the contact is gone by then → :data:`PARTIE_NOT_FOUND` (no second
+      tombstone, no second trail row);
+    * the commit RAISED — its answer may be lost while it landed — → the
+      contact is re-read: absent means it WAS deleted, answered
+      ``(True, "")`` so both callers (the web route, the CardDAV DELETE)
+      still tombstone, bump the CTag and journal; present, or unreadable
+      (« delete_partie: outcome unreadable » warning, beside the
+      « partie delete failed » ERROR), is :data:`PARTIE_DELETE_FAILED` —
+      a message that never claims nothing was deleted.
     """
     try:
         existing = get_partie_strict(partie_id)
@@ -1495,14 +1542,17 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
     if not existing:
         return False, PARTIE_NOT_FOUND
 
-    # FK safety — fail CLOSED: if either check cannot be established the
+    # FK safety — fail CLOSED: if any check cannot be established the
     # deletion is refused rather than risking dangling references.
-    # Local import: avoids any circular-import risk between models.
+    # Local imports: avoid any circular-import risk between models
+    # (models/piece_identite imports this module at load).
+    from models import piece_identite
     from models.dossier import count_dossiers_for_partie_strict
 
     try:
         linked_count = count_dossiers_for_partie_strict(partie_id)
         referencing = _find_mandataire_references(partie_id)
+        holds_proofs = piece_identite.has_proofs_strict(partie_id)
     except Exception as exc:
         logger.warning(
             "delete_partie: FK check failed for %s: %s",
@@ -1524,12 +1574,51 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
             "Retirez d'abord cette représentation."
         )
 
+    if holds_proofs:
+        return False, PARTIE_HOLDS_ID_PROOFS
+
+    ref = db.collection(COLLECTION).document(partie_id)
+    staged: list[str] = []
+
+    @firestore.transactional
+    def _delete(transaction) -> None:
+        staged.clear()
+        try:
+            exists = bool(ref.get(transaction=transaction).exists)
+            holds = exists and piece_identite.has_proofs_strict(
+                partie_id, transaction=transaction)
+        except Exception:
+            log_unexpected("partie delete: read failed",
+                           partie_id=partie_id, check="transaction")
+            raise _DeleteRefused(PARTIE_DELETE_CHECK_UNAVAILABLE)
+        if not exists:
+            raise _DeleteRefused(PARTIE_NOT_FOUND)
+        if holds:
+            raise _DeleteRefused(PARTIE_HOLDS_ID_PROOFS)
+        transaction.delete(ref)
+        staged.append(partie_id)
+
     try:
-        db.collection(COLLECTION).document(partie_id).delete()
-        return True, ""
+        _delete(db.transaction())
+    except _DeleteRefused as refusal:
+        return False, refusal.message
     except Exception:
-        log_unexpected("partie delete failed")
-        return False, PARTIE_DELETE_FAILED
+        log_unexpected("partie delete failed", partie_id=partie_id)
+        # A commit that raised may still have landed (its answer lost): the
+        # contact's absence says so — then it WAS deleted, and the callers'
+        # tombstone, CTag bump and trail row are owed. Only an attempt that
+        # STAGED the delete can have landed.
+        try:
+            landed = bool(staged) and not ref.get().exists
+        except Exception as exc:
+            logger.warning(
+                "delete_partie: outcome unreadable for %s: %s",
+                sanitize_log_value(partie_id), type(exc).__name__,
+            )
+            return False, PARTIE_DELETE_FAILED
+        if not landed:
+            return False, PARTIE_DELETE_FAILED
+    return True, ""
 
 
 def update_kyc_status(
@@ -1665,21 +1754,6 @@ def confirm_kyc_status(
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, partie_id)
     return {**existing, **fields}, []
-
-
-def link_kyc_document(
-    partie_id: str, document_id: str
-) -> tuple[Optional[dict], list[str]]:
-    """Append a document ID to kyc_document_ids."""
-    existing = get_partie(partie_id)
-    if not existing:
-        return None, ["Contact introuvable."]
-
-    ids = list(existing.get("kyc_document_ids", []))
-    if document_id not in ids:
-        ids.append(document_id)
-
-    return update_partie(partie_id, {"kyc_document_ids": ids})
 
 
 # ── vCard 4.0 serialization ──────────────────────────────────────────────

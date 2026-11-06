@@ -24,7 +24,9 @@ ever updates one):
                                      # partie | protocol | protocol_step |
                                      # folder | doc_template | dossier |
                                      # admin_transaction | hearing_series |
-                                     # dossier_party | mandataire
+                                     # dossier_party | mandataire |
+                                     # piece_identite (never read by the
+                                     # connector: CONNECTOR_HIDDEN_ENTITY_TYPES)
         "entity_id": str,
         "dossier_id": str,           # "" when the entity had none
         "snapshot_min": {            # just enough to answer « what was it » —
@@ -107,7 +109,22 @@ VALID_ENTITY_TYPES = (
     #     the contact it represented, status = the kind of representation.
     "dossier_party",
     "mandataire",
+    # A proof of identity ERASED from a contact's fiche (D6,
+    # models/piece_identite.delete_proof): entity_id = the CONTACT whose
+    # proof it was (the proof's own id names nothing once erased — the
+    # dossier_party precedent), dossier_id = "", title = the NEUTRAL
+    # « Preuve d'identité » (piece_identite.NEUTRAL_NAME) — never the
+    # display name, so nothing the lawyer typed outlives the erase in this
+    # write-once trail —, status = the file type. Hidden from the connector
+    # (D7): CONNECTOR_HIDDEN_ENTITY_TYPES below.
+    "piece_identite",
 )
+
+# Rows the connector never reads (D7): list_deletions filters them, its
+# entity_type enum omits them. A subset of VALID_ENTITY_TYPES; filtered
+# BEFORE list_deletions' date filter and its truncation count, so the
+# connector's « truncated » never counts a row it cannot see.
+CONNECTOR_HIDDEN_ENTITY_TYPES = frozenset({"piece_identite"})
 
 _FETCH_CAP = 200
 

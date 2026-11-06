@@ -1,4 +1,6 @@
-"""Partie (contact/party) management routes — list, detail, create, edit, delete."""
+"""Partie (contact/party) management routes — list, detail, create, edit,
+delete, and a contact's proofs of identity (the « Preuves d'identité »
+block of the fiche's Conformité card)."""
 
 import json
 from datetime import datetime
@@ -7,6 +9,7 @@ from typing import Any, Optional
 from flask import (
     Blueprint,
     Response,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -14,14 +17,21 @@ from flask import (
 )
 
 from auth import login_required
+from config import Config
 from utils.cabinet import cabinet_dict
 from dav.sync import bump_ctag, record_tombstone
 from models import concurrency
+from models import piece_identite
 from models.audit_event import record_deletion
+from models.document import format_file_size, get_file_icon
 from tz import to_mtl
-from utils import civilite, kyc, occupations
+from utils import civilite, kyc, occupations, storage_identity
 from utils.format_fr import format_date_fr
-from utils.logging_setup import log_partie_event
+from utils.logging_setup import (
+    log_partie_event,
+    log_unexpected,
+    sanitize_log_value,
+)
 from utils.template_fields import selected_address, selected_email, selected_phone
 from pagination import (
     PAGE_SIZE,
@@ -518,16 +528,27 @@ def partie_detail(partie_id: str) -> str:
         civilite.as_text(partie.get("job_role", "")))
     dossiers = list_dossiers_for_partie(partie_id)
     mandataires = _hydrate_mandataires(partie.get("mandataires"))
+    # Conformité is shown for a contact whose role is « client » — and for
+    # any contact that is a CLIENT of a dossier whatever its role: the
+    # coverage report checks every dossier client, so the fiche must show
+    # what it checks. Computed ONCE, here: the card's condition, the checks'
+    # grid and the proofs block all read this one flag (one authority per
+    # derived value; the template recomputes nothing).
+    conformite_kyc = partie.get("contact_role") == "client" or any(
+        partie_id in (d.get("client_ids") or []) for d in dossiers
+    )
+    preuves = _id_proofs_view(partie_id, conformite_kyc)
+    # ?gerer=1 reopens the « Gérer » dialog — after a rename, a deletion, a
+    # consult that failed, or the uploads. Only « 1 » opens it (a query
+    # filter is checked against its vocabulary), and only where the block
+    # shows at all.
+    preuves["ouvert"] = preuves["visible"] and request.args.get("gerer") == "1"
     return render_template(
         "parties/detail.html",
         partie=partie,
-        # Conformité is shown for a contact whose role is « client » — and
-        # for any contact that is a CLIENT of a dossier whatever its role:
-        # the coverage report checks every dossier client, so the fiche
-        # must show what it checks.
-        is_dossier_client=any(
-            partie_id in (d.get("client_ids") or []) for d in dossiers
-        ),
+        conformite_kyc=conformite_kyc,
+        preuves=preuves,
+        preuves_config=_id_proofs_config(partie_id, preuves["ouvert"]),
         kyc_view=_kyc_view(partie),
         # Signataire des vérifications de conformité. Le gabarit lisait
         # `config.FIRM_NAME` directement ; la valeur vit maintenant dans
@@ -835,3 +856,363 @@ def export_pdf_route() -> Response:
         title="Impliqués",
         filename=f"impliques_{date_str}.pdf",
     )
+
+
+# ── Preuves d'identité (lot 2 of the compliance work, 2026-11) ───────────
+#
+# A contact's proofs of identity (art. 22, RLRQ c. B-1, r. 5): the fiche's
+# « Preuves d'identité » block, inside its Conformité card, and the
+# « Gérer » dialog. Every rule and every Storage verb belongs to the model
+# (``models/piece_identite.py``); these routes map its closed outcome codes
+# to HTTP or to a banner, and journal what the model says happened:
+#
+# * the two JSON endpoints the dialog's script fetches — the upload
+#   session, the filing — keep their 4xx/5xx, like ``documents.api_*``:
+#   fetch reads them, htmx never does;
+# * consult, rename and delete answer with a REDIRECT to the fiche, the
+#   dialog reopened (``?gerer=1``) with its banner (``?message=`` /
+#   ``?erreur=``), and ``HX-Redirect`` under htmx — Rule 8, never a 422
+#   (the ``kyc_confirm`` pattern).
+#
+# The uid comes only from ``utils.storage_identity``. Logs carry ids only
+# (« Do not log PII »): never a display name, a file name, a storage path
+# or a signed URL — the session URL and the signed URL are capabilities,
+# handed to the uploading script or to the browser's redirect, never
+# logged nor rendered in a page.
+
+ID_PROOF_RENAMED = "Nom du document modifié."
+ID_PROOF_DELETED = "Preuve d'identité supprimée."
+# Never shown in practice: the model gives every refusal its French
+# sentence. A banner is still never empty.
+_ID_PROOF_FALLBACK = "L'opération n'a pas abouti — rechargez la page."
+
+# The HTTP status of every NON-success code the two JSON endpoints answer:
+# each code of SESSION_CODES and FILING_CODES but ok / verse / rejoue
+# (pinned by the tests). « incertain » is a 503 with Retry-After: the
+# script re-posts the finalization once, which settles it only when the
+# store answers (rejoue, or verse). A re-post that meets the same outage
+# answers like any filing whose first read failed (« indisponible », « Rien
+# n'a été enregistré »): the page then keeps the uncertain sentence.
+_ID_PROOF_JSON_STATUS = {
+    piece_identite.CODE_FORME: 400,
+    piece_identite.CODE_REFUS: 422,
+    piece_identite.CODE_INDISPONIBLE: 503,
+    piece_identite.CODE_INCERTAIN: 503,
+}
+_ID_PROOF_RETRY_SECONDS = 2
+
+
+def _id_proof_day(value: object) -> str:
+    """« 2 novembre 2026 » — a proof's filing day in Montréal (Rule 5);
+    ``""`` when the stored value is not an instant (a hand edit)."""
+    if not isinstance(value, datetime):
+        return ""
+    return format_date_fr(to_mtl(value).date())
+
+
+def _id_proof_row(proof: dict) -> dict:
+    """One proof as the card and the dialog show it."""
+    name = proof.get("display_name")
+    size = proof.get("file_size")
+    return {
+        "id": proof.get("id") or "",
+        # A stored name that is no text (a hand edit) shows the neutral
+        # name rather than an empty row.
+        "display_name": (name if isinstance(name, str) and name.strip()
+                         else piece_identite.NEUTRAL_NAME),
+        # The PROOF's own etag: the rename and delete forms commit only
+        # against the version the dialog showed.
+        "etag": concurrency.etag_of(proof),
+        # _file_icon's `kind` (pdf | image | file → its glyph).
+        "icone": get_file_icon(proof.get("file_type") or ""),
+        "taille": (format_file_size(size)
+                   if isinstance(size, int) and not isinstance(size, bool)
+                   else ""),
+        "jour": _id_proof_day(proof.get("created_at")),
+    }
+
+
+def _id_proofs_view(partie_id: str, conformite_kyc: bool) -> dict:
+    """The proofs block of the fiche — composed HERE, read alike by the
+    card (``parties/_pieces_identite.html``) and the « Gérer » dialog
+    (``parties/_pieces_identite_gestion.html``).
+
+    ``liste`` (not ``items``: Jinja would read ``preuves.items`` as the
+    dict's method) is empty both when the contact holds no proof and when
+    the read FAILED; ``indisponible`` tells the two apart, so a failed read
+    never shows « aucune » (``list_proofs`` is the fail-open reader:
+    display only). ``tronquee``: the read met more than the cap.
+
+    ``visible`` — the Conformité rule (*conformite_kyc*) OR at least one
+    proof held: a role change must never strand confidential files out of
+    reach. A failed read on a contact that is not a client shows nothing:
+    unknown is not claimed. ``detenues`` adds a sentence to the contact's
+    delete dialog (the model refuses that deletion; the sentence informs).
+    ``ouvert`` is set by the caller (``?gerer=1``).
+    """
+    listing = piece_identite.list_proofs(partie_id)
+    liste = ([_id_proof_row(proof) for proof in listing.proofs]
+             if listing is not None else [])
+    return {
+        "liste": liste,
+        "indisponible": listing is None,
+        "tronquee": bool(listing is not None and listing.truncated),
+        "tronquee_texte": piece_identite.TRUNCATED_NOTICE,
+        "detenues": bool(liste),
+        "visible": bool(conformite_kyc or liste),
+        "ouvert": False,
+        "accept": piece_identite.ACCEPT,
+        "consignes": piece_identite.UPLOAD_HINT,
+        "nom_max": piece_identite.DISPLAY_NAME_MAX,
+    }
+
+
+def _id_proofs_config(partie_id: str, ouvert: bool) -> dict:
+    """What the dialog's script reads from the page — every URL built by
+    the server (the script composes none), in a ``<script
+    type="application/json">`` (server data stays out of the script, CSP).
+    ``suivant``: the fiche with the dialog reopened, once every file of a
+    batch is filed; ``fiche``: the fiche alone, when the dialog closes
+    after a file was filed or its filing left unconfirmed (the list then
+    shows whether the proof is there). ``incertain``: the model's sentence
+    for a filing whose outcome stayed unknown (its single source,
+    ``FILING_UNCERTAIN``), which the page shows when a finalization's
+    answer was lost on the way and the one re-post did not settle it."""
+    return {
+        "ouvert": bool(ouvert),
+        "televersement": url_for("parties.id_proof_session",
+                                 partie_id=partie_id),
+        "finaliser": url_for("parties.id_proof_finalize",
+                             partie_id=partie_id),
+        "suivant": url_for("parties.partie_detail", partie_id=partie_id,
+                           gerer="1", _anchor="preuves-identite"),
+        "fiche": url_for("parties.partie_detail", partie_id=partie_id,
+                         _anchor="preuves-identite"),
+        "incertain": piece_identite.FILING_UNCERTAIN,
+    }
+
+
+def _back_to_proofs(partie_id: str, *, message: str = "",
+                    erreur: str = "") -> Response:
+    """Redirect to the fiche, the « Gérer » dialog reopened with its
+    banner — ``HX-Redirect`` too under htmx (Rule 8: always a 2xx after
+    the redirect, never a 422)."""
+    params = {"gerer": "1"}
+    if message:
+        params["message"] = message
+    if erreur:
+        params["erreur"] = erreur
+    target = url_for("parties.partie_detail", partie_id=partie_id,
+                     _anchor="preuves-identite", **params)
+    resp = redirect(target)
+    if _is_htmx():
+        resp.headers["HX-Redirect"] = target
+    return resp
+
+
+def _id_proof_ids(partie_id: object, proof_id: object = None) -> dict:
+    """The log fields of a proof — ids from the URL, CR/LF neutralized."""
+    ids = {"partie_id": sanitize_log_value(partie_id)}
+    if proof_id is not None:
+        ids["proof_id"] = sanitize_log_value(proof_id)
+    return ids
+
+
+def _json_payload() -> dict:
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _text(value: object) -> str:
+    """A JSON field as the model expects it: a string, or ``""`` (which
+    the model refuses in French) — never coerced, never trimmed: the model
+    judges the exact string."""
+    return value if isinstance(value, str) else ""
+
+
+def _json_refusal(outcome) -> Response:
+    """A JSON endpoint's answer to a non-success code — the model's French
+    sentence, the code's status."""
+    body = {"erreur": " ".join(outcome.errors) or _ID_PROOF_FALLBACK}
+    if outcome.code == piece_identite.CODE_INCERTAIN:
+        # Both objects were KEPT (the model's declared exception): one more
+        # finalization — idempotent through the reserved id and the
+        # create-only copy — settles it only when the store answers
+        # (rejoue, or verse). Any other answer to it leaves the outcome
+        # unknown: the page keeps THIS sentence, never the re-post's.
+        body["incertain"] = True
+    resp = jsonify(body)
+    resp.status_code = _ID_PROOF_JSON_STATUS.get(outcome.code, 500)
+    if outcome.code == piece_identite.CODE_INCERTAIN:
+        resp.headers["Retry-After"] = str(_ID_PROOF_RETRY_SECONDS)
+    return resp
+
+
+@parties_bp.route("/<partie_id>/pieces-identite/televersement",
+                  methods=["POST"])
+@login_required
+def id_proof_session(partie_id: str) -> Response:
+    """Open the browser's DIRECT upload of one proof (JSON ``{name,
+    size}``; CSRF in the ``X-CSRFToken`` header).
+
+    The model judges the name, its extension, the declared size, the
+    contact and the cap BEFORE a byte moves, reserves the proof's id and
+    opens a create-only resumable session on its staging name. 200
+    ``{url, objet}`` — ``url`` is a write capability, handed to the
+    uploading script only, never logged —; 422 a refusal; 503 a store
+    failure or a uid that cannot name a Storage prefix.
+    """
+    payload = _json_payload()
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
+    # The session's CORS origin is the PAGE's. In production TLS ends
+    # upstream of gunicorn and there is no ProxyFix: request.scheme would
+    # read « http » and the browser would refuse the PUTs — https is
+    # FORCED there (routes/documents.api_televersement's rule).
+    scheme = "https" if Config.ENV == "production" else (request.scheme or "http")
+    outcome = piece_identite.open_proof_upload(
+        partie_id, _text(payload.get("name")), payload.get("size"), user_id,
+        origin=f"{scheme}://{request.host}",
+    )
+    if outcome.code == piece_identite.CODE_OK:
+        return jsonify({"url": outcome.doc["url"],
+                        "objet": outcome.doc["objet"]})
+    return _json_refusal(outcome)
+
+
+@parties_bp.route("/<partie_id>/pieces-identite/finaliser", methods=["POST"])
+@login_required
+def id_proof_finalize(partie_id: str) -> Response:
+    """File an uploaded staging object as a proof of the contact (JSON
+    ``{objet, name}``).
+
+    200 ``{ok, proof_id, suivant}`` when the proof is filed — by this call
+    (``verse``: the one ``id_proof_filed`` event) or already (``rejoue``: a
+    replay, nothing new, no event); 400 « Requête invalide. » for a staging
+    name that is not this module's shape (nothing touched); 422 a refusal;
+    503 a store failure, or ``incertain`` (``"incertain": true`` and
+    ``Retry-After``) — the script then re-posts this finalization ONCE.
+    """
+    payload = _json_payload()
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
+    outcome = piece_identite.file_staged_proof(
+        _text(payload.get("objet")), partie_id, _text(payload.get("name")),
+        user_id,
+    )
+    if outcome.code not in (piece_identite.CODE_VERSE,
+                            piece_identite.CODE_REJOUE):
+        return _json_refusal(outcome)
+    proof = outcome.doc or {}
+    if outcome.code == piece_identite.CODE_VERSE:
+        log_partie_event(
+            "id_proof_filed", sanitize_log_value(partie_id),
+            proof_id=proof.get("id"), file_type=proof.get("file_type"),
+            size=proof.get("file_size"),
+        )
+    return jsonify({
+        "ok": True,
+        "proof_id": proof.get("id"),
+        "suivant": url_for("parties.partie_detail", partie_id=partie_id,
+                           gerer="1", _anchor="preuves-identite"),
+    })
+
+
+@parties_bp.route("/<partie_id>/pieces-identite/<proof_id>")
+@login_required
+def id_proof_consult(partie_id: str, proof_id: str) -> Response:
+    """« Consulter » — a 302 to a 15-minute signed URL that SHOWS the file
+    (inline, under its display name). The URL is minted on the click and
+    never embedded in a page.
+
+    Every failure lands back on the fiche, the dialog open, with its own
+    French sentence — logged, never swallowed: the record unreadable, the
+    proof gone, its stored path not this module's shape, its file missing,
+    the reload or the signing failed.
+    """
+    ids = _id_proof_ids(partie_id, proof_id)
+    try:
+        proof = piece_identite.get_proof_strict(partie_id, proof_id)
+    except Exception as exc:
+        log_unexpected("id proof: read failed", exc_info=False,
+                       error_type=type(exc).__name__, **ids)
+        return _back_to_proofs(partie_id,
+                               erreur=concurrency.READ_UNAVAILABLE_ERROR)
+    if proof is None:
+        return _back_to_proofs(partie_id, erreur=piece_identite.PROOF_NOT_FOUND)
+    try:
+        url = piece_identite.consult_url(partie_id, proof)
+    except piece_identite.StoredPathRefused:
+        log_unexpected("id proof: stored path refused", exc_info=False, **ids)
+        return _back_to_proofs(partie_id, erreur=piece_identite.PATH_REFUSED)
+    except piece_identite.ObjectMissing:
+        log_unexpected("id proof: object missing", exc_info=False, **ids)
+        return _back_to_proofs(partie_id, erreur=piece_identite.OBJECT_MISSING)
+    except Exception as exc:
+        # The reload or the signing: their text can name the object, so
+        # the class only, never a traceback.
+        log_unexpected("id proof: signing failed", exc_info=False,
+                       error_type=type(exc).__name__, **ids)
+        return _back_to_proofs(partie_id, erreur=piece_identite.CONSULT_FAILED)
+    return redirect(url)
+
+
+@parties_bp.route("/<partie_id>/pieces-identite/<proof_id>/renommer",
+                  methods=["POST"])
+@login_required
+def id_proof_rename(partie_id: str, proof_id: str) -> Response:
+    """Rename one proof — compare-and-set on the etag its row was rendered
+    with (``expected_etag``, required by the model). The typed name is
+    trimmed here, as every form field is; the model judges the exact
+    string it would store, and refuses rather than alters it. An unchanged
+    name writes nothing and says nothing."""
+    expected = edit_conflict.submitted_etag()
+    outcome = piece_identite.rename_proof(
+        partie_id, proof_id, request.form.get("display_name", "").strip(),
+        expected_etag=expected,
+    )
+    if outcome.code == piece_identite.CODE_MODIFIE:
+        log_partie_event("id_proof_renamed", sanitize_log_value(partie_id),
+                         proof_id=sanitize_log_value(proof_id))
+        return _back_to_proofs(partie_id, message=ID_PROOF_RENAMED)
+    if outcome.code == piece_identite.CODE_INCHANGE:
+        return _back_to_proofs(partie_id)
+    return _back_to_proofs(
+        partie_id, erreur=" ".join(outcome.errors) or _ID_PROOF_FALLBACK)
+
+
+@parties_bp.route("/<partie_id>/pieces-identite/<proof_id>/supprimer",
+                  methods=["POST"])
+@login_required
+def id_proof_delete(partie_id: str, proof_id: str) -> Response:
+    """Delete one proof for good (D6): the model erases its file by
+    generation, then deletes its record EXACTLY ONCE.
+
+    Only the model's ``supprime`` means THIS call removed the record: then,
+    and only then, ONE neutral row joins the deletion trail — the title is
+    « Preuve d'identité », never the display name (``audit_events`` is
+    write-once, and a name typed by hand must not outlive the erased file)
+    — and the one ``id_proof_deleted`` event is logged. ``deja`` (a double
+    submission's other half found the record gone) writes nothing and
+    says so, without alarm: the proof is deleted."""
+    expected = edit_conflict.submitted_etag()
+    outcome = piece_identite.delete_proof(partie_id, proof_id,
+                                          expected_etag=expected)
+    if outcome.code == piece_identite.CODE_SUPPRIME:
+        record_deletion(
+            "piece_identite", partie_id,
+            title=piece_identite.NEUTRAL_NAME,
+            status=(outcome.doc or {}).get("file_type") or "",
+        )
+        log_partie_event("id_proof_deleted", sanitize_log_value(partie_id),
+                         proof_id=sanitize_log_value(proof_id))
+        return _back_to_proofs(partie_id, message=ID_PROOF_DELETED)
+    if outcome.code == piece_identite.CODE_DEJA:
+        return _back_to_proofs(
+            partie_id, message=" ".join(outcome.errors) or ID_PROOF_DELETED)
+    return _back_to_proofs(
+        partie_id, erreur=" ".join(outcome.errors) or _ID_PROOF_FALLBACK)

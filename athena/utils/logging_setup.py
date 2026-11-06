@@ -601,6 +601,14 @@ PartieEvent = Literal[
     # seulement : jamais le statut en clair d'un contact nommé, jamais une
     # note.
     "kyc_recorded",
+    # Lot 2 of the compliance work (2026-11): a contact's proofs of identity
+    # (routes/parties). Ids, the file type and the size only — never a
+    # display name, a file name, a storage path or a signed URL. Filed by
+    # THIS call (never a replay), renamed when the name changed, deleted
+    # when THIS call removed the record (beside its one audit_events row).
+    "id_proof_filed",
+    "id_proof_renamed",
+    "id_proof_deleted",
 ]
 DavOperation = Literal[
     "propfind",
