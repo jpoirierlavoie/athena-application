@@ -246,7 +246,7 @@ def test_the_sweep_tells_an_unloaded_submodule_from_a_missing_one(monkeypatch):
     be loaded yet — it must pass whatever ran before — or no module at all,
     which must be caught. audit_event is unloaded here (restored after);
     re-importing it only builds a logger and a constant."""
-    import models
+    models = importlib.import_module("models")
 
     monkeypatch.delitem(sys.modules, "models.audit_event", raising=False)
     monkeypatch.delattr(models, "audit_event", raising=False)
