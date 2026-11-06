@@ -49,8 +49,10 @@ _XML_TAG_RE = re.compile(r"<[^<>]*>")
 # Fill targets inside the archive: main document + all headers/footers.
 _TARGET_RE = re.compile(r"^word/(document|header\d*|footer\d*)\.xml$")
 
-# C0 control characters except tab/newline/CR (handled separately).
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# Characters XML 1.0 forbids, which make Word report the file corrupt: C0
+# controls except tab/newline/CR (handled separately), lone surrogates and the
+# noncharacters U+FFFE and U+FFFF.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 # Blank-line separator between block chunks (whitespace-only lines count —
 # textarea input frequently carries stray spaces on empty lines).

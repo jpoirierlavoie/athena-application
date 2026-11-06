@@ -564,10 +564,12 @@ BLOCS_TOTAL_MAX_CHARS = 60_000
 CHAMP_MANUEL_MAX_CHARS = MANUAL_MAX_CHARS
 
 # What the fill engine strips in silence (utils/docx_fill._CONTROL_RE): a
-# C0 control character other than tab, newline and carriage return. Refused
-# rather than stripped — nothing supplied is altered without a word.
+# C0 control character other than tab, newline and carriage return, a lone
+# surrogate, U+FFFE or U+FFFF. Refused rather than stripped — nothing
+# supplied is altered without a word.
 _CONTROL_CHARS = frozenset(
-    chr(c) for c in range(32) if chr(c) not in ("\t", "\n", "\r"))
+    [chr(c) for c in range(32) if chr(c) not in ("\t", "\n", "\r")]
+    + [chr(c) for c in range(0xD800, 0xE000)] + ["\ufffe", "\uffff"])
 _NOTHING = "Rien n'a été généré."
 
 
@@ -665,7 +667,7 @@ def _refuse_text(problem: str, where: str, ceiling: int, *, field: str) -> Gener
             f"dossier. Retirez-les. {_NOTHING}"), field=field)
     if problem == "control":
         return GenerationRefused("value_refused", (
-            f"{where} contient un caractère de contrôle invisible, que le "
+            f"{where} contient un caractère invisible, que le "
             f"document ne peut pas porter : retirez-le. {_NOTHING}"),
             field=field)
     return GenerationRefused("value_refused", (

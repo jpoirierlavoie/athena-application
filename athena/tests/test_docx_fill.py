@@ -127,6 +127,20 @@ def test_xml_escaping_control_chars_and_backslash_g():
     assert "<w:evil>" not in out
 
 
+def test_every_character_xml_forbids_is_stripped():
+    """Regression: U+FFFE, U+FFFF and lone surrogates passed through, and
+    Word reported the generated file corrupt."""
+    from defusedxml import ElementTree as ET
+    from utils.docx_fill import _escape_xml
+
+    docx = _make_docx(_doc(_para("V: {{v}}")))
+    out = _document_xml(fill_docx(docx, {"v": "a\ufffeb\uffffc\ud800d"}))
+    assert "V: abcd" in out
+    # Every other character of the Basic Multilingual Plane is legal XML.
+    every = "".join(chr(c) for c in range(0x10000))
+    ET.fromstring(f"<w:t {_W_NS}>{_escape_xml(every)}</w:t>")
+
+
 # ── Block expansion ─────────────────────────────────────────────────────
 
 _NUM_PPR = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr>'

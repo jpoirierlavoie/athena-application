@@ -181,6 +181,17 @@ def test_blank_control_and_oversized_texts_are_refused_never_repaired():
     assert _values(blocs=[{"nom": "FAITS", "contenu": "a\tb\r\nc"}])
 
 
+def test_the_refused_characters_are_exactly_those_the_engine_strips():
+    """One the engine strips but the connector let through would vanish from
+    the document without a word (U+FFFE did)."""
+    from utils.docx_fill import _CONTROL_RE
+
+    stripped = {chr(c) for c in range(0x110000) if _CONTROL_RE.fullmatch(chr(c))}
+    assert stripped == gc._CONTROL_CHARS
+    exc = _refused(blocs=[{"nom": "FAITS", "contenu": "a\ufffeb"}])
+    assert exc.reason == "value_refused" and "invisible" in exc.message
+
+
 def test_the_total_of_the_blocs_is_bounded():
     template = {"placeholders": [f"B{i}" for i in range(4)]}
     chunk = "x" * gc.BLOC_MAX_CHARS

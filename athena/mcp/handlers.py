@@ -187,7 +187,7 @@ from utils import (
     pdf_text, phases, recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
-from utils.docx_fill import extract_placeholders, validate_template
+from utils.docx_fill import _CONTROL_RE, extract_placeholders, validate_template
 from utils.docx_leak_scan import (
     LeakScanError,
     fold_key,
@@ -14064,8 +14064,9 @@ def _clean_generated_text(raw: Any, field: str, limit: int, *,
                           markdown: bool) -> str:
     """A text Claude wrote for a generated document, as it will be FILLED —
     or a refusal: blank, over-long, « {{ »/« }} » (the engine would read
-    them as a field), a control character (the engine strips it in
-    silence), and for Markdown the chevrons the formatter would drop."""
+    them as a field), a character the engine strips in silence
+    (``docx_fill._CONTROL_RE``), and for Markdown the chevrons the formatter
+    would drop."""
     text = raw if isinstance(raw, str) else ""
     if not text.strip():
         raise ToolArgumentError(f"`{field}` est vide. {_NOTHING_CREATED}")
@@ -14096,9 +14097,9 @@ def _clean_generated_text(raw: Any, field: str, limit: int, *,
             "comme un champ à remplir et y imprimerait des données du "
             f"dossier. Retirez-les. {_NOTHING_CREATED}"
         )
-    if any(ord(ch) < 32 and ch not in "\t\n\r" for ch in text):
+    if _CONTROL_RE.search(text):
         raise ToolArgumentError(
-            f"`{field}` contient un caractère de contrôle invisible : "
+            f"`{field}` contient un caractère invisible : "
             f"retirez-le. {_NOTHING_CREATED}"
         )
     if markdown:

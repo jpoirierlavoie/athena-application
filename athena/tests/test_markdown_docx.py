@@ -225,6 +225,12 @@ def test_escaping_in_every_context():
     assert "<c>" not in out
 
 
+def test_characters_xml_forbids_never_reach_the_xml():
+    """Regression: a note holding U+FFFE printed a .docx Word called corrupt."""
+    out = _convert("a\ufffeb\uffffc\ud800d")
+    assert "abcd" in out
+
+
 def test_checkbox_glyph_survives():
     out = _convert("- ☐ **Prescription** — délai")
     assert "☐" in out
