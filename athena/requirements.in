@@ -8,14 +8,14 @@ firebase-admin==7.7.0
 flask-wtf==1.3.0
 flask-limiter==4.1.1
 gunicorn==26.2.0
-google-cloud-firestore==2.32.0
-google-cloud-storage==3.15.0
-google-cloud-secret-manager==2.30.0
-google-cloud-logging==3.16.3
+google-cloud-firestore==2.34.1
+google-cloud-storage==3.17.1
+google-cloud-secret-manager==2.31.0
+google-cloud-logging==3.17.0
 # Portail client (spec L1): the portal enqueues events onto the « portail »
 # Cloud Tasks queue; the main service's handler consumes them. Reused as-is
 # by the future phase J notification pipeline.
-google-cloud-tasks==2.25.0
+google-cloud-tasks==2.26.0
 # requests was already in the hash lock as a locked transitive (cachecontrol,
 # google-api-core, ...). utils/graph.py (Microsoft Graph outbound email) now
 # imports it directly, so it is promoted to a direct pin — Dependabot and
@@ -70,7 +70,7 @@ opentelemetry-exporter-otlp-proto-grpc==1.45.2
 opentelemetry-exporter-credential-provider-gcp==0.66b2
 # NOT deprecated and NOT part of the exporter family — this is the
 # X-Cloud-Trace-Context propagator, which the OTLP migration leaves untouched.
-opentelemetry-propagator-gcp==1.12.0
+opentelemetry-propagator-gcp==1.15.0
 opentelemetry-instrumentation-flask==0.66b2
 opentelemetry-instrumentation-requests==0.66b2
 opentelemetry-instrumentation-jinja2==0.66b2
@@ -88,8 +88,8 @@ opentelemetry-resourcedetector-gcp==1.14.0
 icalendar==7.3.0
 vobject==0.9.9
 bcrypt==5.0.0
-python-dotenv==1.2.3
-reportlab==5.0.1
+python-dotenv==1.2.4
+reportlab==5.1.0
 # Pillow is a transitive dependency of reportlab (which only requires >=9.0.0).
 # Pinned explicitly here for CVE hygiene. 12.3.0 -> 13.0.0 (2026-11-05)
 # closes the 41 GitHub advisories open against 12.3.0, and two more that
@@ -119,10 +119,28 @@ reportlab==5.0.1
 # before any download.
 # 13.0.0 is a major release: its removals (Image._show,
 # ImageCmsProfile.product_name/product_info, ...) and the move of
-# get_child_images from Image to ImageFile touch no API reportlab 5.0.1 or
+# get_child_images from Image to ImageFile touch no API reportlab 5.1.0 or
 # pypdf calls, and the PDF tests pass unchanged.
 Pillow==13.0.0
-Markdown==3.11
+# Markdown renders every note: on screen through main.py's `markdown`
+# filter, and into Word for note prints and the connector's Markdown
+# through utils/markdown_docx.py, bleach after it both ways. 3.11 -> 3.11.2
+# (2026-11-06) is NOT byte-identical: of 23,953 inputs (the 1,476 the tests
+# render, all unchanged; every string literal in tests/; upstream's test
+# inputs; synthetic notes), 194 render differently on screen and 193 in
+# Word, each traced to 3.11.1. Text that 3.11 dropped now shows: everything
+# after an unterminated end tag (`</foo`), and the text of an element whose
+# quoted attribute holds `>`. Emphasis was rewritten (#1632; 3.11.2
+# reverted its CommonMark punctuation rules, #1657): nesting now holds
+# (`*a **b** c*` was three italics), but a closing run after a space no
+# longer closes, so `**Faits : **texte` now shows its asterisks, as does a
+# mismatched run (`**mot*`); and `**` nested 32 deep no longer converts to
+# Word (the connector refuses it, a note print falls back to the raw text).
+# Fixed only in 3.11.3 (2026-11-05), whose own rendering changes want their
+# own review: text lost between mismatched backtick runs (`a `b`` c`
+# renders "a  c"), and quadratic parses — a note of 100,000 characters,
+# `#` then text, takes some 2 minutes of CPU to render.
+Markdown==3.11.2
 # bleach is archived upstream; 6.4.0 is a security release clearing the
 # URI-scheme sanitization advisories (GHSA-gj48-438w-jh9v, GHSA-8rfp-98v4-mmr6)
 # and moving off the 6.3.0-only linkify email-DoS advisory (GHSA-g75f-g53v-794x).
@@ -143,8 +161,8 @@ defusedxml==0.7.1
 # fixes CVE-2026-71554 (duplicate Host header forwarded on HTTP/2→1.1
 # downgrade — a request-smuggling primitive for SERVERS; here h2 is only
 # httpx's outbound HTTP/2 client via firebase-admin, so equally unreachable).
-cryptography==50.0.1
-msgpack==1.2.3
+cryptography==50.0.2
+msgpack==1.2.4
 h2==4.4.1
 # pyjwt arrives only via firebase-admin, and only its App Check verifier runs
 # it here (firebase_admin.app_check: alg pinned to RS256, jwt.decode with
@@ -179,7 +197,7 @@ pyjwt==2.15.1
 # firebase-admin builds is FCM messaging's, which the app never imports), every
 # host the app contacts is ASCII, and nothing uses anyio process pools. A
 # hygiene bump.
-anyio==4.15.1
+anyio==4.16.0
 # urllib3 arrives only via requests (Microsoft Graph in utils/graph.py, the
 # google-auth transport). 2.8.0 (2026-09-15) fixes CVE-2026-97687
 # (GHSA-8988-9cw3-xx77 — HTTPS-proxy TLS settings ignored or overridden:
@@ -230,22 +248,33 @@ certifi==2026.10.23
 # GRPC_USE_SYSTEM_ROOTS_OVER_LANGUAGE_CALLBACK (either would move it off
 # that bundle). 1.80.0's bundle (130 roots) still trusted emSign ECC Root
 # CA - G3 (see certifi above) and AAA Certificate Services, Sectigo's
-# cross-signer of the same eight intermediates. 1.80.1 (2026-11-05,
-# "[security] Update gRPC repo roots", grpc#43845) replaces it with
-# Chromium's root store (99 roots), which drops both and keeps GTS Root R1
-# and R4, the roots Google's endpoints chain to. No advisory covers it, so
-# no alert flagged it. Reachable in principle like certifi's, though the
-# path from App Engine to *.googleapis.com stays inside Google's network.
-# On 2026-11-05 a channel through 1.80.1's own roots reached READY from a
-# workstation to every endpoint the app dials (firestore, secretmanager,
-# cloudtasks, logging and telemetry.googleapis.com), each chain ending at
-# GTS Root R4, while a store missing Google's roots failed. Its two Python
-# fixes (a Health Watch DoS on gRPC servers, an asyncio interceptor leak)
-# touch nothing here: the app runs no gRPC server and no asyncio client.
-# grpcio-status moves with it: gRPC releases them in lockstep, and 1.80.1
-# requires grpcio>=1.80.1.
-grpcio==1.80.1
-grpcio-status==1.80.1
+# cross-signer of the same eight intermediates (gRPC's own advisory,
+# GHSA-2xm2-c8xx-p9vh, critical, 2026-10-27, sits in neither GitHub's global
+# database nor OSV, so no alert flagged it). 1.80.1 (2026-11-05, grpc#43845)
+# replaced it with Chromium's root store (99 roots), which drops both and
+# keeps GTS Root R1 and R4, the roots Google's endpoints chain to; the 1.85
+# line got the same store through grpc#43717 (2026-10-23), before 1.85.0,
+# and 1.85.1's roots.pem is byte-identical to 1.80.1's. Reachable in
+# principle like certifi's, though the path from App Engine to
+# *.googleapis.com stays inside Google's network. On 2026-11-06 a channel
+# through 1.85.1's own roots reached READY from a workstation to every
+# endpoint the app dials (firestore, secretmanager, cloudtasks, logging and
+# telemetry.googleapis.com), while a store missing Google's roots failed;
+# since 1.83.0 the handshake offers X25519MLKEM768 first.
+# 1.80.1 -> 1.85.1 (2026-11-06) also brings the fixes of gRPC's
+# GHSA-hf3w-6hpw-qp67 (high, 2026-08-28, <= 1.83.0, in no database either):
+# memory exhaustion from a peer's GOAWAY frame, floods of tiny DATA frames
+# or a decompressed message past the receive cap. Only a peer that passes
+# TLS as *.googleapis.com talks to these channels, so a hygiene bump; an
+# oversized message now fails RESOURCE_EXHAUSTED in the transport, and the
+# google-cloud clients lift the cap (-1 both ways). GRPC_ENABLE_FORK_SUPPORT
+# still defaults to off, and gunicorn forks its workers before they import
+# grpc. Its Python fixes (a Health Watch DoS on gRPC servers, an asyncio
+# interceptor leak) touch nothing here: the app runs no gRPC server and no
+# asyncio client. grpcio-status moves with it: gRPC releases them in
+# lockstep, and 1.85.1 requires grpcio>=1.85.1 and protobuf>=6.33.5,<8.
+grpcio==1.85.1
+grpcio-status==1.85.1
 # pyasn1 arrives only via pyasn1-modules ← google-auth, whose one importer of
 # either is google/auth/crypt/_python_rsa.py, the backend for keys of the
 # `rsa` package — a google-auth extra, not installed. google-auth parses

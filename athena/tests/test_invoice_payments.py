@@ -83,14 +83,18 @@ class _Txn:
 def store(monkeypatch):
     box: dict = {}
 
-    monkeypatch.setattr(
+    # mock.patch.object, not monkeypatch.setattr, on the db mock: since
+    # pytest 9.2 (#10644) monkeypatch undoes an attribute it takes for an
+    # inherited one by DELETING it, and a MagicMock never gets a deleted
+    # child back — models.db, shared by every model module, would lose
+    # `collection` for the rest of the session. patch.object restores it.
+    with mock.patch.object(
         imod.db, "collection",
         lambda name: mock.Mock(document=lambda i: _Ref(box)),
-    )
-    monkeypatch.setattr(imod.db, "transaction", lambda: _Txn(box))
-    # firestore.transactional wraps the function; call it straight through.
-    monkeypatch.setattr(imod.firestore, "transactional", lambda fn: fn)
-    return box
+    ), mock.patch.object(imod.db, "transaction", lambda: _Txn(box)):
+        # firestore.transactional wraps the function; call it straight through.
+        monkeypatch.setattr(imod.firestore, "transactional", lambda fn: fn)
+        yield box
 
 
 def _invoice(**over):

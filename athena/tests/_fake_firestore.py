@@ -117,8 +117,11 @@ This file is test support: it lives under ``tests/`` (never deployed —
 imports it without collecting it. It leans on documented-private helpers of
 ``google.cloud.firestore_v1`` (``_helpers.encode_dict``/``decode_dict``);
 the exact pin in ``requirements.in`` holds them still, and
-``tests/test_fake_firestore.py`` fails loudly if a Dependabot bump moves
-them.
+``tests/test_fake_firestore.py`` fails loudly if a Dependabot bump changes
+what they do to a value this suite stores. A change confined to other
+values passes unseen: since 2.33.0 ``decode_dict`` reads a one-key map such
+as ``{"__int__": 5}`` back as a BSON object — a field name production
+refuses (none may match ``__.*__``) and this fake does not.
 """
 
 from __future__ import annotations
