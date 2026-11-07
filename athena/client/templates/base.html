@@ -2,7 +2,10 @@
    Actifs vendus (mêmes fichiers hachés que le service principal — le hash du
    CSS fait partie du fan-out de recompilation Tailwind, voir CLAUDE.md).
    Aucun htmx, aucun Alpine : tout le JS du portail est vanilla sous nonce,
-   ce qui permet une CSP sans 'unsafe-eval'. #}
+   ce qui permet une CSP sans 'unsafe-eval'.
+   JAMAIS de data-theme sur <html> ici : le portail reste clair (règle 10).
+   La feuille partagée ne s'assombrit que sous cet attribut, que seul le
+   service principal rend. #}
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -17,9 +20,9 @@
      `crossorigin` est OBLIGATOIRE (les polices sont des requêtes CORS) — sans
      lui le navigateur télécharge le fichier DEUX fois. #}
   <link rel="preload" href="{{ url_for('static', filename='vendor/noto-sans-v42-latin-wght.woff2') }}" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.3fcfc0de.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.fcd0073a.css') }}">
 </head>
-<body class="min-h-screen bg-[#FAFAFA] text-gray-900 flex flex-col">
+<body class="min-h-screen bg-canvas text-gray-900 flex flex-col">
   <main class="w-full max-w-lg mx-auto px-4 py-10 flex-1">
     <div class="text-center mb-8">
       <img src="{{ url_for('static', filename='owl.png') }}" alt=""

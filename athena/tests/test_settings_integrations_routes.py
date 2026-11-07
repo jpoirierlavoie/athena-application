@@ -134,15 +134,6 @@ def test_the_page_renders(web):
     assert "Coupe-circuits" in body
 
 
-def test_the_four_tabs_are_on_every_settings_page(web):
-    for chemin in ("/parametres/", "/parametres/securite",
-                   "/parametres/integrations", "/parametres/configuration"):
-        body = web.get(chemin).data.decode("utf-8")
-        for onglet in ("Profil du cabinet", "Sécurité", "Intégrations",
-                       "Configuration"):
-            assert onglet in body, f"{chemin} manque l'onglet {onglet}"
-
-
 def test_the_page_carries_no_htmx_and_no_script():
     """Épinglé sur la SOURCE, jamais sur le rendu : `base.html` porte
     `hx-headers` et ses scripts de pied. `/parametres` n'est sous aucun

@@ -256,7 +256,10 @@
           Réinitialiser
         </button>
       </div>
-      <div class="overflow-auto max-h-[80vh] border border-gray-100 rounded-lg bg-gray-50 p-2">
+      {# bg-paper scheme-light : une feuille blanche dans TOUS les thèmes — un
+         scan PNG transparent à l'encre foncée disparaîtrait sur un fond
+         sombre, et une image de l'utilisateur ne s'inverse jamais. #}
+      <div class="overflow-auto max-h-[80vh] border border-gray-100 rounded-lg bg-paper scheme-light p-2">
         <img :style="'transform: scale(' + zoom + '); transform-origin: top left;'"
              src="{{ signed_url }}"
              alt="{{ document.display_name or document.filename }}"

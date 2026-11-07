@@ -210,6 +210,11 @@ def create_app() -> Flask:
             "firebase_app_id": app.config.get("FIREBASE_APP_ID", ""),
         }
 
+    # ── Context processor (display theme: <html data-theme>, Rule 10) ──
+    # Reads the per-device theme cookie only — never Firestore, never raises.
+    from routes._helpers import theme_context
+    app.context_processor(theme_context)
+
     # ── Block direct appspot.com access (traffic must come via Cloudflare) ──
     @app.before_request
     def block_appspot() -> None:

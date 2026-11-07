@@ -1,4 +1,4 @@
-"""« Paramètres » — profil du cabinet + sécurité du compte.
+"""« Paramètres » — profil du cabinet, affichage + sécurité du compte.
 
 Le profil est un formulaire ordinaire : POST puis redirection, jamais htmx.
 Ce n'est pas une préférence de style — htmx 2.0.4 n'échange QUE les réponses
@@ -20,6 +20,12 @@ c'est un POST de navigateur. `/parametres` ne tombe sous aucun préfixe
 exempté (`/_ah/`, `UPLOAD_PATHS`, `_is_template_upload_path`, les préfixes
 exempts d'App Check) — contrairement à `/auth/`, ce qui est précisément
 pourquoi la page de sécurité ne porte aucun attribut `hx-*`.
+
+L'onglet « Affichage » suit la même forme (POST puis redirection, jamais
+htmx), mais ce qu'il enregistre n'est PAS dans Firestore : c'est un témoin
+par appareil (`utils/theme.py` dit pourquoi), le seul que l'application pose
+hors de `session`, écrit par ce seul POST et jamais journalisé — un réglage
+d'apparence d'un appareil n'a rien à faire dans un journal.
 """
 
 import re
@@ -64,6 +70,15 @@ from utils.integrations_defaults import (
 )
 from utils.cabinet import display_phone
 from utils.logging_setup import log_auth_event, log_settings_event
+from utils.theme import (
+    DESCRIPTIONS as THEME_DESCRIPTIONS,
+    LABELS as THEME_LABELS,
+    THEME_COOKIE,
+    THEME_COOKIE_MAX_AGE,
+    VALID_THEMES,
+    parse_theme,
+    theme_from,
+)
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/parametres")
 
@@ -139,6 +154,63 @@ def cabinet_update():
         fields_changed=changed_field_names(before, doc or {}),
     )
     return redirect(url_for("settings.settings_index", ok="1"))
+
+
+def _affichage_page(erreur: str = "", enregistre: bool = False) -> str:
+    # Le choix courant vient du TÉMOIN, jamais de la valeur postée : une
+    # valeur refusée ne doit ni s'afficher comme choisie ni teinter la page.
+    # D'où aussi le nom `actuel`, et jamais `ui_theme` — une valeur passée à
+    # render_template sous ce nom l'emporterait sur le processeur de contexte.
+    return render_template(
+        "settings/affichage.html",
+        onglet="affichage",
+        actuel=theme_from(request.cookies.get(THEME_COOKIE)),
+        options=[
+            (v, THEME_LABELS[v], THEME_DESCRIPTIONS[v]) for v in VALID_THEMES
+        ],
+        erreur=erreur,
+        enregistre=enregistre,
+    )
+
+
+@settings_bp.route("/affichage")
+@login_required
+def affichage() -> str:
+    """« Paramètres → Affichage » — le thème de cet appareil (`utils/theme.py`)."""
+    return _affichage_page(enregistre=request.args.get("ok") == "1")
+
+
+@settings_bp.route("/affichage/enregistrer", methods=["POST"])
+@login_required
+def affichage_update():
+    # La chaîne EXACTE — jamais sanitize() ni strip() d'abord : une valeur
+    # qu'il faudrait nettoyer est refusée, pas réparée.
+    theme = parse_theme(request.form.get("theme"))
+    if theme is None:
+        choix = ", ".join(THEME_LABELS[v] for v in VALID_THEMES[:-1])
+        return _affichage_page(
+            erreur=(
+                "Ce choix d'affichage est inconnu : choisissez "
+                f"{choix} ou {THEME_LABELS[VALID_THEMES[-1]]}."
+            )
+        )
+
+    resp = redirect(url_for("settings.affichage", ok="1"))
+    # Hôte seul (aucun Domain) : le portail, sur un autre hôte, ne le reçoit
+    # jamais. Secure TOUJOURS, jamais lu de la configuration ni de
+    # request.is_secure (TLS se termine avant gunicorn) : la production est
+    # HTTPS de bout en bout, et Chrome comme Firefox acceptent un témoin
+    # Secure sur localhost en développement.
+    resp.set_cookie(
+        THEME_COOKIE,
+        theme,
+        max_age=THEME_COOKIE_MAX_AGE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="Lax",
+    )
+    return resp
 
 
 # Les quatre valeurs fixées au déploiement, avec l'autre moitié de

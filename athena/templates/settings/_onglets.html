@@ -3,22 +3,32 @@
    Des `<a href>` ORDINAIRES, jamais un échange htmx : les deux moitiés sont
    deux documents distincts, précisément pour que la page de sécurité soit
    seule à porter le SDK d'auth et le widget reCAPTCHA, et pour que quitter
-   un envoi de code en cours soit une navigation explicite. #}
-<div class="flex gap-1 border-b border-gray-200 mb-6">
+   un envoi de code en cours soit une navigation explicite.
+
+   Règle 9 : chaque onglet fait 44 px de haut (py-3), et la rangée défile à
+   l'horizontale plutôt que de déborder — à 375 px, les libellés ne tiennent
+   pas tous. Un conteneur qui défile rogne ce qui dépasse de ses bords :
+   l'anneau de focus du clavier se dessine donc DANS le lien
+   (focus-visible:-outline-offset-2), pas autour. #}
+<div class="flex gap-1 border-b border-gray-200 mb-6 overflow-x-auto">
   <a href="{{ url_for('settings.settings_index') }}"
-     class="px-3 py-2 text-sm {% if onglet == 'profil' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+     class="whitespace-nowrap px-3 py-3 text-sm focus-visible:-outline-offset-2 {% if onglet == 'profil' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
     Profil du cabinet
   </a>
+  <a href="{{ url_for('settings.affichage') }}"
+     class="whitespace-nowrap px-3 py-3 text-sm focus-visible:-outline-offset-2 {% if onglet == 'affichage' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+    Affichage
+  </a>
   <a href="{{ url_for('settings.securite') }}"
-     class="px-3 py-2 text-sm {% if onglet == 'securite' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+     class="whitespace-nowrap px-3 py-3 text-sm focus-visible:-outline-offset-2 {% if onglet == 'securite' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
     Sécurité
   </a>
   <a href="{{ url_for('settings.integrations') }}"
-     class="px-3 py-2 text-sm {% if onglet == 'integrations' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+     class="whitespace-nowrap px-3 py-3 text-sm focus-visible:-outline-offset-2 {% if onglet == 'integrations' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
     Intégrations
   </a>
   <a href="{{ url_for('settings.configuration') }}"
-     class="px-3 py-2 text-sm {% if onglet == 'configuration' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+     class="whitespace-nowrap px-3 py-3 text-sm focus-visible:-outline-offset-2 {% if onglet == 'configuration' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
     Configuration
   </a>
 </div>

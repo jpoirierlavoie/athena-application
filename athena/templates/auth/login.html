@@ -1,10 +1,13 @@
 <!DOCTYPE html>
 {# translate="no" : voir la note dans templates/base.html — les extensions de
-   traduction réécrivent le DOM et cassent la mise en page. #}
-<html lang="fr" translate="no" class="notranslate">
+   traduction réécrivent le DOM et cassent la mise en page. data-theme et la
+   meta color-scheme : même note. Le témoin du thème survit à la
+   déconnexion, si bien que cette page garde le choix de l'appareil. #}
+<html lang="fr" translate="no" class="notranslate"{% if ui_theme is defined %} data-theme="{{ ui_theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  {% if ui_color_scheme is defined %}<meta name="color-scheme" content="{{ ui_color_scheme }}">{% endif %}
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>Connexion — Pallas Athena</title>
 
@@ -14,7 +17,7 @@
 
   {# Vendored at exact versions, served same-origin (see static/vendor/).
      CSS is precompiled — body font, [x-cloak] and .spinner live in app.css. #}
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.3fcfc0de.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.fcd0073a.css') }}">
   {# reCAPTCHA Enterprise (App Check + phone MFA) loads from these origins. #}
   <link rel="preconnect" href="https://www.gstatic.com">
   <link rel="preconnect" href="https://www.google.com">
@@ -23,14 +26,14 @@
      time and Alpine is `defer` (DOMContentLoaded), so document order keeps
      loginForm() defined before Alpine evaluates x-data. #}
 </head>
-<body class="min-h-screen bg-[#FAFAFA] flex items-center justify-center px-4">
+<body class="min-h-screen bg-canvas text-gray-900 flex items-center justify-center px-4">
 
   <div class="w-full max-w-sm" x-data="loginForm()">
 
     {# ── Header ──────────────────────────────────────────────────── #}
     <div class="text-center mb-8">
       <img src="{{ url_for('static', filename='owl.png') }}" alt="Pallas Athena"
-           class="mx-auto mb-4 w-20 h-20 object-contain">
+           class="mx-auto mb-4 w-20 h-20 object-contain dark:invert">
       <h1 class="text-2xl font-semibold text-gray-900 tracking-tight">Pallas Athéna</h1>
       <p lang="grc" class="mt-2 text-sm italic text-gray-500">Σὺν Ἀθηνᾷ καὶ χεῖρα κίνει</p>
     </div>

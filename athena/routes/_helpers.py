@@ -34,15 +34,21 @@ blueprints had each hand-written — some of them wrongly:
 * ``with_query`` — a banner merged into a target's query string, percent-
   encoded (never ``markupsafe.escape``, which cut « n'a » at its
   apostrophe), moved here from ``routes/trust._redirect_with``.
+
+Also home to ``theme_context``, the template context processor of the
+display theme: ``main.py`` registers it, and so can a test's bare app, with
+no import of ``main``.
 """
 
 from datetime import datetime, timezone
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flask import Response, redirect, request
+from flask import Response, has_request_context, redirect, request
 from markupsafe import escape
 from werkzeug.urls import iri_to_uri
+
+from utils.theme import COLOR_SCHEMES, THEME_COOKIE, theme_from
 
 
 def is_htmx() -> bool:
@@ -92,6 +98,21 @@ def redirect_after_post(target: str, *, follow: bool = False) -> Response:
     if is_htmx() and not follow:
         return Response(status=200, headers={"HX-Redirect": iri_to_uri(target)})
     return redirect(target)
+
+
+def theme_context() -> dict[str, str]:
+    """``ui_theme`` and ``ui_color_scheme`` for ``<html data-theme>`` and the
+    color-scheme meta of ``base.html`` and ``auth/login.html``.
+
+    Request-bound: reads only the theme cookie, never Firestore, and never
+    raises — the 404, 500 and CSRF pages render through it. Outside a request
+    (a template rendered from service code) there is no cookie to read, so
+    the default applies. The keys are distinctive on purpose: a value passed
+    to ``render_template`` under the same name would silently win.
+    """
+    raw = request.cookies.get(THEME_COOKIE) if has_request_context() else None
+    theme = theme_from(raw)
+    return {"ui_theme": theme, "ui_color_scheme": COLOR_SCHEMES[theme]}
 
 
 def parse_date_input(value: str) -> Optional[datetime]:

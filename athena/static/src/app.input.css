@@ -146,6 +146,132 @@
 @theme {
   --font-sans: "Noto Sans", -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-serif: "Noto Serif", Georgia, 'Times New Roman', serif;
+  /* The page background (Rule 10), as `bg-canvas`; remapped in dark mode. */
+  --color-canvas: #FAFAFA;
+}
+
+/* `bg-paper`: a sheet that stays white in every theme (the document image
+   preview). `inline` compiles the literal into the utility, so no remap of
+   the --color-* variables can reach it. */
+@theme inline {
+  --color-paper: #fff;
+}
+
+/* ── Dark mode (Architecture Rule 10) ──────────────────────────────────────
+   A palette remap, not per-element dark: pairs. Every colour utility, every
+   Jinja and Python colour map and every route-built fragment reads its
+   colour through var(--color-*), so redefining those variables once flips
+   them all.
+
+   Scope: only a document whose <html> carries data-theme can go dark. The
+   main service's base.html and auth/login.html render it from the
+   per-device « Affichage » cookie (utils/theme.py). The client portal loads
+   this same stylesheet but never renders the attribute, so it stays light,
+   and every dark branch is screen-only, so print stays light. Sombre is
+   always dark, Auto only while the device prefers dark (live), Clair never.
+   The theme keys in the selectors are stored keys: tests/test_theme_palette
+   derives them from utils/theme.py.
+
+   Values are hand-tuned literal oklch, a cool charcoal ramp rather than a
+   mirror of the light one: a mirror leaves text-gray-500 near 3:1 and folds
+   the red, orange and amber status tints into one brown. Literals, never
+   var(): inside this block a var() would resolve against the remapped
+   tokens (chains, cycles) and would pull unused shades into the light layer.
+   The 400/500 signal shades (dots, bars, icons) keep their light values and
+   are absent below, except indigo-500, which hover text needs lighter;
+   black never changes (the bg-black/40 scrims). A shade newly used anywhere
+   needs its dark value here: tests/test_theme_palette.py fails until it has
+   one, and holds every colour pair's dark contrast to its light contrast. */
+@custom-variant dark {
+  @media screen {
+    &:where([data-theme="sombre"], [data-theme="sombre"] *) { @slot; }
+  }
+  @media screen and (prefers-color-scheme: dark) {
+    &:where([data-theme="auto"], [data-theme="auto"] *) { @slot; }
+  }
+}
+
+/* Light is explicit wherever no dark branch applies: Clair, Auto on a light
+   device, and print (the color-scheme meta is not media-scoped). `only`
+   opts Clair out of Chrome's forced dark. Specificity (0,1,0) on purpose:
+   written :root[data-theme], it would outrank the dark branches below. */
+:root:where([data-theme]) { color-scheme: only light; }
+
+:root {
+  @variant dark {
+    color-scheme: dark;
+    --color-canvas: oklch(16% .008 262);
+    --color-white: oklch(20.5% .010 262);
+    --color-gray-50: oklch(23.5% .010 262);
+    --color-gray-100: oklch(26.5% .011 262);
+    --color-gray-200: oklch(32.5% .012 262);
+    --color-gray-300: oklch(42% .013 262);
+    --color-gray-400: oklch(64% .014 262);
+    --color-gray-500: oklch(71% .013 262);
+    --color-gray-600: oklch(77% .012 262);
+    --color-gray-700: oklch(83% .010 262);
+    --color-gray-800: oklch(87% .008 262);
+    --color-gray-900: oklch(91% .006 262);
+    --color-red-50: oklch(24% .05 15);
+    --color-red-100: oklch(27.5% .085 14);
+    --color-red-200: oklch(40% .11 17);
+    --color-red-600: oklch(68% .17 20);
+    --color-red-700: oklch(76% .13 18);
+    --color-red-800: oklch(84% .08 16);
+    --color-orange-50: oklch(25.5% .048 55);
+    --color-orange-100: oklch(30.5% .07 54);
+    --color-orange-600: oklch(74% .14 48);
+    --color-orange-700: oklch(80% .115 52);
+    --color-amber-50: oklch(27% .046 95);
+    --color-amber-100: oklch(34% .066 97);
+    --color-amber-200: oklch(44% .085 95);
+    --color-amber-600: oklch(78% .14 76);
+    --color-amber-700: oklch(83% .12 82);
+    --color-amber-800: oklch(87% .10 86);
+    --color-amber-900: oklch(91% .07 90);
+    --color-green-50: oklch(24% .035 155);
+    --color-green-100: oklch(29% .06 155);
+    --color-green-200: oklch(40% .085 155);
+    --color-green-600: oklch(74% .15 152);
+    --color-green-700: oklch(80% .13 152);
+    --color-green-800: oklch(86% .10 154);
+    --color-teal-50: oklch(24% .03 185);
+    --color-teal-100: oklch(29% .05 185);
+    --color-teal-600: oklch(75% .11 184);
+    --color-teal-700: oklch(81% .10 184);
+    --color-blue-50: oklch(24.5% .04 258);
+    --color-blue-100: oklch(29.5% .065 258);
+    --color-blue-200: oklch(41% .10 258);
+    --color-blue-600: oklch(72% .13 255);
+    --color-blue-700: oklch(79% .10 255);
+    --color-indigo-50: oklch(25% .045 277);
+    --color-indigo-100: oklch(30% .07 277);
+    --color-indigo-200: oklch(41% .10 277);
+    --color-indigo-300: oklch(50% .13 277);
+    --color-indigo-500: oklch(68% .17 277);
+    --color-indigo-600: oklch(75% .12 277);
+    --color-indigo-700: oklch(81% .095 277);
+    --color-indigo-800: oklch(86% .065 277);
+    --color-indigo-900: oklch(90% .045 277);
+    --color-purple-50: oklch(24.5% .04 305);
+    --color-purple-100: oklch(29.5% .065 305);
+    --color-purple-600: oklch(74% .14 305);
+    --color-purple-700: oklch(80% .11 305);
+  }
+}
+
+/* Floating surfaces: exactly the bg-white + shadow-lg/xl elements (modals,
+   menus, popovers). A 10%-black shadow vanishes on dark, so dark gives them
+   an inset hairline (on the bordered menus it lands on their own border: no
+   doubled edge) and a deeper shadow. --tw-shadow-color is registered
+   inherits:false, so it can only be set here, on the element whose
+   shadow-lg/xl reads it. */
+.bg-white:is(.shadow-lg, .shadow-xl) {
+  @variant dark {
+    outline: 1px solid var(--color-gray-200);
+    outline-offset: -1px;
+    --tw-shadow-color: color-mix(in oklab, var(--color-black) 50%, transparent);
+  }
 }
 
 /* ── Hand-written styles formerly inlined in base.html ─────────────────── */
@@ -158,7 +284,7 @@
 body {
   font-family: var(--font-sans);
   line-height: 1.6;
-  background-color: #FAFAFA;
+  background-color: var(--color-canvas);
 }
 
 [x-cloak] { display: none !important; }
@@ -174,7 +300,7 @@ body {
 }
 .skeleton {
   animation: skeleton-pulse 1.5s ease-in-out infinite;
-  background-color: #e5e7eb;
+  background-color: var(--color-gray-200);
   border-radius: 0.375rem;
 }
 
@@ -213,12 +339,14 @@ body {
   position: absolute;
   top: 0; right: 0; bottom: 0;
   width: 1.5rem;
-  background: linear-gradient(to right, rgba(249, 250, 251, 0), #f9fafb);
+  background: linear-gradient(to right, transparent, var(--color-gray-50));
   pointer-events: none;
 }
 
 /* Markdown note content — the ONE serif surface on screen (see FONT RULE
-   above): a note reads like a document, the chrome around it stays sans. */
+   above): a note reads like a document, the chrome around it stays sans.
+   Its colours are palette tokens so the note follows the dark theme too
+   (bleach strips style=, so note HTML brings no colour of its own). */
 .note-content { font-family: var(--font-serif); }
 .note-content h1 { font-size: 1.25rem; font-weight: 700; margin: 0.75rem 0 0.5rem; }
 .note-content h2 { font-size: 1.125rem; font-weight: 600; margin: 0.75rem 0 0.5rem; }
@@ -227,12 +355,12 @@ body {
 .note-content p { margin: 0.375rem 0; }
 .note-content ul { padding-left: 1.5rem; list-style-type: disc; margin: 0.375rem 0; }
 .note-content ol { padding-left: 1.5rem; list-style-type: decimal; margin: 0.375rem 0; }
-.note-content blockquote { border-left: 3px solid #d1d5db; padding-left: 0.75rem; color: #6b7280; margin: 0.5rem 0; }
-.note-content code { background: #f3f4f6; padding: 0.125rem 0.25rem; border-radius: 0.25rem; font-size: 0.8em; }
-.note-content pre { background: #f3f4f6; padding: 0.75rem; border-radius: 0.375rem; overflow-x: auto; margin: 0.5rem 0; }
+.note-content blockquote { border-left: 3px solid var(--color-gray-300); padding-left: 0.75rem; color: var(--color-gray-500); margin: 0.5rem 0; }
+.note-content code { background: var(--color-gray-100); padding: 0.125rem 0.25rem; border-radius: 0.25rem; font-size: 0.8em; }
+.note-content pre { background: var(--color-gray-100); padding: 0.75rem; border-radius: 0.375rem; overflow-x: auto; margin: 0.5rem 0; }
 .note-content pre code { background: none; padding: 0; }
 .note-content table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
-.note-content th, .note-content td { border: 1px solid #e5e7eb; padding: 0.375rem 0.5rem; }
-.note-content th { background: #f9fafb; font-weight: 600; }
-.note-content a { color: #4f46e5; text-decoration: underline; }
-.note-content hr { border: none; border-top: 1px solid #e5e7eb; margin: 0.75rem 0; }
+.note-content th, .note-content td { border: 1px solid var(--color-gray-200); padding: 0.375rem 0.5rem; }
+.note-content th { background: var(--color-gray-50); font-weight: 600; }
+.note-content a { color: var(--color-indigo-600); text-decoration: underline; }
+.note-content hr { border: none; border-top: 1px solid var(--color-gray-200); margin: 0.75rem 0; }

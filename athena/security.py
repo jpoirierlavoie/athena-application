@@ -176,7 +176,7 @@ def _add_security_headers(response: Response) -> Response:
 # full list of carriers is DEPLOYMENT.md §15 « Frontend assets », and the
 # recipe is CLAUDE.md « Regenerating the stylesheet ».
 _EARLY_HINTS_BASE = (
-    "</static/vendor/app.3fcfc0de.css>; rel=preload; as=style",
+    "</static/vendor/app.fcd0073a.css>; rel=preload; as=style",
     # Font preloads MUST carry `crossorigin` (fonts are always fetched in CORS
     # mode) — without it the browser fetches the file TWICE. Sans roman only
     # for the text faces (serif loads on demand on note pages, italics too
@@ -198,7 +198,7 @@ _EARLY_HINTS_APPCHECK = (
 # the auth SDK — the heaviest script on the cold-start path this feature
 # exists for) and uses reCAPTCHA for phone MFA regardless of App Check.
 _EARLY_HINTS_LOGIN = (
-    "</static/vendor/app.3fcfc0de.css>; rel=preload; as=style",
+    "</static/vendor/app.fcd0073a.css>; rel=preload; as=style",
     '</static/vendor/noto-sans-v42-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     '</static/vendor/material-symbols-outlined-v371-2ac72714.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",

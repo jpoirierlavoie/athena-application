@@ -37,7 +37,7 @@
        @touchstart="startX = $event.touches[0].clientX; dx = 0"
        @touchmove="dx = $event.touches[0].clientX - startX"
        @touchend="if (dx > 80) { $refs.toggleBtn{{ loop.index }}.click() }; dx = 0"
-       :style="dx > 0 ? 'transform: translateX(' + Math.min(dx, 100) + 'px); background: rgb(220 252 231)' : ''">
+       :style="dx > 0 ? 'transform: translateX(' + Math.min(dx, 100) + 'px); background: var(--color-green-100)' : ''">
     {# Checkbox — posts the state it was rendered to reach (never « flip »):
        a stale list asking for what is already true writes nothing. The
        field is `target`, not `status`: the list's status FILTER travels

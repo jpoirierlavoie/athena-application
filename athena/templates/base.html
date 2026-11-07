@@ -5,11 +5,18 @@
    navigation latérale (rapport 2026-07-27). L'attribut est la façon normalisée
    de leur dire de ne pas toucher à cette page. NE PAS l'ajouter au portail
    client (client/templates/base.html) : un client anglophone peut légitimement
-   vouloir traduire ces pages-là. #}
-<html lang="fr" translate="no" class="notranslate">
+   vouloir traduire ces pages-là.
+
+   data-theme / color-scheme (règle 10) : le thème de CET appareil, rendu
+   depuis son témoin par routes/_helpers.theme_context. Aucun défaut écrit
+   ici : un attribut absent veut dire clair — la règle même qui garde le
+   portail clair. La meta vient AVANT la feuille de style : c'est elle qui
+   règle le fond du navigateur avant que la feuille s'applique. #}
+<html lang="fr" translate="no" class="notranslate"{% if ui_theme is defined %} data-theme="{{ ui_theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  {% if ui_color_scheme is defined %}<meta name="color-scheme" content="{{ ui_color_scheme }}">{% endif %}
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>{% block title %}Pallas Athena{% endblock %}</title>
 
@@ -19,6 +26,10 @@
 
   <!-- PWA -->
   <link rel="manifest" href="/manifest.json">
+  {# The one literal colour a themed shell keeps (Rule 10's declared
+     exception): it paints the browser and status-bar chrome, outside the
+     page, where no --color-* token reaches — and the same dark #1a1a1a
+     suits both themes, as manifest.json's theme_color does. #}
   <meta name="theme-color" content="#1a1a1a">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -29,7 +40,7 @@
      CSS is PRECOMPILED (static/src/app.input.css → vendor/app.<hash>.css);
      regenerate + re-hash when class names change — see CLAUDE.md. #}
   <!-- Application stylesheet (precompiled Tailwind + hand-written rules) -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.3fcfc0de.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.fcd0073a.css') }}">
 
   {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
   {# App Check loads reCAPTCHA Enterprise from these origins at runtime —
@@ -46,7 +57,7 @@
      at the edge 2026-07-11.) #}
   {% block head %}{% endblock %}
 </head>
-<body class="min-h-screen bg-[#FAFAFA] text-gray-900"
+<body class="min-h-screen bg-canvas text-gray-900"
       hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'>
 
   {# ── Offline indicator ─────────────────────────────────────────── #}
@@ -78,7 +89,7 @@
     {# ── Desktop sidebar (≥768px) ──────────────────────────────────── #}
     <nav class="hidden md:flex md:flex-col md:w-56 md:sticky md:top-0 md:h-screen md:overflow-y-auto bg-white border-r border-gray-200 p-4">
       <a href="/" class="flex items-center gap-3 mb-8">
-        <img src="{{ url_for('static', filename='owl.png') }}" alt="Pallas Athena" class="w-8 h-8 object-contain">
+        <img src="{{ url_for('static', filename='owl.png') }}" alt="Pallas Athena" class="w-8 h-8 object-contain dark:invert">
         <span class="text-lg font-semibold text-gray-900">Pallas Athena</span>
       </a>
       <div class="flex flex-col gap-1">

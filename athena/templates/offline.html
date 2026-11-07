@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>Hors ligne — Pallas Athena</title>
   <style>
     /* The URL must byte-match the sw.js PRECACHE entry so cache.match serves
@@ -53,6 +54,25 @@
     }
     button:hover {
       background: #4338ca;
+    }
+    /* Dark: the service worker precaches this page once per install, and
+       the theme cookie is HttpOnly, so the page cannot know the device's
+       « Affichage » choice — it follows the device setting only. The values
+       are the dark palette tokens of static/src/app.input.css, as hex;
+       tests/test_theme_palette.py holds them equal. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --color-canvas: #0b0d11;
+        --color-gray-900: #dfe1e5;
+        --color-gray-600: #b0b4bc;
+        --color-indigo-600: #9ba6f9;
+        --color-indigo-700: #b1bcfe;
+        --color-white: #15171c;
+      }
+      body { background: var(--color-canvas); color: var(--color-gray-900); }
+      p { color: var(--color-gray-600); }
+      button { background: var(--color-indigo-600); color: var(--color-white); }
+      button:hover { background: var(--color-indigo-700); }
     }
   </style>
 </head>
