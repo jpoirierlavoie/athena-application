@@ -133,14 +133,19 @@ def scan_set_of(source_css: str, base: pathlib.Path) -> tuple:
     resolved against ``base``), as paths relative to athena/.
 
     Only a quoted path to a directory under athena/ is read. A glob, a
-    ``not`` or an ``inline()`` source would need its own reader: it raises
-    ``ValueError`` rather than let the guards scan less than Tailwind
-    compiles. So does a stylesheet with no ``@source`` at all."""
+    ``not`` path or an ``inline()`` source would need its own reader: it
+    raises ``ValueError`` rather than let the guards scan less than Tailwind
+    compiles. So does a stylesheet with no ``@source`` at all. The one
+    exception is ``@source not inline(...)``: it only REMOVES candidates (the
+    icon size names that collide with Tailwind's margin utilities, pinned by
+    tests/test_icons.py), adding no file and no class to the scan set."""
     dirs = []
     for statement in _css.parse_css(source_css).declarations:
         if not statement.startswith("@source"):
             continue
         written = statement[len("@source"):].strip()
+        if written.startswith("not inline(") and written.endswith(")"):
+            continue
         target = _css.unquote(written)
         path = (base / target).resolve()
         if target == written or any(c in target for c in "*?[]{}!") \
@@ -1992,6 +1997,9 @@ def test_guard_scan_set_refuses_a_source_it_cannot_read():
     base = (_ATHENA / _SOURCE).parent
     good = '@import "tailwindcss" source(none);@source "../../templates";'
     assert scan_set_of(good, base) == ("templates",)
+    # An exclusion removes candidates only: the scan set is unchanged.
+    excluded = good + '@source not inline("ms-{20,24}");'
+    assert scan_set_of(excluded, base) == ("templates",)
     for line in ('@source "../../templates/**/*.html";',
                  '@source not "../../templates/offline.html";',
                  '@source inline("bg-red-500");',

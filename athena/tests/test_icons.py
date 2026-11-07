@@ -106,3 +106,68 @@ def test_every_size_class_exists_in_css():
         assert f".ms-{size} " in css or f".ms-{size}{{" in css.replace(" ", ""), (
             f".ms-{size} absent de app.input.css"
         )
+
+
+# The .ms-N size classes share their names with Tailwind's margin-inline-
+# start utilities (ms-20 = 5rem). One "ms-20" anywhere in the scan set, a
+# comment included, used to compile that utility onto every 20-px icon:
+# 2026-11-07, a pagination comment pushed them all 80 px right.
+_EXCLUSION = '@source not inline("ms-{'
+_SIZE_RULE_PROPERTIES = {"font-size", "font-weight"}
+
+
+def _excluded_sizes(source_css: str) -> set:
+    """The sizes the ``@source not inline("ms-{…}")`` line excludes."""
+    start = source_css.find(_EXCLUSION)
+    if start < 0:
+        return set()
+    start += len(_EXCLUSION)
+    end = source_css.find('}")', start)
+    return {int(part) for part in source_css[start:end].split(",")}
+
+
+def _size_rule_problems(compiled_css: str, sizes) -> list:
+    """Every ``.ms-N{…}`` rule of the compiled stylesheet that declares
+    anything but the hand-written font-size and font-weight."""
+    problems = []
+    for size in sorted(sizes):
+        needle = f".ms-{size}{{"
+        at = compiled_css.find(needle)
+        while at >= 0:
+            body_start = at + len(needle)
+            body = compiled_css[body_start:compiled_css.find("}", body_start)]
+            names = {part.split(":", 1)[0].strip()
+                     for part in body.split(";") if ":" in part}
+            if not names <= _SIZE_RULE_PROPERTIES:
+                problems.append(f".ms-{size} declares {sorted(names)}")
+            at = compiled_css.find(needle, body_start)
+    return problems
+
+
+def test_tailwind_never_generates_the_icon_size_utilities():
+    from utils.icons import _SIZES
+
+    css = (Path(__file__).resolve().parents[1] / "static" / "src"
+           / "app.input.css").read_text(encoding="utf-8")
+    assert _excluded_sizes(css) == set(_SIZES), (
+        "app.input.css must exclude exactly utils/icons._SIZES with "
+        '@source not inline("ms-{…}")'
+    )
+
+
+def test_no_compiled_icon_size_rule_carries_a_utility():
+    from utils.icons import _SIZES
+
+    artifacts = sorted(VENDOR.glob("app.*.css"))
+    assert len(artifacts) == 1, artifacts
+    compiled = artifacts[0].read_text(encoding="utf-8")
+    assert all(f".ms-{size}{{" in compiled for size in _SIZES), "no .ms-N rule read"
+    assert _size_rule_problems(compiled, _SIZES) == []
+
+
+def test_size_rule_checker_catches_a_margin_utility():
+    leak = ".ms-20{font-size:21px}.ms-20{margin-inline-start:calc(var(--spacing) * 20)}"
+    assert _size_rule_problems(leak, {20}) != []
+    assert _size_rule_problems(".ms-20{font-size:21px}", {20}) == []
+    assert _excluded_sizes('@source not inline("ms-{20,24}");') == {20, 24}
+    assert _excluded_sizes('@source "../../templates";') == set()

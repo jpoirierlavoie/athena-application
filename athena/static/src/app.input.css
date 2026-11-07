@@ -22,6 +22,15 @@
    template tree; without this line their classes silently never compile. */
 @source "../../client/templates";
 
+/* Never generate these. The icon size classes (.ms-N, hand-written below)
+   share their names with Tailwind's margin-inline-start utilities, and a
+   size written anywhere in the scan set — a comment is enough — compiles
+   `margin-inline-start: N/4 rem` onto every icon of that size (2026-11-07:
+   one pagination comment pushed every 20-px icon 80 px right). The list is
+   utils/icons._SIZES; tests/test_icons.py pins the two together. This line
+   only removes candidates: the @source paths above stay the scan set. */
+@source not inline("ms-{10,12,14,16,20,24,28,40,48,64}");
+
 /* ── Fonts — Noto Sans (UI) + Noto Serif (note content; the PDF reports use
    the static TTFs in utils/fonts/), vendored (SIL OFL; the *-OFL.txt files in
    static/vendor/; provenance + sha256 pins in utils/fonts/README.md) ─────────
