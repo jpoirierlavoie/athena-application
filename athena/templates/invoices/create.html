@@ -85,8 +85,8 @@
         <div>
           <label class="block text-xs font-medium text-gray-700 mb-1">Date d'échéance</label>
           <input type="date" name="due_date" value="{{ form_due_date or '' }}"
-                 placeholder="Auto : +30 jours"
                  class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
+          <p class="text-xs text-gray-500 mt-1">Laissée vide : un mois après la date de la facture.</p>
         </div>
         {# Aucune provision ici (lot 3a) : une facture émise naît sans
            provision — elle s'impute après l'envoi, par un « paiement
@@ -221,7 +221,7 @@
         <div>
           <label class="block text-xs font-medium text-gray-700 mb-1">Conditions de paiement</label>
           <textarea name="payment_terms" rows="2"
-                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{% if form_payment_terms is defined %}{{ form_payment_terms }}{% else %}Payable dans les 30 jours suivant la date de facturation.{% endif %}</textarea>
+                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{% if form_payment_terms is defined %}{{ form_payment_terms }}{% else %}{{ default_payment_terms }}{% endif %}</textarea>
         </div>
       </div>
     </div>

@@ -2720,6 +2720,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         **_money("qst_amount"),
         **_money("total", "Pass it as create_invoice's expected_total_cents "
                           "— with the SAME selection."),
+        "date": _str("The invoice date create_invoice would store, "
+                     "YYYY-MM-DD."),
+        "due_date": _nstr(
+            "The due date it would store, YYYY-MM-DD: the given due_date, "
+            "else date + 1 calendar month (31 Jan → 28/29 Feb); null when "
+            "the selection was refused before the date was judged."),
         "number_prefix": _str(
             "The year's sequence (« 2026-F »). The number itself is drawn "
             "only when create_invoice commits."),

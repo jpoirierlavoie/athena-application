@@ -4390,6 +4390,42 @@ Notes:
   smoke test after the deploy:** delete a task and a court date on the
   web, then check that both leave DavX5 at its next sync. No index, rule,
   secret, consent, plugin or dependency change.
+- **Invoice dates: UTC, never in the future, due one month later
+  (2026-11-07).** The lawyer's decisions of that day; Change Impact items
+  1 and 4 are touched, item 3 is not (the docx engine is unchanged, only
+  the due date it prints). `plan_invoice` refuses an invoice date after
+  the current UTC calendar day (reason `date_future`), which the web form
+  and — for the first time — `import_invoice` reach (the import raises it
+  as `argument_refused`). The UTC day itself, already tomorrow on a
+  Montréal evening, is accepted, and the web form still pre-fills it — now
+  through `utils.deadlines.today_utc`, the one UTC « today » Architecture
+  Rule 5 names. So an invoice made on the evening of a month's or a year's
+  last day defaults to the NEXT period's date (at year end its number
+  still follows the Montréal year, and the « datée de … » warning says
+  so): change the date in the form when the invoice belongs to the day
+  ending in Montréal. The connector's `create_invoice` and
+  `preview_invoice` keep their own stricter Montréal-day check and
+  default, declared in `mcp/handlers._invoice_date`: aligning them would
+  widen a shipped tool, a decision of its own. When no due date is given,
+  it is the invoice date plus one calendar month (31 January → the last
+  day of February) instead of 30 days — on the web and through both
+  connector creators, an in-place change of a default on two shipped write
+  tools by the lawyer's decision (item 1) — and `preview_invoice` now
+  returns the `date` and `due_date` the write would store (two new keys of
+  a read). The default payment terms read « Payable dans un délai d'un
+  mois suivant la date de facturation. »; the due date stays correctable
+  on a brouillon; existing invoices keep their stored due date and terms.
+  **The note d'honoraires prints the due date (`{{facture.date_echeance}}`)
+  but no placeholder carries the payment terms:** any delay written in the
+  active « Note d'honoraires » gabarit (« 30 jours ») is the gabarit's own
+  text — check it before the deploy and, if it states a delay, upload a
+  version that says « un mois » or none. On the next real invoice dated
+  the 29th to the 31st, read the clamped due date on its note. The
+  connector's descriptions changed, so the registry fingerprint moved: per
+  the approved plan, the plugin is rebuilt and delivered with lot A's
+  plugin release (1.4.0), and `exporter_plugin_athena --check` reports
+  that expected drift until then. No index, rule, secret, consent or
+  dependency change.
 
 ## 16. Troubleshooting
 

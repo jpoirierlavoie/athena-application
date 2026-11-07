@@ -25,6 +25,7 @@ from utils.deadlines import (
     prev_juridical_day,
     get_quebec_holidays,
     today_mtl,
+    today_utc,
     _easter_sunday,
 )
 
@@ -480,6 +481,26 @@ def test_today_mtl_across_the_fall_back(monkeypatch):
     assert today_mtl() == date(2026, 11, 1)
 
 
+@pytest.mark.parametrize("instant, utc_day, montreal_day", [
+    # 21:30 EDT on 30 July: the UTC day turned over at 20:00.
+    ("2026-07-31T01:30:00+00:00", date(2026, 7, 31), date(2026, 7, 30)),
+    # 22:00 EST on 31 December: already next YEAR in UTC.
+    ("2027-01-01T03:00:00+00:00", date(2027, 1, 1), date(2026, 12, 31)),
+    # Mid-afternoon: both clocks agree.
+    ("2026-11-15T18:00:00+00:00", date(2026, 11, 15), date(2026, 11, 15)),
+])
+def test_today_utc_is_the_utc_day_through_the_same_seam(
+    monkeypatch, instant, utc_day, montreal_day,
+):
+    """The one deliberate UTC read — invoice dates only (lawyer's decision,
+    2026-11-07). Every evening it names TOMORROW, the very band today_mtl
+    refuses everywhere else; both read the module's one clock, so a single
+    freeze pins them together."""
+    _freeze_utc(monkeypatch, instant)
+    assert today_utc() == utc_day
+    assert today_mtl() == montreal_day
+
+
 def test_is_past_due_defaults_to_today_mtl(monkeypatch):
     """Without an injected today, the predicate reads the Montréal clock —
     not UTC. Pinned because the default is what every caller uses."""
@@ -835,3 +856,39 @@ def test_every_prescription_site_passes_the_civil_calendar(path, function):
         f"{path}:{function} calls a calendar helper without regime=CIVIL "
         f"(a prescription date — art. 2879 C.c.Q.): {wrong}"
     )
+
+
+# ── today_utc: invoice dates only (lot D, 2026-11-07) ─────────────────────
+
+_SKIPPED_DIRS = {"tests", ".venv", "venv", "node_modules", "__pycache__"}
+
+
+def _names_today_utc(tree: ast.AST) -> bool:
+    """True when the module imports, calls or reads ``today_utc`` — code,
+    never a docstring's mention."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(
+                alias.name == "today_utc" for alias in node.names):
+            return True
+        if isinstance(node, ast.Name) and node.id == "today_utc":
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == "today_utc":
+            return True
+    return False
+
+
+def test_today_utc_serves_invoice_dates_only():
+    """The UTC « today » is for invoice dates alone: the model's future
+    check and the web form's pre-fill. Anywhere else it would bring back the
+    evening-before bug today_mtl exists to prevent — so its users are
+    pinned, and a new one must be argued for here."""
+    users = set()
+    for path in _ATHENA.rglob("*.py"):
+        relative = path.relative_to(_ATHENA)
+        if _SKIPPED_DIRS & set(relative.parts):
+            continue
+        if relative.as_posix() == "utils/deadlines.py":
+            continue
+        if _names_today_utc(ast.parse(path.read_text(encoding="utf-8"))):
+            users.add(relative.as_posix())
+    assert users == {"models/invoice.py", "routes/invoices.py"}

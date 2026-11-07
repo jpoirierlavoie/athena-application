@@ -33,6 +33,7 @@ import pathlib
 import re
 import sys
 from datetime import date, datetime, timezone
+from html import unescape
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
@@ -85,10 +86,25 @@ def _fake_modules() -> list:
             and getattr(m, "db", None) is not None]
 
 
+def _figer_horloge(monkeypatch, instant: datetime) -> None:
+    """Fige l'horloge à sa seule couture, utils.deadlines : today_mtl et
+    today_utc (la date d'une facture, lot D) la lisent toutes deux."""
+    from utils import deadlines
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is None else instant.astimezone(tz)
+
+    monkeypatch.setattr(deadlines, "datetime", _Clock)
+
+
 @pytest.fixture
 def fake(monkeypatch):
     f = install(monkeypatch, *_fake_modules())
-    # Millésime FIGÉ — jamais un offset dérivé de l'horloge.
+    # Millésime FIGÉ — jamais un offset dérivé de l'horloge. L'horloge aussi :
+    # le contrôle de la date d'une facture (today_utc) lit le même jour.
+    _figer_horloge(monkeypatch, datetime(2026, 6, 15, 12, tzinfo=UTC))
     monkeypatch.setattr(invoice_model, "today_mtl", lambda: TODAY)
     f.seed("parties/p1", {"id": "p1", "type": "individual",
                           "first_name": "Jean", "last_name": "Tremblay",
@@ -446,9 +462,11 @@ def test_create_invoice_decide_par_plan_invoice_et_par_lui_seul():
               for n in ast.walk(fn) if isinstance(n, ast.Call)
               and isinstance(n.func, (ast.Name, ast.Attribute))}
     assert {"plan_invoice", "invoice_document_from"} <= called
+    # The due date too (lot D): the plan settles it, the write stores it.
     assert not called & {"get_time_entry", "get_expense", "issuance_refusals",
                          "compute_totals", "_adjustment_line_item",
-                         "_sanitize_data", "_default_doc"}
+                         "_sanitize_data", "_default_doc",
+                         "default_due_date", "add_period", "today_utc"}
 
 
 def test_l_apercu_et_l_ecriture_jugent_le_meme_document(fake):
@@ -618,7 +636,7 @@ def test_le_premier_affichage_coche_tout_le_non_facture(fake, client):
     html = client.get("/factures/new?dossier_id=d1").get_data(as_text=True)
     (initial,) = re.findall(r"selectedEntries: (\[[^\]]*\])", html)
     assert sorted(json.loads(initial)) == ["te-a", "te-b"]
-    assert "Payable dans les 30 jours suivant la date de facturation." in html
+    assert invoice_model.DEFAULT_PAYMENT_TERMS in unescape(html)
 
 
 def test_le_formulaire_n_offre_ni_n_envoie_de_provision(fake, client):
@@ -659,3 +677,195 @@ def test_sans_avertissement_le_retour_demande_est_honore(fake, client):
     resp = _post(client, eid, return_to="/dossiers/d1")
     assert resp.status_code == 302
     assert urlparse(resp.location).path == "/dossiers/d1"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 9. Les dates de la facture (lot D, 2026-11-07)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Décision de l'avocat du 2026-11-07 : les dates de facture sont en UTC.
+# Une date n'est refusée que si elle tombe APRÈS le jour civil UTC courant —
+# un soir à Montréal, le jour UTC a déjà changé, et ce n'est pas une date
+# future. L'échéance par défaut est la date de la facture plus un mois civil
+# (31 janvier → 28 ou 29 février), corrigeable sur un brouillon.
+
+_SOIR_DU_31 = "2027-01-01T03:00:00+00:00"    # 22:00 HNE, le 31 décembre 2026
+_SOIR_D_ETE = "2027-08-01T01:00:00+00:00"    # 21:00 HAE, le 31 juillet 2027
+
+
+def _soir(monkeypatch, instant: str) -> None:
+    """Fige l'horloge à un soir donné et rend au modèle le vrai today_mtl,
+    que la fixture remplace par un jour de juin : le millésime du numéro suit
+    alors la même horloge que le contrôle de la date."""
+    from utils import deadlines
+
+    _figer_horloge(monkeypatch, datetime.fromisoformat(instant))
+    monkeypatch.setattr(invoice_model, "today_mtl", deadlines.today_mtl)
+
+
+@pytest.mark.parametrize("instant, jour_utc, avertie", [
+    # Le soir du 31 décembre : la facture prend la date de l'an suivant,
+    # son numéro reste de l'année montréalaise — et l'avertissement le dit.
+    (_SOIR_DU_31, datetime(2027, 1, 1, tzinfo=UTC), True),
+    (_SOIR_D_ETE, datetime(2027, 8, 1, tzinfo=UTC), False),
+])
+def test_le_jour_utc_d_un_soir_a_montreal_n_est_pas_une_date_future(
+    fake, monkeypatch, instant, jour_utc, avertie,
+):
+    _soir(monkeypatch, instant)
+    eid = _entry(fake, "te1")
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(date=jour_utc), require_all_sources=True)
+    assert errors == [] and doc["date"] == jour_utc
+    assert bool(invoice_model.number_year_warning(
+        doc["date"], doc["invoice_number"])) is avertie
+
+
+@pytest.mark.parametrize("number", [None, "2019-F014"])
+def test_une_date_apres_le_jour_utc_est_refusee_sur_les_deux_chemins(
+    fake, monkeypatch, number,
+):
+    """(Le modèle acceptait n'importe quelle date : le web n'en refusait
+    aucune, la reprise non plus.)"""
+    _soir(monkeypatch, _SOIR_DU_31)
+    eid = _entry(fake, "te1")
+    extra = {} if number is None else {"invoice_number": number}
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(date=datetime(2027, 1, 2, tzinfo=UTC)),
+        require_all_sources=True, **extra)
+    assert doc is None
+    assert any("2027-01-02" in e and "postérieure à aujourd'hui" in e
+               for e in errors), errors
+    _nothing_written(fake, f"timeentries/{eid}")
+
+
+def test_la_date_future_a_son_motif_et_le_plan_la_refuse_comme_l_ecriture(
+    fake, monkeypatch, caplog,
+):
+    """Le contrôle vit dans plan_invoice : le plan et l'écriture refusent la
+    même facture, sous le même motif, consigné. (Le connecteur, lui, refuse
+    plus tôt une date future à Montréal — voir test_mcp_billing_writes.)"""
+    caplog.set_level("INFO", logger="pallas.invoice")
+    _soir(monkeypatch, _SOIR_DU_31)
+    eid = _entry(fake, "te1")
+    data = _data(date=datetime(2027, 1, 2, tzinfo=UTC))
+    plan = invoice_model.plan_invoice(
+        "d1", [eid], [], invoice_model.invoice_document_from(data),
+        generated=True, require_all_sources=True)
+    _, errors = invoice_model.create_invoice(
+        "d1", [eid], [], data, require_all_sources=True)
+    assert plan.refusal_reason == "date_future"
+    assert plan.errors == errors
+    refused = _invoice_events(caplog)[-1]
+    assert (refused["event"], refused["reason"]) == ("invoice_refused",
+                                                      "date_future")
+
+
+@pytest.mark.parametrize("dated, due", [
+    (datetime(2026, 6, 15, tzinfo=UTC), datetime(2026, 7, 15, tzinfo=UTC)),
+    (datetime(2025, 1, 31, tzinfo=UTC), datetime(2025, 2, 28, tzinfo=UTC)),
+    (datetime(2024, 1, 31, tzinfo=UTC), datetime(2024, 2, 29, tzinfo=UTC)),
+    (datetime(2025, 12, 15, tzinfo=UTC), datetime(2026, 1, 15, tzinfo=UTC)),
+])
+def test_l_echeance_par_defaut_est_un_mois_civil_apres_la_date(
+    fake, dated, due,
+):
+    """(Elle était de 30 jours : le 31 janvier échéait le 2 mars, le
+    15 décembre le 14 janvier.)"""
+    eid = _entry(fake, "te1")
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(date=dated), require_all_sources=True)
+    assert errors == [] and doc["due_date"] == due
+    assert fake.peek(f"invoices/{doc['id']}")["due_date"] == due
+
+
+def test_le_plan_porte_l_echeance_que_l_ecriture_stocke(fake):
+    eid = _entry(fake, "te1")
+    data = _data(date=datetime(2025, 1, 31, tzinfo=UTC))
+    plan = invoice_model.plan_invoice(
+        "d1", [eid], [], invoice_model.invoice_document_from(data),
+        generated=True, require_all_sources=True)
+    doc, _ = invoice_model.create_invoice(
+        "d1", [eid], [], data, require_all_sources=True)
+    assert plan.due_date == doc["due_date"] == datetime(2025, 2, 28, tzinfo=UTC)
+
+
+def test_une_echeance_donnee_est_gardee(fake):
+    eid = _entry(fake, "te1")
+    due = datetime(2026, 8, 31, tzinfo=UTC)
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(due_date=due), require_all_sources=True)
+    assert errors == [] and doc["due_date"] == due
+
+
+def test_la_reprise_recoit_la_meme_echeance_par_defaut(fake):
+    eid = _entry(fake, "te1")
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(date=datetime(2019, 1, 31, tzinfo=UTC)),
+        invoice_number="2019-F014", require_all_sources=True)
+    assert errors == [] and doc["due_date"] == datetime(2019, 2, 28, tzinfo=UTC)
+
+
+def test_une_date_qui_n_est_pas_une_date_est_refusee_jamais_jugee(fake):
+    """(Revue du lot D : _validate ne voit qu'une valeur — une chaîne passait
+    le contrôle de la date sans être jugée, puis l'échéance par défaut levait
+    une exception au lieu d'un refus.)"""
+    eid = _entry(fake, "te1")
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(date="2099-01-01"), require_all_sources=True)
+    assert doc is None
+    assert any("illisible" in e for e in errors), errors
+    _nothing_written(fake, f"timeentries/{eid}")
+
+
+def test_les_conditions_par_defaut_disent_un_mois(fake):
+    assert invoice_model.DEFAULT_PAYMENT_TERMS == (
+        "Payable dans un délai d'un mois suivant la date de facturation.")
+    eid = _entry(fake, "te1")
+    doc, _ = invoice_model.create_invoice(
+        "d1", [eid], [], _data(), require_all_sources=True)
+    assert doc["payment_terms"] == invoice_model.DEFAULT_PAYMENT_TERMS
+
+
+def test_le_formulaire_preremplit_le_jour_utc_et_l_accepte(
+    fake, client, monkeypatch,
+):
+    """Un soir à Montréal, la page préremplit le jour UTC — déjà demain — et
+    le POST l'accepte : le préremplissage et le contrôle lisent la même
+    couture (utils.deadlines.today_utc)."""
+    _soir(monkeypatch, _SOIR_DU_31)
+    eid = _entry(fake, "te1")
+    page = client.get("/factures/new?dossier_id=d1").get_data(as_text=True)
+    assert 'name="invoice_date" value="2027-01-01"' in page
+    resp = _post(client, eid, invoice_date="2027-01-01")
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:400]
+    (stored,) = fake.peek_collection("invoices").values()
+    assert stored["date"] == datetime(2027, 1, 1, tzinfo=UTC)
+    assert stored["due_date"] == datetime(2027, 2, 1, tzinfo=UTC)
+
+
+def test_le_formulaire_refuse_une_date_future_et_le_dit(
+    fake, client, monkeypatch,
+):
+    _soir(monkeypatch, _SOIR_DU_31)
+    eid = _entry(fake, "te1")
+    resp = _post(client, eid, invoice_date="2027-01-02")
+    page = unescape(resp.get_data(as_text=True))
+    assert resp.status_code == 200
+    # The refusal itself — not the re-rendered field, which holds the date too.
+    assert ("La date de la facture (2027-01-02) est postérieure à "
+            "aujourd'hui") in page
+    assert fake.peek_collection("invoices") == {}
+
+
+def test_le_formulaire_annonce_un_mois_et_tient_les_conditions_du_modele(
+    fake, client,
+):
+    page = client.get("/factures/new?dossier_id=d1").get_data(as_text=True)
+    # A visible line: browsers draw no placeholder on <input type="date">.
+    assert "Laissée vide : un mois après la date de la facture." in page
+    assert invoice_model.DEFAULT_PAYMENT_TERMS in unescape(page)
+    # Une seule source : le gabarit n'en garde aucune copie.
+    gabarit = (_ATHENA / "templates" / "invoices" / "create.html").read_text(
+        encoding="utf-8")
+    assert "Payable dans" not in gabarit

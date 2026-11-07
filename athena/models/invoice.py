@@ -18,12 +18,23 @@ shape removes.
 A brouillon is corrected by :func:`update_invoice_draft` — notes, payment
 terms, due date and a fresh billing-address snapshot, never a money figure
 or a line item.
+
+Invoice dates are UTC (the lawyer's decision of 2026-11-07). :func:`plan_invoice`
+refuses a date only when it falls AFTER the current UTC calendar day
+(``utils.deadlines.today_utc`` — the one UTC « today » Architecture Rule 5
+names), so the latest date it accepts is the UTC day: already tomorrow on a
+Montréal evening, when an invoice made at a month's or a year's end may carry
+the next period's date (its number still follows the Montréal year, and
+:func:`number_year_warning` says so). The connector's ``create_invoice`` and
+``preview_invoice`` keep their own stricter Montréal-day check, by the same
+decision (``mcp/handlers._invoice_date``). The default due date is the
+invoice date plus one calendar month (:func:`default_due_date`).
 """
 
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
@@ -32,9 +43,10 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
-from utils.deadlines import today_mtl
+from utils.deadlines import today_mtl, today_utc
 from utils.format_fr import format_cents_fr
 from utils.logging_setup import log_invoice_event, log_unexpected, sanitize_log_value
+from utils.recours import MONTHS, add_period
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +301,19 @@ def available_transitions(
 GST_RATE_BPS = 500       # 5.00%
 QST_RATE_BPS = 9975      # 9.975%
 
-DEFAULT_PAYMENT_TERMS = "Payable dans les 30 jours suivant la date de facturation."
+DEFAULT_PAYMENT_TERMS = (
+    "Payable dans un délai d'un mois suivant la date de facturation."
+)
+
+
+def default_due_date(invoice_date: datetime) -> datetime:
+    """The due date an invoice gets when none is given: its date plus one
+    CALENDAR month, the day clamped to that month's last (31 January → 28
+    or 29 February) — ``utils.recours.add_period``, the house's one month
+    arithmetic. It matches ``DEFAULT_PAYMENT_TERMS`` (the lawyer's decision
+    of 2026-11-07; it was 30 days)."""
+    return add_period(invoice_date, 1, MONTHS)
+
 
 # ── Imported (historical) invoice numbers ────────────────────────────────
 # A number carried over from the practice's previous system. Free-form on
@@ -766,7 +790,10 @@ class InvoicePlan:
       machine-stable code of the first one, for the observability event;
     * ``warnings`` — true facts the caller should SHOW, never refusals (the
       number's year differs from the invoice date's; a provision supplied on
-      the generated path was ignored).
+      the generated path was ignored);
+    * ``due_date`` — the due date the invoice will carry: the caller's, else
+      :func:`default_due_date` of its date. Set once the date is accepted,
+      so ``create_invoice`` stores what this plan decided.
     """
 
     line_items: list[dict] = field(default_factory=list)
@@ -782,6 +809,7 @@ class InvoicePlan:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     refusal_reason: str = ""
+    due_date: Optional[datetime] = None
 
     def refuse(self, errors: list[str], reason: str) -> "InvoicePlan":
         self.errors = list(errors)
@@ -989,7 +1017,11 @@ def plan_invoice(
     In order, the first refusal wins (its error list is returned as a
     whole), exactly as ``create_invoice`` always refused:
 
-    1. the invoice fields (``_validate``) and an empty selection;
+    1. the invoice fields (``_validate``) and an empty selection; a date
+       that is not a date (``validation``); then an invoice date AFTER the
+       current UTC day (``date_future``, on both paths — see the module
+       docstring). The date accepted, the plan settles the due date
+       (``due_date``);
     2. each source is read; one that cannot become a line is SKIPPED with
        its reason — missing or unreadable, already billed (the reason names
        the invoice, so a stale selection points at what billed it),
@@ -1028,6 +1060,22 @@ def plan_invoice(
         errors.append("Sélectionnez au moins une entrée de temps ou une dépense.")
     if errors:
         return plan.refuse(errors, "validation")
+
+    # Never dated in the future — measured on the UTC day (module docstring).
+    invoice_day = _calendar_day(merged.get("date"))
+    if invoice_day is None:
+        # _validate saw a value, but not a date: refused, never judged.
+        return plan.refuse([
+            "La date de la facture est illisible : elle doit être une date. "
+            "Rien n'a été créé."
+        ], "validation")
+    if invoice_day > today_utc():
+        return plan.refuse([
+            f"La date de la facture ({invoice_day.isoformat()}) est "
+            "postérieure à aujourd'hui : une facture ne se date jamais dans "
+            "l'avenir. Rien n'a été créé."
+        ], "date_future")
+    plan.due_date = merged.get("due_date") or default_due_date(merged["date"])
 
     # Build line items from selected sources. A source that is missing,
     # already invoiced, owned by a different dossier or (generated path)
@@ -1359,9 +1407,9 @@ def create_invoice(
     })
     provenance.stamp_create(merged, now)
 
-    # Set default due date if not provided
-    if not merged.get("due_date") and merged.get("date"):
-        merged["due_date"] = merged["date"] + timedelta(days=30)
+    # The plan's due date: the caller's, else one calendar month after the
+    # invoice date — decided once, by plan_invoice.
+    merged["due_date"] = plan.due_date
 
     invoice_ref = db.collection(COLLECTION).document(invoice_id)
     source_refs = [

@@ -1,4 +1,10 @@
-"""Invoice management routes — list, create, detail, status updates."""
+"""Invoice management routes — list, create, detail, status updates.
+
+The creation form pre-fills the invoice date with the UTC day
+(``utils.deadlines.today_utc``) — the day the model's future-date guard
+measures against: the exception to Architecture Rule 5 declared in
+``models/invoice.py``.
+"""
 
 from datetime import datetime, timezone
 from typing import Optional
@@ -25,8 +31,10 @@ from pagination import (
 from security import safe_internal_redirect, sanitize
 from utils import storage_identity
 from utils.cabinet import cabinet_dict
+from utils.deadlines import today_utc
 from utils.format_fr import format_rate_fr
 from models.invoice import (
+    DEFAULT_PAYMENT_TERMS,
     DRAFT_FIELDS,
     DRAFT_NOTES_MAX_LENGTH,
     DRAFT_PAYMENT_TERMS_MAX_LENGTH,
@@ -83,9 +91,11 @@ def _template_context() -> dict:
     and the detail page is a DATA sheet — it never restates the firm's own
     identity. The tax numbers a given invoice was issued under live on the
     invoice itself (``gst_number``/``qst_number``, snapshotted at creation),
-    which is what the sheet shows.
+    which is what the sheet shows. The creation form's default payment terms
+    are the model's own constant — the template keeps no copy.
     """
-    return {"status_labels": STATUS_LABELS}
+    return {"status_labels": STATUS_LABELS,
+            "default_payment_terms": DEFAULT_PAYMENT_TERMS}
 
 
 # ── Invoice list ─────────────────────────────────────────────────────────
@@ -233,7 +243,9 @@ def invoice_new() -> str:
         if client_partie:
             billing_address = billing_address_from(client_partie)
 
-    today = datetime.now(timezone.utc)
+    # The UTC day — the one the model's future-date guard measures against
+    # (models/invoice docstring), read through the same clock.
+    today = today_utc()
 
     ctx.update(
         dossier=dossier,
@@ -267,8 +279,8 @@ def unbilled_items(dossier_id: str) -> str:
         if client_partie:
             billing_address = billing_address_from(client_partie)
 
-    today = datetime.now(timezone.utc)
-
+    # No invoice date here: the partial renders none (the form's own field
+    # carries it, pre-filled by invoice_new).
     ctx = _template_context()
     ctx.update(
         dossier=dossier,
@@ -277,7 +289,6 @@ def unbilled_items(dossier_id: str) -> str:
         billing_address=billing_address,
         client_name=clients[0].get("name", "") if clients else "",
         client_id=clients[0].get("id", "") if clients else "",
-        invoice_date=today.strftime("%Y-%m-%d"),
         errors=[],
     )
     return render_template("invoices/_unbilled_items.html", **ctx)

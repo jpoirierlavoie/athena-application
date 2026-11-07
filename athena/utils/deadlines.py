@@ -22,10 +22,18 @@ exists to prevent:
   a no-op on the computed deadlines (steps, prescription), which already
   land on juridical days by construction.
 
-``today_mtl`` is the one place a clock is read. Every surface that needs
+``today_mtl`` is the « today » of every surface. Every surface that needs
 "today" must go through it, or two surfaces drift by up to a day: UTC runs
 ahead of Montréal by 4-5 hours, so a UTC-based comparison declares a deadline
 past from 20:00 (EDT) / 19:00 (EST) the evening BEFORE.
+
+One deliberate exception reads the same clock: ``today_utc``, for invoice
+dates ALONE — the model's future-date guard (``models.invoice.plan_invoice``)
+and the web creation form's pre-filled date, which must agree with it
+(pinned in ``tests/test_deadlines.py``). Invoice dates are UTC by the
+lawyer's decision of 2026-11-07: an invoice dated with the UTC day — already
+tomorrow on a Montréal evening — is not dated in the future. Nothing else may
+use it.
 
 **Two calendars, not one.** Which days are « fériés » depends on the text
 that governs the délai, and the two texts that matter here disagree on two
@@ -189,7 +197,8 @@ def last_action_day(deadline: date) -> tuple[date, bool]:
 
 
 def today_mtl() -> date:
-    """The current calendar date in Montréal — the ONE clock read.
+    """The current calendar date in Montréal — the « today » of every
+    surface but one (``today_utc``, for invoice dates).
 
     Not ``date.today()`` (server-local, undefined on App Engine) and not
     ``datetime.now(timezone.utc).date()``: UTC crosses midnight 4-5 hours
@@ -197,6 +206,22 @@ def today_mtl() -> date:
     the whole evening preceding it.
     """
     return datetime.now(timezone.utc).astimezone(MTL).date()
+
+
+def today_utc() -> date:
+    """The current calendar date in UTC — this module's deliberate UTC read.
+
+    It serves invoice dates alone — the future-date guard of
+    ``models.invoice.plan_invoice`` and the web creation form's pre-filled
+    date: invoice dates are UTC (the lawyer's decision, 2026-11-07), so the
+    model holds a date in the future only once it is AFTER this day — the
+    UTC day itself, a day ahead of Montréal every evening, never is. (The
+    connector's ``create_invoice`` keeps its own stricter Montréal check.)
+    Every other « today » is ``today_mtl``'s, for the reason that function
+    gives. Same clock as ``today_mtl`` (this module's ``datetime``), so one
+    freeze pins both.
+    """
+    return datetime.now(timezone.utc).date()
 
 
 def _as_date(value) -> Optional[date]:

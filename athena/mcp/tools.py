@@ -1072,9 +1072,9 @@ def _invoice_selection_props() -> dict:
                 "instead of naming ids."),
         },
         "date": _date("Invoice date, YYYY-MM-DD; default today (Montréal). "
-                      "Never in the future."),
-        "due_date": _date("YYYY-MM-DD, not before `date`; default date + 30 "
-                          "days."),
+                      "Never after today's Montréal date."),
+        "due_date": _date("YYYY-MM-DD, not before `date`; default date + 1 "
+                          "calendar month (31 Jan → 28/29 Feb)."),
     }
 # Lot 2A (T9) — the upload ticket. Literals copied from the models (an
 # import would run firestore.Client() at load); tests/test_mcp_upload.py
@@ -4819,8 +4819,10 @@ TOOLS: dict[str, dict] = {
                         "length — never truncated."
                     ),
                 },
-                "date": _date("The ORIGINAL invoice date, YYYY-MM-DD."),
-                "due_date": _date("Defaults to date + 30 days."),
+                "date": _date("The ORIGINAL invoice date, YYYY-MM-DD; never "
+                              "after today's UTC date."),
+                "due_date": _date("Defaults to date + 1 calendar month "
+                                  "(31 Jan → 28/29 Feb)."),
                 "expected_total_cents": {
                     "type": "integer", "minimum": 0, "maximum": 100000000000,
                     "description": (
@@ -4943,8 +4945,9 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "minLength": 1,
                     "maxLength": INVOICE_TERMS_MAX_CHARS,
                     "description": (
-                        "Printed on the invoice; default « Payable dans les "
-                        "30 jours… »."),
+                        "Stored on the invoice, shown on its sheet (no note "
+                        "d'honoraires placeholder prints it); default "
+                        "« Payable dans un délai d'un mois… »."),
                 },
                 "expected_total_cents": {
                     "type": "integer", "minimum": 0,

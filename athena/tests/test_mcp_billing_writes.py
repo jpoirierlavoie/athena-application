@@ -78,6 +78,8 @@ WHEN = datetime(2026, 9, 1, tzinfo=UTC)
 UID = "kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s"
 COUNTER = "counters/invoices-2026"
 TAXES = {"gst_number": "123456789 RT0001", "qst_number": "1234567890 TQ0001"}
+# 22:00 EST on 31 December 2026 — the UTC day is already 2027-01-01.
+_EVENING_OF_DEC_31 = datetime(2027, 1, 1, 3, 0, tzinfo=UTC)
 
 
 def _fake_modules() -> list:
@@ -126,11 +128,27 @@ def _dossier(did: str, **over) -> dict:
     return doc
 
 
+def _freeze_deadlines(monkeypatch, instant: datetime) -> None:
+    """Freeze the clock at its one seam, utils.deadlines: today_mtl and
+    today_utc (an invoice's date, lot D) both read it."""
+    from utils import deadlines
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is None else instant.astimezone(tz)
+
+    monkeypatch.setattr(deadlines, "datetime", _Clock)
+
+
 @pytest.fixture
 def world(monkeypatch):
     fake = install(monkeypatch, *_fake_modules())
     bucket = FakeBucket()
     monkeypatch.setattr(tpl_model.storage, "bucket", lambda: bucket)
+    # The day the model judges an invoice date against (today_utc) is the
+    # fixture's TODAY too — never the wall clock.
+    _freeze_deadlines(monkeypatch, datetime(2026, 9, 28, 12, tzinfo=UTC))
     monkeypatch.setattr(invoice_model, "today_mtl", lambda: TODAY)
     monkeypatch.setattr(handlers, "_today_mtl", lambda: TODAY)
     monkeypatch.setattr(handlers, "cabinet_dict", lambda: dict(TAXES))
@@ -201,6 +219,28 @@ def test_the_budget_enum_is_derived_and_never_carries_adm_nor_hor():
         c for c in phases.SOUS_CODES
         if phases.phase_of(c) not in phases.PHASES_NON_FACTURABLES)
     assert not {phases.phase_of(c) for c in enum} & {"ADM", "HOR"}
+
+
+def test_the_invoice_date_texts_say_what_the_model_does():
+    """Lot D (2026-11-07): the default due date is the invoice date plus one
+    calendar month on every path, an imported date is never after today's
+    UTC date, and the default terms say « un mois » — where the registry
+    used to promise 30 days."""
+    props = {name: tools.TOOLS[name]["input_schema"]["properties"]
+             for name in ("preview_invoice", "create_invoice", "import_invoice")}
+    for name, schema_props in props.items():
+        due = schema_props["due_date"]["description"]
+        assert "1 calendar month" in due and "30" not in due, name
+    assert ("never after today's UTC date"
+            in props["import_invoice"]["date"]["description"])
+    # create/preview keep the stricter Montréal day, and say so.
+    for name in ("preview_invoice", "create_invoice"):
+        assert ("Never after today's Montréal date"
+                in props[name]["date"]["description"]), name
+    assert ("Payable dans un délai d'un mois"
+            in props["create_invoice"]["payment_terms"]["description"])
+    assert invoice_model.DEFAULT_PAYMENT_TERMS.startswith(
+        "Payable dans un délai d'un mois")
 
 
 def test_the_status_enum_is_three_targets_the_model_knows():
@@ -1200,6 +1240,74 @@ def test_a_caller_cannot_mark_an_invoice_imported(world):
     assert "imported" not in invoice_model._CREATE_DATA_KEYS
     doc = invoice_model.invoice_document_from({"imported": True})
     assert doc["imported"] is False
+
+
+def test_an_import_dated_after_the_utc_day_is_refused_and_writes_nothing(
+    world, monkeypatch,
+):
+    """Lot D (2026-11-07): plan_invoice refuses an invoice date after the
+    current UTC day, so import_invoice — which took ANY date — refuses one
+    too, as an ordinary argument refusal: nothing written, no number, no
+    source flipped. The UTC day itself, already tomorrow on a Montréal
+    evening, passes."""
+    _freeze_deadlines(monkeypatch, _EVENING_OF_DEC_31)
+    total = invoice_model.compute_totals(
+        [{"type": "fee", "amount": 15000, "taxable": True}])["total"]
+    args = {"dossier_id": "d1", "time_entry_ids": ["e2"],
+            "expected_total_cents": total}
+    with pytest.raises(tools.ToolArgumentError) as refused:
+        handlers.import_invoice(
+            {**args, "invoice_number": "2019-F016", "date": "2027-01-02"})
+    assert refused.value.reason == "argument_refused"
+    assert "2027-01-02" in str(refused.value)
+    assert world.peek_collection("invoices") == {}
+    assert world.peek("timeentries/e2")["invoiced"] is False
+    accepted = handlers.import_invoice(
+        {**args, "invoice_number": "2019-F017", "date": "2027-01-01"})
+    stored = world.peek(f"invoices/{accepted['entity']['id']}")
+    assert stored["date"] == datetime(2027, 1, 1, tzinfo=UTC)
+    assert stored["due_date"] == datetime(2027, 2, 1, tzinfo=UTC)
+    assert world.peek(COUNTER) is None     # an import never moves the counter
+
+
+def test_on_a_montreal_evening_the_connector_creator_keeps_montreals_day(
+    world, monkeypatch,
+):
+    """Lot D, the deliberate split (2026-11-07): the model accepts the UTC
+    day (import_invoice above), while preview_invoice and create_invoice
+    keep their stricter Montréal-day check (handlers._invoice_date) —
+    loosening them would widen a shipped write tool. Both clocks are frozen
+    on the same evening."""
+    _freeze_deadlines(monkeypatch, _EVENING_OF_DEC_31)
+    monkeypatch.setattr(handlers, "_today_mtl", lambda: date(2026, 12, 31))
+    monkeypatch.setattr(invoice_model, "today_mtl", lambda: date(2026, 12, 31))
+    with pytest.raises(tools.ToolArgumentError) as previewed:
+        _preview(time_entry_ids=["e1"], date="2027-01-01")
+    with pytest.raises(tools.ToolArgumentError) as created:
+        _create(time_entry_ids=["e1"], date="2027-01-01",
+                expected_total_cents=1)
+    for refused in (previewed, created):
+        assert refused.value.reason == "invoice_refused"
+        assert "dans le futur" in str(refused.value)
+    assert world.peek_collection("invoices") == {}
+    assert world.peek(COUNTER) is None
+
+
+def test_the_preview_shows_the_dates_the_write_stores(world):
+    """Lot D: plan_invoice settles the due date, and the preview — which runs
+    the same plan — returns it with the date, as create_invoice stores them;
+    a given due date is echoed as is."""
+    selection = {"time_entry_ids": ["e1"], "expense_ids": ["x1"],
+                 "date": "2026-01-31"}
+    preview = _preview(**selection)
+    _conforms("preview_invoice", preview)
+    assert (preview["date"], preview["due_date"]) == ("2026-01-31",
+                                                       "2026-02-28")
+    assert _preview(**selection, due_date="2026-03-15")["due_date"] == (
+        "2026-03-15")
+    stored = _issued(world, date="2026-01-31")
+    assert stored["date"] == datetime(2026, 1, 31, tzinfo=UTC)
+    assert stored["due_date"] == datetime(2026, 2, 28, tzinfo=UTC)
 
 
 # ── Revue des correctifs du lot 3 — la reprise d'une transaction déjà écrite ──

@@ -6686,7 +6686,14 @@ def _connector_transitions(invoice: dict) -> list[str]:
 
 def _invoice_date(args: dict) -> datetime:
     """The invoice date: the argument, else today in Montréal; never after
-    today — an invoice dated in the future would print a false date."""
+    today — an invoice dated in the future would print a false date.
+
+    STRICTER than the model on purpose (the lawyer's decision, 2026-11-07):
+    ``plan_invoice`` accepts the UTC day, a day ahead of Montréal every
+    evening (``models/invoice`` docstring), while this guard keeps
+    Montréal's day and its default. Aligning it with the model would widen
+    a shipped write tool in place (Change Impact item 1) — a decision of its
+    own, never a fix."""
     today = _today_mtl()
     when = _write_date(args, "date", required=False)
     if when is None:
@@ -6888,6 +6895,11 @@ def preview_invoice(args: dict) -> dict:
                    "name": data.get("client_name", "") or ""},
         "sources": _preview_sources(plan, entry_ids, expense_ids),
         "line_count": len(plan.line_items),
+        # The dates create_invoice would store — the due date is the plan's
+        # (the given one, else date + 1 calendar month), None when the plan
+        # refused before judging the date.
+        "date": date_str(_as_utc(data.get("date"))),
+        "due_date": date_str(_as_utc(plan.due_date)),
         "number_prefix": f"{_today_mtl().strftime('%Y')}-F",
         "ready": not refusals and bool(plan.line_items),
         "refusals": refusals,

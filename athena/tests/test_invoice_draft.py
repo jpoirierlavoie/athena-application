@@ -534,12 +534,13 @@ def test_la_page_ne_reecrit_pas_des_notes_que_le_navigateur_renvoie_en_crlf(
     _invoice(fake, notes=_LF)
     resp = client.post(f"/factures/{INV}/brouillon", data={
         "expected_etag": ETAG, "notes": _LF.replace("\n", "\r\n"),
-        "payment_terms": "Payable dans les 30 jours suivant la date de "
-                         "facturation.",
+        # The STORED terms, re-sent unchanged (the page's own value).
+        "payment_terms": invoice_model.DEFAULT_PAYMENT_TERMS,
         "due_date": "2026-07-30"})
     assert resp.status_code == 302
     stored = fake.peek(PATH)
     assert stored["notes"] == _LF
+    assert stored["payment_terms"] == invoice_model.DEFAULT_PAYMENT_TERMS
     assert stored["due_date"] == datetime(2026, 7, 30, tzinfo=UTC)
 
 
