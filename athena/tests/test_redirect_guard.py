@@ -714,7 +714,7 @@ def test_the_guard_accepts_the_door_imported_from_security(snippet):
 _JINJA_TAG = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 _REQUEST_DATA = re.compile(r"\brequest\s*\.\s*(?:args|form|values)\b")
 _NAV_NAME = re.compile(r"\b(?:return_to|next)\b")
-_SCRIPT = re.compile(r"<script\b[^>]*>(.*?)</script>", re.S | re.I)
+_SCRIPT = re.compile(r"<script\b[^>]*>(.*?)</script\b[^>]*>", re.S | re.I)
 _SCRIPT_READ = re.compile(r"\.get\(\s*['\"](?:return_to|next)['\"]\s*\)")
 
 
@@ -1353,7 +1353,7 @@ _SAVES = [
          lambda db, i: _new_cancelled_invoice(db, i["dossier"], "inv2"),
          lambda r: f"/factures/{r}/delete", lambda i: {}),
     Save("budget_create", "budgets", lambda db, i: "",
-         lambda r: "/budgets/", lambda i: _budget_form(i)),
+         lambda r: "/budgets/", _budget_form),
 ]
 _SAVE_IDS = [s.id for s in _SAVES]
 

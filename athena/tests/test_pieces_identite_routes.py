@@ -263,7 +263,8 @@ def _back_to_proofs(resp) -> dict:
     path, query, fragment = _landing(resp)
     assert path == f"/parties/{PID}"
     assert fragment == "preuves-identite"
-    assert query.pop("gerer") == "1"
+    gerer = query.pop("gerer")
+    assert gerer == "1"
     return query
 
 

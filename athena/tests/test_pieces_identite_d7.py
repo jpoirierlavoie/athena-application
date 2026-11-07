@@ -35,6 +35,7 @@ The deletion trail's own rows are hidden elsewhere: ``list_deletions``
 """
 
 import ast
+import importlib
 import inspect
 import os
 import pathlib
@@ -53,7 +54,7 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import mcp.handlers  # noqa: F401 — the handlers get_handler resolves
+    importlib.import_module("mcp.handlers")  # the handlers get_handler resolves
     from mcp import disclosure, tools
     from models import piece_identite as pi
 

@@ -1007,7 +1007,8 @@ def test_another_record_under_the_reserved_id_refuses_and_erases_this_copy(
     assert out == pi.Outcome(None, [pi.CONFLICT], pi.CODE_REFUS)
     assert _final(proof_id) not in world.bucket.objects   # this call's copy
     erased = [d for d in deletes if d[0] == _final(proof_id)]
-    assert len(erased) == 1 and erased[0][1] == erased[0][2] is not None
+    assert len(erased) == 1
+    assert erased[0][2] is not None and erased[0][1] == erased[0][2]
     assert _records(world)[proof_id]["storage_path"] == _final(proof_id, ".png")
 
 
@@ -1094,7 +1095,8 @@ def test_a_failed_record_commit_erases_this_calls_copy_by_generation(
     assert out == pi.Outcome(None, [pi.FILING_FAILED], pi.CODE_INDISPONIBLE)
     assert _records(world) == {} and world.bucket.objects == {}
     erased = [d for d in deletes if d[0] == _final(proof_id)]
-    assert len(erased) == 1 and erased[0][1] == erased[0][2] is not None
+    assert len(erased) == 1
+    assert erased[0][2] is not None and erased[0][1] == erased[0][2]
     assert [m for m, _ in logged] == ["id proof: record write failed"]
 
 
