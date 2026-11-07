@@ -678,7 +678,13 @@ def test_a_refused_deletion_is_said_on_the_document_page(
 def test_under_htmx_a_refusal_is_an_hx_redirect_to_the_document_page(
         web, db, bucket, monkeypatch, refusal):
     """Fails on the old code: a 422 fragment, which htmx never swaps
-    (Rule 8). Every refusal is a redirect, HX-Redirect for htmx."""
+    (Rule 8). Every refusal is a redirect, HX-Redirect for htmx.
+
+    Since the refusals lot (2026-11-06) htmx gets a 200 carrying
+    HX-Redirect and NO Location (``routes/_helpers.redirect_after_post``):
+    the 302 this lot first answered carried a header the browser's XHR
+    never let htmx see — it follows a 302 by itself. No page posts here
+    through htmx, so no behaviour of production changed."""
     _seed(db, bucket)
     if refusal == "file":
         def _refused(self, *a, **kw):
@@ -695,19 +701,25 @@ def test_under_htmx_a_refusal_is_an_hx_redirect_to_the_document_page(
 
     resp = _delete(web, headers={"HX-Request": "true"})
 
-    assert resp.status_code == 302
-    assert resp.headers["HX-Redirect"] == resp.headers["Location"]
-    path, query = _landing(resp)
-    assert (path, query) == (f"/documents/{DOC}", {"erreur": expected})
+    assert resp.status_code == 200 and "Location" not in resp.headers
+    target = urlparse(resp.headers["HX-Redirect"])
+    assert (target.path,
+            {k: v[0] for k, v in parse_qs(target.query).items()}) == (
+        f"/documents/{DOC}", {"erreur": expected})
     assert db.peek(PATH) is not None and _audit_rows(db) == []
 
 
 def test_an_absent_document_lands_on_the_browser_htmx_included(web, db, bucket):
     """Fails on the old code under htmx (a 422 fragment). Gone either way:
-    the browser, never the page of a document that does not exist."""
-    for headers, hx in (({}, None), ({"HX-Request": "true"}, "/documents/")):
-        resp = web.post("/documents/absent/delete", headers=headers)
-        assert resp.status_code == 302
-        assert resp.headers["Location"] == "/documents/"
-        assert resp.headers.get("HX-Redirect") == hx
+    the browser, never the page of a document that does not exist — a 302
+    for the plain form, a 200 carrying HX-Redirect for htmx (the refusals
+    lot: no Location, which the XHR would follow by itself)."""
+    plain = web.post("/documents/absent/delete")
+    assert plain.status_code == 302
+    assert plain.headers["Location"] == "/documents/"
+    assert "HX-Redirect" not in plain.headers
+    htmx = web.post("/documents/absent/delete",
+                    headers={"HX-Request": "true"})
+    assert htmx.status_code == 200 and "Location" not in htmx.headers
+    assert htmx.headers["HX-Redirect"] == "/documents/"
     assert db.commits == [] and _audit_rows(db) == []

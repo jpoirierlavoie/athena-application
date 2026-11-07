@@ -40,7 +40,7 @@ import pathlib
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable, Optional
 from unittest import mock
 from urllib.parse import parse_qs, quote, urlsplit
@@ -1368,6 +1368,18 @@ _VARIANTS = {
 }
 
 
+@pytest.fixture
+def chain_ahead(monkeypatch):
+    """A Montréal day frozen BEFORE the bench's chain (2026-10-15, -22):
+    « Cette occurrence et les suivantes » then deletes it — the save this
+    table means. Left on the real clock, the chain is past, nothing is
+    deleted, and since the refusals lot that outcome lands on the hearing
+    itself (« Aucune occurrence à venir à supprimer. »), not where a save
+    lands. Frozen, never a widened offset (CLAUDE.md, Rule 5)."""
+    monkeypatch.setattr(hearings_routes, "today_mtl",
+                        lambda: date(2026, 10, 1))
+
+
 def _post_save(db, client, save: Save, ids: dict, return_to: str,
                headers: Optional[dict] = None):
     """POST the save on a fresh record: (response, the ids of the records
@@ -1382,7 +1394,7 @@ def _post_save(db, client, save: Save, ids: dict, return_to: str,
 
 
 # The banner a landing may carry is not its target: how it is appended
-# (the hearing chain's escape()-built query) is the htmx/banner lot's.
+# (routes/_helpers.with_query) is tests/test_post_refusals.py's.
 _BANNER_KEYS = frozenset({"message", "erreur"})
 
 
@@ -1401,6 +1413,7 @@ def _target(save: Save, location: str, own_ids: set) -> tuple:
     return path, {k: v for k, v in query.items() if k not in _BANNER_KEYS}
 
 
+@pytest.mark.usefixtures("chain_ahead")
 @pytest.mark.parametrize("variant", list(_VARIANTS), ids=list(_VARIANTS))
 @pytest.mark.parametrize("save", _SAVES, ids=_SAVE_IDS)
 def test_a_save_lands_on_the_doors_answer(
@@ -1434,6 +1447,7 @@ def test_a_save_lands_on_the_doors_answer(
 _HTMX_SAVES = [s for s in _SAVES if s.id != "budget_create"]
 
 
+@pytest.mark.usefixtures("chain_ahead")
 @pytest.mark.parametrize("save", _HTMX_SAVES, ids=[s.id for s in _HTMX_SAVES])
 def test_htmx_is_sent_where_the_door_says_never_to_a_crafted_target(
         caplog, db, client, ids, save):

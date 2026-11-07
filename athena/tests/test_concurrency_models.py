@@ -352,7 +352,8 @@ _ALL = pytest.mark.parametrize("case", sorted(_CASES), ids=sorted(_CASES))
 # concurrent write is slipped into, between the model's read and its commit.
 # update_partie / update_kyc_status / update_note / update_task read through
 # their STRICT getter since the finitions (sync-3): a failed read is
-# « lecture impossible », never « introuvable ».
+# « lecture impossible », never « introuvable » — and confirm_kyc_status
+# since the refusals lot (2026-11-06).
 _GETTERS = {
     "update_partie": (partie_model, "get_partie_strict"),
     "update_dossier": (dossier_model, "get_dossier"),
@@ -362,7 +363,7 @@ _GETTERS = {
     "update_partie_mandataire": (partie_model, "get_partie"),
     "remove_partie_mandataire": (partie_model, "get_partie"),
     "update_kyc_status": (partie_model, "get_partie_strict"),
-    "confirm_kyc_status": (partie_model, "get_partie"),
+    "confirm_kyc_status": (partie_model, "get_partie_strict"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entry"),

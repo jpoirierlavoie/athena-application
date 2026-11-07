@@ -4366,6 +4366,30 @@ Notes:
   secret, consent, plugin or dependency change; **run no MCP write during
   the deploy window** (§11) — an old instance still answers « réessayez »
   and releases the claim.
+- **Refusals said where they happen (2026-11-06).** A refused delete,
+  move, pin or unlink no longer lands where a success lands: a task (its
+  deletion, and its page's « Marquer comme terminée »), a court date (one
+  occurrence or the rest of a series), a protocol or step, a note's pin,
+  an administration entry, a document or folder move — refused by a
+  failed read, a lock set since the page was shown, a mandatory step —
+  comes back to the record's OWN page with its reason in a banner (the
+  task and court-date pages now print one), and so does a contact's
+  « Confirmer » whose read failed. An invoice sheet that cannot show its
+  invoice forwards the refusal to the invoice list, which now prints it.
+  A DELETION of a record already gone (deleted on the phone or in another
+  tab) still goes to the list, quietly; a move or an unlink of one says
+  « introuvable ». Under htmx no branch answers a 4xx any more, and every
+  landing this change moved answers a `200` carrying `HX-Redirect` and no
+  `Location` (a refused time or expense deletion re-renders its form at
+  `200`) — except the `302` the task list's checkbox keeps for its XHR to
+  swap the list in place (as would the document browser's folder forms and
+  bulk move if htmx posted them: rendered inside Alpine `x-if` templates,
+  the folder forms post without htmx today and reload the page). Plain
+  forms keep their `302`. What DavX5 receives does not change: a web
+  deletion still tombstones, then bumps the CTag, then journals. **Phone
+  smoke test after the deploy:** delete a task and a court date on the
+  web, then check that both leave DavX5 at its next sync. No index, rule,
+  secret, consent, plugin or dependency change.
 
 ## 16. Troubleshooting
 

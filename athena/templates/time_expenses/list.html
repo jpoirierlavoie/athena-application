@@ -30,6 +30,13 @@
     </div>
   </div>
 
+  {# ── Bandeau d'une suppression refusée qu'aucune lecture ne pouvait
+     montrer sur sa fiche (?erreur=, texte libre assaini, échappé) — la
+     forme du bandeau du calendrier. #}
+  {% if erreur %}
+  <div role="alert" class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  {% endif %}
+
   {# ── Tab bar ─────────────────────────────────────────────────── #}
   <div class="flex border-b border-gray-200 mb-4">
     <a href="{{ url_for('time_expenses.time_list', tab='heures') }}"

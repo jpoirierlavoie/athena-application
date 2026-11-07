@@ -10,6 +10,15 @@
     <a href="{{ url_for('trust.reconciliation_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouvelle</a>
   </div>
 
+  {# Un abandon refusé dont la feuille n'a pas pu être relue
+     (routes/trust.reconciliation_abandon) — un code fermé. #}
+  {% if avertissement == 'abandon' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    L'abandon de la conciliation n'a pas pu être confirmé, et elle n'a pas pu
+    être relue. Vérifiez la liste ci-dessous, puis réessayez au besoin.
+  </div>
+  {% endif %}
+
   {% if not reconciliations %}
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucune conciliation.</div>
   {% else %}

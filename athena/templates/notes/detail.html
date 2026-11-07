@@ -47,6 +47,12 @@
     <p class="text-sm text-red-700">{{ delete_error }}</p>
   </div>
   {% endif %}
+  {# …and a refused pin (routes/notes.note_pin, a closed code). #}
+  {% if pin_error %}
+  <div role="alert" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+    <p class="text-sm text-red-700">{{ pin_error }}</p>
+  </div>
+  {% endif %}
 
   {% set cat_colors = {
     'rencontre': 'bg-teal-100 text-teal-700',

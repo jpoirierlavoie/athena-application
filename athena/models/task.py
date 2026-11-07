@@ -635,6 +635,13 @@ def update_task(
     return merged, []
 
 
+# The task is not in the store — « already gone » (the phone or another tab
+# deleted it), which the web route answers like a deletion (the refusals
+# lot). Only ever said after a STRICT read: a failed one is
+# ``concurrency.READ_UNAVAILABLE_ERROR``.
+TASK_NOT_FOUND = "Tâche introuvable."
+
+
 def delete_task(
     task_id: str, *, deleted_out: Optional[dict] = None,
 ) -> tuple[bool, str]:
@@ -654,7 +661,7 @@ def delete_task(
         log_unexpected("task delete: read failed", task_id=task_id)
         return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
-        return False, "Tâche introuvable."
+        return False, TASK_NOT_FOUND
 
     try:
         db.collection(COLLECTION).document(task_id).delete()

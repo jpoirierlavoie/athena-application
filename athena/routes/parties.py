@@ -65,7 +65,7 @@ from models.dossier import (
     list_dossiers_for_partie,
 )
 from routes import edit_conflict
-from routes._helpers import is_htmx
+from routes._helpers import is_htmx, redirect_after_post
 
 parties_bp = Blueprint(
     "parties", __name__, url_prefix="/parties"
@@ -619,14 +619,8 @@ def partie_create() -> str:
 
     bump_ctag("parties")
 
-    if _is_htmx():
-        resp = redirect(url_for("parties.partie_detail", partie_id=partie["id"]))
-        resp.headers["HX-Redirect"] = url_for(
-            "parties.partie_detail", partie_id=partie["id"]
-        )
-        return resp
-
-    return redirect(url_for("parties.partie_detail", partie_id=partie["id"]))
+    return redirect_after_post(
+        url_for("parties.partie_detail", partie_id=partie["id"]))
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────
@@ -689,14 +683,8 @@ def partie_update(partie_id: str) -> str:
 
     bump_ctag("parties")
 
-    if _is_htmx():
-        resp = redirect(url_for("parties.partie_detail", partie_id=partie_id))
-        resp.headers["HX-Redirect"] = url_for(
-            "parties.partie_detail", partie_id=partie_id
-        )
-        return resp
-
-    return redirect(url_for("parties.partie_detail", partie_id=partie_id))
+    return redirect_after_post(
+        url_for("parties.partie_detail", partie_id=partie_id))
 
 
 # ── Conformité : « Confirmer » une inscription présumée (D7) ─────────────
@@ -722,8 +710,8 @@ def kyc_confirm(partie_id: str, check: str) -> Response:
     _doc, errors = confirm_kyc_status(
         partie_id, field, par=kyc.SOURCE_JURISTE, expected_etag=expected)
     if errors:
-        if errors == ["Contact introuvable."]:
-            return redirect(url_for("parties.partie_list"))
+        if errors == [PARTIE_NOT_FOUND]:
+            return redirect_after_post(url_for("parties.partie_list"))
         erreur = (
             "La fiche a changé depuis son affichage — rien n'a été confirmé. "
             "Relisez-la, puis confirmez de nouveau."
@@ -736,10 +724,7 @@ def kyc_confirm(partie_id: str, check: str) -> Response:
         log_partie_event("kyc_confirmed", partie_id, field=field)
         target = url_for("parties.partie_detail", partie_id=partie_id,
                          message="Vérification confirmée.")
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    return redirect_after_post(target)
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
@@ -774,10 +759,7 @@ def partie_delete(partie_id: str) -> str:
         target = url_for(
             "parties.partie_detail", partie_id=partie_id, erreur=error
         )
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    return redirect_after_post(target)
 
 
 # ── Export ───────────────────────────────────────────────────────────────
@@ -871,8 +853,9 @@ def export_pdf_route() -> Response:
 #   fetch reads them, htmx never does;
 # * consult, rename and delete answer with a REDIRECT to the fiche, the
 #   dialog reopened (``?gerer=1``) with its banner (``?message=`` /
-#   ``?erreur=``), and ``HX-Redirect`` under htmx — Rule 8, never a 422
-#   (the ``kyc_confirm`` pattern).
+#   ``?erreur=``) — a 200 carrying ``HX-Redirect`` under htmx
+#   (``routes/_helpers.redirect_after_post``): Rule 8, never a 422 (the
+#   ``kyc_confirm`` pattern).
 #
 # The uid comes only from ``utils.storage_identity``. Logs carry ids only
 # (« Do not log PII »): never a display name, a file name, a storage path
@@ -995,19 +978,16 @@ def _id_proofs_config(partie_id: str, ouvert: bool) -> dict:
 def _back_to_proofs(partie_id: str, *, message: str = "",
                     erreur: str = "") -> Response:
     """Redirect to the fiche, the « Gérer » dialog reopened with its
-    banner — ``HX-Redirect`` too under htmx (Rule 8: always a 2xx after
-    the redirect, never a 422)."""
+    banner — a 200 carrying ``HX-Redirect`` under htmx (Rule 8: always a
+    2xx after the redirect, never a 422)."""
     params = {"gerer": "1"}
     if message:
         params["message"] = message
     if erreur:
         params["erreur"] = erreur
-    target = url_for("parties.partie_detail", partie_id=partie_id,
-                     _anchor="preuves-identite", **params)
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    return redirect_after_post(url_for(
+        "parties.partie_detail", partie_id=partie_id,
+        _anchor="preuves-identite", **params))
 
 
 def _id_proof_ids(partie_id: object, proof_id: object = None) -> dict:

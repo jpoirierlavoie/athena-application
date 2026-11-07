@@ -68,7 +68,7 @@ from utils.logging_setup import log_template_event
 from utils.template_fields import classify_placeholders
 from utils.tracing_setup import add_attributes
 from routes import edit_conflict
-from routes._helpers import dossier_search_fragment, is_htmx
+from routes._helpers import dossier_search_fragment, is_htmx, redirect_after_post
 from security import sanitize
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
@@ -112,14 +112,15 @@ def _signer() -> str:
 def _detail_redirect(template_id: str, *, message: str = "",
                      erreur: str = "") -> Response:
     """Back to the template page with a banner. A refusal travels on a 2xx
-    page (the redirect target): htmx only swaps 2xx, and every form here is
-    a plain POST anyway."""
+    page (the redirect target): htmx only swaps 2xx — it gets the 200
+    carrying ``HX-Redirect`` (``routes/_helpers.redirect_after_post``) —,
+    and every form here is a plain POST anyway."""
     params = {}
     if message:
         params["message"] = message
     if erreur:
         params["erreur"] = erreur
-    return redirect(url_for(
+    return redirect_after_post(url_for(
         "doc_templates.template_detail", template_id=template_id, **params))
 
 
@@ -225,12 +226,8 @@ def template_create() -> Response | str:
     )
     # The detail page IS the upload result: full field inventory +
     # split-run warnings, verifiable before first use.
-    target = url_for("doc_templates.template_detail", template_id=template["id"])
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(url_for(
+        "doc_templates.template_detail", template_id=template["id"]))
 
 
 def _designation_context(template: dict) -> dict:
@@ -367,13 +364,8 @@ def template_update(template_id: str) -> Response | str:
             "Le fichier envoyé est identique au fichier en vigueur : aucune "
             "nouvelle version n'a été créée."
         )
-    target = url_for("doc_templates.template_detail", template_id=template_id,
-                     **params)
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(url_for(
+        "doc_templates.template_detail", template_id=template_id, **params))
 
 
 @doc_templates_bp.route("/<template_id>/delete", methods=["POST"])
@@ -388,20 +380,14 @@ def template_delete(template_id: str) -> Response | str:
             title=(existing or {}).get("name", ""),
             status=(existing or {}).get("category", ""),
         )
-        target = url_for("doc_templates.template_list")
-        if _is_htmx():
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return redirect(target)
+        return redirect_after_post(url_for("doc_templates.template_list"))
     # Failure: keep the user on the template (it still exists) rather than
     # silently redirecting to the list as if the delete had worked. The
-    # detail page's delete is a plain POST form → the non-HTMX branch,
-    # which now CARRIES the refusal (T3 review): it used to redirect to the
-    # page with no word at all, so a failed delete read as a dialog that
-    # had merely closed.
-    if _is_htmx():
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>'  # 200 — htmx swaps
+    # detail page's delete is a plain POST form, which now CARRIES the
+    # refusal (T3 review): it used to redirect to the page with no word at
+    # all, so a failed delete read as a dialog that had merely closed.
+    # htmx too lands on the page and its banner (the refusals lot): the
+    # fragment it got was swapped into no target any page declares.
     return _detail_redirect(template_id, erreur=error)
 
 

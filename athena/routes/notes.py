@@ -2,8 +2,6 @@
 
 from datetime import datetime
 
-from markupsafe import escape
-
 from flask import (
     Blueprint,
     Response,
@@ -41,7 +39,12 @@ from models.note import (
 )
 from models.dossier import get_dossier
 from routes import edit_conflict
-from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx
+from routes._helpers import (
+    dossier_search_fragment,
+    enrich_dossier_labels,
+    is_htmx,
+    redirect_after_post,
+)
 
 # Reserved filter value: items belonging to no dossier. Not a dossier id
 # (those are UUIDv4), so it can never collide with a real one.
@@ -207,15 +210,9 @@ def note_create() -> str:
     # Land on the freshly created note itself; thread the return_to (validated
     # where it was read) so the detail view's « Retour » link still points
     # back to the caller (e.g. the dossier Documents tab).
-    target = url_for(
+    return redirect_after_post(url_for(
         "notes.note_detail", note_id=note["id"], return_to=return_to or None
-    )
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    ))
 
 
 # ── Detail ───────────────────────────────────────────────────────────────
@@ -244,6 +241,9 @@ def note_detail(note_id: str) -> str:
     ctx["delete_error"] = _DELETE_ERRORS.get(
         request.args.get("suppression_erreur", "")
     )
+    ctx["pin_error"] = _PIN_ERRORS.get(
+        request.args.get("epinglage_erreur", "")
+    )
     # D17 — every change of a note's content, on any path, keeps the text
     # it replaced (notes/{id}/revisions/). ONE count aggregation, display
     # only: None (a failed read) prints nothing rather than « 0 ».
@@ -262,6 +262,18 @@ _DELETE_ERRORS = {
         "intention."
     ),
     "erreur": "La note n'a pas pu être supprimée. Veuillez réessayer.",
+}
+
+# A refused pin comes back to the note with this closed code (the refusals
+# lot, 2026-11-06) — it used to go to the list without a word, and htmx got
+# a 422 fragment it never swaps. One sentence for every refusal, and true
+# whatever happened: a write whose answer was lost may have landed, so it
+# never says « rien n'a changé » — the page, re-read, shows the state.
+_PIN_ERRORS = {
+    "erreur": (
+        "Le changement d'épinglage n'a pas pu être confirmé — vérifiez "
+        "l'état ci-dessus, puis réessayez au besoin."
+    ),
 }
 
 
@@ -505,15 +517,9 @@ def note_update(note_id: str) -> str:
 
     # Return to the note itself after saving; thread the return_to (validated
     # where it was read) for the detail view's « Retour » link.
-    target = url_for(
+    return redirect_after_post(url_for(
         "notes.note_detail", note_id=note_id, return_to=return_to or None
-    )
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    ))
 
 
 # ── Delete ───────────────────────────────────────────────────────────────
@@ -566,12 +572,7 @@ def note_delete(note_id: str) -> str:
             ),
             return_to=return_to or None,
         )
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(target)
 
 
 # ── Pin toggle ───────────────────────────────────────────────────────────
@@ -656,6 +657,12 @@ def note_pin(note_id: str) -> str:
     to reach — so a stale page asking for what is already true writes
     nothing and bumps no CTag. A page rendered before the field existed
     posts nothing and gets the old flip (``toggle_pin``).
+
+    Every outcome lands on the note (the only page with the button): a
+    refusal with the closed code ``epinglage_erreur`` (the notes
+    convention), where it used to send the lawyer to the list without a
+    word and htmx a 422 fragment. A note the page then cannot read — gone
+    meanwhile — goes on to the list, quietly.
     """
     raw = request.form.get("pinned")
     if raw is None:
@@ -666,22 +673,10 @@ def note_pin(note_id: str) -> str:
         note, errors, changed = None, ["Requête invalide."], False
 
     if errors:
-        if _is_htmx():
-            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
-        return redirect(url_for("notes.note_list"))
+        return redirect_after_post(url_for(
+            "notes.note_detail", note_id=note_id, epinglage_erreur="erreur"))
 
     if changed:
         bump_ctag(collection_for(note.get("dossier_id")))
 
-    if _is_htmx():
-        # Redirect back to where the user was
-        referer = request.headers.get("Referer", "")
-        if f"/notes/{note_id}" in referer:
-            resp = redirect(url_for("notes.note_detail", note_id=note_id))
-            resp.headers["HX-Redirect"] = url_for("notes.note_detail", note_id=note_id)
-            return resp
-        resp = redirect(url_for("notes.note_list"))
-        resp.headers["HX-Redirect"] = url_for("notes.note_list")
-        return resp
-
-    return redirect(url_for("notes.note_detail", note_id=note_id))
+    return redirect_after_post(url_for("notes.note_detail", note_id=note_id))

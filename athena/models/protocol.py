@@ -11,6 +11,7 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
+from models.document import is_addressable_id
 from security import sanitize
 from utils.logging_setup import log_protocol_event, log_unexpected
 
@@ -778,7 +779,16 @@ def get_protocol_strict(protocol_id: str) -> Optional[dict]:
     the caller hunting for an id that was right all along (the connector's
     edit tools, lot 1b, read through this). Each step carries its ``id``
     even if a legacy document lacks the field.
+
+    An id that can name no protocol (``document.is_addressable_id``: blank,
+    holding « / », or one Firestore refuses, such as ``__x__``) is ABSENT —
+    ``None``, nothing read: the store would refuse the read, and « lecture
+    impossible — réessayez » would send the caller retrying a call no retry
+    can ever satisfy (the refusals lot, 2026-11-06: this read now decides
+    the web's protocol and step deletions).
     """
+    if not is_addressable_id(protocol_id):
+        return None
     proto_ref = db.collection(COLLECTION).document(protocol_id)
     doc = proto_ref.get()
     if not doc.exists:
@@ -1240,11 +1250,31 @@ def update_protocol(
     return result, []
 
 
+# What a delete answers when the store SAYS the record is absent — only ever
+# after a STRICT read (the refusals lot, 2026-11-06): the fail-open
+# ``get_protocol`` used to answer a Firestore blip with « Protocole
+# introuvable. » about a protocol still there, which the web page then
+# printed over that very protocol. A read that failed is
+# ``concurrency.READ_UNAVAILABLE_ERROR``.
+PROTOCOL_NOT_FOUND = "Protocole introuvable."
+STEP_NOT_FOUND = "Étape introuvable."
+
+
 def delete_protocol(protocol_id: str) -> tuple[bool, str]:
-    """Delete a protocol and all its steps. Returns (success, error_message)."""
-    existing = get_protocol(protocol_id)
+    """Delete a protocol and all its steps. Returns (success, error_message).
+
+    The read is STRICT: a failure answers
+    ``concurrency.READ_UNAVAILABLE_ERROR``, nothing deleted — never
+    :data:`PROTOCOL_NOT_FOUND`."""
+    try:
+        existing = get_protocol_strict(protocol_id)
+    except Exception as exc:
+        log_unexpected("protocol delete: read failed", exc_info=False,
+                       protocol_id=protocol_id,
+                       error_type=type(exc).__name__)
+        return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
-        return False, "Protocole introuvable."
+        return False, PROTOCOL_NOT_FOUND
 
     try:
         batch = db.batch()
@@ -1557,10 +1587,20 @@ def update_step(
 def delete_step(
     protocol_id: str, step_id: str
 ) -> tuple[bool, str]:
-    """Delete a step. Cannot delete mandatory steps. Returns (success, error)."""
-    protocol = get_protocol(protocol_id)
+    """Delete a step. Cannot delete mandatory steps. Returns (success, error).
+
+    The read is STRICT: a failure answers
+    ``concurrency.READ_UNAVAILABLE_ERROR``, nothing deleted — never
+    :data:`PROTOCOL_NOT_FOUND` nor :data:`STEP_NOT_FOUND`."""
+    try:
+        protocol = get_protocol_strict(protocol_id)
+    except Exception as exc:
+        log_unexpected("protocol step delete: read failed", exc_info=False,
+                       protocol_id=protocol_id,
+                       error_type=type(exc).__name__)
+        return False, concurrency.READ_UNAVAILABLE_ERROR
     if not protocol:
-        return False, "Protocole introuvable."
+        return False, PROTOCOL_NOT_FOUND
 
     target_step = None
     for s in protocol.get("steps", []):
@@ -1568,7 +1608,7 @@ def delete_step(
             target_step = s
             break
     if not target_step:
-        return False, "Étape introuvable."
+        return False, STEP_NOT_FOUND
 
     if target_step.get("mandatory"):
         return False, "Les étapes obligatoires ne peuvent pas être supprimées."

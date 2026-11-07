@@ -19,7 +19,7 @@ from flask import (
 
 from auth import login_required
 from models.audit_event import record_deletion
-from security import safe_internal_redirect
+from security import safe_internal_redirect, sanitize
 from pagination import (
     PAGE_SIZE,
     cursor_pagination,
@@ -30,6 +30,7 @@ from pagination import (
 )
 from models.time_entry import (
     QUICK_DESCRIPTIONS,
+    TIME_ENTRY_NOT_FOUND,
     count_time_entries_page,
     create_time_entry,
     delete_time_entry,
@@ -42,6 +43,7 @@ from models.time_entry import (
 )
 from models.expense import (
     CATEGORY_LABELS,
+    EXPENSE_NOT_FOUND,
     VALID_CATEGORIES,
     count_expenses_page,
     create_expense,
@@ -60,7 +62,14 @@ from models.protocol import get_current_phase_for_dossier
 from utils import phases
 from utils.logging_setup import log_dossier_event
 from routes import edit_conflict
-from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input, standard_dossier_row
+from routes._helpers import (
+    dossier_search_fragment,
+    enrich_dossier_labels,
+    is_htmx,
+    parse_date_input,
+    redirect_after_post,
+    standard_dossier_row,
+)
 
 time_expenses_bp = Blueprint(
     "time_expenses", __name__, url_prefix="/temps"
@@ -211,6 +220,10 @@ def time_list() -> str:
         dossier_id=dossier_id,
         date_from=request.args.get("date_from", ""),
         date_to=request.args.get("date_to", ""),
+        # The refusal of a delete whose entry could not be shown on its own
+        # form (time_entry_delete / expense_delete: neither read answered).
+        # Free text, sanitized, autoescaped — the other lists' posture.
+        erreur=sanitize(request.args.get("erreur", ""), max_length=300),
     )
 
     list_url = url_for("time_expenses.time_list")
@@ -354,13 +367,7 @@ def time_entry_create() -> str:
         ctx.update(entry=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/time_form.html", **ctx)
 
-    target = return_to or url_for("time_expenses.time_list")
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("time_expenses.time_list"))
 
 
 @time_expenses_bp.route("/<entry_id>/edit")
@@ -418,19 +425,18 @@ def time_entry_update(entry_id: str) -> str:
         )
         return render_template("time_expenses/time_form.html", **ctx)
 
-    target = return_to or url_for("time_expenses.time_list")
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("time_expenses.time_list"))
 
 
 @time_expenses_bp.route("/<entry_id>/delete", methods=["POST"])
 @login_required
 def time_entry_delete(entry_id: str) -> str:
-    """Delete a time entry and redirect to the list (or back to the caller)."""
+    """Delete a time entry and redirect to the list (or back to the caller).
+
+    A refusal is SAID at 200 on the entry's form, htmx included (it got a
+    422 fragment htmx never swaps — the refusals lot, 2026-11-06); when no
+    read can show the entry, on the list. Only a deletion, or an entry the
+    model found gone (``TIME_ENTRY_NOT_FOUND``), redirects like one."""
     # Validated ONCE, here: the redirect below and the refusal's re-render
     # both take this value, so a hostile one is a single log line.
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
@@ -448,22 +454,11 @@ def time_entry_delete(entry_id: str) -> str:
             title=(existing or {}).get("description", ""),
         )
 
-    target = return_to or url_for("time_expenses.time_list")
-    if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    if not success:
-        current = get_time_entry(entry_id)
-        if current is None and "introuvable" not in error:
-            # The re-read failed too (get_time_entry fails open to None) —
-            # the entry is NOT known to be gone, so the reason is still
-            # said, on the entry as it stood before this request. Only an
-            # entry the model found missing goes back to the list.
-            current = existing
+    if not success and error != TIME_ENTRY_NOT_FOUND:
+        # The re-read fails open to None: then the entry is NOT known to be
+        # gone, and the reason is still said, on the entry as it stood
+        # before this request.
+        current = get_time_entry(entry_id) or existing
         if current:
             # The refusal is SAID, at 200, on the form of the entry as it
             # now stands (its invoiced banner included). It used to vanish
@@ -473,8 +468,12 @@ def time_entry_delete(entry_id: str) -> str:
             ctx = _template_context()
             ctx.update(entry=current, errors=[error], return_to=return_to)
             return render_template("time_expenses/time_form.html", **ctx)
+        # Neither read answered: no form to say it on — the list does. It
+        # fell through to the redirect of a deletion, without a word.
+        return redirect_after_post(url_for(
+            "time_expenses.time_list", erreur=error))
 
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("time_expenses.time_list"))
 
 
 # ── Expense CRUD ─────────────────────────────────────────────────────────
@@ -533,14 +532,8 @@ def expense_create() -> str:
         ctx.update(expense=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/expense_form.html", **ctx)
 
-    fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("time_expenses.time_list", tab="depenses"))
 
 
 @time_expenses_bp.route("/depenses/<expense_id>/edit")
@@ -599,20 +592,17 @@ def expense_update(expense_id: str) -> str:
         )
         return render_template("time_expenses/expense_form.html", **ctx)
 
-    fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("time_expenses.time_list", tab="depenses"))
 
 
 @time_expenses_bp.route("/depenses/<expense_id>/delete", methods=["POST"])
 @login_required
 def expense_delete(expense_id: str) -> str:
-    """Delete an expense and redirect to the list (or back to the caller)."""
+    """Delete an expense and redirect to the list (or back to the caller).
+
+    Its refusals are time_entry_delete's: said at 200 on the expense's form
+    (htmx included), or on the list when no read can show it."""
     # Validated ONCE, here — see time_entry_delete.
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
     existing = get_expense(expense_id)
@@ -626,26 +616,19 @@ def expense_delete(expense_id: str) -> str:
             title=(existing or {}).get("description", ""),
         )
 
-    fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = return_to or fallback
-    if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    if not success:
-        current = get_expense(expense_id)
-        if current is None and "introuvable" not in error:
-            current = existing  # the re-read failed too — see time_entry_delete
+    if not success and error != EXPENSE_NOT_FOUND:
+        # the re-read failed too — see time_entry_delete
+        current = get_expense(expense_id) or existing
         if current:
             # Said, at 200, on the form — see time_entry_delete.
             ctx = _template_context()
             ctx.update(expense=current, errors=[error], return_to=return_to)
             return render_template("time_expenses/expense_form.html", **ctx)
+        return redirect_after_post(url_for(
+            "time_expenses.time_list", tab="depenses", erreur=error))
 
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("time_expenses.time_list", tab="depenses"))
 
 
 # ── Export ───────────────────────────────────────────────────────────────
@@ -798,12 +781,7 @@ def time_entry_phase_update(entry_id: str) -> str:
     if changed:
         _log_reclassement(existing or {}, "time_entry", sous_phase or phase)
 
-    target = return_to or url_for("time_expenses.time_list")
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("time_expenses.time_list"))
 
 
 @time_expenses_bp.route("/depenses/<expense_id>/phase")
@@ -846,13 +824,8 @@ def expense_phase_update(expense_id: str) -> str:
     if changed:
         _log_reclassement(existing or {}, "expense", sous_phase or phase)
 
-    fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("time_expenses.time_list", tab="depenses"))
 
 
 _TIME_EXPORT_COLUMNS_CSV = [

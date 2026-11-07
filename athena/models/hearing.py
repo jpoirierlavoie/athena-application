@@ -1128,6 +1128,13 @@ def update_hearing(
     return merged, []
 
 
+# The hearing is not in the store — « already gone » (the phone or another
+# tab deleted it), which the web route answers like a deletion (the refusals
+# lot). Only ever said after a STRICT read: a failed one is
+# ``concurrency.READ_UNAVAILABLE_ERROR``.
+HEARING_NOT_FOUND = "Audience introuvable."
+
+
 def delete_hearing(
     hearing_id: str, *, deleted_out: Optional[dict] = None,
 ) -> tuple[bool, str]:
@@ -1147,7 +1154,7 @@ def delete_hearing(
         log_unexpected("hearing delete: read failed", hearing_id=hearing_id)
         return False, concurrency.READ_UNAVAILABLE_ERROR
     if not existing:
-        return False, "Audience introuvable."
+        return False, HEARING_NOT_FOUND
 
     try:
         db.collection(COLLECTION).document(hearing_id).delete()

@@ -107,7 +107,7 @@ from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires_parts, retention_date
 from routes import edit_conflict
-from routes._helpers import is_htmx, parse_date_input
+from routes._helpers import is_htmx, parse_date_input, redirect_after_post
 from utils.format_fr import parse_cents_or_none
 from utils.logging_setup import log_dossier_event, log_unexpected
 
@@ -1009,7 +1009,7 @@ def dossier_create() -> str:
         tree_ok = False
     params = {} if tree_ok else {"tab": "documents",
                                  "avertissement": "arborescence"}
-    return _redirect_to(
+    return redirect_after_post(
         url_for("dossiers.dossier_detail", dossier_id=new_id, **params))
 
 
@@ -1114,15 +1114,8 @@ def dossier_update(dossier_id: str) -> str:
     if not result.dav.complete:
         params["avertissement"] = _dav_warning_code(
             old_status, str((dossier or {}).get("status") or ""))
-    target = url_for("dossiers.dossier_detail", dossier_id=dossier_id,
-                     **params)
-
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(url_for(
+        "dossiers.dossier_detail", dossier_id=dossier_id, **params))
 
 
 @dossiers_bp.route("/<dossier_id>/dav/resync", methods=["POST"])
@@ -1170,7 +1163,7 @@ def dossier_delete(dossier_id: str) -> str:
     """
     if not dossier_id.strip():
         # No dossier bears a blank id — the list (a crafted « /%20/delete »).
-        return _redirect_to(url_for("dossiers.dossier_list"))
+        return redirect_after_post(url_for("dossiers.dossier_list"))
     success, _message, report = delete_dossier(dossier_id)
 
     if not success and report.get("code") == DELETE_FAILED:
@@ -1183,7 +1176,7 @@ def dossier_delete(dossier_id: str) -> str:
         except Exception:
             log_unexpected("dossier delete: outcome re-read failed",
                            dossier_id=dossier_id)
-            return _redirect_to(url_for(
+            return redirect_after_post(url_for(
                 "dossiers.dossier_detail", dossier_id=dossier_id,
                 erreur="suppression_incertaine"))
         if still_there is None:
@@ -1192,14 +1185,14 @@ def dossier_delete(dossier_id: str) -> str:
                 # (its re-read found the dossier, or no attempt staged the
                 # delete): someone else deleted it meanwhile — the list, and
                 # no trail row this call cannot vouch for.
-                return _redirect_to(url_for("dossiers.dossier_list"))
+                return redirect_after_post(url_for("dossiers.dossier_list"))
             success = True  # the delete landed: its answer was lost
 
     if not success:
         if report.get("code") == DELETE_NOT_FOUND:
-            return _redirect_to(url_for("dossiers.dossier_list"))
+            return redirect_after_post(url_for("dossiers.dossier_list"))
         code = _DELETE_ERRORS.get(report.get("code", ""), "suppression_echec")
-        return _redirect_to(url_for(
+        return redirect_after_post(url_for(
             "dossiers.dossier_detail", dossier_id=dossier_id, erreur=code))
 
     deleted = report.get("dossier") or {}
@@ -1223,7 +1216,7 @@ def dossier_delete(dossier_id: str) -> str:
     sync_name = f"dossier:{dossier_id}"
     clear_tombstones(sync_name)
     delete_sync_state(sync_name)
-    return _redirect_to(url_for("dossiers.dossier_list"))
+    return redirect_after_post(url_for("dossiers.dossier_list"))
 
 
 @dossiers_bp.route("/<dossier_id>/arborescence", methods=["POST"])
@@ -1270,15 +1263,6 @@ def dossier_arborescence(dossier_id: str) -> str:
             params["message"] = "arborescence"
     return redirect(url_for("dossiers.dossier_detail", dossier_id=dossier_id,
                             tab="documents", **params))
-
-
-def _redirect_to(target: str) -> Response:
-    """A redirect both branches can follow: htmx gets a 2xx carrying
-    ``HX-Redirect`` (it swaps no 3xx target and no 4xx fragment), a plain
-    form the ordinary 302."""
-    if _is_htmx():
-        return Response(status=200, headers={"HX-Redirect": target})
-    return redirect(target)
 
 
 # ── Export ───────────────────────────────────────────────────────────────

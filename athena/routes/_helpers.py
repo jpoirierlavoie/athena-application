@@ -22,18 +22,76 @@ cases, had already let DRIFT apart (the audit's motivating findings):
   note under « Général »); ``strict=False`` blanks the id to
   ``blank_value`` (tasks store ``None`` for « no dossier », hearings
   ``""`` — both falsy, per the ``collection_for`` routing rule).
+
+And the answer of a POST (the refusals lot, 2026-11-06), which a dozen
+blueprints had each hand-written — some of them wrongly:
+
+* ``redirect_after_post`` — Rule 8's redirect: a plain form gets a 302,
+  htmx a 200 carrying ``HX-Redirect`` and no ``Location`` (the browser's
+  XHR follows a 302 by itself, so htmx never saw a header set on it, and
+  htmx swaps no 4xx). The ONE place the routes set ``HX-Redirect``
+  (``tests/test_post_refusals.py``, guard b).
+* ``with_query`` — a banner merged into a target's query string, percent-
+  encoded (never ``markupsafe.escape``, which cut « n'a » at its
+  apostrophe), moved here from ``routes/trust._redirect_with``.
 """
 
 from datetime import datetime, timezone
 from typing import Callable, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flask import request
+from flask import Response, redirect, request
 from markupsafe import escape
+from werkzeug.urls import iri_to_uri
 
 
 def is_htmx() -> bool:
     """True when the request came from htmx (fragment expected)."""
     return request.headers.get("HX-Request") == "true"
+
+
+def with_query(target: str, **params: str) -> str:
+    """``target`` with ``params`` MERGED into its query string.
+
+    A key named in ``params`` REPLACES the target's own (and is dropped
+    when its value is empty, so a stale ``?erreur=`` riding in a
+    ``return_to`` never survives); the other keys and the ``#fragment``
+    are kept. Everything is percent-encoded — never HTML-escaped: an
+    apostrophe travels whole. With no ``params`` the target is returned
+    unchanged. ``target`` must already be internal (``url_for``, or a
+    value read through ``security.safe_internal_redirect``)."""
+    if not params:
+        return target
+    parts = urlsplit(target)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k not in params]
+    kept += [(k, v) for k, v in params.items() if v]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
+
+def redirect_after_post(target: str, *, follow: bool = False) -> Response:
+    """The answer of a POST that lands on ``target`` (Rule 8).
+
+    A plain form gets a 302. htmx gets a 200 carrying ``HX-Redirect`` and
+    no ``Location``: the browser's XHR follows a 302 by itself, so a header
+    set on one never reaches htmx, and htmx swaps no 4xx fragment. The
+    header value is ``iri_to_uri``'d, as Werkzeug does for ``Location``:
+    a character past U+00FF (a ``return_to`` naming « ā ») cannot ride a
+    header, and the server would fail the answer after the write had
+    committed.
+
+    ``follow=True`` keeps the 302 under htmx too: the XHR follows it with
+    its ``HX-Request`` header, and the target view answers the very
+    fragment the form's ``hx-target`` expects — an in-place swap, where
+    ``HX-Redirect`` would reload the whole page: the task list's checkbox,
+    and the document browser's folder forms should htmx ever post them
+    (rendered inside Alpine ``x-if`` templates htmx never processes, they
+    post without it today). ``tests/test_post_refusals.py`` pins the views
+    that pass it.
+    """
+    if is_htmx() and not follow:
+        return Response(status=200, headers={"HX-Redirect": iri_to_uri(target)})
+    return redirect(target)
 
 
 def parse_date_input(value: str) -> Optional[datetime]:

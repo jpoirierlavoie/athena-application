@@ -35,6 +35,20 @@
     connecteur — : elle n'a PAS été compensée. Vérifiez ci-dessous son
     montant et sa date contre le relevé, puis compensez-la de nouveau.
   </div>
+  {# Une suppression refusée (routes/admin_ledger.entry_delete) : la phrase
+     se lit sur l'écriture TELLE QUE CETTE PAGE VIENT DE LA LIRE — elle est
+     donc vraie même si la suppression a été tentée sur une autre version. #}
+  {% elif avertissement == 'suppression' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    {% if lock_reason %}
+    Cette écriture a été verrouillée depuis l'affichage de la page
+    (compensée, conciliée, contre-passée ou liée) : elle n'a pas été
+    supprimée. Une correction passe maintenant par une contre-passation.
+    {% else %}
+    La suppression n'a pas abouti : l'écriture est toujours au registre.
+    Réessayez dans un instant.
+    {% endif %}
+  </div>
   {% elif avertissement == 'compensation' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     La compensation n'a pas pu être enregistrée — l'écriture demeure « En

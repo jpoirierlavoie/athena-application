@@ -2,8 +2,6 @@
 
 from datetime import datetime, timezone
 
-from markupsafe import escape
-
 from tz import MTL
 
 from flask import (
@@ -25,6 +23,7 @@ from models.task import (
     PRIORITY_COLORS,
     PRIORITY_LABELS,
     STATUS_LABELS,
+    TASK_NOT_FOUND,
     VALID_CATEGORIES,
     VALID_PRIORITIES,
     VALID_STATUSES,
@@ -46,7 +45,13 @@ from models.dossier import (
 from models.protocol import get_current_phase_for_dossier
 from utils import phases
 from routes import edit_conflict
-from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input
+from routes._helpers import (
+    dossier_search_fragment,
+    enrich_dossier_labels,
+    is_htmx,
+    parse_date_input,
+    redirect_after_post,
+)
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/taches")
 
@@ -342,13 +347,7 @@ def task_create() -> str:
 
     bump_ctag(collection_for(task.get("dossier_id")))
 
-    target = return_to or url_for("tasks.task_list")
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("tasks.task_list"))
 
 
 # ── Detail ───────────────────────────────────────────────────────────────
@@ -357,14 +356,22 @@ def task_create() -> str:
 @tasks_bp.route("/<task_id>")
 @login_required
 def task_detail(task_id: str) -> str:
-    """Render the task detail view."""
+    """Render the task detail view.
+
+    ``?erreur=`` is the banner of a refusal sent back here (task_delete's):
+    free text, sanitized, autoescaped — the task list's posture. A task this
+    page cannot show — gone, or its read still failing — forwards the
+    banner to the list, which prints it: a refusal is never dropped on the
+    way (the document page's rule)."""
+    erreur = sanitize(request.args.get("erreur", ""), max_length=300)
     task = get_task(task_id)
     if not task:
-        return redirect(url_for("tasks.task_list"))
+        return redirect(url_for("tasks.task_list", erreur=erreur or None))
 
     _stamp_overdue([task])
     ctx = _template_context()
     ctx["task"] = task
+    ctx["erreur"] = erreur
     ctx["return_to"] = safe_internal_redirect(request.args.get("return_to"), "")
 
     # Resolve related note for display
@@ -452,14 +459,8 @@ def task_update(task_id: str) -> str:
         new_dossier_id=task.get("dossier_id"),
     )
 
-    fallback = url_for("tasks.task_detail", task_id=task_id)
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("tasks.task_detail", task_id=task_id))
 
 
 # ── Delete ───────────────────────────────────────────────────────────────
@@ -468,7 +469,16 @@ def task_update(task_id: str) -> str:
 @tasks_bp.route("/<task_id>/delete", methods=["POST"])
 @login_required
 def task_delete(task_id: str) -> str:
-    """Delete a task and redirect to the list (or back to the caller)."""
+    """Delete a task and redirect to the list (or back to the caller).
+
+    A deletion, or a task already gone (``TASK_NOT_FOUND`` — the phone or
+    another tab deleted it: the intent is fulfilled), lands where the page
+    came from, quietly. Any other refusal — a read that failed, a delete
+    that failed — lands back on the TASK, its French reason in the banner
+    and its « Retour » kept (the refusals lot, 2026-11-06): it used to
+    redirect exactly like a deletion, the task and its copy on the phone
+    still there, and to answer htmx a 422 fragment htmx never swaps.
+    """
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     # The collection to tombstone comes from the document the MODEL read and
@@ -491,15 +501,12 @@ def task_delete(task_id: str) -> str:
             status=(existing_task or {}).get("status", ""),
         )
 
-    target = return_to or url_for("tasks.task_list")
-    if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    return redirect(target)
+    if not success and error != TASK_NOT_FOUND:
+        return redirect_after_post(url_for(
+            "tasks.task_detail", task_id=task_id, erreur=error,
+            return_to=return_to or None,
+        ))
+    return redirect_after_post(return_to or url_for("tasks.task_list"))
 
 
 # ── Toggle complete (HTMX) ──────────────────────────────────────────────
@@ -535,26 +542,34 @@ def task_toggle(task_id: str) -> str:
     )
 
     if errors:
-        # Jamais un fragment 4xx : htmx 2.0.4 n'échange que les 2xx, donc
-        # « Tâche introuvable. » — le cas ORDINAIRE d'une liste restée
-        # ouverte pendant qu'une tâche partait par DavX5, un second onglet
-        # ou le connecteur — mourait à l'écran : case morte, l'utilisateur
-        # re-tape (audit 2026-08-26, catégorie b). 200 + HX-Redirect vers
-        # la liste, filtres conservés (postés via hx-include), bannière
-        # ?erreur= rendue par _task_rows.html. La branche non-htmx (le
-        # formulaire de la page détail) recevait de surcroît un 422 dont
-        # le corps entier était le seul <div> rouge — une page cassée.
-        target = url_for(
+        # Le formulaire de la fiche (« Marquer comme terminée », un POST
+        # sans htmx) revient sur la FICHE, sa phrase en bandeau (le lot des
+        # refus, 2026-11-06) : il retombait sur la liste (et, avant l'audit
+        # 2026-08-26, sur un 422 dont le corps entier était le seul <div>
+        # rouge), alors que CANCELLED_MEANWHILE renvoie justement à la
+        # fiche. Une tâche partie entre-temps : la fiche transmet le bandeau
+        # à la liste.
+        if not _is_htmx():
+            return redirect_after_post(url_for(
+                "tasks.task_detail", task_id=task_id, erreur=errors[0]))
+        # La case de la liste : jamais un fragment 4xx, htmx 2.0.4
+        # n'échange que les 2xx, donc « Tâche introuvable. » — le cas
+        # ORDINAIRE d'une liste restée ouverte pendant qu'une tâche partait
+        # par DavX5, un second onglet ou le connecteur — mourait à l'écran :
+        # case morte, l'utilisateur re-tape (audit 2026-08-26, catégorie b).
+        # Une redirection 302 vers la liste, filtres conservés (postés via
+        # hx-include) : le XHR la SUIT avec son en-tête HX-Request, et
+        # task_list rend le fragment _task_rows.html — bannière ?erreur=
+        # comprise — que la cible #task-content attend (follow=True : un
+        # échange sur place, jamais un rechargement de page par
+        # HX-Redirect).
+        return redirect_after_post(url_for(
             "tasks.task_list", erreur=errors[0],
             dossier=request.form.get("dossier", "").strip(),
             status=request.form.get("status", "").strip(),
             priority=request.form.get("priority", "").strip(),
             category=request.form.get("category", "").strip(),
-        )
-        resp = redirect(target)
-        if _is_htmx():
-            resp.headers["HX-Redirect"] = target
-        return resp
+        ), follow=True)
 
     if changed:
         bump_ctag(collection_for(task.get("dossier_id")))
@@ -585,7 +600,7 @@ def task_toggle(task_id: str) -> str:
         return render_template("tasks/_task_rows.html", **ctx)
 
     # Non-HTMX (e.g. detail page form): redirect back to the task detail
-    return redirect(url_for("tasks.task_detail", task_id=task_id))
+    return redirect_after_post(url_for("tasks.task_detail", task_id=task_id))
 
 
 # ── Export ───────────────────────────────────────────────────────────────

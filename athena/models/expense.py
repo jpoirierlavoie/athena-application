@@ -661,6 +661,11 @@ def set_expense_phase(
     return {**existing, **pair, **stamp}, [], True
 
 
+# What delete_expense answers when the transaction's read found no expense —
+# « already gone » (the twin of ``time_entry.TIME_ENTRY_NOT_FOUND``).
+EXPENSE_NOT_FOUND = "Dépense introuvable."
+
+
 def delete_expense(expense_id: str) -> tuple[bool, str]:
     """Delete an expense. Returns (success, error_message).
 
@@ -675,7 +680,7 @@ def delete_expense(expense_id: str) -> tuple[bool, str]:
     def _apply(transaction) -> None:
         snap = ref.get(transaction=transaction)
         if not snap.exists:
-            raise _Refused(["Dépense introuvable."])
+            raise _Refused([EXPENSE_NOT_FOUND])
         if (snap.to_dict() or {}).get("invoiced"):
             raise _Refused(["Impossible de supprimer une dépense déjà facturée."])
         transaction.delete(ref)

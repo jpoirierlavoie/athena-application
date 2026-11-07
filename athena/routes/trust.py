@@ -9,7 +9,6 @@ exemption is needed (ordinary form POSTs).
 
 import json
 from datetime import datetime, timezone
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import (
     Blueprint,
@@ -51,7 +50,14 @@ from security import safe_internal_redirect
 from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
-from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input, standard_dossier_row
+from routes._helpers import (
+    dossier_search_fragment,
+    is_htmx,
+    parse_date_input,
+    redirect_after_post,
+    standard_dossier_row,
+    with_query,
+)
 
 trust_bp = Blueprint("trust", __name__, url_prefix="/fideicommis")
 
@@ -129,22 +135,6 @@ def _today_default() -> datetime:
     calendar, at midnight UTC (the register's date-only convention)."""
     t = today_mtl()
     return datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
-
-
-def _redirect_with(target: str, **params: str):
-    """Redirect to ``target`` with ``params`` MERGED into its query string.
-
-    Never appended blindly: ``return_to`` may already carry a query (a
-    filtered journal), and a second ``?`` would corrupt both. An empty value
-    drops the key. ``target`` must already have passed
-    ``safe_internal_redirect``."""
-    parts = urlsplit(target)
-    query = [
-        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-        if k not in params
-    ]
-    query += [(k, v) for k, v in params.items() if v]
-    return redirect(urlunsplit(parts._replace(query=urlencode(query))))
 
 
 def _account_header(account: dict) -> dict:
@@ -559,29 +549,33 @@ def entry_detail(tx_id: str):
 @trust_bp.route("/<tx_id>/compenser", methods=["POST"])
 @login_required
 def entry_clear(tx_id: str):
+    return_to = safe_internal_redirect(
+        request.form.get("return_to", ""), url_for("trust.entry_detail", tx_id=tx_id)
+    )
     # The form pre-fills today (Montréal); a field emptied by hand keeps
     # that default HERE — the service itself requires a statement date.
     cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
     errors = comptabilite.compenser_fideicommis([tx_id], cleared_date)["errors"]
-    return_to = safe_internal_redirect(
-        request.form.get("return_to", ""), url_for("trust.entry_detail", tx_id=tx_id)
-    )
     # A refusal used to be DISCARDED here: the page came back unchanged and
     # nothing said the entry had not been cleared. It now travels on the
-    # redirect (a plain POST → 302 → GET; the detail page reads ?erreur=).
-    return _redirect_with(return_to, erreur=errors[0] if errors else "")
+    # redirect (a plain POST → 302 → GET; the detail page reads ?erreur=),
+    # MERGED into the return_to's own query (routes/_helpers.with_query: a
+    # filtered journal keeps its filters, a stale ?erreur= is replaced).
+    return redirect_after_post(
+        with_query(return_to, erreur=errors[0] if errors else ""))
 
 
 @trust_bp.route("/compenser-lot", methods=["POST"])
 @login_required
 def entry_clear_bulk():
-    tx_ids = request.form.getlist("tx_ids")
-    cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
-    report = comptabilite.compenser_fideicommis(tx_ids, cleared_date)
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), url_for("trust.journal")
     )
-    return _redirect_with(return_to, erreur=report["errors"][0] if report["errors"] else "")
+    tx_ids = request.form.getlist("tx_ids")
+    cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
+    report = comptabilite.compenser_fideicommis(tx_ids, cleared_date)
+    return redirect_after_post(with_query(
+        return_to, erreur=report["errors"][0] if report["errors"] else ""))
 
 
 # ── Reversal (contre-passation) ────────────────────────────────────────────
@@ -810,6 +804,8 @@ def reconciliations_list():
         "trust/reconciliations_list.html",
         reconciliations=trust.list_reconciliations(),
         accounts={a["id"]: a for a in trust.list_accounts()}, **_labels(),
+        # A closed code: reconciliation_abandon's.
+        avertissement=request.args.get("avertissement", ""),
     )
 
 
@@ -888,17 +884,27 @@ def reconciliation_complete(rec_id: str):
 def reconciliation_abandon(rec_id: str):
     """Abandon a draft reconciliation — the escape hatch a brouillon lacked
     (an unbalanceable draft used to block the account forever, the
-    one-brouillon guard having no other exit)."""
+    one-brouillon guard having no other exit).
+
+    A refusal re-renders its worksheet; a worksheet that cannot be re-read
+    lands on the list, which SAYS the abandon was not confirmed (the
+    refusals lot, 2026-11-06 — it used to land there without a word, like
+    an abandon) — unless the model found it gone: the list, quietly. Both
+    landings answer through ``redirect_after_post`` (Rule 8)."""
     ok, errors = trust.delete_reconciliation(rec_id)
     if errors:
         current = trust.get_reconciliation(rec_id)
         if not current:
-            return redirect(url_for("trust.reconciliations_list"))
+            return redirect_after_post(url_for(
+                "trust.reconciliations_list",
+                avertissement=(None
+                               if errors == [trust.RECONCILIATION_NOT_FOUND]
+                               else "abandon")))
         return render_template(
             "trust/reconciliation_worksheet.html",
             **_worksheet_context(current), errors=errors, **_labels(),
         ), 400
-    return redirect(url_for("trust.reconciliations_list"))
+    return redirect_after_post(url_for("trust.reconciliations_list"))
 
 
 # ── Exports (spec §8) — TWO-column « Recette » / « Crédit » ─────────────────

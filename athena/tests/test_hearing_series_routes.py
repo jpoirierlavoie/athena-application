@@ -290,8 +290,10 @@ def test_deleting_nothing_says_so_rather_than_claiming_success(
 
 
 # ── Détachement ─────────────────────────────────────────────────────────
+# The route reads the hearing STRICTLY since the refusals lot (2026-11-06):
+# these tests stage get_hearing_strict.
 def test_detacher_clears_the_link_and_bumps_the_ctag(client, monkeypatch):
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, TODAY))
+    monkeypatch.setattr(rh, "get_hearing_strict", lambda i: _occ(i, TODAY))
     monkeypatch.setattr(
         rh, "unlink_hearing",
         lambda i: ({"id": i, "dossier_id": "d1", "serie_id": ""}, []),
@@ -306,7 +308,8 @@ def test_detacher_clears_the_link_and_bumps_the_ctag(client, monkeypatch):
 
 
 def test_detacher_a_non_series_hearing_reports_the_refusal(client, monkeypatch):
-    monkeypatch.setattr(rh, "get_hearing", lambda i: _occ(i, TODAY, serie=""))
+    monkeypatch.setattr(rh, "get_hearing_strict",
+                        lambda i: _occ(i, TODAY, serie=""))
     monkeypatch.setattr(
         rh, "unlink_hearing",
         lambda i: (None, ["Cette audience ne fait pas partie d'une série."]),

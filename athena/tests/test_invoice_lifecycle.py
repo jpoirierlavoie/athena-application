@@ -185,7 +185,10 @@ def test_la_route_statut_ne_perd_plus_un_refus_en_silence(fake, client):
     assert "non permise" in erreur
     htmx = client.post(f"/factures/{INV}/status", data={"status": "en_retard"},
                        headers={"HX-Request": "true"})
-    assert htmx.status_code == 302
+    # Lot des refus (2026-11-06) : un 200 portant HX-Redirect, sans
+    # Location — le XHR suit une 302 de lui-même et htmx n'en voyait jamais
+    # l'en-tête.
+    assert htmx.status_code == 200 and "Location" not in htmx.headers
     assert "erreur=" in htmx.headers["HX-Redirect"]
 
 
@@ -598,7 +601,9 @@ def test_la_route_supprimer_dit_son_refus(fake, client):
     assert fake.peek(f"invoices/{INV}") is not None
     htmx = client.post(f"/factures/{INV}/delete",
                        headers={"HX-Request": "true"})
-    assert htmx.status_code == 302 and "erreur=" in htmx.headers["HX-Redirect"]
+    # Un 200 portant HX-Redirect, sans Location (lot des refus, 2026-11-06).
+    assert htmx.status_code == 200 and "Location" not in htmx.headers
+    assert "erreur=" in htmx.headers["HX-Redirect"]
 
 
 def test_une_annulation_sans_reste_ne_porte_aucun_bandeau(fake, client):

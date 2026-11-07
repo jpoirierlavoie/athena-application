@@ -424,6 +424,10 @@ def _purposes_of(direction: str) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " et " + names[-1]
 
 
+# A reconciliation the transaction found gone — « already gone » to the web
+# route that abandons one (the refusals lot, 2026-11-06): the list, quietly.
+RECONCILIATION_NOT_FOUND = "Conciliation introuvable."
+
 # Machine-stable abort reason → French user message.
 _ABORT_MESSAGES = {
     "compte_introuvable": "Compte en fidéicommis introuvable.",
@@ -553,7 +557,7 @@ _ABORT_MESSAGES = {
         "Impossible de compenser : écriture déjà compensée ou annulée, "
         "date de compensation antérieure à l'écriture, ou future."
     ),
-    "conciliation_introuvable": "Conciliation introuvable.",
+    "conciliation_introuvable": RECONCILIATION_NOT_FOUND,
     "conciliation_non_brouillon": "Cette conciliation est déjà complétée.",
     "conciliation_variance": "La conciliation n'est pas équilibrée (écart non nul).",
     "conciliation_modifiée": "Le compte a changé pendant la conciliation. Veuillez recommencer.",

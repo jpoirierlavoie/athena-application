@@ -28,6 +28,12 @@
     </div>
   </div>
 
+  {# ── Bandeau d'un refus renvoyé ici (task_delete : ?erreur=, texte
+     libre assaini, échappé) — les classes du bandeau du calendrier. #}
+  {% if erreur %}
+  <div role="alert" class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  {% endif %}
+
   {# ── Header card ─────────────────────────────────────────────── #}
   {% set priority_colors = {
     'haute': 'bg-red-50 text-red-600',

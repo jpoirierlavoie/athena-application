@@ -28,6 +28,17 @@
     </div>
   </div>
 
+  {# ── Bandeaux d'une action renvoyée ici (suppression refusée,
+     « Détacher » refusé : ?erreur= ; série sans rien à supprimer :
+     ?message=, rien n'a changé — ambre, jamais le vert d'une réussite) :
+     texte libre assaini, échappé, la forme des bandeaux du calendrier. #}
+  {% if message %}
+  <div role="status" class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">{{ message }}</div>
+  {% endif %}
+  {% if erreur %}
+  <div role="alert" class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  {% endif %}
+
   {# ── Série ───────────────────────────────────────────────────── #}
   {% if hearing.serie_id %}
   <div class="mb-4 bg-gray-50 border border-gray-200 rounded-lg px-4 py-3">

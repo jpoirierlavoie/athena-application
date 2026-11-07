@@ -21,6 +21,11 @@
     </div>
   </div>
 
+  {# A refusal the invoice sheet forwarded (it could not show its invoice). #}
+  {% if erreur %}
+  <div role="alert" class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  {% endif %}
+
   {# ── Filters ─────────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
     {# id="filters" lets the pagination component's hx-include carry the

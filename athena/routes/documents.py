@@ -17,7 +17,6 @@ from flask import (
     session,
     url_for,
 )
-from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from auth import login_required
@@ -33,6 +32,7 @@ from models.document import (
     CATEGORY_LABELS,
     DELETE_NOT_FOUND,
     MAX_FILE_SIZE,
+    MOVE_NOT_FOUND,
     VALID_CATEGORIES,
     build_folder_zip_url,
     delete_document,
@@ -51,7 +51,7 @@ from models.document import (
 )
 from models import concurrency
 from routes import edit_conflict
-from routes._helpers import is_htmx
+from routes._helpers import is_htmx, redirect_after_post
 from utils import storage_identity
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -932,13 +932,8 @@ def document_update(document_id: str) -> str:
             **_analyse_form_context(),
         )
 
-    fallback = url_for("documents.document_detail", document_id=document_id)
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(return_to or url_for(
+        "documents.document_detail", document_id=document_id))
 
 
 # ── Move document ─────────────────────────────────────────────────────────
@@ -960,12 +955,28 @@ def document_move(document_id: str) -> str:
     The modal carries the version the page showed (plan rule 11, lot 2A):
     since the connector refiles documents (update_document, move_documents),
     a detail page left open must not send one back, unseen, to where it
-    was. A stale move is refused on the page's 2xx-bound bounce."""
-    doc = get_document(document_id)
+    was. A stale move is refused on the page's 2xx-bound bounce.
+
+    Every outcome is a redirect, htmx's included (Rule 8 — it answered a
+    404 or 422 fragment htmx never swaps). The document is read STRICTLY
+    (the refusals lot, 2026-11-06): a read that fails refuses on the
+    document's page — which forwards the banner to the browser when it
+    cannot show the document either — where the fail-open read sent the
+    lawyer to the browser without a word (the failed read is logged, the
+    ids only). A document the store says is gone goes to the browser,
+    SAYING so: unlike a deletion, the move did not do what was asked."""
+    try:
+        doc = get_document_strict(document_id)
+    except Exception as exc:
+        log_unexpected("document move: read failed", exc_info=False,
+                       document_id=sanitize_log_value(document_id),
+                       error_type=type(exc).__name__)
+        return redirect_after_post(url_for(
+            "documents.document_detail", document_id=document_id,
+            erreur=concurrency.READ_UNAVAILABLE_ERROR))
     if not doc:
-        if _is_htmx():
-            return '<div class="text-red-600 text-sm">Document introuvable.</div>', 404
-        return redirect(url_for("documents.document_list"))
+        return redirect_after_post(url_for(
+            "documents.document_list", erreur=MOVE_NOT_FOUND))
 
     dossier_id = doc["dossier_id"]
     target_folder_id = request.form.get("target_folder_id", "").strip() or None
@@ -977,35 +988,41 @@ def document_move(document_id: str) -> str:
     if concurrency.is_stale(errors):
         errors = [_MOVE_STALE]
 
-    if _is_htmx():
-        if errors:
-            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
-        resp = redirect(url_for("documents.document_detail", document_id=document_id))
-        resp.headers["HX-Redirect"] = url_for("documents.document_detail", document_id=document_id)
-        return resp
-
     # The move modal is a plain form: its refusal travels on the redirect
     # (the detail page prints ?erreur=). It used to be dropped — a move to
     # a folder deleted meanwhile answered with the page, unchanged, and no
     # word of why.
-    return redirect(url_for(
+    return redirect_after_post(url_for(
         "documents.document_detail", document_id=document_id,
         **({"erreur": errors[0]} if errors else {}),
     ))
 
 
+_BULK_PARAMS_MISSING = "Paramètres manquants."
+
+
 @documents_bp.route("/move-bulk", methods=["POST"])
 @login_required
 def document_move_bulk() -> str:
-    """Move multiple documents to a folder."""
+    """Move multiple documents to a folder.
+
+    No page calls it today (``tests/test_document_moves.py`` keeps it on
+    purpose; the connector's ``move_documents`` does the same). Its answer
+    is the document browser's — a 302 htmx's XHR follows to the browser
+    fragment (``follow=True``) — carrying the first refusal (``?erreur=``)
+    and how many moved (``?message=``): every refusal used to be dropped on
+    the plain branch, and htmx got a 422 fragment it never swaps. It opens
+    the target folder only when something moved there; when nothing did,
+    the dossier's root — never a folder the documents are not in (an absent
+    target among them)."""
     dossier_id = request.form.get("dossier_id", "").strip()
     target_folder_id = request.form.get("target_folder_id", "").strip() or None
     doc_ids = request.form.getlist("document_ids")
 
     if not dossier_id or not doc_ids:
-        if _is_htmx():
-            return '<div class="text-red-600 text-sm">Paramètres manquants.</div>', 422
-        return redirect(url_for("documents.document_list"))
+        return redirect_after_post(url_for(
+            "documents.document_list", dossier_id=dossier_id or None,
+            erreur=_BULK_PARAMS_MISSING), follow=True)
 
     # The model refuses an id named twice (a batch naming a row twice has no
     # single outcome to report); a form that posts a checkbox twice means it
@@ -1015,14 +1032,12 @@ def document_move_bulk() -> str:
     moved = sum(1 for r in rows if r["outcome"] == "moved")
     errors = errors or [r["reason"] for r in rows if r["outcome"] == "refused"]
 
-    target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=target_folder_id or "")
-    if _is_htmx():
-        if errors and moved == 0:
-            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(url_for(
+        "documents.document_list", dossier_id=dossier_id,
+        folder_id=(target_folder_id or "") if moved else "",
+        **({"erreur": errors[0]} if errors else {}),
+        **({"message": f"{moved} document(s) déplacé(s)."} if moved else {}),
+    ), follow=True)
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
@@ -1082,13 +1097,18 @@ def document_delete(document_id: str) -> str:
             erreur=error, return_to=return_to or None,
         )
 
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    # htmx gets a 200 + HX-Redirect (the refusals lot): the 302 it got
+    # carried a header the browser's XHR never let htmx see.
+    return redirect_after_post(target)
 
 
 # ── Folder CRUD routes ───────────────────────────────────────────────────
+
+
+# The four folder forms post without a dossier only when forged (or from a
+# page rendered without one): said in the browser's banner, htmx included —
+# it used to be a 422 fragment htmx never swaps, and a silent redirect.
+_DOSSIER_REQUIRED = "Dossier juridique requis."
 
 
 @documents_bp.route("/folders/create", methods=["POST"])
@@ -1100,29 +1120,28 @@ def folder_create() -> str:
     parent_folder_id = request.form.get("parent_folder_id", "").strip() or None
 
     if not dossier_id:
-        if _is_htmx():
-            return '<div class="text-red-600 text-sm">Dossier juridique requis.</div>', 422
-        return redirect(url_for("documents.document_list"))
+        return redirect_after_post(url_for(
+            "documents.document_list", erreur=_DOSSIER_REQUIRED), follow=True)
 
     folder, errors = create_folder(dossier_id, name, parent_folder_id)
 
-    # Succès comme échec : 200 + redirection vers le navigateur, qui relit
+    # Succès comme échec : une redirection 302 vers le navigateur, qui relit
     # ?erreur= dans sa bannière (_browser.html) — jamais un fragment 4xx,
     # htmx 2.0.4 n'échange que les 2xx (la règle de folder_delete_route
-    # ci-dessous). Un « / » dans le nom ou un doublon de nom — les refus
-    # ORDINAIRES de create_folder — mourait à l'écran : bouton ✓ mort,
-    # l'utilisateur re-clique (audit 2026-08-26, catégorie b).
-    target = url_for(
+    # ci-dessous). Si un appelant htmx poste ce formulaire — aujourd'hui
+    # rendu par un <template x-if> que htmx ne traite pas, il est posté
+    # SANS htmx et la page se recharge —, son XHR SUIT la 302 avec son
+    # en-tête HX-Request, et document_list rend le fragment _browser.html
+    # que la cible #browser-content attend : un échange sur place
+    # (follow=True), jamais un rechargement par HX-Redirect. Un « / » dans
+    # le nom ou un doublon de nom — les refus ORDINAIRES de create_folder —
+    # mourait à l'écran : bouton ✓ mort, l'utilisateur re-clique (audit
+    # 2026-08-26, catégorie b).
+    return redirect_after_post(url_for(
         "documents.document_list", dossier_id=dossier_id,
         folder_id=parent_folder_id or "",
         **({"erreur": errors[0]} if errors else {}),
-    )
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    ), follow=True)
 
 
 @documents_bp.route("/folders/<folder_id>/rename", methods=["POST"])
@@ -1133,9 +1152,8 @@ def folder_rename(folder_id: str) -> str:
     new_name = request.form.get("new_name", "").strip()
 
     if not dossier_id:
-        if _is_htmx():
-            return '<div class="text-red-600 text-sm">Dossier juridique requis.</div>', 422
-        return redirect(url_for("documents.document_list"))
+        return redirect_after_post(url_for(
+            "documents.document_list", erreur=_DOSSIER_REQUIRED), follow=True)
 
     # Parent lu AVANT la mutation : sur un refus, rename_folder rend
     # folder=None et le navigateur doit revenir au MÊME niveau.
@@ -1149,49 +1167,51 @@ def folder_rename(folder_id: str) -> str:
         expected_etag=edit_conflict.submitted_etag(),
     )
 
-    # Même discipline 2xx + ?erreur= que folder_create ci-dessus : renommer
-    # vers un nom déjà pris — l'erreur la plus banale — mourait en 422
-    # silencieux (audit 2026-08-26, catégorie b).
+    # Même discipline que folder_create ci-dessus (302 suivie, ?erreur=) :
+    # renommer vers un nom déjà pris — l'erreur la plus banale — mourait en
+    # 422 silencieux (audit 2026-08-26, catégorie b).
     parent_id = (folder or existing or {}).get("parent_folder_id")
-    target = url_for(
+    return redirect_after_post(url_for(
         "documents.document_list", dossier_id=dossier_id,
         folder_id=parent_id or "",
         **({"erreur": errors[0]} if errors else {}),
-    )
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    ), follow=True)
 
 
 @documents_bp.route("/folders/<folder_id>/move", methods=["POST"])
 @login_required
 def folder_move(folder_id: str) -> str:
-    """Move a folder to a new parent."""
+    """Move a folder to a new parent.
+
+    No page calls it today (the connector's ``manage_folder`` does the
+    same). Answered like the browser's other folder forms (``follow=True``):
+    a refusal at the folder's CURRENT level with ``?erreur=`` (folder_rename's
+    rule — its parent read before the move), a move at the new parent. Every
+    refusal used to be dropped on the plain branch (the dossier's root,
+    without a word), and htmx got a 422 fragment it never swaps."""
     dossier_id = request.form.get("dossier_id", "").strip()
     new_parent_folder_id = request.form.get("new_parent_folder_id", "").strip() or None
 
     if not dossier_id:
-        if _is_htmx():
-            return '<div class="text-red-600 text-sm">Dossier juridique requis.</div>', 422
-        return redirect(url_for("documents.document_list"))
+        return redirect_after_post(url_for(
+            "documents.document_list", erreur=_DOSSIER_REQUIRED), follow=True)
 
+    # Parent read BEFORE the move: a refusal goes back to the level the
+    # folder still sits at (display only — fail-open, the root on a blip).
+    existing = get_folder(dossier_id, folder_id)
     folder, errors, _changed = move_folder(
         dossier_id, folder_id, new_parent_folder_id,
         expected_etag=edit_conflict.submitted_etag(),
     )
 
-    if _is_htmx():
-        if errors:
-            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
-        target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=new_parent_folder_id or "")
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(url_for("documents.document_list", dossier_id=dossier_id))
+    if errors:
+        return redirect_after_post(url_for(
+            "documents.document_list", dossier_id=dossier_id,
+            folder_id=(existing or {}).get("parent_folder_id") or "",
+            erreur=errors[0]), follow=True)
+    return redirect_after_post(url_for(
+        "documents.document_list", dossier_id=dossier_id,
+        folder_id=new_parent_folder_id or ""), follow=True)
 
 
 @documents_bp.route("/folders/<folder_id>/delete", methods=["POST"])
@@ -1208,9 +1228,8 @@ def folder_delete_route(folder_id: str) -> str:
     contents = request.form.get("contents", "").strip()
 
     if not dossier_id:
-        if _is_htmx():
-            return '<div class="text-red-600 text-sm">Dossier juridique requis.</div>', 422
-        return redirect(url_for("documents.document_list"))
+        return redirect_after_post(url_for(
+            "documents.document_list", erreur=_DOSSIER_REQUIRED), follow=True)
 
     # Get parent before deleting
     folder_data = get_folder(dossier_id, folder_id)
@@ -1268,26 +1287,24 @@ def folder_delete_route(folder_id: str) -> str:
         # saw a change) still owes what the store could not erase.
         error = f"{error} {_orphan_phrase(rapport)}"
 
-    target = url_for(
+    # Succès comme échec : une redirection 302 vers le navigateur, qui relit
+    # ?message= / ?erreur= dans sa bannière. Si un appelant htmx poste ce
+    # formulaire — aujourd'hui rendu par un <template x-if> que htmx ne
+    # traite pas, il est posté SANS htmx et la page se recharge —, son XHR
+    # la SUIT avec son en-tête HX-Request et document_list rend le fragment
+    # _browser.html que la cible #browser-content attend (follow=True : un
+    # échange sur place). Surtout PAS un fragment 422 — htmx 2.0.4
+    # n'échange que les 2xx (la règle que doc_templates.py:88 documente
+    # déjà), si bien qu'un refus (« 342 fichiers, au-delà de la limite »)
+    # ou un aveu de destruction partielle mourait à l'écran : bouton mort,
+    # rien qui bouge, et l'utilisateur re-clique. La branche sans JS
+    # laissait tomber l'erreur en silence — elle rebondit désormais sur le
+    # navigateur avec ?erreur=, comme l'archive zip.
+    return redirect_after_post(url_for(
         "documents.document_list", dossier_id=dossier_id,
         folder_id=parent_id or "",
         **({"message": message} if message else {"erreur": error} if error else {}),
-    )
-    if _is_htmx():
-        # Succès comme échec : 200 + HX-Redirect vers le navigateur, qui
-        # relit ?message= / ?erreur= dans sa bannière. Surtout PAS un
-        # fragment 422 — htmx 2.0.4 n'échange que les 2xx (la règle que
-        # doc_templates.py:88 documente déjà), si bien qu'un refus (« 342
-        # fichiers, au-delà de la limite ») ou un aveu de destruction
-        # partielle mourait à l'écran : bouton mort, rien qui bouge, et
-        # l'utilisateur re-clique.
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    # La branche sans JS laissait tomber l'erreur en silence — elle rebondit
-    # désormais sur le navigateur avec ?erreur=, comme l'archive zip.
-    return redirect(target)
+    ), follow=True)
 
 
 _COUNTS_MALFORMED = (

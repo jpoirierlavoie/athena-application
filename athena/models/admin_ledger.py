@@ -616,6 +616,10 @@ def _kinds_of(direction: str, among=None) -> str:
                          if d == direction and (among is None or k in among)])
 
 
+# A reconciliation the transaction found gone — « already gone » to the web
+# route that abandons one (the refusals lot, 2026-11-06): the list, quietly.
+RECONCILIATION_NOT_FOUND = "Conciliation introuvable."
+
 # Machine-stable abort reason → French user message.
 _ABORT_MESSAGES = {
     "compte_introuvable": "Compte d'administration introuvable.",
@@ -776,7 +780,7 @@ _ABORT_MESSAGES = {
     "comptes_incompatibles": (
         "Un paiement de carte va d'un compte d'opérations vers une carte de crédit."
     ),
-    "conciliation_introuvable": "Conciliation introuvable.",
+    "conciliation_introuvable": RECONCILIATION_NOT_FOUND,
     "conciliation_non_brouillon": "Cette conciliation est déjà complétée.",
     "conciliation_variance": "La conciliation n'est pas équilibrée (écart non nul).",
     "conciliation_modifiée": "Le registre a changé pendant la conciliation. Veuillez recommencer.",

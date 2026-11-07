@@ -988,14 +988,20 @@ def test_every_rename_code_lands_on_its_banner(
 @pytest.mark.parametrize("url", [_rename(), _delete()])
 def test_under_htmx_the_redirect_also_says_hx_redirect(web, db, bucket, url):
     """Rule 8: htmx swaps only a 2xx — never a 422; the answer is the
-    redirect, and HX-Redirect for htmx (the kyc_confirm pattern)."""
+    redirect, and HX-Redirect for htmx (the kyc_confirm pattern).
+
+    Since the refusals lot (2026-11-06), a 200 carrying HX-Redirect and NO
+    Location (``routes/_helpers.redirect_after_post``): the browser's XHR
+    follows a 302 by itself, so htmx never saw the header this test pinned
+    on one. HX-Redirect names exactly where the plain form lands."""
     _seed_contact(db)
     _seed_proof(db, bucket)
-    resp = web.post(url, data={"expected_etag": "e-autre",
-                               "display_name": "Passeport"},
-                    headers={"HX-Request": "true"})
-    assert resp.status_code == 302
-    assert resp.headers["HX-Redirect"] == resp.headers["Location"]
+    form = {"expected_etag": "e-autre", "display_name": "Passeport"}
+    plain = web.post(url, data=form)
+    assert plain.status_code == 302 and "HX-Redirect" not in plain.headers
+    resp = web.post(url, data=form, headers={"HX-Request": "true"})
+    assert resp.status_code == 200 and "Location" not in resp.headers
+    assert resp.headers["HX-Redirect"] == plain.headers["Location"]
 
 
 @pytest.mark.parametrize("url", [_rename(), _delete()])

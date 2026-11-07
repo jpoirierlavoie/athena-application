@@ -7,19 +7,23 @@ from flask import (
     request,
     url_for,
 )
-from markupsafe import escape
 
 from auth import login_required
+from security import sanitize
 from utils import deadlines, phases
+from utils.logging_setup import log_unexpected, sanitize_log_value
 from models.audit_event import record_deletion
+from models.concurrency import READ_UNAVAILABLE_ERROR
 from models.dossier import get_dossier
 from models.protocol import (
     CLOSED_BY_AUTO,
+    PROTOCOL_NOT_FOUND,
     PROTOCOL_TYPE_COLORS,
     PROTOCOL_TYPE_LABELS,
     PROTOCOL_TYPE_SHORT_LABELS,
     PROTOCOL_TYPE_TRIBUNAL,
     STATUS_LABELS,
+    STEP_NOT_FOUND,
     STEP_STATUS_COLORS,
     STEP_STATUS_LABELS,
     VALID_PROTOCOL_TYPES,
@@ -30,11 +34,12 @@ from models.protocol import (
     delete_step,
     get_protocol,
     get_protocol_for_dossier,
+    get_protocol_strict,
     list_protocols,
     regime_mismatch,
 )
 from routes import edit_conflict
-from routes._helpers import is_htmx, parse_date_input
+from routes._helpers import is_htmx, parse_date_input, redirect_after_post
 from services import protocoles as protocol_service
 
 protocols_bp = Blueprint("protocols", __name__, url_prefix="/protocoles")
@@ -172,13 +177,8 @@ def protocol_create() -> str:
             "créées ou rattachées à leur étape — vérifiez les étapes sans "
             "« Voir la tâche liée »."
         )
-    target = url_for("protocols.protocol_detail", protocol_id=protocol["id"],
-                     **params)
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(url_for(
+        "protocols.protocol_detail", protocol_id=protocol["id"], **params))
 
 
 # ── Detail ──────────────────────────────────────────────────────────────
@@ -188,12 +188,17 @@ def protocol_create() -> str:
 @login_required
 def protocol_detail(protocol_id: str) -> str:
     """Render the protocol detail view with timeline."""
-    # The step button's and the step forms' outcomes come back as a
-    # redirect carrying ?erreur= / ?message=.
+    # The step button's and the step forms' outcomes — and since the
+    # refusals lot a refused protocol or step deletion — come back as a
+    # redirect carrying ?erreur= / ?message=: free text, sanitized, then
+    # autoescaped (the task and document pages' posture). The message cap
+    # leaves room for this module's own notices: protocol_update's
+    # _update_notice exceeds 300 characters when five of its branches fire
+    # at once, and a cut would drop the instruction that ends it.
     return _render_detail(
         protocol_id,
-        erreur=request.args.get("erreur", ""),
-        message=request.args.get("message", ""),
+        erreur=sanitize(request.args.get("erreur", ""), max_length=300),
+        message=sanitize(request.args.get("message", ""), max_length=1000),
     )
 
 
@@ -395,13 +400,9 @@ def protocol_update(protocol_id: str) -> str:
         return render_template("protocols/form.html", **ctx)
 
     notice = _update_notice(report)
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id,
-                     **({"message": notice} if notice else {}))
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(url_for(
+        "protocols.protocol_detail", protocol_id=protocol_id,
+        **({"message": notice} if notice else {})))
 
 
 # ── Delete protocol ─────────────────────────────────────────────────────
@@ -410,9 +411,31 @@ def protocol_update(protocol_id: str) -> str:
 @protocols_bp.route("/<protocol_id>/delete", methods=["POST"])
 @login_required
 def protocol_delete(protocol_id: str) -> str:
-    """Delete a protocol and redirect to dossier."""
-    protocol = get_protocol(protocol_id)
-    dossier_id = protocol.get("dossier_id") if protocol else None
+    """Delete a protocol and redirect to its dossier.
+
+    The protocol is read STRICTLY first (the refusals lot, 2026-11-06): a
+    read that fails refuses — nothing attempted, logged with the ids only
+    under the model's own message (the route refuses before the model is
+    reached) — and says so on the protocol's page, where the fail-open
+    read sent the lawyer to the dossier list as if the protocol were gone,
+    and journaled a deletion with no dossier and no title. A protocol
+    already gone (the store says so) goes to the list, quietly: the intent
+    is fulfilled. Any refusal of the delete lands back on the protocol,
+    its French reason in the banner: it used to land on the dossier like a
+    deletion, and to answer htmx a 422 fragment htmx never swaps.
+    """
+    try:
+        protocol = get_protocol_strict(protocol_id)
+    except Exception as exc:
+        log_unexpected("protocol delete: read failed", exc_info=False,
+                       protocol_id=sanitize_log_value(protocol_id),
+                       error_type=type(exc).__name__)
+        return redirect_after_post(url_for(
+            "protocols.protocol_detail", protocol_id=protocol_id,
+            erreur=READ_UNAVAILABLE_ERROR))
+    if protocol is None:
+        return redirect_after_post(url_for("dossiers.dossier_list"))
+    dossier_id = protocol.get("dossier_id")
 
     success, error = delete_protocol(protocol_id)
 
@@ -426,20 +449,15 @@ def protocol_delete(protocol_id: str) -> str:
             status=(protocol or {}).get("protocol_type", ""),
         )
 
-    target = (
+    if not success and error != PROTOCOL_NOT_FOUND:
+        return redirect_after_post(url_for(
+            "protocols.protocol_detail", protocol_id=protocol_id,
+            erreur=error))
+    return redirect_after_post(
         url_for("dossiers.dossier_detail", dossier_id=dossier_id)
         if dossier_id
         else url_for("dossiers.dossier_list")
     )
-
-    if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    return redirect(target)
 
 
 # ── Step operations ─────────────────────────────────────────────────────
@@ -466,12 +484,9 @@ def step_add(protocol_id: str) -> str:
 
     # A refusal travels as a 2xx redirect with ?erreur=: the old 422
     # fragment was never swapped by htmx, and this is a full-page form.
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id,
-                     **({"erreur": errors[0]} if errors else {}))
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    return redirect_after_post(url_for(
+        "protocols.protocol_detail", protocol_id=protocol_id,
+        **({"erreur": errors[0]} if errors else {})))
 
 
 def _stored_step(protocol_id: str, step_id: str) -> dict | None:
@@ -534,12 +549,9 @@ def step_update(protocol_id: str, step_id: str) -> str:
     if report.get("aligned") or report.get("diverged") or report.get(
             "failed") or report.get("missing"):
         notice = " ".join(["Échéance modifiée."] + _alignment_notice(report))
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id,
-                     **({"message": notice} if notice else {}))
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    return redirect_after_post(url_for(
+        "protocols.protocol_detail", protocol_id=protocol_id,
+        **({"message": notice} if notice else {})))
 
 
 def _step_target(protocol_id: str, step_id: str) -> str:
@@ -629,20 +641,35 @@ def step_complete(protocol_id: str, step_id: str) -> str:
         if notice:
             params["message"] = notice
 
-    target_url = url_for(
+    return redirect_after_post(url_for(
         "protocols.protocol_detail", protocol_id=protocol_id, **params
-    )
-    resp = redirect(target_url)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target_url
-    return resp
+    ))
 
 
 @protocols_bp.route("/<protocol_id>/steps/<step_id>/delete", methods=["POST"])
 @login_required
 def step_delete(protocol_id: str, step_id: str) -> str:
-    """Delete a custom (non-mandatory) step."""
-    protocol = get_protocol(protocol_id)
+    """Delete a custom (non-mandatory) step.
+
+    Every outcome lands on the protocol's page — a refusal with its French
+    reason in the banner (the refusals lot, 2026-11-06): it used to reload
+    the page without a word, and to answer htmx a 422 fragment htmx never
+    swaps. The protocol is read STRICTLY first: a read that fails refuses,
+    nothing attempted, logged with the ids only under the model's own
+    message, where the fail-open read journaled a deletion with no dossier
+    and no title. A step already gone is the protocol's page, quietly; a
+    protocol already gone, the dossier list."""
+    try:
+        protocol = get_protocol_strict(protocol_id)
+    except Exception as exc:
+        log_unexpected("protocol step delete: read failed", exc_info=False,
+                       protocol_id=sanitize_log_value(protocol_id),
+                       error_type=type(exc).__name__)
+        return redirect_after_post(url_for(
+            "protocols.protocol_detail", protocol_id=protocol_id,
+            erreur=READ_UNAVAILABLE_ERROR))
+    if protocol is None:
+        return redirect_after_post(url_for("dossiers.dossier_list"))
     step = next(
         (s for s in (protocol or {}).get("steps", []) if s.get("id") == step_id),
         None,
@@ -657,12 +684,7 @@ def step_delete(protocol_id: str, step_id: str) -> str:
             status=(step or {}).get("status", ""),
         )
 
-    if not success and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{escape(error)}</div>', 422
-
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    refused = not success and error not in (STEP_NOT_FOUND, PROTOCOL_NOT_FOUND)
+    return redirect_after_post(url_for(
+        "protocols.protocol_detail", protocol_id=protocol_id,
+        **({"erreur": error} if refused else {})))

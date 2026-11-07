@@ -2,8 +2,6 @@
 
 from datetime import date, datetime, timedelta, timezone
 
-from markupsafe import escape
-
 from tz import mtl_to_utc, to_mtl
 
 from flask import (
@@ -18,12 +16,17 @@ from flask import (
 from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, relocate_resource
 from models.audit_event import record_deletion
-from security import safe_internal_redirect
+from security import safe_internal_redirect, sanitize
 from utils import recurrence
 from utils.deadlines import today_mtl
-from utils.logging_setup import log_hearing_series_event
+from utils.logging_setup import (
+    log_hearing_series_event,
+    log_unexpected,
+    sanitize_log_value,
+)
 from models.hearing import (
     FORUM_LABELS,
+    HEARING_NOT_FOUND,
     HEARING_TYPE_COLORS,
     HEARING_TYPE_LABELS,
     HEARING_TITLE_SUGGESTIONS,
@@ -62,7 +65,14 @@ from models.dossier import (
     VALID_COURTS,
 )
 from routes import edit_conflict
-from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input
+from routes._helpers import (
+    dossier_search_fragment,
+    enrich_dossier_labels,
+    is_htmx,
+    parse_date_input,
+    redirect_after_post,
+    with_query,
+)
 
 hearings_bp = Blueprint("hearings", __name__, url_prefix="/audiences")
 
@@ -349,8 +359,8 @@ def hearing_list() -> str:
             serie_label=recurrence.describe(
                 rows[0].get("serie_rule") if rows else None
             ),
-            message=request.args.get("message", ""),
-            erreur=request.args.get("erreur", ""),
+            message=sanitize(request.args.get("message", ""), max_length=300),
+            erreur=sanitize(request.args.get("erreur", ""), max_length=300),
         )
         if _is_htmx():
             return render_template("hearings/_hearing_rows.html", **ctx)
@@ -529,8 +539,8 @@ def hearing_list() -> str:
             hearing_type_filter=hearing_type_filter,
             status_filter=status_filter,
             now=now,
-            message=request.args.get("message", ""),
-            erreur=request.args.get("erreur", ""),
+            message=sanitize(request.args.get("message", ""), max_length=300),
+            erreur=sanitize(request.args.get("erreur", ""), max_length=300),
         )
 
         if _is_htmx():
@@ -606,16 +616,11 @@ def hearing_create() -> str:
         )
         # Vers la chaîne elle-même : la seule façon de VOIR ce qui vient
         # d'être créé, et la vérification que le lot a fait ce qu'on a demandé.
-        target = url_for(
+        return redirect_after_post(url_for(
             "hearings.hearing_list",
             serie=serie_id,
             message=f"Série créée — {len(occurrences)} occurrences.",
-        )
-        if _is_htmx():
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return redirect(target)
+        ))
 
     hearing, errors = create_hearing(data)
 
@@ -624,13 +629,7 @@ def hearing_create() -> str:
 
     bump_ctag(collection_for(hearing.get("dossier_id")))
 
-    target = return_to or url_for("hearings.hearing_list")
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("hearings.hearing_list"))
 
 
 # ── Detail ────────────────────────────────────────────────────────────────
@@ -639,17 +638,29 @@ def hearing_create() -> str:
 @hearings_bp.route("/<hearing_id>")
 @login_required
 def hearing_detail(hearing_id: str) -> str:
-    """Render the hearing detail view."""
+    """Render the hearing detail view.
+
+    ``?erreur=`` / ``?message=`` are the banners of an action sent back
+    here — a refused delete or « Détacher », a chain with nothing left to
+    delete: free text, sanitized, autoescaped (the calendar list's
+    posture). They used to be put in the context and never rendered. A
+    hearing this page cannot show — gone, or its read still failing —
+    forwards both to the calendar, which prints them: never dropped on the
+    way (the document page's rule)."""
+    erreur = sanitize(request.args.get("erreur", ""), max_length=300)
+    message = sanitize(request.args.get("message", ""), max_length=300)
     hearing = get_hearing(hearing_id)
     if not hearing:
-        return redirect(url_for("hearings.hearing_list"))
+        return redirect(url_for("hearings.hearing_list",
+                                erreur=erreur or None,
+                                message=message or None))
 
     ctx = _template_context()
     ctx["hearing"] = hearing
     ctx["return_to"] = safe_internal_redirect(request.args.get("return_to"), "")
     ctx["serie_label"] = recurrence.describe(hearing.get("serie_rule"))
-    ctx["message"] = request.args.get("message", "")
-    ctx["erreur"] = request.args.get("erreur", "")
+    ctx["message"] = message
+    ctx["erreur"] = erreur
     return render_template("hearings/detail.html", **ctx)
 
 
@@ -731,82 +742,107 @@ def hearing_update(hearing_id: str) -> str:
         new_dossier_id=hearing.get("dossier_id"),
     )
 
-    fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("hearings.hearing_detail", hearing_id=hearing_id))
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
 
+# « Cette occurrence et les suivantes » qui ne trouve rien à supprimer : rien
+# n'a été détruit — dit sur la page de l'audience, jamais sur un onglet de
+# dossier, dont les bandeaux ne sont que des codes fermés (il s'y perdait).
+_NOTHING_TO_DELETE = "Aucune occurrence à venir à supprimer."
 
-def _delete_chain_from(hearing: dict, return_to: str) -> str:
+
+def _back_to_hearing(hearing_id: str, return_to: str, **banner: str):
+    """The hearing's own page, its banner in the query string — where every
+    refusal of a delete or a « Détacher » lands (the refusals lot,
+    2026-11-06), its « Retour » kept. They used to land where a success
+    lands — a dossier tab, whose banners are closed codes only, or the
+    calendar —, the banner built with ``markupsafe.escape``, which is no
+    URL encoding: « n'a » became « n&#39;a », whose ``&`` ended the
+    parameter (« Cet élément n »). ``return_to`` has passed
+    ``safe_internal_redirect`` where it was read: "" or an internal path."""
+    return redirect_after_post(url_for(
+        "hearings.hearing_detail", hearing_id=hearing_id,
+        return_to=return_to or None, **banner,
+    ))
+
+
+def _delete_chain_from(hearing_id: str, hearing: dict, return_to: str) -> str:
     """« Cette occurrence et les suivantes » — jamais une occurrence passée.
 
     Une occurrence déjà tenue est le constat de ce qui a eu lieu ; le pivot
     est donc le plus TARDIF entre le jour de cette occurrence et aujourd'hui.
     ``return_to`` a passé ``safe_internal_redirect`` là où il a été lu
     (``hearing_delete``) : "" ou un chemin interne.
+
+    Un refus, ou rien à supprimer, revient sur l'audience : le lot est
+    atomique, elle est donc toujours là, et sa page le dit. Seule une
+    suppression faite va où va un succès, « Série supprimée — N
+    occurrences. » en bandeau.
     """
     serie_id = hearing["serie_id"]
     pivot = max(occurrence_day(hearing) or today_mtl(), today_mtl())
 
     rows, errors = delete_series(serie_id, from_date=pivot)
-    target = return_to or url_for("hearings.hearing_list")
     if errors:
         # 2xx obligatoire : htmx n'échange que les 2xx, un fragment 4xx ne
         # paraîtrait jamais et le bouton semblerait mort.
-        return redirect(f"{target}{'&' if '?' in target else '?'}"
-                        f"erreur={escape(errors[0])}")
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    if not rows:
+        return _back_to_hearing(hearing_id, return_to,
+                                message=_NOTHING_TO_DELETE)
 
-    if rows:
-        # UNE ligne au journal, jamais N : list_recent lit une fenêtre dure de
-        # 200 filtrée en Python, donc N lignes évinceraient tout l'historique
-        # de suppression du cabinet. Légitime parce que le lot est atomique.
-        record_deletion(
-            "hearing_series", serie_id,
-            dossier_id=rows[0].get("dossier_id", "") or "",
-            title=f"{len(rows)} occurrences",
-            status=rows[0].get("status", ""),
-        )
-        log_hearing_series_event(
-            "series_deleted",
-            serie_id,
-            occurrences=len(rows),
-            dossier_id=rows[0].get("dossier_id", ""),
-            ctag_bumped=True,
-        )
-
-    message = (
-        f"Série supprimée — {len(rows)} occurrences."
-        if rows else "Aucune occurrence à venir à supprimer."
+    # UNE ligne au journal, jamais N : list_recent lit une fenêtre dure de
+    # 200 filtrée en Python, donc N lignes évinceraient tout l'historique
+    # de suppression du cabinet. Légitime parce que le lot est atomique.
+    record_deletion(
+        "hearing_series", serie_id,
+        dossier_id=rows[0].get("dossier_id", "") or "",
+        title=f"{len(rows)} occurrences",
+        status=rows[0].get("status", ""),
     )
-    target = f"{target}{'&' if '?' in target else '?'}message={escape(message)}"
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    log_hearing_series_event(
+        "series_deleted",
+        serie_id,
+        occurrences=len(rows),
+        dossier_id=rows[0].get("dossier_id", ""),
+        ctag_bumped=True,
+    )
+
+    return redirect_after_post(with_query(
+        return_to or url_for("hearings.hearing_list"),
+        message=f"Série supprimée — {len(rows)} occurrences.",
+    ))
 
 
 @hearings_bp.route("/<hearing_id>/detacher", methods=["POST"])
 @login_required
 def hearing_unlink(hearing_id: str) -> str:
-    """Détacher une occurrence de sa série — elle devient autonome."""
+    """Détacher une occurrence de sa série — elle devient autonome.
+
+    Un refus revient sur l'audience, sa phrase entière en bandeau (elle
+    était coupée à la première apostrophe, puis jamais affichée).
+    L'audience est lue STRICTEMENT d'abord : une lecture ratée refuse, rien
+    n'est tenté — la lecture « fail-open » du modèle l'aurait dite
+    « Audience introuvable. », au-dessus de l'audience elle-même. La
+    lecture ratée est journalisée, les identifiants seuls (la lecture
+    « fail-open » l'était, elle aussi)."""
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
-    existing = get_hearing(hearing_id)
+    try:
+        existing = get_hearing_strict(hearing_id)
+    except Exception as exc:
+        log_unexpected("hearing unlink: read failed", exc_info=False,
+                       hearing_id=sanitize_log_value(hearing_id),
+                       error_type=type(exc).__name__)
+        return _back_to_hearing(hearing_id, return_to,
+                                erreur=READ_UNAVAILABLE_ERROR)
     serie_id = (existing or {}).get("serie_id", "")
 
     updated, errors = unlink_hearing(hearing_id)
-    fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
     if errors:
-        target = return_to or fallback
-        return redirect(f"{target}{'&' if '?' in target else '?'}"
-                        f"erreur={escape(errors[0])}")
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
 
     # L'appartenance a changé : la charge DAV n'émet pas serie_id, mais la
     # collection doit repasser au téléphone pour que l'etag suive.
@@ -818,12 +854,8 @@ def hearing_unlink(hearing_id: str) -> str:
         dossier_id=updated.get("dossier_id", ""),
         ctag_bumped=True,
     )
-    target = return_to or fallback
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(
+        return_to or url_for("hearings.hearing_detail", hearing_id=hearing_id))
 
 
 @hearings_bp.route("/<hearing_id>/delete", methods=["POST"])
@@ -836,6 +868,14 @@ def hearing_delete(hearing_id: str) -> str:
     stored value, so a stale page whose occurrence has since been detached
     would otherwise ask to delete the chain "" — every standalone hearing in
     the practice.
+
+    A deletion, or a hearing already gone (``HEARING_NOT_FOUND`` — the
+    phone or another tab deleted it: the intent is fulfilled), lands where
+    the page came from, quietly. Any other refusal lands back on the
+    HEARING, its French reason in the banner (the refusals lot,
+    2026-11-06): it used to redirect exactly like a deletion — the court
+    date and its copy on the phone still there — and to answer htmx a 422
+    fragment htmx never swaps.
     """
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
     if request.form.get("scope") == "suivantes":
@@ -845,11 +885,10 @@ def hearing_delete(hearing_id: str) -> str:
         try:
             stored = get_hearing_strict(hearing_id)
         except Exception:
-            target = return_to or url_for("hearings.hearing_list")
-            return redirect(f"{target}{'&' if '?' in target else '?'}"
-                            f"erreur={escape(READ_UNAVAILABLE_ERROR)}")
+            return _back_to_hearing(hearing_id, return_to,
+                                    erreur=READ_UNAVAILABLE_ERROR)
         if stored and stored.get("serie_id"):
-            return _delete_chain_from(stored, return_to)
+            return _delete_chain_from(hearing_id, stored, return_to)
 
     # The collection to tombstone comes from the document the MODEL read and
     # deleted (finitions, sync-4) — never from a separate fail-open
@@ -870,15 +909,9 @@ def hearing_delete(hearing_id: str) -> str:
             status=(existing_hearing or {}).get("status", ""),
         )
 
-    target = return_to or url_for("hearings.hearing_list")
-    if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    return redirect(target)
+    if not success and error != HEARING_NOT_FOUND:
+        return _back_to_hearing(hearing_id, return_to, erreur=error)
+    return redirect_after_post(return_to or url_for("hearings.hearing_list"))
 
 
 # ── Export ───────────────────────────────────────────────────────────────

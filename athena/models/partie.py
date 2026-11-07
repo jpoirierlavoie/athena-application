@@ -40,6 +40,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.api_core.exceptions import AlreadyExists
 from models import aggregation_values, concurrency, dav_ids, db, provenance
+from models.document import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import civilite, kyc, occupations
@@ -1725,9 +1726,23 @@ def confirm_kyc_status(
         return None, [KYC_CONFIRM_APP_ONLY]
     if expected_etag is None:
         return None, [KYC_CONFIRM_NEEDS_VERSION]
-    existing = get_partie(partie_id)
+    # STRICT (the refusals lot, 2026-11-06): a read that fails is
+    # ``READ_UNAVAILABLE_ERROR``, never :data:`PARTIE_NOT_FOUND` — the route
+    # takes that sentence for a contact already gone and lands on the list,
+    # quietly, which dropped the lawyer's « Confirmer » without a word. An
+    # id that can name no contact (``document.is_addressable_id``) is an
+    # absence, never « réessayez ».
+    if not is_addressable_id(partie_id):
+        return None, [PARTIE_NOT_FOUND]
+    try:
+        existing = get_partie_strict(partie_id)
+    except Exception as exc:
+        log_unexpected("partie KYC confirmation: read failed", exc_info=False,
+                       partie_id=sanitize_log_value(partie_id),
+                       error_type=type(exc).__name__)
+        return None, [concurrency.READ_UNAVAILABLE_ERROR]
     if not existing:
-        return None, ["Contact introuvable."]
+        return None, [PARTIE_NOT_FOUND]
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR]
     if not kyc.is_presumed(existing, field):

@@ -787,6 +787,13 @@ def set_time_entry_phase(
     return {**existing, **pair, **stamp}, [], True
 
 
+# What delete_time_entry answers when the transaction's read found no entry —
+# « already gone », which the web route answers like a deletion (the
+# refusals lot, 2026-11-06). A read that FAILED raises out of the
+# transaction instead: « Erreur lors de la suppression ».
+TIME_ENTRY_NOT_FOUND = "Entrée de temps introuvable."
+
+
 def delete_time_entry(entry_id: str) -> tuple[bool, str]:
     """Delete a time entry. Returns (success, error_message).
 
@@ -802,7 +809,7 @@ def delete_time_entry(entry_id: str) -> tuple[bool, str]:
     def _apply(transaction) -> None:
         snap = ref.get(transaction=transaction)
         if not snap.exists:
-            raise _Refused(["Entrée de temps introuvable."])
+            raise _Refused([TIME_ENTRY_NOT_FOUND])
         if (snap.to_dict() or {}).get("invoiced"):
             raise _Refused(["Impossible de supprimer une entrée déjà facturée."])
         transaction.delete(ref)

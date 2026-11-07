@@ -86,7 +86,12 @@ from utils.logging_setup import (
 )
 from utils import storage_identity
 from routes import edit_conflict
-from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input
+from routes._helpers import (
+    dossier_search_fragment,
+    is_htmx,
+    parse_date_input,
+    redirect_after_post,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -577,9 +582,28 @@ def _lock_reason_now(entry: dict):
 @admin_bp.route("/<tx_id>/supprimer", methods=["POST"])
 @login_required
 def entry_delete(tx_id: str):
-    entry = al.get_transaction(tx_id)
-    if not entry:
-        return render_template("errors/404.html"), 404
+    """Delete an unlocked entry (a card payment: both legs).
+
+    A refusal lands back on the entry with the closed code
+    ``avertissement=suppression`` (the refusals lot, 2026-11-06), whose
+    banner the page words from the entry as it reads it NOW — locked since
+    the page was shown (the connector clears entries), or still there after
+    a failure: it used to reload the page without a word. The entry is
+    read STRICTLY first: a read that fails refuses — nothing attempted,
+    logged with the ids only — where the fail-open read answered a 404
+    page; an entry the store says is gone goes to the journal, quietly (the
+    intent is fulfilled)."""
+    try:
+        entry = al.get_transaction_strict(tx_id)
+    except Exception as exc:
+        log_unexpected("admin entry delete: read failed", exc_info=False,
+                       transaction_id=sanitize_log_value(tx_id),
+                       error_type=type(exc).__name__)
+        return redirect_after_post(url_for(
+            "admin_ledger.entry_detail", tx_id=tx_id,
+            avertissement="suppression"))
+    if entry is None:
+        return redirect_after_post(url_for("admin_ledger.journal"))
     if entry.get("kind") == "paiement_carte":
         legs, errors = al.delete_card_payment(tx_id)
         deleted = legs or []
@@ -587,7 +611,9 @@ def entry_delete(tx_id: str):
         doc, errors = al.delete_transaction(tx_id)
         deleted = [doc] if doc else []
     if errors or not deleted:
-        return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
+        return redirect_after_post(url_for(
+            "admin_ledger.entry_detail", tx_id=tx_id,
+            avertissement="suppression"))
     # House deletions registry — write side lives in the routes, AFTER the
     # committed delete (the audit_event doctrine). EVERY deleted row gets a
     # trail entry (a card payment removes two). The receipt blob, if any,
@@ -600,8 +626,8 @@ def entry_delete(tx_id: str):
                   f"{doc.get('counterparty', '')}",
             status=doc.get("status", ""),
         )
-    return redirect(url_for("admin_ledger.journal",
-                            account_id=deleted[0].get("account_id", "")))
+    return redirect_after_post(url_for(
+        "admin_ledger.journal", account_id=deleted[0].get("account_id", "")))
 
 
 # ── Ventilation (HTMX) ─────────────────────────────────────────────────────
@@ -1102,6 +1128,8 @@ def reconciliations_list():
         "administration/reconciliations_list.html",
         reconciliations=al.list_reconciliations(),
         accounts={a["id"]: a for a in al.list_accounts()}, **_labels(),
+        # A closed code (this module's convention): reconciliation_abandon's.
+        avertissement=request.args.get("avertissement", ""),
     )
 
 
@@ -1182,16 +1210,25 @@ def reconciliation_complete(rec_id: str):
 @admin_bp.route("/conciliations/<rec_id>/abandonner", methods=["POST"])
 @login_required
 def reconciliation_abandon(rec_id: str):
+    """Abandon a draft reconciliation. A refusal re-renders its worksheet,
+    the reason in the form; a worksheet that cannot be re-read lands on the
+    list, which SAYS the abandon was not confirmed (the refusals lot,
+    2026-11-06 — it used to land there without a word, like an abandon) —
+    unless the model found the reconciliation gone: the list, quietly.
+    Both landings answer through ``redirect_after_post`` (Rule 8)."""
     ok, errors = al.delete_reconciliation(rec_id)
     if errors:
         current = al.get_reconciliation(rec_id)
         if not current:
-            return redirect(url_for("admin_ledger.reconciliations_list"))
+            return redirect_after_post(url_for(
+                "admin_ledger.reconciliations_list",
+                avertissement=(None if errors == [al.RECONCILIATION_NOT_FOUND]
+                               else "abandon")))
         return render_template(
             "administration/reconciliation_worksheet.html",
             **_worksheet_context(current), errors=errors, **_labels(),
         ), 400
-    return redirect(url_for("admin_ledger.reconciliations_list"))
+    return redirect_after_post(url_for("admin_ledger.reconciliations_list"))
 
 
 # ── Exports ────────────────────────────────────────────────────────────────

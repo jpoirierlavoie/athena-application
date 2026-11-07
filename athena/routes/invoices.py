@@ -64,7 +64,7 @@ from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
 from routes import edit_conflict
 from services import note_honoraires
-from routes._helpers import is_htmx, parse_date_input
+from routes._helpers import is_htmx, parse_date_input, redirect_after_post
 
 invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
 
@@ -182,6 +182,10 @@ def invoice_list() -> str:
         date_from=request.args.get("date_from", ""),
         date_to=request.args.get("date_to", ""),
         pagination=pagination,
+        # A refusal forwarded by the invoice sheet when it could not show
+        # its invoice (invoice_detail): free text, sanitized, then
+        # autoescaped — at the sheet's own cap.
+        erreur=sanitize(request.args.get("erreur", ""), max_length=500),
     )
 
     if _is_htmx():
@@ -397,12 +401,7 @@ def invoice_create() -> str:
         target = url_for(
             "invoices.invoice_detail", invoice_id=invoice["id"], message=warning
         )
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-
-    return redirect(target)
+    return redirect_after_post(target)
 
 
 # ── Invoice detail ───────────────────────────────────────────────────────
@@ -420,7 +419,13 @@ def invoice_detail(invoice_id: str) -> str:
     """
     invoice, items = get_invoice_with_items(invoice_id)
     if not invoice:
-        return redirect(url_for("invoices.invoice_list"))
+        # A refusal sent here (?erreur= — invoice_draft_update's double
+        # fault) whose invoice the sheet cannot show goes on to the list,
+        # which prints it: never dropped on the way (the document page's
+        # rule, the refusals lot).
+        erreur = sanitize(request.args.get("erreur", ""), max_length=500)
+        return redirect(url_for("invoices.invoice_list",
+                                erreur=erreur or None))
 
     # Split by type. Everything that is not a fee is a disbursement — the
     # same rule utils/invoice_docx.py applies. Matching on == "expense"
@@ -571,7 +576,10 @@ def invoice_draft_update(invoice_id: str) -> str:
     )
     current = get_invoice(invoice_id)
     if not current:
-        return redirect(url_for("invoices.invoice_list"))
+        # No form to re-render it on: the sheet says it — and forwards to
+        # the list when it cannot be read either. It used to be the list,
+        # without a word (the refusals lot, 2026-11-06).
+        return _back_to_detail(invoice_id, erreur=" ".join(errors))
     refusal = draft_edit_refusal(current)
     if refusal:
         return _back_to_detail(invoice_id, erreur=refusal)
@@ -670,14 +678,10 @@ def _back_to_detail(invoice_id: str, **params: str):
     be dropped on the floor (the non-htmx branch redirected with nothing,
     and the htmx branch answered a 422 htmx never swaps).
     """
-    target = url_for(
+    return redirect_after_post(url_for(
         "invoices.invoice_detail", invoice_id=invoice_id,
         **{k: v for k, v in params.items() if v},
-    )
-    resp = redirect(target)
-    if _is_htmx():
-        resp.headers["HX-Redirect"] = target
-    return resp
+    ))
 
 
 @invoices_bp.route("/<invoice_id>/status", methods=["POST"])
@@ -753,12 +757,7 @@ def invoice_delete(invoice_id: str) -> str:
         # still attached, say) vanished without a word.
         return _back_to_detail(invoice_id, erreur=error)
 
-    target = return_to or url_for("invoices.invoice_list")
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return redirect_after_post(return_to or url_for("invoices.invoice_list"))
 
 
 # ── Export ───────────────────────────────────────────────────────────────
