@@ -11,7 +11,7 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
-from models.document import is_addressable_id
+from models.record_ids import is_addressable_id
 from security import sanitize
 from utils.logging_setup import log_protocol_event, log_unexpected
 

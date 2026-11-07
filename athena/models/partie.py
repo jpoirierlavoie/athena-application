@@ -40,7 +40,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.api_core.exceptions import AlreadyExists
 from models import aggregation_values, concurrency, dav_ids, db, provenance
-from models.document import is_addressable_id
+from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import civilite, kyc, occupations

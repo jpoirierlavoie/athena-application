@@ -103,6 +103,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.time_expenses as time_expenses_routes
     import routes.trust as trust_routes
     from routes._helpers import redirect_after_post, with_query
+    from security import safe_internal_redirect
 
 from flask import Blueprint, Flask, request  # noqa: E402
 
@@ -151,8 +152,10 @@ def bench():
 
     @app.post("/x")
     def x():
-        target = with_query(request.form.get("target", "/taches/t1"),
-                            erreur=request.form.get("erreur", ""))
+        # Read through the door like any route's target (CodeQL n° 903).
+        target = with_query(
+            safe_internal_redirect(request.form.get("target"), "/taches/t1"),
+            erreur=request.form.get("erreur", ""))
         return redirect_after_post(
             target, follow=request.form.get("follow") == "1")
 
