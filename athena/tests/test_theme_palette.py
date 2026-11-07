@@ -1860,8 +1860,7 @@ def test_guard_offline_check_catches_drift():
     assert check_offline(good.replace(
         "body{background:var(--color-canvas)}", ""), dark) == [
         "--color-canvas is declared but no rule of the dark block reads it",
-        "body { background } writes a light colour the dark block never "
-        "overrides"]
+        "body { background } writes a light colour the dark block never overrides"]
     # A light colour the dark block never overrides, its token still read.
     uncovered = good.replace("body{background:#FAFAFA}",
                              "body{background:#FAFAFA}p{color:#4b5563}")
