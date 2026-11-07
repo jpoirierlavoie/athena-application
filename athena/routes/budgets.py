@@ -254,7 +254,7 @@ def budget_form() -> str:
         conflict=None,
         base_version=_version_of(latest),
         note_value=(latest.get("note", "") if latest else ""),
-        return_to=request.args.get("return_to", ""),
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
     )
 
 
@@ -273,7 +273,7 @@ def budget_create() -> str:
         "note": f.get("note", "").strip(),
         "lines": _parse_budget_lines_json(f.get("lines_json", "")),
     }
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
 
     budget, errors = budget_model.create_budget(data, base_version=base_version)
     if errors and budget_model.is_version_conflict(errors):
@@ -339,9 +339,8 @@ def budget_create() -> str:
         budget_id=budget["id"], version=budget["version"],
         line_count=len(budget["lines"]),
     )
-    target = safe_internal_redirect(
-        return_to,
-        url_for("dossiers.dossier_detail", dossier_id=dossier_id, tab="budget"),
+    target = return_to or url_for(
+        "dossiers.dossier_detail", dossier_id=dossier_id, tab="budget"
     )
     return redirect(target)
 
@@ -361,7 +360,7 @@ def budget_history() -> str:
         "budgets/history.html",
         dossier=dossier,
         versions=rows,
-        return_to=request.args.get("return_to", ""),
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
     )
 
 

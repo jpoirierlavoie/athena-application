@@ -1,7 +1,5 @@
 """Authentication routes: login, token verification, logout, MFA setup/manage."""
 
-from urllib.parse import urlparse
-
 from flask import (
     Blueprint,
     Response,
@@ -15,19 +13,9 @@ from flask import (
 )
 
 from auth import login_required, verify_and_create_session
-from security import limiter
+from security import limiter, safe_internal_redirect
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
-
-
-def _safe_next(url: str) -> str | None:
-    """Return ``url`` only if it is a same-origin relative path."""
-    if not url or "\\" in url or url.startswith("//"):
-        return None
-    parsed = urlparse(url)
-    if parsed.scheme or parsed.netloc or not url.startswith("/"):
-        return None
-    return url
 
 
 @auth_bp.route("/login")
@@ -52,7 +40,11 @@ def verify_token() -> tuple[Response, int]:
 
     success, error_msg = verify_and_create_session(id_token)
     if success:
-        next_url = _safe_next(request.args.get("next", "")) or url_for("dashboard.index")
+        # The login's ``next`` is a request-supplied target like any
+        # ``return_to``: the one door, where it is read.
+        next_url = safe_internal_redirect(
+            request.args.get("next"), url_for("dashboard.index")
+        )
         return jsonify({"ok": True, "redirect": next_url}), 200
 
     return jsonify({"ok": False, "error": error_msg or "Accès non autorisé."}), 403

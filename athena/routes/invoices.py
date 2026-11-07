@@ -198,7 +198,7 @@ def invoice_list() -> str:
 def invoice_new() -> str:
     """Step 1: Select a dossier, then show unbilled items."""
     dossier_id = request.args.get("dossier_id", "").strip()
-    return_to = request.args.get("return_to", "")
+    return_to = safe_internal_redirect(request.args.get("return_to"), "")
 
     ctx = _template_context()
     ctx["return_to"] = return_to
@@ -285,7 +285,7 @@ def invoice_create() -> str:
     """Handle invoice creation form submission."""
     f = request.form
     dossier_id = f.get("dossier_id", "").strip()
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
 
     dossier = get_dossier(dossier_id)
     if not dossier:
@@ -389,7 +389,7 @@ def invoice_create() -> str:
     # number follows the year of today, not of its date, and the lawyer
     # learns that on the invoice's own sheet, before sending it.
     fallback = url_for("invoices.invoice_detail", invoice_id=invoice["id"])
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     warning = number_year_warning(
         invoice.get("date"), invoice.get("invoice_number", "")
     )
@@ -473,7 +473,7 @@ def invoice_detail(invoice_id: str) -> str:
         # A brouillon is corrected on its own page (notes, terms, due date,
         # billing address) — never its figures.
         can_edit_draft=not draft_edit_refusal(invoice),
-        return_to=request.args.get("return_to", ""),
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
         # Rebond des actions de la fiche (statut, annulation, suppression) :
         # leur refus —
         # ou ce qu'une annulation a laissé de côté — revient ici en bandeau.
@@ -732,7 +732,7 @@ def invoice_void(invoice_id: str) -> str:
 @login_required
 def invoice_delete(invoice_id: str) -> str:
     """Delete a cancelled invoice."""
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     existing, _ = get_invoice_with_items(invoice_id)
     success, error = delete_invoice(invoice_id)
 
@@ -753,7 +753,7 @@ def invoice_delete(invoice_id: str) -> str:
         # still attached, say) vanished without a word.
         return _back_to_detail(invoice_id, erreur=error)
 
-    target = safe_internal_redirect(return_to, url_for("invoices.invoice_list"))
+    target = return_to or url_for("invoices.invoice_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target

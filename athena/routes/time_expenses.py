@@ -319,7 +319,10 @@ def time_entry_new() -> str:
                 dossier_id=dossier_id, limit=10
             )
             ctx.update(_phase_prefill(dossier_id, recent_rows))
-    ctx.update(entry=prefilled, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        entry=prefilled, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("time_expenses/time_form.html", **ctx)
 
 
@@ -339,7 +342,7 @@ def time_entry_create() -> str:
         "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
 
     entry, errors = create_time_entry(data)
 
@@ -351,7 +354,7 @@ def time_entry_create() -> str:
         ctx.update(entry=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/time_form.html", **ctx)
 
-    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
+    target = return_to or url_for("time_expenses.time_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -369,7 +372,10 @@ def time_entry_edit(entry_id: str) -> str:
         return redirect(url_for("time_expenses.time_list"))
 
     ctx = _template_context()
-    ctx.update(entry=entry, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        entry=entry, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("time_expenses/time_form.html", **ctx)
 
 
@@ -390,7 +396,7 @@ def time_entry_update(entry_id: str) -> str:
         "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
 
     entry, errors = update_time_entry(entry_id, data, expected_etag=expected)
 
@@ -412,7 +418,7 @@ def time_entry_update(entry_id: str) -> str:
         )
         return render_template("time_expenses/time_form.html", **ctx)
 
-    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
+    target = return_to or url_for("time_expenses.time_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -425,7 +431,9 @@ def time_entry_update(entry_id: str) -> str:
 @login_required
 def time_entry_delete(entry_id: str) -> str:
     """Delete a time entry and redirect to the list (or back to the caller)."""
-    return_to = request.form.get("return_to", "")
+    # Validated ONCE, here: the redirect below and the refusal's re-render
+    # both take this value, so a hostile one is a single log line.
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     existing = get_time_entry(entry_id)
     success, error = delete_time_entry(entry_id)
 
@@ -440,7 +448,7 @@ def time_entry_delete(entry_id: str) -> str:
             title=(existing or {}).get("description", ""),
         )
 
-    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
+    target = return_to or url_for("time_expenses.time_list")
     if _is_htmx():
         if success:
             resp = redirect(target)
@@ -491,7 +499,10 @@ def expense_new() -> str:
                 dossier_id=dossier_id, limit=10
             )
             ctx.update(_phase_prefill(dossier_id, recent_rows))
-    ctx.update(expense=prefilled, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        expense=prefilled, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("time_expenses/expense_form.html", **ctx)
 
 
@@ -511,7 +522,7 @@ def expense_create() -> str:
         "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
 
     expense, errors = create_expense(data)
 
@@ -523,7 +534,7 @@ def expense_create() -> str:
         return render_template("time_expenses/expense_form.html", **ctx)
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -541,7 +552,10 @@ def expense_edit(expense_id: str) -> str:
         return redirect(url_for("time_expenses.time_list", tab="depenses"))
 
     ctx = _template_context()
-    ctx.update(expense=expense, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        expense=expense, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("time_expenses/expense_form.html", **ctx)
 
 
@@ -562,7 +576,7 @@ def expense_update(expense_id: str) -> str:
         "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
 
     expense, errors = update_expense(expense_id, data, expected_etag=expected)
 
@@ -586,7 +600,7 @@ def expense_update(expense_id: str) -> str:
         return render_template("time_expenses/expense_form.html", **ctx)
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -599,7 +613,8 @@ def expense_update(expense_id: str) -> str:
 @login_required
 def expense_delete(expense_id: str) -> str:
     """Delete an expense and redirect to the list (or back to the caller)."""
-    return_to = request.form.get("return_to", "")
+    # Validated ONCE, here — see time_entry_delete.
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     existing = get_expense(expense_id)
     success, error = delete_expense(expense_id)
 
@@ -612,7 +627,7 @@ def expense_delete(expense_id: str) -> str:
         )
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         if success:
             resp = redirect(target)
@@ -661,13 +676,16 @@ def _phase_form_context(
     return ctx
 
 
-def _phase_form_data() -> tuple[str, str, str]:
-    """(phase, sous_phase, return_to) from the submitted form."""
+def _phase_form_data() -> tuple[str, str]:
+    """(phase, sous_phase) from the submitted form.
+
+    The return_to is NOT returned here: each handler reads it through
+    safe_internal_redirect itself. A tuple holding it beside the raw codes
+    would read, to a taint analysis, as tainted as they are."""
     f = request.form
     return (
         f.get("phase", "").strip(),
         f.get("sous_phase", "").strip(),
-        f.get("return_to", ""),
     )
 
 
@@ -752,7 +770,9 @@ def time_entry_phase_edit(entry_id: str) -> str:
         dossier_id=entry.get("dossier_id", ""), limit=10
     )
     ctx = _phase_form_context(entry, kind="time_entry", recent_rows=recent_rows)
-    ctx.update(return_to=request.args.get("return_to", ""))
+    ctx.update(
+        return_to=safe_internal_redirect(request.args.get("return_to"), "")
+    )
     return render_template("time_expenses/phase_form.html", **ctx)
 
 
@@ -760,7 +780,8 @@ def time_entry_phase_edit(entry_id: str) -> str:
 @login_required
 def time_entry_phase_update(entry_id: str) -> str:
     """Apply a phase reclassification to a time entry."""
-    phase, sous_phase, return_to = _phase_form_data()
+    phase, sous_phase = _phase_form_data()
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     expected = edit_conflict.submitted_etag()
     existing = get_time_entry(entry_id)
     entry, errors, changed = set_time_entry_phase(
@@ -777,7 +798,7 @@ def time_entry_phase_update(entry_id: str) -> str:
     if changed:
         _log_reclassement(existing or {}, "time_entry", sous_phase or phase)
 
-    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
+    target = return_to or url_for("time_expenses.time_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -797,7 +818,9 @@ def expense_phase_edit(expense_id: str) -> str:
         dossier_id=expense.get("dossier_id", ""), limit=10
     )
     ctx = _phase_form_context(expense, kind="expense", recent_rows=recent_rows)
-    ctx.update(return_to=request.args.get("return_to", ""))
+    ctx.update(
+        return_to=safe_internal_redirect(request.args.get("return_to"), "")
+    )
     return render_template("time_expenses/phase_form.html", **ctx)
 
 
@@ -805,7 +828,8 @@ def expense_phase_edit(expense_id: str) -> str:
 @login_required
 def expense_phase_update(expense_id: str) -> str:
     """Apply a phase reclassification to a disbursement."""
-    phase, sous_phase, return_to = _phase_form_data()
+    phase, sous_phase = _phase_form_data()
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     expected = edit_conflict.submitted_etag()
     existing = get_expense(expense_id)
     expense, errors, changed = set_expense_phase(
@@ -823,7 +847,7 @@ def expense_phase_update(expense_id: str) -> str:
         _log_reclassement(existing or {}, "expense", sous_phase or phase)
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target

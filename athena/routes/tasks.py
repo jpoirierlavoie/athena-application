@@ -315,7 +315,10 @@ def task_new() -> str:
         )
         ctx.update(phase_default=phase_default, sous_phase_default=sous_default)
 
-    ctx.update(task=prefilled, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        task=prefilled, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("tasks/form.html", **ctx)
 
 
@@ -325,7 +328,7 @@ def task_create() -> str:
     """Handle new task form submission."""
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     # Re-rendered at 200 like every refusal here: htmx swaps only 2xx.
     task, errors = (None, link_errors) if link_errors else create_task(data)
@@ -339,7 +342,7 @@ def task_create() -> str:
 
     bump_ctag(collection_for(task.get("dossier_id")))
 
-    target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
+    target = return_to or url_for("tasks.task_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -362,7 +365,7 @@ def task_detail(task_id: str) -> str:
     _stamp_overdue([task])
     ctx = _template_context()
     ctx["task"] = task
-    ctx["return_to"] = request.args.get("return_to", "")
+    ctx["return_to"] = safe_internal_redirect(request.args.get("return_to"), "")
 
     # Resolve related note for display
     related_note = None
@@ -386,7 +389,10 @@ def task_edit(task_id: str) -> str:
         return redirect(url_for("tasks.task_list"))
 
     ctx = _template_context()
-    ctx.update(task=task, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        task=task, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("tasks/form.html", **ctx)
 
 
@@ -412,7 +418,7 @@ def task_update(task_id: str) -> str:
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
     link_errors = read_errors + link_errors
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     task, errors = (
         (None, link_errors) if link_errors
@@ -447,7 +453,7 @@ def task_update(task_id: str) -> str:
     )
 
     fallback = url_for("tasks.task_detail", task_id=task_id)
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -463,7 +469,7 @@ def task_update(task_id: str) -> str:
 @login_required
 def task_delete(task_id: str) -> str:
     """Delete a task and redirect to the list (or back to the caller)."""
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     # The collection to tombstone comes from the document the MODEL read and
     # deleted (finitions, sync-4) — never from a separate fail-open pre-read,
@@ -485,7 +491,7 @@ def task_delete(task_id: str) -> str:
             status=(existing_task or {}).get("status", ""),
         )
 
-    target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
+    target = return_to or url_for("tasks.task_list")
     if _is_htmx():
         if success:
             resp = redirect(target)

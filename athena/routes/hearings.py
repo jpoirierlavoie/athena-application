@@ -557,7 +557,10 @@ def hearing_new() -> str:
                 "dossier_title": dossier.get("title", ""),
                 "court": dossier.get("court", ""),
             }
-    ctx.update(hearing=prefilled, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        hearing=prefilled, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("hearings/form.html", **ctx)
 
 
@@ -567,7 +570,7 @@ def hearing_create() -> str:
     """Handle new hearing form submission."""
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     frequence, count, until = _recurrence_from_form()
 
     def _reject(errors: list[str]) -> str:
@@ -621,7 +624,7 @@ def hearing_create() -> str:
 
     bump_ctag(collection_for(hearing.get("dossier_id")))
 
-    target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
+    target = return_to or url_for("hearings.hearing_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -643,7 +646,7 @@ def hearing_detail(hearing_id: str) -> str:
 
     ctx = _template_context()
     ctx["hearing"] = hearing
-    ctx["return_to"] = request.args.get("return_to", "")
+    ctx["return_to"] = safe_internal_redirect(request.args.get("return_to"), "")
     ctx["serie_label"] = recurrence.describe(hearing.get("serie_rule"))
     ctx["message"] = request.args.get("message", "")
     ctx["erreur"] = request.args.get("erreur", "")
@@ -662,7 +665,10 @@ def hearing_edit(hearing_id: str) -> str:
         return redirect(url_for("hearings.hearing_list"))
 
     ctx = _template_context()
-    ctx.update(hearing=hearing, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        hearing=hearing, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("hearings/form.html", **ctx)
 
 
@@ -690,7 +696,7 @@ def hearing_update(hearing_id: str) -> str:
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
     link_errors = read_errors + link_errors
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     hearing, errors = (
         (None, link_errors) if link_errors
@@ -726,7 +732,7 @@ def hearing_update(hearing_id: str) -> str:
     )
 
     fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -743,14 +749,14 @@ def _delete_chain_from(hearing: dict, return_to: str) -> str:
 
     Une occurrence déjà tenue est le constat de ce qui a eu lieu ; le pivot
     est donc le plus TARDIF entre le jour de cette occurrence et aujourd'hui.
+    ``return_to`` a passé ``safe_internal_redirect`` là où il a été lu
+    (``hearing_delete``) : "" ou un chemin interne.
     """
     serie_id = hearing["serie_id"]
     pivot = max(occurrence_day(hearing) or today_mtl(), today_mtl())
 
     rows, errors = delete_series(serie_id, from_date=pivot)
-    target = safe_internal_redirect(
-        return_to, url_for("hearings.hearing_list")
-    )
+    target = return_to or url_for("hearings.hearing_list")
     if errors:
         # 2xx obligatoire : htmx n'échange que les 2xx, un fragment 4xx ne
         # paraîtrait jamais et le bouton semblerait mort.
@@ -791,14 +797,14 @@ def _delete_chain_from(hearing: dict, return_to: str) -> str:
 @login_required
 def hearing_unlink(hearing_id: str) -> str:
     """Détacher une occurrence de sa série — elle devient autonome."""
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     existing = get_hearing(hearing_id)
     serie_id = (existing or {}).get("serie_id", "")
 
     updated, errors = unlink_hearing(hearing_id)
     fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
     if errors:
-        target = safe_internal_redirect(return_to, fallback)
+        target = return_to or fallback
         return redirect(f"{target}{'&' if '?' in target else '?'}"
                         f"erreur={escape(errors[0])}")
 
@@ -812,7 +818,7 @@ def hearing_unlink(hearing_id: str) -> str:
         dossier_id=updated.get("dossier_id", ""),
         ctag_bumped=True,
     )
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -831,7 +837,7 @@ def hearing_delete(hearing_id: str) -> str:
     would otherwise ask to delete the chain "" — every standalone hearing in
     the practice.
     """
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
     if request.form.get("scope") == "suivantes":
         # The chain is named by the STORED hearing — read strictly: an
         # unreadable one refuses (a 2xx redirect carrying the banner), never
@@ -839,8 +845,7 @@ def hearing_delete(hearing_id: str) -> str:
         try:
             stored = get_hearing_strict(hearing_id)
         except Exception:
-            target = safe_internal_redirect(
-                return_to, url_for("hearings.hearing_list"))
+            target = return_to or url_for("hearings.hearing_list")
             return redirect(f"{target}{'&' if '?' in target else '?'}"
                             f"erreur={escape(READ_UNAVAILABLE_ERROR)}")
         if stored and stored.get("serie_id"):
@@ -865,7 +870,7 @@ def hearing_delete(hearing_id: str) -> str:
             status=(existing_hearing or {}).get("status", ""),
         )
 
-    target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
+    target = return_to or url_for("hearings.hearing_list")
     if _is_htmx():
         if success:
             resp = redirect(target)

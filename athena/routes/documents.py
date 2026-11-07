@@ -271,7 +271,7 @@ def document_detail(document_id: str) -> str:
         category_labels=CATEGORY_LABELS,
         folder_breadcrumb=folder_breadcrumb,
         folder_tree=folder_tree,
-        return_to=request.args.get("return_to", ""),
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
     )
 
 
@@ -711,7 +711,7 @@ def document_edit(document_id: str) -> str:
         document=doc,
         category_labels=CATEGORY_LABELS,
         errors=[],
-        return_to=request.args.get("return_to", ""),
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
         **_analyse_form_context(),
     )
 
@@ -840,7 +840,7 @@ def document_update(document_id: str) -> str:
     """
     f = request.form
     tags_raw = f.get("tags", "").strip()
-    return_to = f.get("return_to", "")
+    return_to = safe_internal_redirect(f.get("return_to"), "")
     expected = edit_conflict.submitted_etag()
 
     data = {
@@ -933,7 +933,7 @@ def document_update(document_id: str) -> str:
         )
 
     fallback = url_for("documents.document_detail", document_id=document_id)
-    target = safe_internal_redirect(return_to, fallback)
+    target = return_to or fallback
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -1049,7 +1049,8 @@ def document_delete(document_id: str) -> str:
     # The navigation target only — where the browser was, for a document
     # already gone. Never the audit row: fail-open, it reads a blip as {}.
     seen = get_document(document_id) or {}
-    return_to = request.form.get("return_to", "")
+    # Validated ONCE, here — both branches below take this value.
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     deleted: dict = {}
     success, error = delete_document(document_id, deleted_out=deleted)
@@ -1072,14 +1073,13 @@ def document_delete(document_id: str) -> str:
                                folder_id=where.get("folder_id") or "")
         else:
             fallback = url_for("documents.document_list")
-        target = safe_internal_redirect(return_to, fallback)
+        target = return_to or fallback
     else:
         # Back on the document, its « Retour » unchanged: the return_to the
-        # page carried, once proven internal.
-        back = safe_internal_redirect(return_to, "") if return_to else ""
+        # page carried, proven internal where it was read.
         target = url_for(
             "documents.document_detail", document_id=document_id,
-            erreur=error, return_to=back or None,
+            erreur=error, return_to=return_to or None,
         )
 
     resp = redirect(target)

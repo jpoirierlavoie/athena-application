@@ -390,26 +390,65 @@ def sanitize(value: str, max_length: int = 1000) -> str:
 # ---------------------------------------------------------------------------
 # Internal-redirect URL guard
 # ---------------------------------------------------------------------------
+# C0 (tab, LF and CR included), DEL and C1. A character class: linear on any
+# input (CWE-1333).
+_CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def safe_internal_redirect(target: Optional[str], fallback: str) -> str:
     """Return ``target`` only if it is a same-origin internal path; else ``fallback``.
 
+    THE door for every request-supplied redirect or link target: the
+    ``return_to`` a form threads back to its caller, the login's ``next``.
+    A route calls it WHERE IT READS the value, whether it redirects to it
+    or renders it (the « Retour » href, a hidden field, a link carrying it
+    on), and keeps the result: a value read raw is refused by
+    ``tests/test_redirect_guard.py`` (CLAUDE.md, Security Rules « Inputs
+    and errors »). The CodeQL url-redirection barrier
+    (``.github/codeql/athena-python-queries``) matches this NAME: no
+    wrapper, no rename.
+
     Accepts only paths starting with a single ``/`` and no scheme or host —
     blocks ``//evil.com/x``, ``https://evil.com``, ``javascript:...``, and
-    backslash-bypass tricks that some browsers normalize to ``/``. Used by
-    forms that thread a ``return_to`` query string back to the caller.
+    backslash-bypass tricks that some browsers normalize to ``/`` — and
+    with no control character (C0, DEL, C1) left once stripped: a CR or LF
+    cannot ride a ``Location`` header (Werkzeug raises, a 500 after the
+    write committed), and a browser silently drops tab, CR and LF.
+
+    An ABSENT target (None, a non-string, or a string empty once stripped,
+    which is what every form opened from its own list posts) is no
+    refusal: ``fallback``, and nothing is logged. A target that was present
+    and refused logs ONE ``redirect_rejected`` (Change Impact 4,
+    OBSERVABILITY.md), never the URL itself. The result passes again
+    silently (a kept path is kept, a blank fallback is absent), so a value
+    checked where it was read can be checked again without a second line.
     """
     if not isinstance(target, str):
         return fallback
     candidate = target.strip()
-    if not candidate or not candidate.startswith("/") or candidate.startswith("//"):
+    if not candidate:
+        return fallback
+    if not candidate.startswith("/") or candidate.startswith("//"):
         _log_redirect_rejection("not_internal_path")
         return fallback
     if "\\" in candidate:
         _log_redirect_rejection("backslash_in_path")
         return fallback
-    parsed = urlparse(candidate)
+    # urlparse drops tab, CR and LF as browsers do, so « /\t/evil.example »
+    # reads « //evil.example » here: this check refuses it as the host it
+    # becomes, BEFORE the control-character check below. A host that
+    # urlsplit cannot even parse (« /\t/[x »: an unclosed IPv6 bracket) is
+    # a host all the same — refused, never a 500.
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        _log_redirect_rejection("scheme_or_netloc_present")
+        return fallback
     if parsed.scheme or parsed.netloc:
         _log_redirect_rejection("scheme_or_netloc_present")
+        return fallback
+    if _CONTROL_CHARACTER_RE.search(candidate):
+        _log_redirect_rejection("control_character")
         return fallback
     return candidate
 

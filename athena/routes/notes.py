@@ -176,7 +176,10 @@ def note_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
-    ctx.update(note=prefilled, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        note=prefilled, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("notes/form.html", **ctx)
 
 
@@ -186,7 +189,7 @@ def note_create() -> str:
     """Handle new note form submission."""
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     note, errors = (None, link_errors) if link_errors else create_note(data)
 
@@ -201,13 +204,11 @@ def note_create() -> str:
 
     bump_ctag(collection_for(note.get("dossier_id")))
 
-    # Land on the freshly created note itself; thread a validated return_to so
-    # the detail view's « Retour » link still points back to the caller
-    # (e.g. the dossier Documents tab). Only validate when present, so the
-    # common no-return_to case doesn't emit a spurious redirect_rejected event.
-    clean_return = safe_internal_redirect(return_to, "") if return_to else ""
+    # Land on the freshly created note itself; thread the return_to (validated
+    # where it was read) so the detail view's « Retour » link still points
+    # back to the caller (e.g. the dossier Documents tab).
     target = url_for(
-        "notes.note_detail", note_id=note["id"], return_to=clean_return or None
+        "notes.note_detail", note_id=note["id"], return_to=return_to or None
     )
     if _is_htmx():
         resp = redirect(target)
@@ -236,7 +237,7 @@ def note_detail(note_id: str) -> str:
     ctx = _template_context()
     ctx["note"] = note
     ctx["linked_tasks"] = linked_tasks
-    ctx["return_to"] = request.args.get("return_to", "")
+    ctx["return_to"] = safe_internal_redirect(request.args.get("return_to"), "")
     ctx["gabarit_error"] = _GABARIT_ERRORS.get(
         request.args.get("gabarit_erreur", "")
     )
@@ -423,7 +424,10 @@ def note_edit(note_id: str) -> str:
         return redirect(url_for("notes.note_list"))
 
     ctx = _template_context()
-    ctx.update(note=note, errors=[], return_to=request.args.get("return_to", ""))
+    ctx.update(
+        note=note, errors=[],
+        return_to=safe_internal_redirect(request.args.get("return_to"), ""),
+    )
     return render_template("notes/form.html", **ctx)
 
 
@@ -447,7 +451,7 @@ def note_update(note_id: str) -> str:
     expected = edit_conflict.submitted_etag()
     data, link_errors = _enrich_dossier_info(_form_data())
     link_errors = read_errors + link_errors
-    return_to = request.form.get("return_to", "")
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     # The « Théorie de la cause » note is bound to its dossier: the form
     # locks the picker, so a differing dossier_id can only come from a
@@ -499,11 +503,10 @@ def note_update(note_id: str) -> str:
         new_dossier_id=note.get("dossier_id"),
     )
 
-    # Return to the note itself after saving; thread a validated return_to for
-    # the detail view's « Retour » link (see note_create for the guard rationale).
-    clean_return = safe_internal_redirect(return_to, "") if return_to else ""
+    # Return to the note itself after saving; thread the return_to (validated
+    # where it was read) for the detail view's « Retour » link.
     target = url_for(
-        "notes.note_detail", note_id=note_id, return_to=clean_return or None
+        "notes.note_detail", note_id=note_id, return_to=return_to or None
     )
     if _is_htmx():
         resp = redirect(target)
@@ -520,7 +523,9 @@ def note_update(note_id: str) -> str:
 @login_required
 def note_delete(note_id: str) -> str:
     """Delete a note and redirect to the list (or back to the caller)."""
-    return_to = request.form.get("return_to", "")
+    # Validated ONCE, here: a hostile value is one redirect_rejected line,
+    # whichever branch below uses it.
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     # The collection to tombstone comes from the document the MODEL read and
     # deleted (finitions, sync-4) — never from a separate fail-open
@@ -548,19 +553,18 @@ def note_delete(note_id: str) -> str:
             status=(existing_note or {}).get("category", ""),
         )
 
-    target = safe_internal_redirect(return_to, url_for("notes.note_list"))
+    target = return_to or url_for("notes.note_list")
     if not success and error != "Note introuvable.":
         # A refused delete goes BACK to the note with a banner. It used to
         # return silently to the list, the note still standing; and since
         # lot 1a (L3) the théorie de la cause can refuse a delete that races
         # an edit (the snapshot must be of what disappears).
-        clean_return = safe_internal_redirect(return_to, "") if return_to else ""
         target = url_for(
             "notes.note_detail", note_id=note_id,
             suppression_erreur=(
                 "modifiee" if concurrency.is_stale([error]) else "erreur"
             ),
-            return_to=clean_return or None,
+            return_to=return_to or None,
         )
     if _is_htmx():
         resp = redirect(target)

@@ -28,7 +28,8 @@ def login_required(f: Callable[..., Any]) -> Callable[..., Any]:
 
         # Preserve the query string so parameterized deep links (filtered
         # lists, /oauth/authorize?client_id=...) survive the login
-        # round-trip; _safe_next re-validates the value on the way back.
+        # round-trip; security.safe_internal_redirect re-validates the value
+        # on the way back (routes/auth_routes.verify_token).
         return_to = request.full_path if request.query_string else request.path
 
         if not user_id or not expires_at:
