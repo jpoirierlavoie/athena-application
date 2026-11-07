@@ -313,6 +313,56 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
     staging.delete.assert_called_once()
 
 
+@pytest.mark.parametrize("panne, ligne", [
+    ("relecture", "admin: staging blob reload failed: ServiceUnavailable"),
+    ("copie", "admin: receipt rewrite failed: ServiceUnavailable"),
+])
+def test_recu_ne_journalise_que_la_classe_jamais_le_nom_du_fichier(
+        web, monkeypatch, caplog, panne, ligne):
+    """The « incertain » lot (2026-11-06), as the documents lot did for
+    api_finaliser: a failed reload of the staging object, or of the
+    receipt's copy, was logged by ``logger.exception`` — a traceback whose
+    Storage error text names the object, which ends in the uploaded file's
+    name (staging/{uid}/{uuid}/{name}, users/{uid}/administration/{tx}/
+    {name}). The line now carries the class only, no traceback; the answer
+    is unchanged."""
+    import logging
+
+    from google.api_core import exceptions as gexc
+
+    objet = ("staging/u1/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/"
+             "Facture_Tremblay.pdf")
+    monkeypatch.setattr(ra.al, "get_transaction", lambda t: {"id": t})
+    monkeypatch.setattr(ra.al, "attach_receipt",
+                        lambda *a, **k: pytest.fail("reçu attaché"))
+    staging = mock.MagicMock()
+    staging.size = 1000
+    staging.download_as_bytes.return_value = b"%PDF-1.7 " + b"\x00" * 100
+    dest = mock.MagicMock()
+    if panne == "relecture":
+        staging.reload.side_effect = gexc.ServiceUnavailable(f"503 GET {objet}")
+    else:
+        dest.rewrite.side_effect = gexc.ServiceUnavailable(
+            f"503 POST {objet} → users/u1/administration/t1/"
+            "Facture_Tremblay.pdf")
+    bucket = mock.Mock()
+    bucket.blob.side_effect = lambda p: staging if p.startswith("staging/") else dest
+    monkeypatch.setattr(ra.storage, "bucket", lambda: bucket)
+    caplog.set_level(logging.DEBUG)
+
+    reponse = _post(web, "/administration/t1/api/recu",
+                    {"objet": objet, "name": "Facture Tremblay.pdf"})
+
+    assert reponse.status_code == 422
+    lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
+              if r.name == ra.logger.name]
+    assert lignes == [(ligne, None)]
+    for r in caplog.records:
+        textes = (r.getMessage(), repr(r.exc_info or ""), r.exc_text or "",
+                  repr(getattr(r, "json_fields", "")))
+        assert not any("Tremblay" in t for t in textes), r
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Fidéicommis → la route n'écrit plus au registre d'administration
 # ═══════════════════════════════════════════════════════════════════════════

@@ -802,6 +802,13 @@ def test_a_filed_copy_answers_the_entry_page_without_a_banner(
     (pj.Versement(None, ["x"], pj.REFUSEE, "ingestion"), "versement"),
     (pj.Versement(None, [pj.MSG_INADMISSIBLE], pj.INADMISSIBLE),
      "versement_inadmissible"),
+    # The « incertain » lot (2026-11-06): an UNKNOWN outcome — the copy may
+    # be filed — has its own banner, never the generic « réessayez ». Its
+    # code and reason are spelled out (pj.INCERTAINE, pj.REASON_INCERTAIN,
+    # pinned below): a constant would raise AttributeError on the old code
+    # instead of failing on what this pins.
+    (pj.Versement(None, ["x"], "incertaine", "incertain"),
+     "versement_incertain"),
 ])
 def test_api_recu_gives_a_lasting_refusal_its_own_banner(
         web, store, monkeypatch, versement, code):
@@ -868,6 +875,7 @@ def test_recu_verser_inadmissible_is_a_closed_code(web, store):
     (pj.REASON_DOSSIER_INTROUVABLE, "versement_dossier_introuvable"),
     (pj.REASON_RECU_MODIFIE, "versement_piece_modifiee"),
     ("lecture_impossible", "versement"),
+    ("incertaine", "versement_incertain"),       # the « incertain » lot
 ])
 def test_recu_verser_failures_are_closed_codes(web, monkeypatch, outcome, expected):
     def _service(tx_id, uid, *, document_id):
@@ -877,6 +885,9 @@ def test_recu_verser_failures_are_closed_codes(web, monkeypatch, outcome, expect
             return pj.Versement(None, [pj.MSG_INADMISSIBLE], pj.INADMISSIBLE)
         if outcome == "refusal":
             return pj.Versement(None, ["non"], pj.REFUSEE)
+        if outcome == "incertaine":
+            # Spelled out — see test_api_recu_gives_a_lasting_refusal_….
+            return pj.Versement(None, ["non"], "incertaine", "incertain")
         return pj.Versement(None, ["non"], pj.REFUSEE, outcome)
 
     monkeypatch.setattr(pj, "verser_recu_au_dossier", _service)
@@ -1100,6 +1111,9 @@ _BANNERS = [
     ("versement_piece_modifiee",
      "La pièce justificative a changé pendant le versement — rechargez la "
      "page, puis réessayez."),
+    # The « incertain » lot (2026-11-06): the copy MAY be filed.
+    ("versement_incertain",
+     "au dossier n'a pas pu être confirmé — elle y est peut-être déjà."),
 ]
 
 
@@ -1112,9 +1126,11 @@ def test_the_closed_banners_are_rendered(web_rendu, code, text):
 
 
 def test_the_lasting_banners_never_say_only_retry(web_rendu):
-    """A refusal a retry cannot cure never reads as the generic
+    """A refusal a retry cannot cure — nor an outcome that may already be
+    filed (the « incertain » lot) — never reads as the generic
     « réessayez avec Verser une copie »."""
-    for code in ("versement_dossier_introuvable", "versement_piece_modifiee"):
+    for code in ("versement_dossier_introuvable", "versement_piece_modifiee",
+                 "versement_incertain"):
         html = web_rendu.get(f"/administration/{TX}?avertissement={code}").get_data(
             as_text=True)
         assert "Réessayez avec « Verser une copie au dossier »" not in html
@@ -1176,3 +1192,48 @@ def test_the_new_markup_uses_only_compiled_classes(web_rendu, store):
                    for i in hits):
             absent.append(c)
     assert not absent, absent
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_copy_whose_outcome_is_unknown_is_incertaine_never_refusee(
+    store, events, monkeypatch,
+):
+    """La copie a peut-être été versée : la réponse de son enregistrement
+    s'est perdue, et sa relecture échoue. L'ancien service la disait
+    « refusée » (rien n'est versé, raison ``ingestion``) et la fiche
+    invitait à réessayer. Elle est INCERTAINE — journalisée ``failure``,
+    jamais ``refused`` —, et un nouveau « Verser une copie au dossier »,
+    sous un AUTRE identifiant (la fiche en frappe un à chaque rendu), rend
+    la copie déjà versée : jamais en double, comme la bannière le promet."""
+    from models import concurrency
+    from tests._ingest_faults import lose_answer_then_unreadable
+
+    db, _bucket = store
+    state = lose_answer_then_unreadable(db, monkeypatch)
+
+    result = _verser()
+
+    assert result.document is None
+    assert (result.code, result.reason) == ("incertaine", "incertain")
+    assert result.errors == [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+    assert events[-1] == ("admin_receipt_filed", "failure",
+                          {"transaction_id": TX, "reason": "incertain"})
+    assert list(_documents(db)) == [DOC_ID]        # it did land
+
+    state["dead"] = None                           # the store answers
+    again = _verser(document_id=DOC_ID2)
+
+    assert again.code == pj.DEJA and again.document["id"] == DOC_ID
+    assert list(_documents(db)) == [DOC_ID]
+
+
+def test_the_incertain_code_and_reason_are_the_spelled_out_ones():
+    """The routes' tests spell them out (see the parametrized banner tests):
+    pinned to the service's constants here."""
+    assert (pj.INCERTAINE, pj.REASON_INCERTAIN) == ("incertaine", "incertain")
+    assert ra._versement_code(pj.Versement(
+        None, ["x"], pj.INCERTAINE, pj.REASON_INCERTAIN)) == "versement_incertain"

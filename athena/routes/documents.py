@@ -25,7 +25,7 @@ from config import Config
 from models.audit_event import record_deletion
 from security import safe_internal_redirect, sanitize
 from pagination import paginate
-from models.dossier import get_dossier, list_dossiers
+from models.dossier import get_dossier, get_dossier_strict, list_dossiers
 from models import document as document_model
 from models.document import (
     ALLOWED_EXTENSIONS,
@@ -317,17 +317,29 @@ def folder_zip():
 # ── Upload ────────────────────────────────────────────────────────────────
 
 # What the upload page says of a file whose filing could not be confirmed —
-# its single source. api_finaliser answers it (503, ``incertain``) when a
-# replayed finalization cannot read the reserved id, and the page receives
-# it through its JSON config for an answer lost on the way. It names the
-# page's real way to send that file again — its row's « Retirer le
-# fichier » (×), then the file added anew — since « Téléverser » never
+# its single source. api_finaliser answers it (503, ``incertain``) when the
+# ingestion's outcome is UNKNOWN (the model's
+# ``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR``: the record could not be
+# read back — the staging object is then KEPT for the page's re-post) and
+# when a replayed finalization cannot read the reserved id; the page
+# receives it through its JSON config for an answer lost on the way. It
+# names the page's real way to send that file again — its row's « Retirer
+# le fichier » (×), then the file added anew — since « Téléverser » never
 # re-sends a file left « incertain ».
 UPLOAD_UNCERTAIN = (
     "Le versement n'a pas pu être confirmé : vérifiez la liste des "
     "documents du dossier ; s'il n'y figure pas, retirez-le de cette "
     "liste (×) et ajoutez-le de nouveau."
 )
+# A staging reload that failed for another reason than its absence: this
+# call filed nothing, and the object may well be there — a failed read is
+# never « introuvable ».
+STAGED_READ_FAILED = "Lecture du fichier téléversé impossible. Réessayez."
+# The dossier a finalization names could not be read: nothing was filed,
+# the staging object is untouched — never « Veuillez sélectionner un
+# dossier », which the lawyer did. Réception's « Verser » says the same
+# (routes/reception.verser imports it).
+DOSSIER_READ_FAILED = "Lecture du dossier impossible. Réessayez."
 
 
 @documents_bp.route("/upload", methods=["GET"])
@@ -463,11 +475,25 @@ def api_televersement():
 def api_finaliser():
     """Ingère un objet staging téléversé en direct → document du dossier.
 
-    Le staging est CONSOMMÉ dans les deux issues : copié au chemin
+    Le staging est CONSOMMÉ quand l'issue est CONNUE : copié au chemin
     canonique (réussite) ou supprimé (refus — des octets non conformes
-    n'ont rien à faire en staging non plus). Un staging jamais finalisé
-    (navigateur fermé en plein transfert) est un orphelin inerte que la
-    règle de cycle de vie du bucket balaie (préfixe staging/, 7 jours).
+    n'ont rien à faire en staging non plus). Il est GARDÉ quand elle ne
+    l'est pas (lot « incertain », 2026-11-06 — renversant le « consommé
+    dans les deux issues » du lot des documents) : le modèle n'a pu relire
+    si le document a été versé — 503 ``incertain``. La page reprend alors
+    cette finalisation une fois, ~2 s plus tard : si le magasin répond, la
+    reprise tranche (le document déjà versé, ou ces octets versés une
+    fois) ; s'il ne répond toujours pas, la reprise ne verse rien : la
+    lecture stricte du dossier la refuse d'abord (503, le staging gardé,
+    que la règle staging/ balaie en 7 jours) ou, le dossier lisible, la
+    pré-lecture de l'identifiant réservé (le refus « réessayez » du modèle,
+    qui consomme le staging) ; la page garde « incertain » dans les deux
+    cas — la copie canonique, elle, reste. Une lecture ratée du dossier ou du
+    staging lui-même répond 503 sans y toucher (rien n'est versé), jamais
+    « sélectionnez un dossier » ni « introuvable ». Un staging jamais
+    finalisé (navigateur fermé en plein transfert) est un orphelin inerte
+    que la règle de cycle de vie du bucket balaie (préfixe staging/,
+    7 jours).
     """
     donnees = request.get_json(silent=True) or {}
     objet = str(donnees.get("objet") or "")
@@ -493,7 +519,20 @@ def api_finaliser():
             or not document_model.is_canonical_uuid4(segments[2])):
         return jsonify({"erreur": "Requête invalide."}), 400
     document_id = segments[2]
-    dossier = get_dossier(dossier_id) if dossier_id else None
+    # STRICT: the dossier decides what is filed and where. A blank id, or
+    # one no record can bear, is an absence; a failed read is not — it
+    # answers 503 with the staging object untouched (the fail-open reader
+    # turned a blip into « Veuillez sélectionner un dossier », about a
+    # dossier the form had named).
+    if not document_model.is_addressable_id(dossier_id):
+        return jsonify({"erreur": "Veuillez sélectionner un dossier."}), 422
+    try:
+        dossier = get_dossier_strict(dossier_id)
+    except Exception as exc:
+        log_unexpected("documents: dossier unreadable", exc_info=False,
+                       dossier_id=sanitize_log_value(dossier_id),
+                       error_type=type(exc).__name__)
+        return jsonify({"erreur": DOSSIER_READ_FAILED}), 503
     if dossier is None:
         return jsonify({"erreur": "Veuillez sélectionner un dossier."}), 422
 
@@ -532,11 +571,12 @@ def api_finaliser():
             "erreur": "Fichier téléversé introuvable. Réessayez."
         }), 422
     except Exception as exc:
+        # A failed read, not an absence: this call filed nothing and the
+        # object may well be there — 503, the staging untouched. The class
+        # only, never the traceback (the error's text names the object).
         logger.error("documents: staging blob reload failed: %s",
                      type(exc).__name__)
-        return jsonify({
-            "erreur": "Fichier téléversé introuvable. Réessayez."
-        }), 422
+        return jsonify({"erreur": STAGED_READ_FAILED}), 503
 
     metadata = {
         **_upload_metadata(donnees),
@@ -555,6 +595,22 @@ def api_finaliser():
         lawyer_set_category=(
             metadata.get("category") != UPLOAD_DEFAULT_CATEGORY),
     )
+    if document is None and concurrency.is_outcome_uncertain(errors):
+        # UNKNOWN — the model could not read back whether the record landed
+        # (this call's commit, or a concurrent finalization's): never a 422,
+        # which the page shows « rejeté » and re-sends through a NEW upload,
+        # a second document. The staging object is KEPT for the page's one
+        # re-post (``incertain``), which the reserved id, the create-only
+        # copy and the adoption of identical bytes make idempotent: when the
+        # store answers, it answers the landed record or files these bytes
+        # once. When it still does not, the re-post files nothing: the strict
+        # dossier read refuses it first (503, the staging kept for the
+        # staging/ 7-day rule) or, the dossier readable, the reserved
+        # pre-read does (the model's retryable refusal, which consumes the
+        # staging below); either way the page keeps « incertain » (the
+        # canonical copy stays). A page that never re-posts leaves the
+        # staging to the bucket's staging/ 7-day rule.
+        return jsonify({"erreur": UPLOAD_UNCERTAIN, "incertain": True}), 503
     try:
         blob.delete()
     except Exception:

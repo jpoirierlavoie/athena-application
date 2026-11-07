@@ -137,7 +137,7 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier",
+    monkeypatch.setattr(rc, "get_dossier_strict",
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "ensure_system_folder",
                         lambda d, role: ({"id": "f-portail", "system_role": role}, []))
@@ -200,7 +200,7 @@ def test_verser_nomme_le_chemin_du_dossier_de_reception(
     bucket = mock.Mock()
     bucket.blob.return_value = _blob_quarantaine()
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier",
+    monkeypatch.setattr(rc, "get_dossier_strict",
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "ensure_system_folder", lambda d, role: ({
         "id": "f-portail", "system_role": role, "parent_folder_id": parent,
@@ -234,7 +234,7 @@ def test_verser_seule_une_categorie_deplacee_est_un_choix_du_juriste(
     bucket = mock.Mock()
     bucket.blob.return_value = _blob_quarantaine()
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier",
+    monkeypatch.setattr(rc, "get_dossier_strict",
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "ensure_system_folder",
                         lambda d, role: ({"id": "f-portail", "system_role": role}, []))
@@ -264,7 +264,7 @@ def test_verser_refuse_un_uid_de_session_inutilisable_avant_toute_ecriture(
         s["user_id"] = "unknown"
     manifeste = _manifeste(_entree(sha512=_SHA_PDF))
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
-    monkeypatch.setattr(rc, "get_dossier",
+    monkeypatch.setattr(rc, "get_dossier_strict",
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "_bucket",
                         lambda: pytest.fail("ouvert la quarantaine"))
@@ -316,7 +316,7 @@ def test_verser_refuse_blob_regonfle_sans_lecture(web, monkeypatch):
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
+    monkeypatch.setattr(rc, "get_dossier_strict", lambda d: _dossier())
     ingest = mock.Mock()
     monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
@@ -338,7 +338,7 @@ def test_verser_refuse_divergence_sha512(web, monkeypatch):
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
+    monkeypatch.setattr(rc, "get_dossier_strict", lambda d: _dossier())
     ingest = mock.Mock()
     monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
@@ -525,6 +525,45 @@ def test_traiter_reprend_un_lot_deja_archive(web, monkeypatch):
     assert statuts == [("inv1", "traitée")]
 
 
+def test_traiter_ne_journalise_que_la_classe_jamais_le_nom_du_client(
+    web, monkeypatch, caplog,
+):
+    """Le lot « incertain » (2026-11-06) : un échec de la purge ou de
+    l'archivage se journalisait par ``logger.exception`` — une trace dont le
+    texte d'erreur Storage nomme l'objet, et un objet files/{seq}_{nom} porte
+    le nom du fichier du client. La ligne ne porte plus que la classe, sans
+    trace ; le lot reste rejouable."""
+    import logging
+
+    from google.api_core import exceptions as gexc
+
+    objet = "submissions/inv1/b1/files/001_Passeport Tremblay.pdf"
+    manifeste = _manifeste(_entree(objet=objet, name="Passeport Tremblay.pdf",
+                                   etat="versé"))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
+    bucket, _sources, fichiers_restants = _bucket_traiter(monkeypatch)
+    fichiers_restants[0].delete.side_effect = gexc.ServiceUnavailable(
+        f"503 DELETE {objet}")
+    maj = mock.Mock()
+    monkeypatch.setattr(rc.pi, "maj_statut", maj)
+    caplog.set_level(logging.DEBUG)
+
+    reponse = web.post("/reception/lots/inv1/b1/traiter")
+
+    assert "erreur=" in reponse.headers["Location"]
+    bucket.copy_blob.assert_not_called()      # the manifest key stays put
+    maj.assert_not_called()
+    lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
+              if r.name == rc.logger.name]
+    assert lignes == [("reception: lot archive failed: ServiceUnavailable",
+                       None)]
+    for r in caplog.records:
+        textes = (r.getMessage(), repr(r.exc_info or ""), r.exc_text or "",
+                  repr(getattr(r, "json_fields", "")))
+        assert not any("Tremblay" in t for t in textes), r
+
+
 def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
     # The document IS in the dossier but the quarantine state still says
     # « reçu » — a plain success message would invite a duplicate ingest.
@@ -536,7 +575,7 @@ def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
+    monkeypatch.setattr(rc, "get_dossier_strict", lambda d: _dossier())
     # Changé délibérément (lot 2A, T2) : ce faux rendait None, que l'ancien
     # get_or_create_folder rendait sur une panne — et le document partait
     # alors à la racine du dossier. Un dossier système introuvable REFUSE
@@ -570,7 +609,7 @@ def test_verser_refuse_quand_le_dossier_systeme_est_indisponible(web, monkeypatc
     bucket = mock.Mock()
     bucket.blob.return_value = _blob_quarantaine()
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier",
+    monkeypatch.setattr(rc, "get_dossier_strict",
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "ensure_system_folder",
                         lambda d, role: (None, [folder_model.READ_ERROR]))
@@ -743,7 +782,7 @@ def _verser_capture(web, monkeypatch, *, nom_client="piece.pdf",
     bucket = mock.Mock()
     bucket.blob.return_value = _blob_quarantaine()
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
-    monkeypatch.setattr(rc, "get_dossier",
+    monkeypatch.setattr(rc, "get_dossier_strict",
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "ensure_system_folder",
                         lambda d, role: ({"id": "f-portail", "system_role": role}, []))
@@ -788,3 +827,167 @@ def test_verser_nom_du_client_borne_au_plafond_du_modele(web, monkeypatch):
     metadata = _verser_capture(web, monkeypatch,
                                nom_client="n" * 400 + ".pdf")
     assert len(metadata["display_name"]) == document_model.DISPLAY_NAME_MAX
+
+
+# ── Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592 ────────
+
+
+_PDF_REEL = b"%PDF-1.7\n" + b"0" * 2048
+_OBJET_REEL = "submissions/inv1/b1/files/001_piece.pdf"
+
+
+def _versement_reel(monkeypatch):
+    """« Verser » sur les VRAIS modèles (document, dossier, dossiers de
+    classement) au-dessus du faux Firestore partagé, le stockage canonique
+    et la quarantaine en faux Cloud Storage. Le manifeste n'est jamais
+    réécrit : un fichier dont le versement n'est pas tranché reste « reçu »."""
+    from models import document as document_model
+    from models import dossier as dossier_model
+    from models import folder as folder_model
+    from tests._fake_firestore import install
+    from tests._fake_gcs import FakeBucket
+
+    fake = install(monkeypatch, document_model, dossier_model, folder_model)
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001-0042",
+                              "title": "Tremblay c. Lavoie", "status": "actif"})
+    canonique, quarantaine = FakeBucket(), FakeBucket(name="q")
+    monkeypatch.setattr(document_model.storage, "bucket",
+                        lambda *a: canonique)
+    monkeypatch.setattr(rc, "_bucket", lambda: quarantaine)
+    quarantaine.put(_OBJET_REEL, _PDF_REEL, content_type="application/pdf")
+    manifeste = _manifeste(_entree(
+        objet=_OBJET_REEL, name="piece.pdf", size_gcs=len(_PDF_REEL),
+        size_declared=len(_PDF_REEL), sha512=""))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste",
+                        lambda i, b, m: pytest.fail("manifeste réécrit"))
+    return fake, quarantaine, manifeste
+
+
+def _erreur(reponse) -> str:
+    from urllib.parse import parse_qs, urlparse
+
+    assert reponse.status_code == 302
+    return parse_qs(urlparse(reponse.headers["Location"]).query)["erreur"][0]
+
+
+def test_verser_dont_l_issue_est_inconnue_le_dit_et_garde_le_fichier(
+    web, monkeypatch,
+):
+    """L'enregistrement du document a peut-être été fait (sa réponse s'est
+    perdue, sa relecture échoue). L'ancienne route répondait « Erreur lors
+    du versement. Veuillez réessayer. » — et un second « Verser » frappait
+    un identifiant NEUF : un second document. La bannière dit maintenant que
+    le fichier est peut-être déjà au dossier, et où le chercher ; le fichier
+    reste « reçu » en quarantaine, intouché, le manifeste non réécrit."""
+    from security import sanitize
+    from tests._ingest_faults import lose_answer_then_unreadable
+
+    fake, quarantaine, manifeste = _versement_reel(monkeypatch)
+    lose_answer_then_unreadable(fake, monkeypatch)
+
+    erreur = _erreur(web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                              data={"dossier_id": "d1", "category": "pièce"}))
+
+    assert "réessayer" not in erreur.lower()
+    assert "n'a pas pu être confirmé" in erreur
+    assert "2026-001-0042" in erreur
+    assert "« Autres › Reçus du portail »" in erreur
+    # Found there, it is REFUSED to close the lot (traiter_lot archives
+    # nothing while a file is « reçu ») — never versed a second time.
+    assert erreur.endswith("S'il y figure, refusez-le pour clore le lot.")
+    assert sanitize(erreur, max_length=300) == erreur    # survives the page
+    assert manifeste["files"][0]["etat"] == "reçu"
+    assert _OBJET_REEL in quarantaine.objects
+
+
+def test_verser_une_lecture_ratee_du_dossier_n_est_jamais_choisissez_le_dossier(
+    web, monkeypatch, caplog,
+):
+    """Le lecteur qui avale la panne la changeait en « Choisissez le dossier
+    de destination. » — au sujet du dossier que le juriste venait de
+    choisir. Une lecture ratée le dit, rien n'est versé, la quarantaine
+    n'est pas même ouverte, et la ligne ne porte que la classe."""
+    import logging
+
+    from models import dossier as dossier_model
+    from tests._fake_firestore import install
+    from tests._ingest_faults import unreadable_documents
+
+    fake = install(monkeypatch, dossier_model)
+    fake.seed("dossiers/d1", _dossier())
+    refusees = unreadable_documents(fake, monkeypatch, "dossiers/d1")
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_bucket",
+                        lambda: pytest.fail("ouvert la quarantaine"))
+    ingest = mock.Mock()
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
+    caplog.set_level(logging.INFO)
+
+    erreur = _erreur(web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                              data={"dossier_id": "d1"}))
+
+    assert refusees["refused"] == ["dossiers/d1"]
+    assert erreur == "Lecture du dossier impossible. Réessayez."
+    ingest.assert_not_called()
+    assert manifeste["files"][0]["etat"] == "reçu"
+    lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
+              if r.name == rc.logger.name]
+    assert lignes == [("reception: dossier read failed: RuntimeError", None)]
+
+
+@pytest.mark.parametrize("panne, ligne", [
+    ("relecture", "reception: quarantine blob reload failed: ServiceUnavailable"),
+    ("empreinte", "reception: quarantine hash failed: ServiceUnavailable"),
+    ("manifeste",
+     "reception: manifest update failed after ingest: ServiceUnavailable"),
+])
+def test_verser_ne_journalise_que_la_classe_jamais_le_nom_du_client(
+    web, monkeypatch, caplog, panne, ligne,
+):
+    """Les échecs de « Verser » se journalisaient par ``logger.exception`` :
+    une trace dont le texte d'erreur Storage nomme l'objet en quarantaine —
+    qui porte le nom du fichier du client (submissions/{inv}/{lot}/files/
+    {seq}_{nom}). La ligne ne porte plus que la classe, sans trace."""
+    import logging
+
+    from google.api_core import exceptions as gexc
+
+    objet = "submissions/inv1/b1/files/001_Passeport Tremblay.pdf"
+    texte = f"503 GET {objet}"
+    manifeste = _manifeste(_entree(objet=objet, name="Passeport Tremblay.pdf",
+                                   sha512=_SHA_PDF))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    blob = _blob_quarantaine()
+    if panne == "relecture":
+        blob.reload.side_effect = gexc.ServiceUnavailable(texte)
+    elif panne == "empreinte":
+        blob.open.side_effect = gexc.ServiceUnavailable(texte)
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", mock.Mock(
+        side_effect=gexc.ServiceUnavailable(texte)))
+    # The dossier from the fake store — never a patched reader — so the old
+    # route reads it too, and fails on what this pins.
+    from models import dossier as dossier_model
+    from tests._fake_firestore import install
+
+    install(monkeypatch, dossier_model).seed("dossiers/d1", _dossier())
+    monkeypatch.setattr(rc, "ensure_system_folder",
+                        lambda d, role: ({"id": "f-portail", "system_role": role}, []))
+    monkeypatch.setattr(rc, "ingest_blob_as_document",
+                        mock.Mock(return_value=({"id": "doc9"}, [])))
+    caplog.set_level(logging.DEBUG)
+
+    web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+             data={"dossier_id": "d1"})
+
+    lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
+              if r.name == rc.logger.name]
+    assert lignes == [(ligne, None)]
+    for r in caplog.records:
+        textes = (r.getMessage(), repr(r.exc_info or ""), r.exc_text or "",
+                  repr(getattr(r, "json_fields", "")))
+        assert not any("Tremblay" in t for t in textes), r

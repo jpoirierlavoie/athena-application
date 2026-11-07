@@ -87,6 +87,13 @@ _SLOT_LABELS = {
 class GenerationRefused(Exception):
     """A generation that must not proceed — nothing was written.
 
+    Declared exception: ``save_uncertain`` (``services.gabarits.
+    save_generated``, the « incertain » lot, 2026-11-06) — the save RAISED
+    and its record could not be read back, so the document MAY be filed.
+    A caller never words it « rien n'a été généré » nor invites a blind
+    retry: the connector keeps its idempotency claim, the web shows the
+    model's sentence (``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR``).
+
     ``reason`` is machine-stable (the ``generation_failed`` vocabulary),
     ``message`` is French and never quotes a submitted value, ``field``
     names what the refusal concerns: a slot parameter (``client_id`` …),

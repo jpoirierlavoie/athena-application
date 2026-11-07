@@ -855,3 +855,53 @@ def test_every_popup_input_carries_the_ceiling_the_server_enforces(web, store):
         assert int(form.maxlength[f"champ__{name}"]) == spec["ceiling"]
     assert rendered["objet_lettre"]["ceiling"] == sg.MANUAL_MAX_CHARS
     assert rendered["dossier.sommaire"]["ceiling"] == sg.AUTO_MAX_CHARS
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. The « incertain » lot (2026-11-06) — each fails on 25f0592
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_save_whose_outcome_is_unknown_is_save_uncertain(store, monkeypatch):
+    """The document's create answered nothing (the connection reset after
+    the commit) and its record cannot be read back. The old save raised
+    ``save_failed`` « Erreur lors du téléversement. Veuillez réessayer. »:
+    the connector worded it « Rien n'a été généré » and released its claim,
+    and the same-key retry filed a second document. ``save_uncertain`` is
+    the one refusal that does NOT say nothing was written."""
+    from models import concurrency
+    from tests._ingest_faults import lose_answer_then_unreadable
+
+    db, bucket, template = store
+    filled, _ = sg.fill(TEMPLATE_BYTES, {"dossier.titre": "T"})
+    lose_answer_then_unreadable(db, monkeypatch)
+
+    with pytest.raises(sg.GenerationRefused) as exc:
+        sg.save_into_projets(template=template,
+                             dossier=dossier_model.get_dossier("d1"),
+                             filled=filled, uid=UID, today=_DAY)
+
+    assert exc.value.reason == "save_uncertain"
+    assert exc.value.message == concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR
+    (stored,) = _stored_documents(db)                 # it DID land
+    assert bucket.objects[stored["storage_path"]].data == filled
+
+
+def test_the_popup_says_an_unknown_outcome_never_retry(web, store, monkeypatch):
+    """The web popup shows the model's sentence as is — never « Veuillez
+    réessayer », which a second « Générer » would answer with a second
+    document."""
+    from models import concurrency
+    from tests._ingest_faults import lose_answer_then_unreadable
+
+    db, _bucket, template = store
+    form = _form(web.get(_fields_url(template["id"], dossier_id="d1"))
+                 .get_data(as_text=True))
+    lose_answer_then_unreadable(db, monkeypatch)
+
+    resp = _post(web, _submission(form))
+
+    assert resp.status_code == 200
+    body = html_module.unescape(resp.get_data(as_text=True))
+    assert concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR in body
+    assert "réessayer" not in body.lower()

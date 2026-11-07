@@ -5,7 +5,10 @@ plafonne toute requête à 32 Mo (le miroir du plafond de 32 Mo par réponse
 qui a frappé les téléchargements la veille) : ouverture d'une session
 reprenable sous staging/{uid}/, PUT navigateur→GCS, puis finalisation qui
 sniffe une sonde de 512 octets et ingère par copie côté serveur
-(ingest_blob_as_document), le staging étant consommé dans les deux issues.
+(ingest_blob_as_document), le staging étant consommé quand l'issue est
+CONNUE (versé ou refusé) — et GARDÉ quand elle ne l'est pas : changé
+délibérément au lot « incertain » (2026-11-06), qui renverse le « consommé
+dans les deux issues » épinglé ici par le lot des documents.
 """
 
 import json
@@ -30,11 +33,17 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
     from models import concurrency
+    from models import dossier as dossier_model
     import routes.documents as rd
 
 from flask import Flask  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._fake_gcs import FakeBucket  # noqa: E402
+from tests._ingest_faults import (  # noqa: E402
+    lose_answer_then_unreadable,
+    unreadable_documents,
+)
 
 
 @pytest.fixture()
@@ -215,8 +224,9 @@ def test_finaliser_objet_etranger_400(web):
 
 
 def test_finaliser_ingere_et_consomme_le_staging(web, monkeypatch):
+    # The STRICT reader since the « incertain » lot (2026-11-06).
     monkeypatch.setattr(
-        rd, "get_dossier",
+        rd, "get_dossier_strict",
         lambda d: {"id": "d1", "file_number": "2026-001"} if d == "d1" else None,
     )
     blob = mock.MagicMock()
@@ -244,7 +254,7 @@ def test_finaliser_ingere_et_consomme_le_staging(web, monkeypatch):
 
 
 def test_finaliser_refus_consomme_le_staging_aussi(web, monkeypatch):
-    monkeypatch.setattr(rd, "get_dossier",
+    monkeypatch.setattr(rd, "get_dossier_strict",
                         lambda d: {"id": "d1", "file_number": "2026-001"})
     blob = mock.MagicMock()
     bucket = mock.Mock()
@@ -281,7 +291,7 @@ def test_finaliser_refuse_un_segment_qui_n_est_pas_un_identifiant(
     """Lot 2A (T1) : le segment uuid4 du chemin staging devient l'id
     RÉSERVÉ du document. Tout autre segment est refusé AVANT de toucher
     l'objet — ni lecture, ni suppression, ni ingestion."""
-    monkeypatch.setattr(rd, "get_dossier",
+    monkeypatch.setattr(rd, "get_dossier_strict",
                         lambda d: {"id": "d1", "file_number": "2026-001"})
     bucket = mock.Mock()
     monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
@@ -373,7 +383,7 @@ def _staging_consomme(monkeypatch):
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
-    monkeypatch.setattr(rd, "get_dossier",
+    monkeypatch.setattr(rd, "get_dossier_strict",
                         lambda d: {"id": d, "file_number": "2026-001"})
     ingest = mock.Mock()
     monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
@@ -483,25 +493,35 @@ def test_un_echec_de_relecture_du_staging_ne_journalise_que_sa_classe(
     """Fails on the old code: a staging reload failing other than NotFound
     (a Storage 503) was logged by ``logger.exception``, a traceback whose
     error text names the staging object — its last segment is the client's
-    file name. Still the 422 « introuvable » (this call filed nothing); the
-    one line now carries the class only."""
+    file name. The one line now carries the class only.
+
+    Changed deliberately (the « incertain » lot, 2026-11-06), reversing
+    what the documents lot pinned here (« Still the 422 « introuvable » »):
+    a failed read is not an absence. The answer is now 503 « Lecture du
+    fichier téléversé impossible. Réessayez. », and the object is neither
+    deleted nor ingested — this call filed nothing."""
     blob = mock.MagicMock()
     blob.reload.side_effect = gexc.ServiceUnavailable(
         f"503 GET staging/u1/{_SEG}/Passeport Tremblay.pdf")
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
-    monkeypatch.setattr(rd, "get_dossier",
-                        lambda d: {"id": d, "file_number": "2026-001"})
+    # The dossier from the fake store, never a patched reader: the old
+    # route (its fail-open reader) and the new one (the strict one) both
+    # read it, so this fails on the old code on what it pins.
+    install(monkeypatch, dossier_model).seed(
+        "dossiers/d1", {"id": "d1", "file_number": "2026-001"})
     ingest = mock.Mock()
     monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
     caplog.set_level(logging.DEBUG)
 
     reponse = _rejoue(web)
 
-    assert reponse.status_code == 422
+    assert reponse.status_code == 503
     assert reponse.get_json() == {
-        "erreur": "Fichier téléversé introuvable. Réessayez."}
+        "erreur": "Lecture du fichier téléversé impossible. Réessayez."}
+    assert "introuvable" not in reponse.get_json()["erreur"]
+    blob.delete.assert_not_called()
     ingest.assert_not_called()
     lignes = [(r.getMessage(), r.exc_info) for r in caplog.records
               if r.name == rd.logger.name]
@@ -511,6 +531,103 @@ def test_un_echec_de_relecture_du_staging_ne_journalise_que_sa_classe(
         textes = (r.getMessage(), repr(r.exc_info or ""), r.exc_text or "",
                   repr(getattr(r, "json_fields", "")))
         assert not any("Tremblay" in t for t in textes), r
+
+
+# ── Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592 ────────
+#
+# End to end on the REAL ingestion, over the fake Firestore and the fake
+# Cloud Storage: what the page is answered, and what the store and the
+# bucket hold afterwards.
+
+_PDF = b"%PDF-1.7\n" + b"0" * 2048
+_STAGING = f"staging/u1/{_SEG}/piece.pdf"
+
+
+@pytest.fixture()
+def reel(monkeypatch):
+    """The real document and dossier models over ONE fake store, the
+    dossier « d1 » seeded, and a fake bucket holding the staged upload."""
+    fake = install(monkeypatch, rd.document_model, dossier_model)
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001",
+                              "title": "Essai", "status": "actif"})
+    gcs = FakeBucket()
+    monkeypatch.setattr(rd.storage, "bucket", lambda: gcs)
+    gcs.put(_STAGING, _PDF, content_type="application/octet-stream")
+    return fake, gcs
+
+
+def _finalise(web):
+    return _post(web, "/documents/api/finaliser", {
+        "objet": _STAGING, "name": "piece.pdf", "dossier_id": "d1",
+        "category": "pièce"})
+
+
+@pytest.mark.parametrize("atterri", [True, False])
+def test_une_issue_inconnue_garde_le_staging_et_la_reprise_tranche(
+    web, reel, monkeypatch, atterri,
+):
+    """The record's commit landed — or not —, its answer was lost, and the
+    store could not read it back. The old code answered 422 « Erreur lors
+    du versement. Veuillez réessayer. » and DELETED the staging object: the
+    page marked the file « rejeté » and re-sent it through a NEW upload — a
+    second document when the first had landed. Now: 503 ``incertain``, the
+    staging KEPT; the page's one re-post, once the store answers, settles
+    it — the landed document, or these bytes filed once."""
+    fake, gcs = reel
+    etat = lose_answer_then_unreadable(fake, monkeypatch, land=atterri)
+
+    premier = _finalise(web)
+
+    assert premier.status_code == 503
+    assert premier.get_json() == {"erreur": _INCERTAIN, "incertain": True}
+    assert _STAGING in gcs.objects                  # kept for the re-post
+
+    etat["dead"] = None                             # the store answers
+    reprise = _finalise(web)
+
+    assert reprise.status_code == 200
+    assert reprise.get_json() == {"ok": True, "document_id": _SEG}
+    assert list(fake.peek_collection("documents")) == [_SEG]
+    assert _STAGING not in gcs.objects              # consumed, now settled
+
+
+def test_une_lecture_ratee_du_dossier_n_est_jamais_choisissez_un_dossier(
+    web, monkeypatch, caplog,
+):
+    """The fail-open dossier reader turned a blip into « Veuillez
+    sélectionner un dossier. » (422), about a dossier the form had named.
+    Now 503 « Lecture du dossier impossible. Réessayez. », the staging
+    object untouched — no reload, no delete —, nothing ingested, and one
+    line with ids and the class only. A real absence still says « Veuillez
+    sélectionner un dossier »."""
+    fake = install(monkeypatch, dossier_model)
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001"})
+    refusees = unreadable_documents(fake, monkeypatch, "dossiers/d1")
+    bucket = mock.Mock()
+    monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
+    ingest = mock.Mock()
+    monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
+    caplog.set_level(logging.INFO)
+
+    reponse = _finalise(web)
+
+    assert refusees["refused"] == ["dossiers/d1"]   # the dossier read failed
+    assert reponse.status_code == 503
+    assert reponse.get_json() == {
+        "erreur": "Lecture du dossier impossible. Réessayez."}
+    bucket.blob.assert_not_called()
+    ingest.assert_not_called()
+    lignes = [(r.getMessage(), r.json_fields)
+              for r in caplog.records if r.name == "pallas.unexpected"]
+    assert lignes == [("documents: dossier unreadable", {
+        "event": "unexpected", "dossier_id": "d1",
+        "error_type": "RuntimeError"})]
+    assert not any(r.exc_info for r in caplog.records)
+
+    absent = _post(web, "/documents/api/finaliser", {
+        "objet": _STAGING, "name": "piece.pdf", "dossier_id": "d9"})
+    assert absent.status_code == 422
+    assert absent.get_json() == {"erreur": "Veuillez sélectionner un dossier."}
 
 
 # ── La page : une finalisation dont la réponse se perd (2026-11) ─────────

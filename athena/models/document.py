@@ -1109,16 +1109,55 @@ def ingest_blob_as_document(
 
     * the copy is written with ``if_generation_match=0`` — it can only
       CREATE the destination object. A 412 means another call already wrote
-      it: this call then adopts it (same size, same checksum as the source)
-      or refuses — it never overwrites it and never deletes it;
+      it: this call then answers that call's committed record, adopts the
+      object (same size, same checksum as the source) or refuses — it
+      never overwrites it and never deletes it. An occupant whose metadata
+      cannot be reloaded is never « another file » (``_INGEST_OCCUPIED``, a
+      refusal of the content, on which the connector DISCARDS the upload):
+      this call wrote nothing, and the answer is the retryable
+      ``_INGEST_FAILED``;
     * the record is written with ``create()`` — ``AlreadyExists`` means
       another call committed it: the existing record is returned when it is
-      the same document (same dossier, same size), refused otherwise;
-    * a failure deletes the destination ONLY when this call created it
-      (the generation it wrote), and never when a committed record
-      references it. The old rollback deleted the canonical path blindly —
-      with a reserved id that path can belong to a call that already
-      committed, whose document would have lost its bytes in silence.
+      the same document (same dossier, same size), refused otherwise. On a
+      FRESH id (no ``document_id``) only this call holds the id, so
+      ``AlreadyExists`` is its OWN ``create()``, retried by the client after
+      a first attempt that LANDED with its answer lost: the record is filed
+      and is the answer, with no read (the premise of
+      ``concurrency.settle_failed_create``);
+    * a failure that can leave a record behind — the ``create()`` raised;
+      on a reserved id, the copy or its patch failed (a concurrent
+      finalization may have adopted this very generation and committed) —
+      reads the record ONCE (:func:`_after_failure`), and that read decides
+      both the object's fate and the answer: a record → it is the answer,
+      this call's copy deleted only when the record names another path; no
+      record → this call's own generation deleted and nothing was filed
+      (``_INGEST_FAILED``, true then); the read failing too → the outcome is
+      UNKNOWN: every object KEPT and the answer
+      ``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR`` — never « réessayez »,
+      which every caller used to answer with a second document (the
+      « incertain » lot, 2026-11-06). A delete only ever takes the
+      generation this call wrote. The old rollback deleted the canonical
+      path blindly — with a reserved id that path can belong to a call that
+      already committed, whose document would have lost its bytes in
+      silence.
+
+    Declared exceptions (« A failed read never passes for absence »,
+    « Honest outcomes »):
+
+    * an UNKNOWN outcome keeps this call's copy under the canonical prefix
+      even when the commit did not in fact land — no lifecycle rule reaches
+      that prefix, and an automatic delete could take a filed document's
+      bytes. The ERROR « document ingest: filing uncertain »
+      (``document_id``, ``dossier_id``, no traceback) names it for an erase
+      by hand once the store answers (OBSERVABILITY.md);
+    * the reserved pre-read below (a replay whose first attempt finished)
+      still REFUSES with the retryable ``_INGEST_FAILED`` when it cannot
+      read the record: it precedes every write of this call, so it adds no
+      uncertainty of its own. Its callers have just read the id strictly
+      (the connector's ``_already_filed``, the receipt copy's
+      ``find_receipt_copies``), or have no predecessor (the upload page's
+      first finalization), whose single re-post keeps « incertain »
+      whatever it is answered.
 
     ``analyse_seed`` (keyword, lot 2A T8) — a copy's inherited protection
     (:func:`copy_document`): the record carries it as its ``analyse`` cache,
@@ -1214,12 +1253,28 @@ def ingest_blob_as_document(
             # same upload committed) → its document is the answer. No record
             # yet (that call is still between its copy and its record, or
             # died there) → adopt the object only when it IS this source's
-            # bytes; the record's create() below settles who wins.
+            # bytes; the record's create() below settles who wins. A record
+            # that cannot be read is UNKNOWN — that finalization may have
+            # filed this upload: never adopt nor refuse over it (a 412 means
+            # this call wrote nothing, so nothing is deleted either).
             if reserved:
-                done = _read_ingested(ref, dossier_id, size)
-                if done is not None:
-                    return _noted(done)
-            if not _same_object(dest, source_blob):
+                outcome, stored = _settle_ingested(ref)
+                if outcome == concurrency.WRITE_UNKNOWN:
+                    return _uncertain(ref, dossier_id)
+                if outcome == concurrency.WRITE_LANDED:
+                    landed = _same_ingested(stored, dossier_id, size)
+                    if landed[0] is not None:
+                        return _noted(landed)
+            verdict = _object_verdict(dest, source_blob)
+            if verdict is None:
+                # The occupant could not be reloaded: unknown, never
+                # « another file occupies… » — a content refusal, on which
+                # the connector settles its ticket and DISCARDS the upload,
+                # for a read that merely blipped. Nothing was filed (the
+                # record is absent, or the id fresh) and this call wrote
+                # nothing: the same call may succeed.
+                return None, [_INGEST_FAILED]
+            if not verdict:
                 return None, [_INGEST_OCCUPIED]
         else:
             created_generation = dest.generation
@@ -1236,17 +1291,18 @@ def ingest_blob_as_document(
             "ingest_blob failed for document %s: %s",
             document_id, type(exc).__name__,
         )
+        if not reserved:
+            # A fresh id no create() has been sent for: no record can hold
+            # it, so this call's own generation goes and nothing was filed.
+            _delete_own_object(storage_path, created_generation)
+            return None, [_INGEST_FAILED]
         # A concurrent finalization may have ADOPTED this very generation
         # (its rewrite answered 412, the bytes were the same) and committed
-        # its record before this call's patch failed.
-        _delete_own_object_unreferenced(ref, storage_path, created_generation)
-        if reserved:
-            # The concurrent call that consumed the staging object may have
-            # committed meanwhile — then this call's answer is its document.
-            done = _read_ingested(ref, dossier_id, size)
-            if done is not None:
-                return _noted(done)
-        return None, [_INGEST_FAILED]
+        # its record before this call's patch failed — or consumed the
+        # staging object and committed while this call's rewrite ran: ONE
+        # read decides both the object's fate and the answer.
+        return _after_failure(ref, dossier_id, size, storage_path,
+                              created_generation)
 
     try:
         if analyse_seed is None:
@@ -1264,18 +1320,20 @@ def ingest_blob_as_document(
             )
             batch.commit()
     except AlreadyExists:
-        # Another call committed this id. Its record is the answer when it
-        # is the same document; this call's own copy is removed only when
-        # no committed record points at it.
-        try:
-            existing = ref.get().to_dict() or {}
-        except Exception:
-            log_unexpected("document ingest: committed record unreadable",
-                           document_id=document_id)
-            return None, [_INGEST_FAILED]
-        if existing.get("storage_path") != storage_path:
-            _delete_own_object(storage_path, created_generation)
-        return _noted(_same_ingested(existing, dossier_id, size))
+        if not reserved:
+            # A fresh uuid4 only this call holds: the record is this call's
+            # OWN create(), which the client retried after a first attempt
+            # that LANDED with its answer lost — `merged` is what is stored,
+            # the answer, with no read (an unreadable record here used to
+            # answer « réessayez » over a filed document).
+            return _noted((merged, []))
+        # Another finalization of this upload committed this id (or this
+        # call's own retried create did). Its record is the answer when it
+        # is the same document, this call's copy removed only when that
+        # record names another path; an unreadable one is UNKNOWN — never
+        # « nothing filed » against the server's own AlreadyExists.
+        return _after_failure(ref, dossier_id, size, storage_path,
+                              created_generation, exists=True)
     except Exception as exc:
         logger.warning(
             "ingest_blob failed for document %s: %s",
@@ -1285,11 +1343,9 @@ def ingest_blob_as_document(
         # may have gone through and only its answer been lost. The record
         # then points at this copy, which must outlive the failure — and it
         # IS this call's answer (reserved or fresh, the id is this upload's).
-        _delete_own_object_unreferenced(ref, storage_path, created_generation)
-        done = _read_ingested(ref, dossier_id, size)
-        if done is not None:
-            return _noted(done)
-        return None, [_INGEST_FAILED]
+        # ONE read settles it; unreadable, the outcome is UNKNOWN.
+        return _after_failure(ref, dossier_id, size, storage_path,
+                              created_generation)
 
     provenance.note_commit(COLLECTION, document_id)
     return merged, []
@@ -1314,7 +1370,13 @@ _INGEST_READ_FAILED = "Lecture du fichier source impossible. Réessayez."
 # of the content itself (its type, its size, its metadata, an id already
 # taken). The connector's upload ticket keeps its bytes for a retry on the
 # former and consumes them on the latter (lot 2A, T9): consuming 200 MB on a
-# store blip would cost the caller the whole upload.
+# store blip would cost the caller the whole upload. Since the « incertain »
+# lot (2026-11-06) `_INGEST_FAILED` is answered only when nothing was filed —
+# the record READ absent, or no create() sent for a fresh id. A filing whose
+# record could not be read back answers `concurrency.
+# WRITE_OUTCOME_UNCERTAIN_ERROR` instead, deliberately NOT a member here: it
+# is neither a retry (the document MAY be filed — a retry would file it
+# twice) nor a refusal of the content (its bytes must not be discarded).
 RETRYABLE_INGEST_ERRORS = (_INGEST_FAILED, _INGEST_READ_FAILED)
 _INGEST_OCCUPIED = (
     "Un autre fichier occupe déjà l'emplacement de ce document : rien n'a "
@@ -1335,20 +1397,69 @@ def _same_ingested(
     return None, [_INGEST_CONFLICT]
 
 
-def _read_ingested(ref, dossier_id: str, size: int):
-    """``(record, [])`` when a matching record exists now, else ``None``."""
+def _settle_ingested(ref) -> tuple[str, Optional[dict]]:
+    """What the store holds under *ref* after a failure, read ONCE:
+    ``(concurrency.WRITE_LANDED, stored)``, ``(concurrency.WRITE_ABSENT,
+    None)``, or ``(concurrency.WRITE_UNKNOWN, None)`` when the read fails —
+    never « no record ». The three outcomes of
+    ``concurrency.settle_failed_create``, without its premise that a record
+    found can only be this call's: under a RESERVED id it may be a
+    concurrent finalization's, which the caller judges with
+    :func:`_same_ingested`. Never raises."""
     try:
         snap = ref.get()
     except Exception:
-        return None
+        return concurrency.WRITE_UNKNOWN, None
     if not snap.exists:
-        return None
-    doc, errors = _same_ingested(snap.to_dict() or {}, dossier_id, size)
-    return (doc, errors) if doc is not None else None
+        return concurrency.WRITE_ABSENT, None
+    return concurrency.WRITE_LANDED, snap.to_dict() or {}
 
 
-def _same_object(dest, source) -> bool:
-    """True when *dest* (an existing object) holds exactly *source*'s bytes.
+def _uncertain(ref, dossier_id: str) -> tuple[None, list[str]]:
+    """The answer of a filing whose outcome is UNKNOWN: its record could not
+    be read after a failure that may have committed it. Every object is
+    KEPT (a record may point at this call's copy). The ERROR line carries
+    the ids an operator needs to settle it by hand, and never a traceback:
+    a Storage error's text names the object, whose last segment is the
+    client's file name."""
+    log_unexpected("document ingest: filing uncertain", exc_info=False,
+                   document_id=ref.id, dossier_id=dossier_id)
+    return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+
+
+def _after_failure(ref, dossier_id: str, size: int, storage_path: str,
+                   generation, *, exists: bool = False):
+    """Settle a filing whose copy, patch or ``create()`` FAILED, from ONE
+    read of its record (:func:`_settle_ingested`), which decides both the
+    object's fate and the answer:
+
+    * a record → the answer when it is this ingestion's document
+      (:func:`_same_ingested`, a conflict otherwise); this call's copy stays
+      unless that record names another path;
+    * no record → this call's own generation is deleted and nothing was
+      filed (``_INGEST_FAILED``, true now) — unless the server has just
+      answered that the record EXISTS (*exists*): absent then is a
+      contradiction, so UNKNOWN;
+    * the read failing → UNKNOWN (:func:`_uncertain`): every object kept.
+
+    It replaces a rollback check and a read-back that were two independent
+    reads, each swallowing its failure into « no record »: an unreadable
+    store answered « réessayez » over a commit that had landed."""
+    outcome, stored = _settle_ingested(ref)
+    if outcome == concurrency.WRITE_LANDED:
+        if stored.get("storage_path") != storage_path:
+            _delete_own_object(storage_path, generation)
+        return _noted(_same_ingested(stored, dossier_id, size))
+    if outcome == concurrency.WRITE_ABSENT and not exists:
+        _delete_own_object(storage_path, generation)
+        return None, [_INGEST_FAILED]
+    return _uncertain(ref, dossier_id)
+
+
+def _object_verdict(dest, source) -> Optional[bool]:
+    """Whether *dest* (an existing object) holds exactly *source*'s bytes:
+    ``True``, ``False`` (other bytes, or not proven), or ``None`` when *dest*
+    could not be reloaded — unknown, never « other bytes ».
 
     Size, then a stored checksum both sides carry (MD5, else CRC32C —
     a rewrite preserves both); no common checksum is « not proven ».
@@ -1358,7 +1469,7 @@ def _same_object(dest, source) -> bool:
     try:
         dest.reload()
     except Exception:
-        return False
+        return None
     if dest.size is None or int(dest.size) != int(source.size or 0):
         return False
     for attr in ("md5_hash", "crc32c"):
@@ -1368,29 +1479,12 @@ def _same_object(dest, source) -> bool:
     return False
 
 
-def _delete_own_object_unreferenced(ref, storage_path: str, generation) -> None:
-    """:func:`_delete_own_object`, unless a committed record points at it.
-
-    The generation guard proves the object is the one THIS call wrote — not
-    that nobody depends on it. Two failure branches can leave a committed
-    record behind this call's copy: a concurrent finalization that adopted
-    the generation and committed before this call's patch failed, and this
-    call's own ``create()`` whose commit landed while its answer was lost.
-    Deleting there left a document without its bytes, in silence. An
-    unreadable record keeps the object (fail closed): an orphan under the
-    canonical prefix costs storage, a record without bytes costs a document.
-    """
-    if generation is None:
-        return
-    try:
-        snap = ref.get()
-    except Exception:
-        log_unexpected("document ingest: rollback check unreadable",
-                       document_id=ref.id)
-        return
-    if snap.exists and (snap.to_dict() or {}).get("storage_path") == storage_path:
-        return
-    _delete_own_object(storage_path, generation)
+def _same_object(dest, source) -> bool:
+    """True when *dest* (an existing object) holds exactly *source*'s bytes
+    — :func:`_object_verdict` as a boolean, an unreadable *dest* reading as
+    « not proven ». ``models/piece_identite`` keeps this boolean: its own
+    refusal of that case (« id proof: object occupied ») is unchanged."""
+    return _object_verdict(dest, source) is True
 
 
 def _delete_own_object(storage_path: str, generation) -> None:
@@ -1406,8 +1500,11 @@ def _delete_own_object(storage_path: str, generation) -> None:
         # Gone already, or no longer this call's generation: either way
         # there is nothing of ours left to delete.
         pass
-    except Exception:
-        log_unexpected("document ingest: own copy rollback failed")
+    except Exception as exc:
+        # The class only, never the traceback: a Storage error's text names
+        # the object, whose last segment is the client's file name.
+        log_unexpected("document ingest: own copy rollback failed",
+                       exc_info=False, error_type=type(exc).__name__)
 
 
 def upload_document(
@@ -1430,6 +1527,16 @@ def upload_document(
     generators (the template's category), « mcp » when Claude chose it;
     ``generated_from_invoice`` links a generated note d'honoraires to its
     invoice (see ``_prepare_document_record``).
+
+    A record ``create()`` that RAISED is settled by ONE read of the fresh
+    id: a record there is this call's own commit, landed with its answer
+    lost — the answer; none → the file is deleted and « réessayez » is true;
+    the read failing too → UNKNOWN: the file is KEPT and the answer is
+    ``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR`` (logged « document ingest:
+    filing uncertain »), which ``services.gabarits.save_generated`` raises
+    as ``save_uncertain`` — never « réessayez », which the connector's
+    same-key retry answered with a second generated document. A retried
+    create answered ``AlreadyExists`` is this call's own landed commit.
     """
     _, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -1486,20 +1593,27 @@ def upload_document(
     ref = db.collection(COLLECTION).document(document_id)
     try:
         ref.create(merged)
+    except AlreadyExists:
+        # The id is fresh, so a record holding it can only be THIS call's:
+        # the client retries a commit on ServiceUnavailable, and a retried
+        # create() answers AlreadyExists once the first attempt LANDED
+        # (revue de T1: with the old set() the retry simply rewrote the same
+        # record). `merged` is what is stored — the answer, its file kept.
+        return _noted((merged, []))
     except Exception as exc:
         logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
-        # The id is fresh, so a record holding it can only be THIS call's —
-        # committed by an attempt whose answer was lost: the client retries
-        # a commit on ServiceUnavailable, and a retried create() answers
-        # AlreadyExists (revue de T1: with the old set() the retry simply
-        # rewrote the same record). Deleting the file then would leave the
-        # committed document without its bytes. Its record is the answer;
-        # the file is removed only when no record points at it.
-        _delete_own_object_unreferenced(ref, storage_path, blob.generation)
-        done = _read_ingested(ref, dossier_id, file_size)
-        if done is not None:
-            return _noted(done)
-        return None, ["Erreur lors du téléversement. Veuillez réessayer."]
+        # An error on a write does not prove it did not land: ONE read of
+        # the fresh id settles it, and decides the file's fate. Deleting the
+        # file under a committed record would leave a document without its
+        # bytes; answering « réessayez » over an unreadable one would file a
+        # second document on the retry.
+        outcome, stored = _settle_ingested(ref)
+        if outcome == concurrency.WRITE_LANDED:
+            return _noted(_same_ingested(stored, dossier_id, file_size))
+        if outcome == concurrency.WRITE_ABSENT:
+            _delete_own_object(storage_path, blob.generation)
+            return None, ["Erreur lors du téléversement. Veuillez réessayer."]
+        return _uncertain(ref, dossier_id)
 
     # The commit point (lot 2A, T8): the connector's generations reach this
     # writer, and a failure AFTER it (the payload, the audit line) must be

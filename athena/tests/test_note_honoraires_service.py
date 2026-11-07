@@ -796,3 +796,56 @@ def test_the_service_never_reads_the_browser_session():
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             modules = [getattr(node, "module", "") or ""] + [a.name for a in node.names]
             assert not any(m.split(".")[0] == "flask" for m in modules)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_note_whose_save_is_unknown_says_to_look_in_factures(
+    store, events, monkeypatch,
+):
+    """La réponse de l'enregistrement s'est perdue et sa relecture échoue :
+    la note est PEUT-ÊTRE versée. L'ancien service répondait ``save_failed``
+    « Erreur lors du téléversement. Veuillez réessayer. » — et le bouton,
+    qui verse une note à chaque clic, en versait une seconde. La phrase
+    envoie d'abord le juriste à « Mandat › Factures »."""
+    from tests._ingest_faults import lose_answer_then_unreadable
+
+    db, _bucket, _template = store
+    lose_answer_then_unreadable(db, monkeypatch)
+
+    with pytest.raises(nh.NoteRefusee) as exc:
+        _generate(regenerate=True)
+
+    assert exc.value.reason == "save_uncertain"
+    assert "« Mandat › Factures »" in exc.value.message
+    assert "n'a pas pu être confirmé" in exc.value.message
+    assert "réessayez" not in exc.value.message.lower()
+    assert [(e, kw.get("reason")) for e, kw in events] == [
+        ("generation_failed", "save_uncertain")]
+    assert len(_documents(db)) == 1      # it landed: « Factures » shows it
+
+
+def test_the_web_button_says_where_to_look_before_another_click(
+    store, web, monkeypatch,
+):
+    """Le bouton garde sa règle — une note par clic, choix du lot : la
+    phrase, montrée telle quelle (200 : htmx n'échange qu'un 2xx), dit de
+    vérifier « Mandat › Factures » avant de cliquer de nouveau, jamais
+    « réessayez »."""
+    from html import unescape
+
+    from tests._ingest_faults import lose_answer_then_unreadable
+
+    db, _bucket, _template = store
+    lose_answer_then_unreadable(db, monkeypatch)
+
+    resp = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
+
+    assert resp.status_code == 200
+    body = unescape(resp.get_data(as_text=True))
+    assert "n'a pas pu être confirmé" in body
+    assert "Vérifiez « Mandat › Factures »" in body
+    assert "réessayez" not in body.lower()

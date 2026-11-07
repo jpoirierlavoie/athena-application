@@ -18,7 +18,8 @@ refuse ce que Firestore refuse), et l'on relit ce qui est STOCKÉ.
    par le CODE à la réservation ; une réservation de plus de 5 minutes
    reprise (les identifiants réservés rendent la reprise sûre) ; deux
    réservations concurrentes, une seule gagne.
-3. Le TTL : ``expire_at`` porte +24 h sur un ticket ouvert et +7 jours sur un
+3. Le TTL : ``expire_at`` porte +24 h sur un ticket ouvert — et au moins
+   +24 h après sa dernière réservation, jamais plus tôt — et +7 jours sur un
    ticket réglé, pour que la réponse d'une finalisation survive à ses
    rejeux ; le fieldOverride est déclaré, aucun index composite.
 4. Les points de validation : création et versement notent leur commit ;
@@ -455,6 +456,19 @@ def test_a_claim_on_an_unreadable_store_raises_never_absent(monkeypatch):
     assert "rien n'a été versé" in str(excinfo.value)
 
 
+def test_a_store_outage_speaks_of_this_call_only(monkeypatch):
+    """Le lot « incertain » (2026-11-06) : pendant la même panne, ce refus
+    peut suivre de près une finalisation « incertaine » du même ticket —
+    son document est peut-être versé. « rien n'a été versé » seul s'y
+    lisait comme un verdict sur elle : il ne parle que de CET appel."""
+    broken = mock.MagicMock()
+    broken.collection.side_effect = RuntimeError("down")
+    monkeypatch.setattr(ut, "db", broken)
+    with pytest.raises(ut.TicketStoreUnavailable) as excinfo:
+        ut.claim_ticket("3f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f", now=NOW)
+    assert "rien n'a été versé par cet appel" in str(excinfo.value)
+
+
 def test_a_ticket_with_an_unknown_status_is_unreadable(fake):
     ticket = _open(fake)
     fake.external_write(f"{ut.COLLECTION}/{ticket['id']}",
@@ -746,6 +760,29 @@ def test_the_ttl_override_is_declared_and_no_composite_index_exists():
                           "fieldPath": "expire_at", "ttl": True, "indexes": []}]
     assert not [i for i in spec["indexes"]
                 if i.get("collectionGroup") == ut.COLLECTION]
+
+
+def test_a_claim_keeps_the_ticket_one_window_past_itself(fake):
+    """Le lot « incertain » (2026-11-06) : une finalisation dont l'issue est
+    inconnue GARDE sa réservation, reprise même passé l'heure. La
+    réservation ne touchait pas ``expire_at`` (``open_until`` + 24 h) : le
+    TTL pouvait ramasser un ticket encore tenu, dont le document est
+    peut-être versé — et finalize_upload répondait « introuvable :
+    ouvrez-en un nouveau ». Chaque réservation le porte au plus tard de sa
+    valeur et d'elle-même + 24 h, sans jamais l'avancer."""
+    ticket, _first = _claimed(fake)
+    # Dans l'heure, l'échéance du ticket ouvert couvre déjà la réservation :
+    # jamais AVANCÉE.
+    assert _stored(fake, ticket["id"])["expire_at"] == (
+        NOW + ut.OPEN_WINDOW + ut.OPEN_RETENTION)
+
+    late = NOW + ut.OPEN_WINDOW + timedelta(hours=3)
+    again = ut.claim_ticket(ticket["id"], now=late)
+
+    assert again.state == ut.RECLAIMED
+    stored = _stored(fake, ticket["id"])
+    assert stored["expire_at"] == late + ut.OPEN_RETENTION
+    assert again.ticket["expire_at"] == stored["expire_at"]
 
 
 def _module_functions() -> dict:

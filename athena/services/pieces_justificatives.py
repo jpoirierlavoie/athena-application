@@ -57,6 +57,16 @@ routes turn the two LASTING ones — the entry's dossier is gone
 (``recu_modifie``) — into their own CLOSED banner, since « réessayez » is
 no answer to either.
 
+One outcome is NOT a refusal (the « incertain » lot, 2026-11-06): a copy
+whose record could not be read back after its write failed
+(``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR`` from the model) MAY be filed.
+It is code :data:`INCERTAINE` with reason :data:`REASON_INCERTAIN` —
+logged ``admin_receipt_filed`` outcome ``failure``, never ``refused``
+(« nothing filed ») — and its own banner says the copy may already be in
+the dossier. A retry is still safe: step 5's STRICT
+``find_receipt_copies`` answers a copy that landed ``deja``, so « Verser
+une copie au dossier » never files it twice.
+
 Reached ONLY from ``routes/admin_ledger.py`` (the receipt finalization and
 « Verser une copie au dossier »). The connector never reaches it.
 """
@@ -68,7 +78,7 @@ from typing import Optional
 
 from firebase_admin import storage
 
-from models import admin_ledger
+from models import admin_ledger, concurrency
 from models.document import (
     ALLOWED_EXTENSIONS,
     find_receipt_copies,
@@ -94,6 +104,9 @@ VERSEE = "versee"
 DEJA = "deja"
 INADMISSIBLE = "inadmissible"
 REFUSEE = "refusee"
+# The copy's outcome is UNKNOWN (its write failed and its record could not
+# be read back): it MAY be filed — never REFUSEE, which says nothing was.
+INCERTAINE = "incertaine"
 
 # Machine REASONS of a refusal (``Versement.reason``) — the two a caller
 # gives its own banner, because retrying cannot help: the dossier the entry
@@ -102,6 +115,9 @@ REFUSEE = "refusee"
 # their own reason and read, on the page, as the generic « réessayez ».
 REASON_DOSSIER_INTROUVABLE = "dossier_introuvable"
 REASON_RECU_MODIFIE = "recu_modifie"
+# The reason of an INCERTAINE outcome — no refusal: its own banner says the
+# copy may already be in the dossier (module docstring).
+REASON_INCERTAIN = "incertain"
 
 MSG_INADMISSIBLE = (
     "Seule une dépense liée à un dossier et munie d'une pièce justificative "
@@ -128,8 +144,10 @@ MSG_RECEIPT_CHANGED = (
 class Versement:
     """The outcome: the document (filed now, or already there), the French
     refusals, a machine code (``versee`` | ``deja`` | ``inadmissible`` |
-    ``refusee``) and, on a refusal, its machine ``reason`` (``""`` when none
-    was recorded — see ``REASON_*``)."""
+    ``refusee`` | ``incertaine``) and, on a refusal, its machine ``reason``
+    (``""`` when none was recorded — see ``REASON_*``). ``incertaine`` is
+    the one outcome without a document that does NOT say nothing was filed:
+    the copy's outcome is unknown (reason ``incertain``)."""
 
     document: Optional[dict]
     errors: list[str] = field(default_factory=list)
@@ -386,6 +404,15 @@ def verser_recu_au_dossier(
         lawyer_set_category=False,
         from_admin_receipt={"transaction_id": tx_id, "md5": md5},
     )
+    if document is None and concurrency.is_outcome_uncertain(errors):
+        # Never « refused (nothing filed) »: the copy MAY be filed. The next
+        # « Verser une copie au dossier » settles it — step 5's strict
+        # lookup answers a landed copy « deja ».
+        log_admin_ledger_event(
+            "admin_receipt_filed", "failure", transaction_id=tx_id,
+            reason=REASON_INCERTAIN,
+        )
+        return Versement(None, list(errors), INCERTAINE, REASON_INCERTAIN)
     if errors or document is None:
         log_admin_ledger_event(
             "admin_receipt_filed", "refused", transaction_id=tx_id,

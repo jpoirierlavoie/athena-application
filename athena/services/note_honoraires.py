@@ -61,6 +61,13 @@ surfaces log identically:
 The web passes ``regenerate=True``: its button has always filed a new note
 on every click, and keeps doing so (the note it files is fingerprinted, so
 the connector finds it). Never reads ``flask.session`` — a sweep pins it.
+
+Declared exception to « every refusal … BEFORE anything is written » (the
+« incertain » lot, 2026-11-06): ``save_uncertain`` — the save of step 8
+RAISED and its record could not be read back, so the note MAY be filed.
+Its sentence (:data:`SAVE_UNCERTAIN`) sends the lawyer to « Mandat ›
+Factures » before another click, the web keeping its every-click rule; the
+connector keeps its idempotency claim and words its own.
 """
 
 from __future__ import annotations
@@ -78,6 +85,11 @@ from models.doc_template import (
 )
 from models.document import find_generated_for_invoice
 from models.dossier import get_dossier_strict
+from models.folder import (
+    SYSTEM_FOLDER_NAMES,
+    SYSTEM_FOLDER_PARENTS,
+    SYSTEM_ROLE_FACTURES,
+)
 from models.invoice import get_invoice_with_items_strict, line_items_missing
 from models.partie import get_partie
 from services.gabarits import (
@@ -134,10 +146,29 @@ TEMPLATE_FILE_UNAVAILABLE = (
 TEMPLATE_INVALID = "Le gabarit est invalide et n'a pas pu être rempli."
 FILL_ERROR = "Erreur lors de la génération. Veuillez réessayer."
 SAVE_FAILED = "Erreur lors de l'enregistrement."
+# Where the note is filed, as the browser shows it (« Mandat › Factures »),
+# from the folder registry — never a name written here.
+_FACTURES_PATH = " › ".join(
+    SYSTEM_FOLDER_NAMES[role]
+    for role in (SYSTEM_FOLDER_PARENTS[SYSTEM_ROLE_FACTURES],
+                 SYSTEM_ROLE_FACTURES)
+    if role
+)
+# ``save_uncertain`` — the one refusal that does NOT say nothing was
+# written: the note MAY be filed (module docstring). The web button files a
+# new note on every click, so the sentence sends the lawyer to look first.
+SAVE_UNCERTAIN = (
+    "L'enregistrement de la note d'honoraires n'a pas pu être confirmé : "
+    "elle a peut-être été versée au dossier. Vérifiez « "
+    f"{_FACTURES_PATH} » avant de la générer de nouveau — chaque clic en "
+    "verse une nouvelle."
+)
 
 
 class NoteRefusee(Exception):
-    """A note d'honoraires that must not be generated — nothing was written.
+    """A note d'honoraires that must not be generated — nothing was written,
+    except under ``save_uncertain``, whose note MAY be filed (module
+    docstring: its sentence never invites a blind retry).
 
     ``reason`` is machine-stable (the ``generation_failed`` vocabulary of
     OBSERVABILITY.md); ``message`` is French and never quotes a value.
@@ -363,6 +394,9 @@ def generer_note_honoraires(
                                     "fingerprint": fingerprint},
         )
     except GenerationRefused as refusal:
+        if refusal.reason == "save_uncertain":
+            # The note MAY be filed: its own sentence, never « réessayez ».
+            raise _refuse("save_uncertain", SAVE_UNCERTAIN, **save_fields)
         raise _refuse(refusal.reason, refusal.message or SAVE_FAILED,
                       **save_fields)
 

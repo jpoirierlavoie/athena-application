@@ -1138,3 +1138,289 @@ def test_the_upload_tools_carry_the_hints_they_owe():
     spec = tools.TOOLS["finalize_upload"]
     assert spec["concurrency"] == tools.CONCURRENCY_EXEMPT
     assert spec["annotations"] == {"idempotentHint": True}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592
+# ══════════════════════════════════════════════════════════════════════
+#
+# A finalization whose outcome is UNKNOWN — the ingestion could not read
+# back whether the record landed, or a RECLAIMED claim could not read what
+# its predecessor produced — answered upload_retry « rien n'a été versé »
+# and RELEASED the ticket: past its hour the next call read « expiré : rien
+# n'a été versé, ouvrez-en un nouveau », over a filed document — a second
+# ticket, a second document. It is now write_outcome_uncertain, raised with
+# keep_claim, and the TICKET's claim is kept too: it goes stale and is
+# reclaimed whatever open_until says, so the reclaim settles it, once.
+
+from tests._ingest_faults import (  # noqa: E402
+    lose_answer_then_unreadable,
+    unreadable_documents,
+)
+
+_PAST_THE_HOUR = NOW + ut.OPEN_WINDOW + ut.STALE_CLAIM_AFTER + timedelta(minutes=1)
+
+
+def _uncertain(call) -> ToolArgumentError:
+    with pytest.raises(ToolArgumentError) as exc:
+        call()
+    assert exc.value.reason == "write_outcome_uncertain"
+    assert exc.value.keep_claim is True
+    assert "INCERTAINE" in str(exc.value)
+    assert "rien n'a été versé" not in str(exc.value).lower()
+    return exc.value
+
+
+@pytest.mark.parametrize("landed", [True, False])
+def test_an_unknown_outcome_keeps_both_claims_and_the_reclaim_settles_it(
+    world, monkeypatch, landed,
+):
+    """The ingestion's commit LANDED — or not —, its answer was lost, the
+    record is unreadable. Never « rien n'a été versé »: the ticket stays
+    « en cours » (never refusé, its bytes kept), the same key is refused
+    while in flight, and once the store answers, a NEW key on the SAME
+    ticket — past the hour and the stale delay — finds the document, or
+    files the kept bytes, once; never « expiré ». Also kills mutant A (the
+    model alone): the uncertain answer falling into the content refusal
+    would settle the ticket refusé and discard its bytes."""
+    opened = _begin_document(world)
+    ticket_id = opened["ticket_id"]
+    reserved = _ticket(world, ticket_id)["reserved_document_id"]
+    staging = _staging(world, ticket_id)
+    # PUT within the hour (the fake stamps objects with the wall clock).
+    world["bucket"].put(staging, PDF, content_type="application/pdf",
+                        time_created=NOW + timedelta(minutes=1))
+    state = lose_answer_then_unreadable(world["db"], monkeypatch, land=landed)
+
+    first = _uncertain(lambda: handlers.finalize_upload(
+        {"ticket_id": ticket_id, "idempotency_key": "k1"}))
+
+    assert reserved in str(first)            # the id to look for, named
+    assert "NOUVELLE idempotency_key" in str(first)
+    assert "MÊME ticket_id" in str(first)
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_CLAIMED
+    assert staging in world["bucket"].objects
+    assert list(_documents(world)) == ([reserved] if landed else [])
+
+    with pytest.raises(ToolArgumentError) as again:      # never a 2nd filing
+        handlers.finalize_upload({"ticket_id": ticket_id,
+                                  "idempotency_key": "k1"})
+    assert again.value.reason == "idempotency_in_flight"
+
+    state["dead"] = None                                  # the store answers
+    world["clock"]["now"] = _PAST_THE_HOUR
+    done = handlers.finalize_upload({"ticket_id": ticket_id,
+                                     "idempotency_key": "k2"})
+
+    assert done["already_finalized"] is landed
+    assert done["entity"]["id"] == reserved
+    assert list(_documents(world)) == [reserved]
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_DONE
+    assert staging not in world["bucket"].objects
+
+
+def test_a_reclaim_that_still_cannot_read_never_releases_nor_expires(
+    world, monkeypatch,
+):
+    """The critic of the lot, which this fails on the design's prototype
+    too: the reclaim of a ticket left « incertain » met a store still
+    unable to read the reserved document — it RELEASED the claim and said
+    « rien n'a été versé », and the next call expired the ticket, « ouvrez-
+    en un nouveau ». A reclaimed claim now keeps the claim and answers the
+    uncertainty: the ticket stays « en cours », never en_attente nor expiré;
+    a call meanwhile is told to wait; once the store answers, the next
+    reclaim finds the document, exactly once."""
+    opened = _begin_document(world)
+    _put(world, opened, PDF)
+    ticket_id = opened["ticket_id"]
+    reserved = _ticket(world, ticket_id)["reserved_document_id"]
+    state = lose_answer_then_unreadable(world["db"], monkeypatch)
+    _uncertain(lambda: handlers.finalize_upload(
+        {"ticket_id": ticket_id, "idempotency_key": "k1"}))
+
+    world["clock"]["now"] = _PAST_THE_HOUR       # reclaimed, still unreadable
+    _uncertain(lambda: handlers.finalize_upload(
+        {"ticket_id": ticket_id, "idempotency_key": "k2"}))
+    held = _ticket(world, ticket_id)
+    assert held["status"] == ut.STATUS_CLAIMED and held["claim_count"] == 2
+
+    with pytest.raises(ToolArgumentError) as busy:
+        handlers.finalize_upload({"ticket_id": ticket_id,
+                                  "idempotency_key": "k3"})
+    assert busy.value.reason == "upload_busy"
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_CLAIMED
+
+    state["dead"] = None
+    world["clock"]["now"] = _PAST_THE_HOUR + ut.STALE_CLAIM_AFTER \
+        + timedelta(minutes=1)
+    done = handlers.finalize_upload({"ticket_id": ticket_id,
+                                     "idempotency_key": "k4"})
+    assert done["already_finalized"] is True
+    assert list(_documents(world)) == [reserved]
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_DONE
+
+
+@pytest.mark.parametrize("reclaimed", [False, True])
+def test_an_identity_failure_releases_a_first_claim_only(
+    world, monkeypatch, reclaimed,
+):
+    """The owner uid is established before the destination is read. On a
+    FIRST claim of a document ticket nothing can have been filed — released,
+    « rien n'a été versé », true (a gabarit ticket is the exception
+    ``handlers._UploadHolder`` declares). On a RECLAIMED one the predecessor
+    may have filed: the claim is kept and the outcome is uncertain (the old
+    code released it)."""
+    opened = _begin_document(world)
+    _put(world, opened, PDF)
+    ticket_id = opened["ticket_id"]
+    if reclaimed:
+        ut.claim_ticket(ticket_id, now=NOW)       # a finalizer that died
+        world["clock"]["now"] = NOW + ut.STALE_CLAIM_AFTER + timedelta(minutes=1)
+
+    def _no_identity():
+        raise storage_identity.StorageIdentityUnavailable()
+
+    monkeypatch.setattr(storage_identity, "owner_uid", _no_identity)
+
+    if reclaimed:
+        _uncertain(lambda: handlers.finalize_upload({"ticket_id": ticket_id}))
+        assert _ticket(world, ticket_id)["status"] == ut.STATUS_CLAIMED
+    else:
+        with pytest.raises(ToolArgumentError) as exc:
+            handlers.finalize_upload({"ticket_id": ticket_id})
+        assert exc.value.reason == "upload_retry"
+        assert exc.value.keep_claim is False
+        assert _ticket(world, ticket_id)["status"] == ut.STATUS_OPEN
+    assert _documents(world) == {}
+
+
+def test_a_first_claim_whose_destination_read_fails_is_released(
+    world, monkeypatch,
+):
+    """The guard: a FIRST claim of a DOCUMENT ticket took an « en_attente »
+    ticket, which no filing that may have landed leaves behind (an uncertain
+    one keeps its claim) — so a failed read of the destination is still
+    « rien n'a été versé », released, the bytes kept for the retry. (A
+    gabarit ticket is not there yet: the exception ``handlers._UploadHolder``
+    declares.)"""
+    opened = _begin_document(world)
+    _put(world, opened, PDF)
+    ticket_id = opened["ticket_id"]
+    reserved = _ticket(world, ticket_id)["reserved_document_id"]
+    state = unreadable_documents(world["db"], monkeypatch,
+                                 f"documents/{reserved}")
+
+    with pytest.raises(ToolArgumentError) as exc:
+        handlers.finalize_upload({"ticket_id": ticket_id})
+
+    assert exc.value.reason == "upload_retry" and not exc.value.keep_claim
+    assert state["refused"] == [f"documents/{reserved}"]
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_OPEN
+    assert _staging(world, ticket_id) in world["bucket"].objects
+
+
+def test_a_reclaimed_gabarit_whose_template_cannot_be_read_is_uncertain(
+    world, monkeypatch,
+):
+    """The same rule for the gabarit purpose: a predecessor created the
+    template under the ticket's reserved id and died; the reclaim cannot
+    read it. Kept and uncertain — never released, « rien n'a été versé »
+    (the old code) — then settled by the next reclaim, one template."""
+    opened = _begin_gabarit(world, CLEAN_LETTER)
+    _put(world, opened, CLEAN_LETTER)
+    ticket_id = opened["ticket_id"]
+    ticket = _ticket(world, ticket_id)
+    ut.claim_ticket(ticket_id, now=NOW)
+    first, errors = tpl_model.create_template(
+        io.BytesIO(CLEAN_LETTER), "Lettre type.docx", len(CLEAN_LETTER),
+        {"name": "Lettre type", "category": "autre", "kind": "gabarit"}, UID,
+        template_id=ticket["reserved_template_id"])
+    assert errors == []
+    count = len(_templates(world))
+    state = unreadable_documents(
+        world["db"], monkeypatch, f"doc_templates/{first['id']}")
+    world["clock"]["now"] = NOW + ut.STALE_CLAIM_AFTER + timedelta(minutes=1)
+
+    refusal = _uncertain(lambda: handlers.finalize_upload(
+        {"ticket_id": ticket_id, "idempotency_key": "g1"}))
+
+    assert "list_templates" in str(refusal)
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_CLAIMED
+    state["paths"].clear()
+    world["clock"]["now"] = NOW + 2 * ut.STALE_CLAIM_AFTER + timedelta(minutes=2)
+    done = handlers.finalize_upload({"ticket_id": ticket_id,
+                                     "idempotency_key": "g2"})
+    assert done["already_finalized"] is True
+    assert done["entity"]["id"] == first["id"]
+    assert len(_templates(world)) == count
+
+
+def test_an_occupant_that_cannot_be_reloaded_never_discards_the_upload(
+    world, monkeypatch,
+):
+    """S5b: the reserved path holds an object whose reload fails. The old
+    model called it « another file occupies… », a content refusal: the
+    ticket was settled refusé and its bytes — up to 200 MB — discarded, for
+    a read that merely blipped. Now the retryable refusal: the claim
+    released, the bytes kept, nothing filed — and the next call files it."""
+    from werkzeug.utils import secure_filename
+
+    from tests._fake_gcs import FakeBlob
+
+    opened = _begin_document(world)
+    _put(world, opened, PDF)
+    ticket_id = opened["ticket_id"]
+    ticket = _ticket(world, ticket_id)
+    canonical = (f"users/{UID}/dossiers/d1/documents/"
+                 f"{ticket['reserved_document_id']}/"
+                 f"{secure_filename(ticket['original_filename'])}")
+    world["bucket"].put(canonical, PDF, content_type="application/pdf")
+    real_reload = FakeBlob.reload
+
+    def _reload(self, *args, **kwargs):
+        if self.name == canonical:
+            raise RuntimeError("503 reload")
+        return real_reload(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeBlob, "reload", _reload)
+
+    with pytest.raises(ToolArgumentError) as exc:
+        handlers.finalize_upload({"ticket_id": ticket_id})
+
+    assert exc.value.reason == "upload_retry"
+    assert _ticket(world, ticket_id)["status"] == ut.STATUS_OPEN
+    assert ticket["staging_object"] in world["bucket"].objects
+    assert _documents(world) == {}
+    monkeypatch.setattr(FakeBlob, "reload", real_reload)
+    done = handlers.finalize_upload({"ticket_id": ticket_id})
+    assert done["entity"]["id"] == ticket["reserved_document_id"]
+
+
+def test_a_ticket_held_on_an_unknown_outcome_outlives_its_latest_claim(
+    world, monkeypatch,
+):
+    """The ticket's TTL (the contract verifier of the lot): a claim never
+    moved ``expire_at`` (``open_until`` + 24 h), so a ticket still held
+    « incertain » past its hour could be collected while its document may
+    be filed — and finalize_upload then answered « introuvable : ouvrez-en
+    un nouveau », the instruction that files twice. After every uncertain
+    finalization the ticket now lives one idempotency window past its
+    latest claim."""
+    opened = _begin_document(world)
+    _put(world, opened, PDF)
+    ticket_id = opened["ticket_id"]
+    lose_answer_then_unreadable(world["db"], monkeypatch)
+
+    _uncertain(lambda: handlers.finalize_upload(
+        {"ticket_id": ticket_id, "idempotency_key": "k1"}))
+    held = _ticket(world, ticket_id)
+    assert held["expire_at"] >= held["claimed_at"] + ut.OPEN_RETENTION
+
+    world["clock"]["now"] = _PAST_THE_HOUR       # reclaimed, still unreadable
+    _uncertain(lambda: handlers.finalize_upload(
+        {"ticket_id": ticket_id, "idempotency_key": "k2"}))
+
+    held = _ticket(world, ticket_id)
+    assert held["status"] == ut.STATUS_CLAIMED
+    assert held["claimed_at"] == _PAST_THE_HOUR
+    assert held["expire_at"] >= held["claimed_at"] + ut.OPEN_RETENTION

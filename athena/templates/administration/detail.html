@@ -55,6 +55,15 @@
     Seule une dépense liée à un dossier et munie d'une pièce justificative
     peut en verser une copie au dossier. Rien n'a été versé.
   </div>
+  {# L'issue INCONNUE de la copie (services/pieces_justificatives,
+     INCERTAINE) : elle est peut-être versée — jamais « Réessayez » seul. #}
+  {% elif avertissement == 'versement_incertain' %}
+  <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    La pièce justificative est jointe à l'écriture ; le versement de sa copie
+    au dossier n'a pas pu être confirmé — elle y est peut-être déjà.
+    Vérifiez ci-dessous : si aucune copie n'y figure, « Verser une copie au
+    dossier » la versera, jamais en double.
+  </div>
   {# Les deux refus DURABLES de la copie (services/pieces_justificatives,
      REASON_*) — « réessayez » n'y répondrait pas. #}
   {% elif avertissement == 'versement_dossier_introuvable' %}

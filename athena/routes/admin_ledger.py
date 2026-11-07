@@ -824,8 +824,12 @@ def api_recu(tx_id: str):
     try:
         blob = bucket.blob(objet)
         blob.reload()
-    except Exception:
-        logger.exception("admin: staging blob reload failed")
+    except Exception as exc:
+        # The class only, never the traceback (the « incertain » lot,
+        # 2026-11-06): a Storage error's text names the object, whose last
+        # segment is the uploaded file's name.
+        logger.error("admin: staging blob reload failed: %s",
+                     type(exc).__name__)
         return jsonify({"erreur": "Fichier téléversé introuvable. Réessayez."}), 422
 
     def _consume_staging():
@@ -860,8 +864,10 @@ def api_recu(tx_id: str):
         dest.content_type = content_type
         dest.content_disposition = "attachment"
         dest.patch()
-    except Exception:
-        logger.exception("admin: receipt rewrite failed")
+    except Exception as exc:
+        # The class only, never the traceback: the error's text names the
+        # staging object or the entry's copy, both ending in the file's name.
+        logger.error("admin: receipt rewrite failed: %s", type(exc).__name__)
         _consume_staging()
         return jsonify({"erreur": "Erreur lors de la sauvegarde. Réessayez."}), 422
 
@@ -925,6 +931,10 @@ def _versement_code(versement: "pieces_justificatives.Versement | None") -> str:
         return "versement"
     if versement.code == pieces_justificatives.INADMISSIBLE:
         return "versement_inadmissible"
+    if versement.code == pieces_justificatives.INCERTAINE:
+        # Not a refusal: the copy MAY be filed — never the generic
+        # « Réessayez », its banner says to look first.
+        return "versement_incertain"
     return _VERSEMENT_CODES.get(versement.reason, "versement")
 
 

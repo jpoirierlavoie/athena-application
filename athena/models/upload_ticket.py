@@ -57,10 +57,17 @@ The state machine::
   ``firestore.indexes.json``) — garbage collection ONLY, the
   ``mcp_idempotency`` doctrine: an open ticket keeps ``open_until`` + 24 h
   (one idempotency window, so a replayed ``begin_upload`` reads « fermé »
-  rather than « introuvable »), and a ticket that reaches ``versé``,
-  ``refusé`` or ``expiré`` is kept :data:`FINAL_RETENTION` (7 days, the
-  staging lifecycle) so a ``finalize`` replayed without its key still finds
-  the answer it gave.
+  rather than « introuvable »); every claim moves it to the later of that
+  value and the claim + 24 h — never earlier —, so a HELD ticket lives one
+  idempotency window past its latest claim (the « incertain » lot,
+  2026-11-06: a finalization whose outcome is unknown KEEPS its claim,
+  reclaimed even past the hour, and a ticket collected meanwhile would
+  answer « introuvable : ouvrez-en un nouveau » over a document that may be
+  filed); and a ticket that reaches ``versé``, ``refusé`` or ``expiré`` is
+  kept :data:`FINAL_RETENTION` (7 days, the staging lifecycle) so a
+  ``finalize`` replayed without its key still finds the answer it gave.
+  Moving it is TTL bookkeeping, inside the claim's own transaction: no
+  commit is noted for it (below).
 
 Commit points (``models.provenance.note_commit``). :func:`create_ticket` and
 :func:`complete_ticket` note theirs: they are the tool's own writes. The
@@ -191,7 +198,8 @@ MODE_REPLACE = "replace"
 
 OPEN_WINDOW = timedelta(hours=1)
 STALE_CLAIM_AFTER = timedelta(minutes=5)
-# An open ticket lives one idempotency window past its window.
+# An open ticket lives one idempotency window past its window; a held one,
+# at least one window past its latest claim (claim_ticket).
 OPEN_RETENTION = timedelta(hours=24)
 # A settled ticket lives as long as the canonical bucket's staging/ rule.
 FINAL_RETENTION = timedelta(days=7)
@@ -263,9 +271,13 @@ _MESSAGES = {
         "résultat du versement sans rien verser une seconde fois."
     ),
 }
+# « par cet appel » (the « incertain » lot, 2026-11-06): during the same
+# outage this can directly follow an « incertain » finalization of the same
+# ticket, whose document may be filed — it speaks of THIS call, never of an
+# earlier one.
 _STORE_MESSAGE = (
     "Le registre des téléversements est illisible pour le moment : rien n'a "
-    "été versé. Réessayez dans un instant."
+    "été versé par cet appel. Réessayez dans un instant."
 )
 _SAVE_MESSAGE = (
     "Erreur lors de l'enregistrement du ticket de téléversement : rien n'a "
@@ -1016,6 +1028,11 @@ def claim_ticket(
     / missing → refused. Raises :class:`TicketStoreUnavailable` when the
     ticket cannot be read or written — nothing may proceed on a claim that
     was not established.
+
+    A claim also moves ``expire_at`` to the later of its stored value and
+    *now* + :data:`OPEN_RETENTION` (module docstring): a ticket held on an
+    unknown outcome, and reclaimed past its hour, lives one idempotency
+    window past its latest claim — not merely a day past its hour.
     """
     if not is_canonical_uuid4(ticket_id):
         return TicketClaim(None, REFUSED, REASON_NOT_FOUND)
@@ -1051,11 +1068,18 @@ def claim_ticket(
         else:
             raise TicketStoreUnavailable()
         claim_id = str(uuid.uuid4())
+        # TTL bookkeeping, never earlier than stored: a held ticket lives
+        # one idempotency window past its latest claim.
+        expiry = at + OPEN_RETENTION
+        stored_expiry = _as_datetime(ticket.get("expire_at"))
+        if stored_expiry is not None and stored_expiry > expiry:
+            expiry = stored_expiry
         fields = {
             "status": STATUS_CLAIMED,
             "claim_id": claim_id,
             "claimed_at": at,
             "claim_count": int(ticket.get("claim_count") or 0) + 1,
+            "expire_at": expiry,
             **provenance.update_fields(at),
         }
         txn.update(ref, fields)

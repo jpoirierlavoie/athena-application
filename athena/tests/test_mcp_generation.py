@@ -1041,3 +1041,94 @@ def test_the_instructions_state_the_rules_verbatim():
     assert "in ITS OWN dossier only" in (
         tools.TOOLS["create_document"]["description"])
     assert "« par Claude (connecteur) »" in text
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592
+# ══════════════════════════════════════════════════════════════════════
+#
+# A generated document — or a copy — whose record's commit answer was lost,
+# the record then unreadable, MAY be filed. The old refusal said « Rien n'a
+# été généré/créé » and RELEASED the idempotency claim: the same-key retry
+# the protocol prescribes filed a second document. It is now
+# write_outcome_uncertain with keep_claim: the same key is refused in
+# flight, and exactly one document exists.
+
+from tests._ingest_faults import lose_answer_then_unreadable  # noqa: E402
+
+
+def _uncertain_then_in_flight(call, args) -> str:
+    with pytest.raises(tools.ToolArgumentError) as exc:
+        call(dict(args))
+    assert exc.value.reason == "write_outcome_uncertain"
+    assert exc.value.keep_claim is True
+    assert "INCERTAINE" in str(exc.value)
+    assert "Rien n'a été" not in str(exc.value)
+    assert "list_documents" in str(exc.value)
+    with pytest.raises(tools.ToolArgumentError) as again:
+        call(dict(args))                       # the SAME key: never re-run
+    assert again.value.reason == "idempotency_in_flight"
+    return str(exc.value)
+
+
+def test_a_copy_whose_outcome_is_unknown_keeps_the_claim_one_copy_only(
+    world, monkeypatch,
+):
+    _seed_source(world)
+    lose_answer_then_unreadable(world["db"], monkeypatch, skip_ids=("src",))
+
+    _uncertain_then_in_flight(handlers.create_document, {
+        "source": "copy", "document_id": "src",
+        "idempotency_key": "copie-incertaine"})
+
+    copies = [i for i in _documents(world["db"]) if i != "src"]
+    assert len(copies) == 1                    # the one that landed
+
+
+def test_a_filled_gabarit_whose_save_is_unknown_keeps_the_claim(
+    world, monkeypatch,
+):
+    lose_answer_then_unreadable(world["db"], monkeypatch)
+
+    _uncertain_then_in_flight(handlers.fill_gabarit, {
+        "template_id": world["gabarit"], "dossier_id": "d1",
+        "client_id": "c1", "idempotency_key": "gabarit-incertain"})
+
+    assert len(_documents(world["db"])) == 1
+
+
+def test_a_markdown_document_whose_save_is_unknown_keeps_the_claim(
+    world, monkeypatch,
+):
+    lose_answer_then_unreadable(world["db"], monkeypatch)
+
+    _uncertain_then_in_flight(handlers.create_document, {
+        "source": "markdown", "dossier_id": "d1",
+        "title": "Note de recherche", "markdown": MD,
+        "idempotency_key": "markdown-incertain"})
+
+    assert len(_documents(world["db"])) == 1
+
+
+def test_an_invoice_note_whose_save_is_unknown_keeps_the_claim(
+    world, monkeypatch,
+):
+    """The note d'honoraires' service says ``save_uncertain``: never « Rien
+    n'a été créé », never a released claim (the connector reuses an
+    identical note by default, so a NEW key after « interrompu » finds the
+    one that landed)."""
+    from services import note_honoraires
+
+    def _uncertain_save(*_args, **_kwargs):
+        # The service's sentence, spelled out: its constant would raise
+        # AttributeError on the old code instead of failing on the claim.
+        raise note_honoraires.NoteRefusee(
+            "save_uncertain", "L'enregistrement de la note d'honoraires "
+            "n'a pas pu être confirmé.")
+
+    monkeypatch.setattr(handlers.note_honoraires_service,
+                        "generer_note_honoraires", _uncertain_save)
+
+    _uncertain_then_in_flight(handlers.create_document, {
+        "source": "invoice_note", "invoice_id": "i1",
+        "idempotency_key": "note-incertaine"})

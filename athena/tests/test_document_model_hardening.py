@@ -28,6 +28,7 @@ est STOCKÉ. Le formulaire web qui s'en sert : ``test_document_edit_route.py``.
 
 import ast
 import io
+import logging
 import os
 import pathlib
 import sys
@@ -842,7 +843,13 @@ def test_a_patch_failure_after_a_concurrent_adoption_keeps_its_bytes(
 
 def test_an_unreadable_record_keeps_the_copy_on_rollback(db, gcs, monkeypatch):
     """The check itself failing is not « nobody references it »: the copy
-    is kept (an orphan costs storage, a record without bytes a document)."""
+    is kept (an orphan costs storage, a record without bytes a document).
+
+    Changed deliberately (the « incertain » lot, 2026-11-06): the answer
+    was ``_INGEST_FAILED`` — « Veuillez réessayer », a RETRYABLE « nothing
+    was filed » — although the unread record may have landed; every caller
+    answered it with a second document. It is now the uncertain outcome,
+    the copy still kept."""
     source = _staged(gcs)
 
     def _fail(info):
@@ -864,7 +871,8 @@ def test_an_unreadable_record_keeps_the_copy_on_rollback(db, gcs, monkeypatch):
 
     got, errors = _ingest(source)
 
-    assert got is None and errors == [doc._INGEST_FAILED]
+    assert got is None
+    assert errors == [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
     assert gcs.objects[_CANONICAL].data == PDF
 
 
@@ -947,3 +955,401 @@ def test_an_ingestion_whose_create_was_retried_keeps_its_bytes(
     assert errors == [] and got["id"] == DOC_ID
     assert gcs.objects[_CANONICAL].data == PDF
     assert db.peek(f"documents/{DOC_ID}")["storage_path"] == _CANONICAL
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. Le lot « incertain » (2026-11-06) — chacun échoue sur 25f0592
+# ══════════════════════════════════════════════════════════════════════
+#
+# A failure that may have committed the record — the create raised, a
+# reserved copy or its patch failed — was settled by reads that SWALLOWED
+# their own failure into « no record »: the answer was ``_INGEST_FAILED``
+# (« Veuillez réessayer »), a RETRYABLE « nothing was filed », over a
+# document that may have landed, and every caller answered it with a second
+# document. ONE read now settles it; unreadable, the answer is the
+# uncertain outcome, every object kept. The guard against over-reporting —
+# a commit READ absent stays the plain retry, its copy deleted — is
+# test_a_failed_record_write_removes_only_this_calls_copy above, unchanged.
+
+from tests._ingest_faults import (  # noqa: E402
+    lose_answer_then_unreadable,
+    unreadable_after_commit,
+)
+
+UNCERTAIN = concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR
+
+
+def _uncertain_lines(caplog):
+    return [(r.getMessage(), getattr(r, "json_fields", {}), r.exc_info)
+            for r in caplog.records if r.name == "pallas.unexpected"
+            and r.getMessage() == "document ingest: filing uncertain"]
+
+
+def _fresh_source(gcs):
+    """A source outside staging/ — Réception's quarantine, a copy's
+    original: the ingestion mints a FRESH id for it."""
+    gcs.put("q/piece.pdf", PDF)
+    source = gcs.blob("q/piece.pdf")
+    source.reload()
+    return source
+
+
+def _ingest_fresh(source):
+    return doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "piece.pdf", {"category": "pièce"}, "u1")
+
+
+def _failing_patch(self, *_args, **_kwargs):
+    from google.api_core.exceptions import ServiceUnavailable
+
+    raise ServiceUnavailable("503 patch")
+
+
+@pytest.mark.parametrize("land", [True, False])
+def test_an_unreadable_outcome_is_uncertain_never_a_retry(
+    db, gcs, monkeypatch, caplog, land,
+):
+    """A reserved id (the upload page, the connector): the record's commit
+    lands — or not —, its answer is lost, and every read after it fails.
+    Both ways the old code answered ``_INGEST_FAILED``, a retry."""
+    source = _staged(gcs)
+    lose_answer_then_unreadable(db, monkeypatch, land=land)
+    caplog.set_level(logging.INFO)
+
+    got, errors = _ingest(source)
+
+    assert got is None and errors == [UNCERTAIN]
+    assert not set(errors) & set(doc.RETRYABLE_INGEST_ERRORS)
+    assert gcs.objects[_CANONICAL].data == PDF          # never deleted blind
+    assert (db.peek(f"documents/{DOC_ID}") is not None) is land
+    ((_message, fields, exc_info),) = _uncertain_lines(caplog)
+    assert fields["document_id"] == DOC_ID and fields["dossier_id"] == "d1"
+    assert not exc_info                                  # ids, no traceback
+
+
+def test_a_fresh_id_is_uncertain_too(db, gcs, monkeypatch):
+    """Réception and the copy file under a FRESH id: their retry mints a NEW
+    one — a second document for certain, had the first landed."""
+    source = _fresh_source(gcs)
+    lose_answer_then_unreadable(db, monkeypatch)
+
+    got, errors = _ingest_fresh(source)
+
+    assert got is None and errors == [UNCERTAIN]
+    (stored,) = db.peek_collection("documents").values()
+    assert gcs.objects[stored["storage_path"]].data == PDF        # kept
+
+
+def test_a_retried_create_on_a_fresh_id_is_filed_even_unreadable(
+    db, gcs, monkeypatch,
+):
+    """A fresh uuid4 only this call holds: ``AlreadyExists`` is its own
+    create, retried by the client after a first attempt that LANDED — filed,
+    and noted committed, with no read to fail."""
+    source = _fresh_source(gcs)
+    lose_answer_then_unreadable(db, monkeypatch, retry_answers_exists=True)
+
+    with provenance.writing_via("mcp", tool="create_document"):
+        got, errors = _ingest_fresh(source)
+        commits = provenance.committed_writes()
+
+    assert errors == [] and got is not None
+    assert commits == (("documents", got["id"]),)
+    stored = db.peek(f"documents/{got['id']}")
+    assert stored["storage_path"] == got["storage_path"]
+    assert gcs.objects[got["storage_path"]].data == PDF
+
+
+def test_already_exists_on_a_reserved_id_unreadable_is_uncertain(
+    db, gcs, monkeypatch,
+):
+    """The server has just said the record EXISTS; its read fails: never
+    « nothing filed » (the old « committed record unreadable », then
+    ``_INGEST_FAILED``)."""
+    source = _staged(gcs)
+    lose_answer_then_unreadable(db, monkeypatch, retry_answers_exists=True)
+
+    got, errors = _ingest(source)
+
+    assert got is None and errors == [UNCERTAIN]
+    assert gcs.objects[_CANONICAL].data == PDF
+    assert db.peek(f"documents/{DOC_ID}")["storage_path"] == _CANONICAL
+
+
+def test_a_reserved_patch_failure_over_an_unreadable_record_is_uncertain(
+    db, gcs, monkeypatch,
+):
+    """A reserved copy's patch failed — a concurrent finalization may have
+    adopted this very generation and committed — and the record cannot be
+    read after the pre-read."""
+    from tests._fake_gcs import FakeBlob
+
+    source = _staged(gcs)
+    server = db._fake_server
+    real_get = server.batch_get_documents
+    reads = {"n": 0}
+
+    def _get(request, metadata=None, **kwargs):
+        reads["n"] += 1
+        if reads["n"] > 1:                         # the pre-read passes
+            raise RuntimeError("firestore unreadable")
+        return real_get(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", _get)
+    monkeypatch.setattr(FakeBlob, "patch", _failing_patch)
+
+    got, errors = _ingest(source)
+
+    assert got is None and errors == [UNCERTAIN]
+    assert gcs.objects[_CANONICAL].data == PDF
+
+
+def test_a_fresh_copy_whose_patch_fails_is_removed_without_a_read(
+    db, gcs, monkeypatch,
+):
+    """No create() was sent for a fresh id, so no record can hold it: this
+    call's own generation goes and nothing was filed, with no read. The old
+    rollback read first, and KEPT the copy when that read failed — an
+    orphan for nothing."""
+    from tests._fake_gcs import FakeBlob
+
+    source = _fresh_source(gcs)
+    reads = []
+
+    def _get(request, metadata=None, **kwargs):
+        reads.append(request)
+        raise RuntimeError("firestore unreadable")
+
+    monkeypatch.setattr(db._fake_server, "batch_get_documents", _get)
+    monkeypatch.setattr(FakeBlob, "patch", _failing_patch)
+
+    got, errors = _ingest_fresh(source)
+
+    assert got is None and errors == [doc._INGEST_FAILED]
+    assert list(gcs.objects) == ["q/piece.pdf"]    # this call's copy, gone
+    assert reads == []
+
+
+def test_a_twin_filed_during_the_rewrite_then_unreadable_is_uncertain(
+    db, gcs, monkeypatch,
+):
+    """The 412 branch: a concurrent finalization of the same upload filed it
+    while this call's rewrite ran, then the store went dark. The old read
+    swallowed into « no record »: the object was ADOPTED, the create met
+    AlreadyExists, and the answer was « réessayez ». Never adopt nor refuse
+    over an unreadable record — and delete nothing: a 412 wrote nothing."""
+    source_t2 = _staged(gcs)
+    unreadable_after_commit(db, monkeypatch, DOC_ID)
+    _complete_first_call_during_rewrite(db, gcs)
+
+    got, errors = _ingest(source_t2)
+
+    assert got is None and errors == [UNCERTAIN]
+    assert gcs.objects[_CANONICAL].data == PDF          # T1's bytes, intact
+    assert db.peek(f"documents/{DOC_ID}")["storage_path"] == _CANONICAL
+
+
+def test_an_occupant_that_cannot_be_reloaded_is_never_another_file(
+    db, gcs, monkeypatch,
+):
+    """S5b: the reserved path holds an object whose reload fails — unknown,
+    never « Un autre fichier occupe… », a content refusal on which the
+    connector settles its ticket and DISCARDS the upload. Nothing was filed
+    and this call wrote nothing: the retryable refusal, the object left
+    alone (the old code answered ``_INGEST_OCCUPIED``)."""
+    from tests._fake_gcs import FakeBlob
+
+    source = _staged(gcs)
+    occupant = gcs.put(_CANONICAL, PDF)
+    real_reload = FakeBlob.reload
+
+    def _reload(self, *args, **kwargs):
+        if self.name == _CANONICAL:
+            raise RuntimeError("503 reload")
+        return real_reload(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeBlob, "reload", _reload)
+
+    got, errors = _ingest(source)
+
+    assert got is None and errors == [doc._INGEST_FAILED]
+    assert gcs.objects[_CANONICAL] is occupant
+    assert db.peek_collection("documents") == {}
+    # The identity proofs keep their boolean: an unreadable occupant is
+    # « not proven » there (models/piece_identite, unchanged).
+    assert doc._same_object(gcs.blob(_CANONICAL), source) is False
+
+
+def test_a_generated_document_whose_outcome_is_unknown_is_uncertain(
+    db, gcs, monkeypatch, caplog,
+):
+    """upload_document — every generation: the create's answer lost, the
+    record unreadable. The old code answered « Erreur lors du téléversement.
+    Veuillez réessayer. », and the connector's same-key retry filed a second
+    generated document."""
+    lose_answer_then_unreadable(db, monkeypatch)
+    caplog.set_level(logging.INFO)
+
+    got, errors = doc.upload_document(
+        "d1", "2026-001", io.BytesIO(PDF), "projet.pdf", len(PDF),
+        {"category": "correspondance"}, "u1")
+
+    assert got is None and errors == [UNCERTAIN]
+    (stored,) = db.peek_collection("documents").values()
+    assert gcs.objects[stored["storage_path"]].data == PDF        # kept
+    assert len(_uncertain_lines(caplog)) == 1
+
+
+def test_a_generated_document_whose_retried_create_is_unreadable_is_filed(
+    db, gcs, monkeypatch,
+):
+    lose_answer_then_unreadable(db, monkeypatch, retry_answers_exists=True)
+
+    got, errors = doc.upload_document(
+        "d1", "2026-001", io.BytesIO(PDF), "projet.pdf", len(PDF),
+        {"category": "correspondance"}, "u1")
+
+    assert errors == [] and got is not None
+    assert gcs.objects[got["storage_path"]].data == PDF
+
+
+def test_a_generated_document_read_absent_stays_a_plain_retry(db, gcs):
+    """The guard: a create that failed and was READ absent is « réessayez »,
+    true then, and its file is removed — never over-reported uncertain."""
+    def _fail(info):
+        if any(p.startswith("documents/") for _op, p in info.ops):
+            raise RuntimeError("firestore down")
+
+    db.add_commit_hook(_fail)
+
+    got, errors = doc.upload_document(
+        "d1", "2026-001", io.BytesIO(PDF), "projet.pdf", len(PDF),
+        {"category": "correspondance"}, "u1")
+
+    assert got is None
+    assert errors == ["Erreur lors du téléversement. Veuillez réessayer."]
+    assert gcs.objects == {}
+
+
+# The lot's review (round 2) found three settle branches no test pinned: each
+# test below kills the verifiers' named mutant (passing on the code as it
+# stands, failing with the branch mutated). The first is a guard pin that
+# passes on 25f0592 too; the other two fail there.
+
+
+def test_a_generated_document_whose_create_landed_then_raised_keeps_its_file(
+    db, gcs, monkeypatch,
+):
+    """A guard pin (it passes on 25f0592 too): upload_document's create
+    LANDED and then raised (a reset connection — not ``AlreadyExists``), and
+    the one read after it FINDS the record. That record is the answer, its
+    commit noted, and its file is KEPT. Since the lot answers a retried
+    create's ``AlreadyExists`` first, with no read,
+    test_a_generated_document_whose_create_was_retried_keeps_its_bytes no
+    longer reaches this branch: a delete there (the data verifier's mutant
+    N) left a filed document without its bytes and survived the whole
+    suite."""
+    server = db._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(
+                "/documents/" in server._write_name(w) for w in writes):
+            state["armed"] = False
+            raise RuntimeError("connection reset after the commit")
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+
+    with provenance.writing_via("mcp", tool="create_document"):
+        got, errors = doc.upload_document(
+            "d1", "2026-001", io.BytesIO(PDF), "projet.pdf", len(PDF),
+            {"category": "correspondance"}, "u1")
+        commits = provenance.committed_writes()
+
+    assert errors == [] and got is not None
+    assert state["armed"] is False                        # it did raise
+    assert commits == (("documents", got["id"]),)
+    stored = db.peek(f"documents/{got['id']}")
+    assert stored["storage_path"] == got["storage_path"]
+    assert gcs.objects[got["storage_path"]].data == PDF   # never deleted
+
+
+def test_a_twin_filed_then_record_and_occupant_unreadable_is_uncertain_at_once(
+    db, gcs, monkeypatch,
+):
+    """The 412 branch's own early answer: a concurrent finalization filed
+    the reserved id during this call's rewrite, then the store went dark
+    for the record AND for the occupant's metadata. Uncertain at once — no
+    adoption, so the occupant is never even reloaded. Without that answer
+    (the contract verifier's mutant M16, the data verifier's Q) the call
+    fell through to the occupant check, whose failed reload answered the
+    retryable « réessayez » over a filed document: the upload page re-sent
+    it through a new upload, the connector released its claim — a second
+    document. test_a_twin_filed_during_the_rewrite_then_unreadable_is_
+    uncertain reaches the same answer by another route (adopt, then
+    ``AlreadyExists``), which is why it could not tell."""
+    from tests._fake_gcs import FakeBlob
+
+    source_t2 = _staged(gcs)
+    unreadable_after_commit(db, monkeypatch, DOC_ID)
+    _complete_first_call_during_rewrite(db, gcs)
+    real_reload = FakeBlob.reload
+    reloads = []
+
+    def _reload(self, *args, **kwargs):
+        # The occupant's metadata fails once the twin has filed (the twin's
+        # own run never reloads it).
+        if self.name == _CANONICAL and db.peek(f"documents/{DOC_ID}"):
+            reloads.append(self.name)
+            raise RuntimeError("503 reload")
+        return real_reload(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeBlob, "reload", _reload)
+
+    got, errors = _ingest(source_t2)
+
+    assert db.peek(f"documents/{DOC_ID}") is not None     # it IS filed
+    assert got is None and errors == [UNCERTAIN]          # never a retry
+    assert not set(errors) & set(doc.RETRYABLE_INGEST_ERRORS)
+    assert reloads == []                                  # never adopted
+    assert gcs.objects[_CANONICAL].data == PDF            # the twin's, intact
+    assert db.peek(f"documents/{DOC_ID}")["storage_path"] == _CANONICAL
+
+
+def test_already_exists_then_read_absent_is_uncertain_and_keeps_the_copy(
+    db, gcs, monkeypatch,
+):
+    """The server answered the reserved create ``AlreadyExists`` and the
+    one read after it finds NO record (deleted in between): a contradiction,
+    so UNKNOWN — never « nothing filed » against the server's own answer,
+    and this call's copy is kept. Without ``exists`` (the verifiers'
+    mutants M17 and M) the call deleted its copy and answered the retryable
+    « réessayez »."""
+    from google.api_core.exceptions import AlreadyExists
+
+    source = _staged(gcs)
+    server = db._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(
+                "/documents/" in server._write_name(w) for w in writes):
+            state["armed"] = False
+            raise AlreadyExists("409 Document already exists")  # not written
+        return real_commit(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "commit", _commit)
+
+    got, errors = _ingest(source)
+
+    assert state["armed"] is False
+    assert db.peek(f"documents/{DOC_ID}") is None         # read absent
+    assert got is None and errors == [UNCERTAIN]
+    assert not set(errors) & set(doc.RETRYABLE_INGEST_ERRORS)
+    assert gcs.objects[_CANONICAL].data == PDF            # kept

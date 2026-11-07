@@ -67,6 +67,7 @@ from typing import Mapping, Optional
 
 from werkzeug.utils import secure_filename
 
+from models import concurrency
 from models.document import projet_document_name, upload_document
 from models.folder import (
     SYSTEM_FOLDER_NAMES,
@@ -350,7 +351,13 @@ def save_generated(
     invoice it renders (``services.note_honoraires``, lot 3a).
 
     Raises :class:`GenerationRefused` as :func:`save_into_projets` does —
-    ``factures_unavailable`` for :data:`FACTURES`.
+    ``factures_unavailable`` for :data:`FACTURES` — and, the one refusal
+    that does NOT say nothing was written, ``save_uncertain`` (the
+    « incertain » lot, 2026-11-06): the document's record could not be read
+    back after its write failed, so it MAY be filed. Its message is the
+    model's ``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR``; a caller never
+    answers it « réessayez » nor « rien n'a été généré » — the connector
+    keeps its idempotency claim, the web shows the sentence as is.
     """
     try:
         uid = storage_identity.require_uid(uid)
@@ -385,6 +392,10 @@ def save_generated(
         category_source=category_source,
         **link,
     )
+    if doc is None and concurrency.is_outcome_uncertain(errors):
+        # NOT « nothing was written »: the document MAY be filed.
+        raise GenerationRefused(
+            "save_uncertain", concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR)
     if errors or doc is None:
         raise GenerationRefused(
             "save_failed", errors[0] if errors else FILL_ERROR)

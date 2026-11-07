@@ -48,10 +48,12 @@ from models.document import (
     PORTAL_FOLDER_NAME,
     build_attachment_disposition,
     ingest_blob_as_document,
+    is_addressable_id,
     sign_blob_url,
 )
+from routes.documents import DOSSIER_READ_FAILED
 from routes.taches_portail import sha512_flux
-from models.dossier import get_dossier, list_dossiers
+from models.dossier import get_dossier, get_dossier_strict, list_dossiers
 from models.folder import (
     SYSTEM_FOLDER_NAMES,
     SYSTEM_ROLE_AUTRES,
@@ -837,7 +839,19 @@ def verser(inv_id: str, batch: str, seq: int):
         ))
 
     dossier_id = request.form.get("dossier_id", "").strip()
-    dossier = get_dossier(dossier_id) if dossier_id else None
+    # Lecture STRICTE (lot « incertain », 2026-11-06) : le lecteur qui avale
+    # la panne la changeait en « Choisissez le dossier de destination. » —
+    # au sujet d'un dossier que le juriste venait de choisir. Un identifiant
+    # vide, ou qu'aucun dossier ne peut porter, est une absence ; une
+    # lecture ratée n'en est pas une : rien n'est versé, le fichier reste en
+    # quarantaine. La classe de l'erreur seulement, jamais sa trace.
+    if not is_addressable_id(dossier_id):
+        return _rediriger(erreur="Choisissez le dossier de destination.")
+    try:
+        dossier = get_dossier_strict(dossier_id)
+    except Exception as exc:
+        logger.error("reception: dossier read failed: %s", type(exc).__name__)
+        return _rediriger(erreur=DOSSIER_READ_FAILED)
     if dossier is None:
         return _rediriger(erreur="Choisissez le dossier de destination.")
 
@@ -854,11 +868,16 @@ def verser(inv_id: str, batch: str, seq: int):
     # Fraîcheur (revue 2026-08-11) : _versable a jugé la taille du
     # MANIFESTE, figée au traitement du lot — le blob VIVANT peut différer.
     # Relire ses métadonnées AVANT toute lecture.
+    # Les échecs de « Verser » se journalisent par leur CLASSE seulement,
+    # jamais par une trace (lot « incertain », 2026-11-06) : le texte d'une
+    # erreur Storage nomme l'objet, et l'objet en quarantaine porte le nom
+    # du fichier du client (submissions/{inv}/{lot}/files/{seq}_{nom}).
     try:
         blob = _bucket().blob(entree["objet"])
         blob.reload()
-    except Exception:
-        logger.exception("reception: quarantine blob reload failed")
+    except Exception as exc:
+        logger.error("reception: quarantine blob reload failed: %s",
+                     type(exc).__name__)
         return _rediriger(erreur="Lecture du fichier en quarantaine impossible.")
     if int(blob.size or 0) > MAX_FILE_SIZE:
         log_portail_event(
@@ -880,8 +899,9 @@ def verser(inv_id: str, batch: str, seq: int):
         try:
             with blob.open("rb") as flux:
                 calcule = sha512_flux(flux)
-        except Exception:
-            logger.exception("reception: quarantine hash failed")
+        except Exception as exc:
+            logger.error("reception: quarantine hash failed: %s",
+                         type(exc).__name__)
             return _rediriger(
                 erreur="Lecture du fichier en quarantaine impossible."
             )
@@ -950,6 +970,26 @@ def verser(inv_id: str, batch: str, seq: int):
         # sélecteur) n'est le choix de personne.
         lawyer_set_category=_categorie_choisie(request.form.get("category")),
     )
+    if document is None and concurrency.is_outcome_uncertain(errors):
+        # Issue INCONNUE : le modèle n'a pu relire si le document a été
+        # versé — il l'est peut-être. Jamais « réessayez » : un second
+        # « Verser » frapperait un identifiant NEUF, donc un second
+        # document. Une bannière honnête seulement (option a) : le fichier
+        # reste « reçu », en quarantaine, intouché, et le manifeste n'est pas
+        # réécrit ; la copie canonique gardée, versée ou orpheline, est
+        # nommée par la ligne « document ingest: filing uncertain » du
+        # modèle. Le juriste qui l'y trouve le REFUSE pour clore le lot :
+        # traiter_lot n'archive rien tant qu'un fichier est « reçu », comme
+        # le dit la bannière d'un manifeste qui n'a pu être réécrit.
+        # ≤ 300 caractères et sans chevron : index() passe ?erreur= par
+        # sanitize(max_length=300).
+        return _rediriger(erreur=(
+            "Le versement n'a pas pu être confirmé : le fichier est "
+            f"peut-être déjà au dossier {dossier.get('file_number', '')}, "
+            f"sous « {_chemin_recus(folder)} ». Vérifiez-le avant de le "
+            "verser de nouveau ; il reste en quarantaine. S'il y figure, "
+            "refusez-le pour clore le lot."
+        ))
     if errors or document is None:
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")
 
@@ -965,11 +1005,12 @@ def verser(inv_id: str, batch: str, seq: int):
     )
     try:
         _ecrire_manifeste(inv_id, batch, manifeste)
-    except Exception:
+    except Exception as exc:
         # Le document EST au dossier, mais l'état de quarantaine ne le
         # reflète pas : un succès silencieux inviterait à re-verser le même
         # fichier (le garde etat == « reçu » repasserait). Avertir.
-        logger.exception("reception: manifest update failed after ingest")
+        logger.error("reception: manifest update failed after ingest: %s",
+                     type(exc).__name__)
         return _rediriger(erreur=(
             f"Le fichier a bien été versé au dossier "
             f"{dossier.get('file_number', '')}, mais l'état de quarantaine "
@@ -1061,8 +1102,12 @@ def traiter_lot(inv_id: str, batch: str):
                 if src.exists():
                     bucket.copy_blob(src, bucket, archive + nom)
                     src.delete()
-        except Exception:
-            logger.exception("reception: lot archive failed")
+        except Exception as exc:
+            # La classe seulement, jamais la trace (lot « incertain »,
+            # 2026-11-06) : le texte d'une erreur Storage nomme l'objet, et
+            # un objet files/{seq}_{nom} porte le nom du fichier du client.
+            logger.error("reception: lot archive failed: %s",
+                         type(exc).__name__)
             return _rediriger(erreur="Archivage du lot impossible. Réessayez.")
         log_portail_event("lot_traite", invitation_id=inv_id, batch=batch)
 

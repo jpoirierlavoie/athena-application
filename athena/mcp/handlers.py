@@ -4957,14 +4957,22 @@ def _raise_if_outcome_uncertain(errors: list[str], *, reread: str) -> None:
     « interrompu » instead. *reread* names the read that tells.
     """
     if concurrency.is_outcome_uncertain(errors):
-        raise ToolArgumentError(
-            "Issue INCERTAINE : " + concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR
-            + f" Relisez {reread} AVANT toute nouvelle tentative : si "
-            "l'enregistrement y figure, il est fait — ne le recréez pas. "
-            "Sinon, réessayez avec la MÊME idempotency_key, jamais une "
-            "nouvelle : elle reste réservée à cet appel.",
-            reason="write_outcome_uncertain", keep_claim=True,
-        )
+        raise _outcome_uncertain_refusal(reread=reread)
+
+
+def _outcome_uncertain_refusal(*, reread: str) -> ToolArgumentError:
+    """The refusal :func:`_raise_if_outcome_uncertain` raises — built here so
+    a handler that learns of the uncertainty from a SERVICE refusal (a
+    generation's ``save_uncertain``, the « incertain » lot) raises the very
+    same one, ``keep_claim`` included."""
+    return ToolArgumentError(
+        "Issue INCERTAINE : " + concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR
+        + f" Relisez {reread} AVANT toute nouvelle tentative : si "
+        "l'enregistrement y figure, il est fait — ne le recréez pas. "
+        "Sinon, réessayez avec la MÊME idempotency_key, jamais une "
+        "nouvelle : elle reste réservée à cet appel.",
+        reason="write_outcome_uncertain", keep_claim=True,
+    )
 
 
 def _raise_if_stale(
@@ -13534,7 +13542,12 @@ def _edit_folder(args: dict, dossier_id: str, action: str) -> dict:
 # a refusal a retry may repeat. The save is the commit point (the models note it);
 # nothing after it may refuse. Refusals name the field, never quote what
 # was sent, and log the fill's machine reason as `generation_failed`
-# (log_template_event), beside the endpoint's `mcp_write_refused`.
+# (log_template_event), beside the endpoint's `mcp_write_refused`. One save
+# failure is NOT a refusal a retry may repeat (the « incertain » lot,
+# 2026-11-06): the model could not read back whether the document's record
+# landed (`save_uncertain`, the model's WRITE_OUTCOME_UNCERTAIN_ERROR for a
+# copy) — the document MAY be filed, so `_uncertain_generation` raises with
+# keep_claim and the same-key retry is refused instead of filing it twice.
 
 _GENERATED_BY = "par Claude (connecteur)"
 _NOTHING_GENERATED = "Rien n'a été généré."
@@ -13593,6 +13606,8 @@ def _generation_refused(
     surface without a window."""
     _log_generation("generation_failed", source, reason=exc.reason,
                     template_id=template_id, dossier_id=dossier_id)
+    if exc.reason == "save_uncertain":
+        return _uncertain_generation()
     if exc.reason in ("dossier_not_found", "slot_foreign", "slot_unknown",
                       "slot_ambiguous"):
         return _gabarit_refusal(exc, dossier_id=dossier_id)
@@ -13600,6 +13615,15 @@ def _generation_refused(
     if "Rien n'a été" not in message:
         message = f"{message} {_NOTHING_GENERATED}"
     return ToolArgumentError(message)
+
+
+def _uncertain_generation() -> ToolArgumentError:
+    """A generated document whose save's outcome is UNKNOWN
+    (``save_uncertain``): it MAY be filed — never « Rien n'a été généré »,
+    never a released claim, or the same-key retry the protocol prescribes
+    would file a second document. Raised with ``keep_claim``, the re-read
+    being ``list_documents``."""
+    return _outcome_uncertain_refusal(reread="list_documents")
 
 
 def _owner_uid(source: str, **log: Any) -> str:
@@ -13982,6 +14006,8 @@ def _invoice_note_document(args: dict) -> dict:
             generated_by=_GENERATED_BY,
         )
     except note_honoraires_service.NoteRefusee as refusal:
+        if refusal.reason == "save_uncertain":
+            raise _uncertain_generation()
         message = refusal.message
         if "Rien n'a été" not in message:
             message = f"{message} {_NOTHING_CREATED}"
@@ -14246,6 +14272,8 @@ def _create_markdown_document(args: dict) -> dict:
     except gabarit_writer.GenerationRefused as exc:
         _log_generation("generation_failed", source, reason=exc.reason,
                         template_id=template_id, dossier_id=dossier_id)
+        if exc.reason == "save_uncertain":
+            raise _uncertain_generation()
         message = exc.message
         if "Rien n'a été" not in message:
             message = f"{message} {_NOTHING_CREATED}"
@@ -14359,6 +14387,13 @@ def _copy_stored_document(args: dict) -> dict:
         genere_depuis=(f"Copie de « {name[:200]} » — {_GENERATED_BY}, le "
                        f"{today.isoformat()}"),
     )
+    if copy is None and concurrency.is_outcome_uncertain(errors):
+        # The copy MAY be filed (a fresh id, its record unreadable after its
+        # write failed): the claim is KEPT, or the same-key retry would file
+        # a second copy.
+        _log_generation("generation_failed", source, reason="save_uncertain",
+                        dossier_id=dossier_id, source_document_id=document_id)
+        raise _uncertain_generation()
     if errors or copy is None:
         _log_generation("generation_failed", source, reason="copy_refused",
                         dossier_id=dossier_id, source_document_id=document_id)
@@ -14483,6 +14518,41 @@ _UPLOAD_RETRY = (
     "momentanément indisponible) : rien n'a été versé, le fichier reçu est "
     "conservé et le ticket reste ouvert. Rappelez finalize_upload dans un "
     "instant."
+)
+# The « incertain » lot (2026-11-06): the outcome of this ticket's filing is
+# UNKNOWN — the ingestion could not read back whether the record landed, or
+# a RECLAIMED claim could not read what its predecessor produced. Never
+# « rien n'a été versé », never a released claim: raised with keep_claim
+# (``_upload_uncertain``), and the TICKET's claim is kept too, so it goes
+# stale and is reclaimed whatever open_until says — the reclaim's
+# _already_filed then answers the destination, or files the kept bytes,
+# once, and never meets « expiré ». Worded as the protocol actually runs:
+# the same key is refused (in flight, then « interrompu »), so the re-read
+# comes after « interrompu », and only an absent document takes a NEW key
+# on the SAME ticket — never a new ticket, which would file it twice.
+_UPLOAD_UNCERTAIN = (
+    "Issue INCERTAINE : le versement n'a pas pu être confirmé — le document "
+    "a PEUT-ÊTRE été versé, sous l'identifiant {document_id}. Le fichier "
+    "reçu est conservé et ce ticket reste réservé à ce versement : "
+    "n'ouvrez PAS de nouveau ticket et ne téléversez pas ce fichier de "
+    "nouveau. Réessayez d'abord avec la MÊME idempotency_key : elle est "
+    "refusée tant que cet appel peut encore écrire, puis dite "
+    "« interrompue ». Alors seulement, relisez list_documents (le dossier "
+    "du ticket) : si le document {document_id} y figure, il est versé — ne "
+    "refaites rien. Sinon, rappelez finalize_upload avec ce MÊME ticket_id "
+    "et une NOUVELLE idempotency_key : le ticket ne verse son fichier "
+    "qu'une fois."
+)
+_UPLOAD_TEMPLATE_UNCERTAIN = (
+    "Issue INCERTAINE : une finalisation précédente de ce ticket a "
+    "PEUT-ÊTRE déjà versé son gabarit, et ce qu'elle a produit n'a pas pu "
+    "être lu. Le fichier reçu est conservé et ce ticket reste réservé à ce "
+    "versement : n'ouvrez PAS de nouveau ticket. Réessayez d'abord avec la "
+    "MÊME idempotency_key : elle est refusée tant que cet appel peut encore "
+    "écrire, puis dite « interrompue ». Alors seulement, relisez "
+    "list_templates : si le gabarit — ou sa nouvelle version — y figure, il "
+    "est versé — ne refaites rien. Sinon, rappelez finalize_upload avec ce "
+    "MÊME ticket_id et une NOUVELLE idempotency_key."
 )
 _UPLOAD_DOSSIER_UNREADABLE = (
     "Le dossier lié à ce ticket est introuvable ou illisible pour le moment "
@@ -15074,10 +15144,31 @@ register_persistence_hooks(
 
 @dataclasses.dataclass(frozen=True)
 class _UploadHolder:
-    """This call's claim on a ticket."""
+    """This call's claim on a ticket.
+
+    ``reclaimed`` — the claim was taken over from a STALE one
+    (``upload_ticket.RECLAIMED``). Its predecessor may have filed before it
+    died, or answered « incertain » (which keeps its claim), so until this
+    call has READ the destination it cannot say « nothing was filed »: a
+    failure there is uncertain, never a released claim
+    (:func:`_upload_uncertain`). A first claim (``CLAIMED``) took a ticket
+    that was ``en_attente``. For a DOCUMENT ticket no filing that may have
+    landed leaves it so, since an uncertain ingestion no longer releases.
+
+    Declared exception (« Honest outcomes »): a GABARIT ticket. Until the
+    template model settles a commit that raised —
+    ``doc_template.create_template``'s twin of the « incertain » lot, its
+    own later lot; a replacement's ``update_template`` likewise —, an
+    unknown template commit still answers ``upload_retry`` (« rien n'a été
+    versé ») and RELEASES the claim (:func:`_template_write_failed`: the
+    model's ``SAVE_ERROR`` and ``READ_ERROR`` are retryable). A first claim
+    of a gabarit ticket may then follow a template that landed: within the
+    hour, a claim that can read it finds it (:func:`_already_filed`); past
+    the hour the ticket reads « expiré … ouvrez-en un nouveau » over it."""
 
     ticket: dict
     claim_id: str
+    reclaimed: bool = False
 
     @property
     def ticket_id(self) -> str:
@@ -15096,6 +15187,25 @@ def _release_upload(holder: _UploadHolder) -> None:
     """Give the ticket back, bytes kept — a later finalize retries."""
     upload_ticket_model.release_ticket(holder.ticket_id,
                                        claim_id=holder.claim_id)
+
+
+def _upload_uncertain(holder: _UploadHolder) -> ToolArgumentError:
+    """The refusal of a finalization whose outcome is UNKNOWN (the
+    « incertain » lot, 2026-11-06) — ``write_outcome_uncertain``, raised
+    with ``keep_claim`` and NEVER after :func:`_release_upload`: the
+    ticket's claim is kept, so it goes stale after ``STALE_CLAIM_AFTER`` and
+    is RECLAIMED whatever open_until says — released, the ticket would read
+    « expiré : rien n'a été versé, ouvrez-en un nouveau » past its hour,
+    over a document that may be filed. The reclaim's :func:`_already_filed`
+    settles it. The message names the ticket's reserved document id (an
+    id, not a capability)."""
+    if holder.purpose == "document":
+        message = _UPLOAD_UNCERTAIN.format(document_id=str(
+            holder.ticket.get("reserved_document_id") or ""))
+    else:
+        message = _UPLOAD_TEMPLATE_UNCERTAIN
+    return ToolArgumentError(message, reason="write_outcome_uncertain",
+                             keep_claim=True)
 
 
 def _settle_refused(holder: _UploadHolder, reason: str) -> None:
@@ -15234,8 +15344,19 @@ def _already_filed(holder: _UploadHolder) -> Optional[dict]:
     template stored under THIS ticket's reserved id is its own. A
     replacement has no id to reserve: it is recognised by the version it
     moved to and the SHA-256 its finalizer recorded before writing.
-    Fail CLOSED: an unreadable destination releases the claim and refuses —
-    guessing « not filed » could file twice."""
+    Fail CLOSED: an unreadable destination refuses — guessing « not filed »
+    could file twice. A FIRST claim releases it and says nothing was filed:
+    true for a DOCUMENT ticket, which was ``en_attente`` and which no filing
+    that may have landed leaves so. Not yet for a GABARIT ticket — the
+    exception :class:`_UploadHolder` declares: until the template model
+    settles a commit that raised (its own later lot), an unknown template
+    commit releases the claim, so its first claim may follow a template
+    that landed, and « rien n'a été versé » here can then be false. A
+    RECLAIMED claim cannot say so either — its predecessor may have filed,
+    or answered « incertain » — so it keeps the claim and answers the
+    uncertain refusal (:func:`_upload_uncertain`); released, the ticket
+    would go back ``en_attente`` and expire past its hour as « rien n'a été
+    versé, ouvrez-en un nouveau » (the critic of the « incertain » lot)."""
     ticket = holder.ticket
     params = holder.params
     try:
@@ -15258,6 +15379,8 @@ def _already_filed(holder: _UploadHolder) -> Optional[dict]:
         template = doc_template_model.get_template(
             str(params.get("template_id") or ""), strict=True)
     except Exception:
+        if holder.reclaimed:
+            raise _upload_uncertain(holder)
         _release_upload(holder)
         raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
     expected = int(params.get("expected_version") or 0)
@@ -15378,7 +15501,9 @@ def _finalize_upload_impl(args: dict) -> dict:
             raise ToolArgumentError(claim.message, reason="upload_busy")
         raise ToolArgumentError(claim.message, reason="upload_ticket_closed")
 
-    holder = _UploadHolder(claim.ticket, claim.claim_id)
+    holder = _UploadHolder(
+        claim.ticket, claim.claim_id,
+        reclaimed=claim.state == upload_ticket_model.RECLAIMED)
     _held_uid(holder)      # fail closed BEFORE any byte is read
     filed = _already_filed(holder)
     if filed is not None:
@@ -15453,10 +15578,15 @@ def _content_refused(holder: _UploadHolder, errors: list[str]) -> ToolArgumentEr
 
 def _held_uid(holder: _UploadHolder) -> str:
     """The owner uid for a claimed ticket — its claim released when the
-    identity cannot be established (nothing filed; the bytes wait)."""
+    identity cannot be established (nothing filed; the bytes wait). Not on
+    a RECLAIMED claim: it runs before the destination is read, and the
+    predecessor may have filed — that claim is kept and the outcome is
+    uncertain (:func:`_upload_uncertain`), never « rien n'a été versé »."""
     try:
         return _upload_uid()
     except ToolArgumentError:
+        if holder.reclaimed:
+            raise _upload_uncertain(holder)
         _release_upload(holder)
         raise
 
@@ -15499,6 +15629,12 @@ def _finalize_document_upload(holder: _UploadHolder, blob) -> dict:
         category_source="mcp" if presumed else "juriste",
     )
     if doc is None:
+        if concurrency.is_outcome_uncertain(errors):
+            # FIRST, before the retryable check and before the content
+            # refusal — which would settle the ticket refusé and DISCARD the
+            # bytes of a document that may be filed. Neither claim is
+            # released (_upload_uncertain).
+            raise _upload_uncertain(holder)
         if set(errors) & set(document_model.RETRYABLE_INGEST_ERRORS):
             _release_upload(holder)
             raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")

@@ -4322,6 +4322,50 @@ Notes:
   the older `delete_partie` would delete a contact holding proofs, and
   Firestore does not cascade: its records and objects would stay with no
   path to them in the application.
+- **Filing outcome « incertain » (2026-11-06).** A document filing whose
+  commit answer was lost, and whose record could not then be read back, is
+  « incertain » wherever the shared ingestion runs — never « Veuillez
+  réessayer », which every caller answered with a second document. The
+  upload page answers 503 `incertain` and KEEPS the staging object for its
+  one automatic re-post, about 2 s later: when the store answers, the
+  re-post settles it; when it still does not, the re-post files nothing —
+  the strict dossier read refuses it first (503, the staging object kept
+  for the `staging/` 7-day rule) or, the dossier readable, the reserved
+  pre-read does (which consumes the staging object) — and the page keeps
+  « incertain » (the canonical copy stays). A file still « incertain » is never re-sent: check
+  the dossier's documents and, only if it is absent, remove the row and add
+  the file again. A failed read of the dossier or of the staging object
+  answers 503 « Lecture … impossible. Réessayez. », never « sélectionnez un
+  dossier » nor « introuvable ». Réception's « Verser » shows a banner — the
+  file is perhaps already in the dossier, under « Autres › Reçus du
+  portail » — and leaves it « reçu » in quarantine: look there before
+  versing it again, since a second « Verser » mints a new document, and
+  refuse it to close the lot if it is there. The receipt copy gets its own
+  banner (« Verser une copie au dossier » still never files twice), and the
+  note d'honoraires keeps one note per click, its sentence sending the
+  lawyer to « Mandat › Factures » first. Through the connector,
+  `finalize_upload`, `create_document` (`copy`, `markdown`,
+  `invoice_note`) and `fill_gabarit` answer « Issue INCERTAINE » (reason
+  `write_outcome_uncertain`) with their idempotency claim KEPT: the
+  document MAY exist. The generations keep the creators' generic refusal —
+  re-read `list_documents`, then the SAME key, whose « interrompu » refusal
+  then allows a new key only if nothing was written; only `finalize_upload`
+  states the full protocol, on the SAME ticket: the SAME key until
+  « interrompu », then re-read `list_documents`, and only if the document
+  is absent a NEW key on the SAME `ticket_id`, never a new ticket (its
+  claim is kept too, reclaimed even past the hour, and every claim now
+  keeps the ticket at least 24 h past itself before the TTL may collect
+  it). An empty list proves nothing during the same outage: the documents
+  views and the connector's `list_documents` still read fail-open (a strict
+  reader is a later lot). A copy left behind by an outcome that stayed
+  unknown is named by the ERROR « document ingest: filing uncertain »
+  (`document_id`, `dossier_id`) for an erase by hand — never while a call
+  can still finalize its id (OBSERVABILITY.md). This reverses two decisions
+  the documents lot shipped the same day (a failed staging reload worded
+  « introuvable », the staging consumed on every outcome). No index, rule,
+  secret, consent, plugin or dependency change; **run no MCP write during
+  the deploy window** (§11) — an old instance still answers « réessayez »
+  and releases the claim.
 
 ## 16. Troubleshooting
 

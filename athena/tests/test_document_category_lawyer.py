@@ -424,7 +424,8 @@ def test_the_web_upload_passes_the_lawyers_choice(monkeypatch):
     with client.session_transaction() as sess:
         sess["user_id"] = "u1"
         sess["expires_at"] = datetime(2099, 1, 1, tzinfo=UTC)
-    monkeypatch.setattr(rd, "get_dossier",
+    # The finaliser reads the dossier STRICTLY since the « incertain » lot.
+    monkeypatch.setattr(rd, "get_dossier_strict",
                         lambda d: {"id": "d1", "file_number": "2026-001"})
     monkeypatch.setattr(rd.storage_identity, "request_uid", lambda: "u1")
     bucket = mock.Mock()
