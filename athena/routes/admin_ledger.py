@@ -18,10 +18,13 @@ compensée, never create-then-clear.
 The natures outside the firm's results
 (``models/admin_ledger.NON_RESULT_KINDS``) ride the same form: the lawyer's
 « Prélèvement » and « Apport », one « Virement interne » whose « Sens »
-names the stored kind (2026-10-07), and the « Remise » and « Remboursement
-de TPS/TVQ » (2026-11-07). The form hides the dossier of the kinds that
-never carry one from the model's own list (``NO_DOSSIER_KINDS``). They
-show as plain text, like every kind. The
+names the stored kind (2026-10-07) and whose « Objet », for a sortant,
+marks the advances it moves to trust, the « Remise » and « Remboursement
+de TPS/TVQ » (2026-11-07) and the client's « Avance d'honoraires »
+(2026-11-08). The form hides the dossier of the kinds that never carry
+one from the model's own list (``NO_DOSSIER_KINDS``); a « Remboursement de
+dépense » takes the category and split block of a dépense
+(``CATEGORY_KINDS``). They show as plain text, like every kind. The
 account page (for the calendar year) shows his « Avoir de l'avocat »
 (``owner_equity``) — only over a register read whole; neither the journal
 header nor the PDF journal does (the lawyer's decision, 2026-10-07).
@@ -130,6 +133,7 @@ def _labels() -> dict:
         "method_labels": METHOD_LABELS,
         "direction_labels": DIRECTION_LABELS,
         "category_labels": ADMIN_CATEGORY_LABELS,
+        "transfer_purpose_labels": al.TRANSFER_PURPOSE_LABELS,
         "tx_status_labels": TX_STATUS_LABELS,
         "account_type_labels": ACCOUNT_TYPE_LABELS,
         "account_status_labels": ACCOUNT_STATUS_LABELS,
@@ -331,12 +335,17 @@ def _entry_form_data() -> dict:
         "reference": f.get("reference", "").strip(),
         "description": f.get("description", "").strip(),
         "date": _parse_date(f.get("date", "")),
+        "transfer_purpose": f.get("transfer_purpose", "").strip(),
     }
     if kind in al.NON_RESULT_KINDS:
         data.update(category="", net_amount=None, gst_amount=None,
                     qst_amount=None, invoice_id="")
         if kind in al.NO_DOSSIER_KINDS:
             data["dossier_id"] = None
+    if kind != al.TRANSFER_PURPOSE_KIND:
+        # Only a virement interne sortant carries a purpose; the select is
+        # disabled for every other kind, and a stale one is neutralized.
+        data["transfer_purpose"] = ""
     return data
 
 
@@ -418,11 +427,18 @@ def _form_context(entry, errors: list[str], mode: str = "create",
         factures=_factures_impayees() if mode == "create" else [],
         kind_choices=kind_choices, sens_choices=sens_choices,
         form_kind_value=kind_value, form_sens_value=sens_value,
-        # The kinds whose dossier block the form hides, and those its
-        # TPS/TVQ help line follows — the model's lists, never restated in
-        # the template.
+        # The kinds whose dossier block the form hides, those its TPS/TVQ
+        # and advance help lines follow, and those that carry a category
+        # and a split — the model's lists, never restated in the template.
         no_dossier_kinds=list(al.NO_DOSSIER_KINDS),
         sales_tax_kinds=list(al.SALES_TAX_KINDS),
+        advance_kinds=list(al.ADVANCE_KINDS),
+        category_kinds=list(al.CATEGORY_KINDS),
+        refund_kinds=list(al.REFUND_KINDS),
+        # A virement interne sortant's purpose (« avances » or none).
+        transfer_purpose_choices=[(p, al.TRANSFER_PURPOSE_LABELS[p])
+                                  for p in ("",) + al.TRANSFER_PURPOSES],
+        form_transfer_purpose=(entry or {}).get("transfer_purpose") or "",
         **_labels(),
     )
 
@@ -1273,9 +1289,11 @@ def _ventilation_signed(tx: dict) -> tuple:
     original's ventilation copied — shows it NEGATIVE, so the tax columns
     and the period's Σ TPS/Σ TVQ NET a reversed expense to zero. Without
     the sign, the CTI/RTI figure a book of account feeds to the tax return
-    claims credits for reversed purchases. Rows with no ventilation
-    (recettes, card payments, exempt/unventilated) show blanks."""
-    if tx.get("kind") not in ("dépense", "correction"):
+    claims credits for reversed purchases. A supplier's refund (a recette,
+    2026-11-08) shows its ventilation NEGATIVE too: it gives back the
+    CTI/RTI its expense claimed. Rows with no ventilation (other recettes,
+    card payments, exempt/unventilated) show blanks."""
+    if tx.get("kind") not in al.CATEGORY_KINDS + (al.REVERSAL_KIND,):
         return None, None, None
     n, g, q = (
         int(tx.get(k) or 0)

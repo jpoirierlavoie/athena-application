@@ -44,9 +44,12 @@ lawyer's own drawings and contributions (``prélèvement``, ``apport`` — a
 sole practitioner's equity, never an expense nor a revenue) and the firm's
 money moving to or from an account outside this ledger
 (``virement_interne_sortant`` / ``virement_interne_entrant`` — the trust
-account, a savings account), both by the lawyer's spec of 2026-10-07; and
+account, a savings account), both by the lawyer's spec of 2026-10-07;
 since 2026-11-07 the TPS/TVQ the firm remits to the tax authorities or is
-refunded (``remise_tps_tvq`` / ``remboursement_tps_tvq``). They move the
+refunded (``remise_tps_tvq`` / ``remboursement_tps_tvq``); and since
+2026-11-08 a client's advance received here instead of in trust
+(``avance_honoraires`` — client money, moved to trust by a virement interne
+sortant marked « avances », ``TRANSFER_PURPOSES``). They move the
 balance, clear and reconcile like any entry; they carry no category, no
 invoice and no tax split (the model writes the canonical one on every
 write: net = amount on a déboursé, zeros on a recette); and no revenue,
@@ -54,7 +57,10 @@ expense or input-tax total counts them — a remittance or a refund SETTLES
 the firm's TPS/TVQ balance with the tax authorities (owed by the firm, or
 to it), never an expense, a revenue nor a tax credit. The lawyer's
 own money and the two TPS/TVQ natures never carry a dossier
-(``NO_DOSSIER_KINDS``). ``results_statement`` is the one authority for the
+(``NO_DOSSIER_KINDS``). A supplier's refund of an expense
+(``remboursement_depense``, since 2026-11-08) is a recette that carries a
+category and a split like a dépense and counts against it, never as a
+revenue. ``results_statement`` is the one authority for the
 revenue, expense and input-tax totals, ``owner_equity`` for the « Avoir de
 l'avocat » figures. A payment between two accounts OF this ledger stays
 ``paiement_carte`` (two linked legs), and fees taken from trust stay the
@@ -128,10 +134,12 @@ VALID_KINDS = (
     "encaissement_facture",
     "recette_autre",
     "dépense",
+    "remboursement_depense",
     "prélèvement",
     "apport",
     "virement_interne_sortant",
     "virement_interne_entrant",
+    "avance_honoraires",
     "remise_tps_tvq",
     "remboursement_tps_tvq",
     "paiement_carte",
@@ -140,16 +148,22 @@ VALID_KINDS = (
 REVERSAL_KIND = "correction"
 # The kinds outside the firm's results (module docstring): the lawyer's own
 # money, the firm's money moving to or from an account outside this
-# ledger, and the TPS/TVQ it remits or is refunded. ``kind``
-# « prélèvement » is the lawyer's DRAWING — never the method « prélèvement »
-# (a pre-authorized debit), a different field.
+# ledger, the TPS/TVQ it remits or is refunded, and a client's advance
+# received here instead of in trust. ``kind`` « prélèvement » is the
+# lawyer's DRAWING — never the method « prélèvement » (a pre-authorized
+# debit), a different field.
 OWNER_KINDS = ("prélèvement", "apport")
 INTERNAL_TRANSFER_KINDS = ("virement_interne_sortant", "virement_interne_entrant")
 SALES_TAX_KINDS = ("remise_tps_tvq", "remboursement_tps_tvq")
-NON_RESULT_KINDS = OWNER_KINDS + INTERNAL_TRANSFER_KINDS + SALES_TAX_KINDS
+# A client's advance on fees or disbursements that reached this ledger —
+# money due in trust (the lawyer's decision of 2026-11-08), named as the
+# trust register names it (« Avance d'honoraires »). The virement interne
+# that moves it to trust is marked « avances » (``TRANSFER_PURPOSES``).
+ADVANCE_KINDS = ("avance_honoraires",)
+NON_RESULT_KINDS = OWNER_KINDS + INTERNAL_TRANSFER_KINDS + SALES_TAX_KINDS + ADVANCE_KINDS
 # The natures that never carry a dossier: the lawyer's own money, and the
 # firm's TPS/TVQ settlements (owed by the firm, never by a dossier). A
-# virement interne may name one.
+# virement interne and an advance may name one.
 NO_DOSSIER_KINDS = OWNER_KINDS + SALES_TAX_KINDS
 # The results statement's ALLOW-list (``results_statement``): every kind not
 # named here stays out of every revenue, expense and tax total — the
@@ -157,11 +171,29 @@ NO_DOSSIER_KINDS = OWNER_KINDS + SALES_TAX_KINDS
 # ledger). A correction counts as the kind it reverses.
 REVENUE_KINDS = ("encaissement_facture", "recette_autre")
 EXPENSE_KINDS = ("dépense",)
+# A supplier's refund of an expense (the lawyer's decision of 2026-11-08):
+# a recette that counts as a NEGATIVE expense of its category — gross, net
+# and the TPS/TVQ it gives back — never a revenue.
+REFUND_KINDS = ("remboursement_depense",)
+# The kinds that carry a category and a TPS/TVQ split of their own.
+CATEGORY_KINDS = EXPENSE_KINDS + REFUND_KINDS
 # The only kinds the create form (and an edit) may carry.
-_SIMPLE_KINDS = ("encaissement_facture", "recette_autre", "dépense") + NON_RESULT_KINDS
+_SIMPLE_KINDS = (("encaissement_facture", "recette_autre") + CATEGORY_KINDS
+                 + NON_RESULT_KINDS)
 # The only kinds an EDIT may keep or become (invoice-linked entries are
 # reverse-only — see ``_entry_lock_reason``).
-_EDITABLE_KINDS = ("recette_autre", "dépense") + NON_RESULT_KINDS
+_EDITABLE_KINDS = ("recette_autre",) + CATEGORY_KINDS + NON_RESULT_KINDS
+# The purpose of a virement interne SORTANT. « avances » marks the transfer
+# to trust of the advances received here (``ADVANCE_KINDS``): the
+# statements settle the advances owed with it. Any other — the stored ""
+# or an absent field (rows written before 2026-11-08) — is the firm's own
+# money leaving this ledger.
+TRANSFER_PURPOSE_KIND = "virement_interne_sortant"
+TRANSFER_PURPOSES = ("avances",)
+TRANSFER_PURPOSE_LABELS = {
+    "": "Autre virement",
+    "avances": "Avances à verser au fidéicommis",
+}
 # The passages an edit may make between kinds (spec of 2026-10-07, §2.2):
 # within ONE sign — the bank movement's direction is a fact, only its nature
 # was misjudged — every editable kind may become any other of its sign,
@@ -175,14 +207,18 @@ KIND_MOVES = {
     "prélèvement": ("dépense", "virement_interne_sortant", "remise_tps_tvq"),
     "virement_interne_sortant": ("dépense", "prélèvement", "remise_tps_tvq"),
     "remise_tps_tvq": ("dépense", "prélèvement", "virement_interne_sortant"),
-    "recette_autre": ("apport", "virement_interne_entrant",
-                      "remboursement_tps_tvq", "dépense"),
-    "apport": ("recette_autre", "virement_interne_entrant",
-               "remboursement_tps_tvq"),
-    "virement_interne_entrant": ("recette_autre", "apport",
-                                 "remboursement_tps_tvq"),
-    "remboursement_tps_tvq": ("recette_autre", "apport",
-                              "virement_interne_entrant"),
+    "recette_autre": ("remboursement_depense", "apport", "virement_interne_entrant",
+                      "avance_honoraires", "remboursement_tps_tvq", "dépense"),
+    "remboursement_depense": ("recette_autre", "apport", "virement_interne_entrant",
+                              "avance_honoraires", "remboursement_tps_tvq"),
+    "apport": ("recette_autre", "remboursement_depense", "virement_interne_entrant",
+               "avance_honoraires", "remboursement_tps_tvq"),
+    "virement_interne_entrant": ("recette_autre", "remboursement_depense", "apport",
+                                 "avance_honoraires", "remboursement_tps_tvq"),
+    "avance_honoraires": ("recette_autre", "remboursement_depense", "apport",
+                          "virement_interne_entrant", "remboursement_tps_tvq"),
+    "remboursement_tps_tvq": ("recette_autre", "remboursement_depense", "apport",
+                              "virement_interne_entrant", "avance_honoraires"),
 }
 # The web form shows the two virement codes as ONE « Virement interne »
 # with a « Sens » select; this value is the form's, never stored.
@@ -199,8 +235,8 @@ INTERNAL_TRANSFER_SENS_LABELS = {
 # The create form's « Type » choices, in display order (a card payment has
 # its own form).
 FORM_KINDS = (
-    "dépense", "recette_autre", "encaissement_facture",
-    "prélèvement", "apport", INTERNAL_TRANSFER_FORM_KIND,
+    "dépense", "recette_autre", "encaissement_facture", "remboursement_depense",
+    "prélèvement", "apport", INTERNAL_TRANSFER_FORM_KIND, "avance_honoraires",
     "remise_tps_tvq", "remboursement_tps_tvq",
 )
 # The sign of a simple kind is IMPLIED, never chosen. Until lot 0b only the
@@ -217,10 +253,12 @@ _KIND_DIRECTION = {
     "encaissement_facture": "recette",
     "recette_autre": "recette",
     "dépense": "déboursé",
+    "remboursement_depense": "recette",
     "prélèvement": "déboursé",
     "apport": "recette",
     "virement_interne_sortant": "déboursé",
     "virement_interne_entrant": "recette",
+    "avance_honoraires": "recette",
     "remise_tps_tvq": "déboursé",
     "remboursement_tps_tvq": "recette",
 }
@@ -254,16 +292,28 @@ ADMIN_EXPENSE_CATEGORIES = (
     "loyer",
     "internet",
     "téléphone",
+    # Software and office subscriptions — labelled « Logiciels et
+    # bureautique » since 2026-11-08; the stored code stays (a rename
+    # changes the label, CLAUDE.md « One source per list »).
     "abonnements",
     # Usage-billed cloud and AI services (API credits, hosting, compute) —
-    # a flat monthly plan stays « abonnements » (the lawyer's decision of
-    # 2026-11-07: a variable cost in the financial statements).
+    # a flat software plan stays « abonnements » (the lawyer's decision of
+    # 2026-11-07: a variable cost in the financial statements; every
+    # Anthropic charge, its plan included, by his decision of 2026-11-08).
     "infonuagique_ia",
     "équipement",
     "fournitures",
     "assurances",
     "cotisations_professionnelles",
     "formation",
+    # Law reports, journals, books and their updates — the firm's library
+    # of sources (the lawyer's decision of 2026-11-08); a course or a
+    # degree stays « formation ».
+    "documentation",
+    # Research billed by the search: SOQUIJ, the land and bankruptcy
+    # registers (the lawyer's decision of 2026-11-08) — a court stamp stays
+    # « taxes_permis ».
+    "recherche",
     "publicité",
     "honoraires_professionnels",
     "huissier",
@@ -301,8 +351,10 @@ KIND_LABELS = {
     "dépense": "Dépense",
     "prélèvement": "Prélèvement de l'avocat",
     "apport": "Apport de l'avocat",
+    "remboursement_depense": "Remboursement de dépense",
     "virement_interne_sortant": "Virement interne (sortant)",
     "virement_interne_entrant": "Virement interne (entrant)",
+    "avance_honoraires": "Avance d'honoraires",
     "remise_tps_tvq": "Remise de TPS/TVQ",
     "remboursement_tps_tvq": "Remboursement de TPS/TVQ",
     "paiement_carte": "Paiement de carte",
@@ -321,13 +373,15 @@ ADMIN_CATEGORY_LABELS = {
     "loyer": "Loyer",
     "internet": "Internet",
     "téléphone": "Téléphone",
-    "abonnements": "Abonnements",
+    "abonnements": "Logiciels et bureautique",
     "infonuagique_ia": "Infonuagique et IA (à l'usage)",
     "équipement": "Équipement",
     "fournitures": "Fournitures de bureau",
     "assurances": "Assurances",
     "cotisations_professionnelles": "Cotisations professionnelles",
     "formation": "Formation continue",
+    "documentation": "Documentation juridique",
+    "recherche": "Frais de recherche",
     "publicité": "Publicité et développement",
     "honoraires_professionnels": "Honoraires professionnels",
     "huissier": "Huissier",
@@ -421,7 +475,7 @@ def extract_taxes_from_gross(gross: int) -> tuple[int, int, int]:
 
 
 def validate_ventilation(
-    direction: str, amount: int, net, tps, tvq
+    direction: str, amount: int, net, tps, tvq, *, kind: str = ""
 ) -> tuple[Optional[dict], str]:
     """Normalize the TPS/TVQ split of one entry.
 
@@ -429,7 +483,9 @@ def validate_ventilation(
     ``(None, abort_reason)``.
 
     * a **recette** carries no ventilation — stray values (the form's hidden
-      x-show fields) are silently zeroed, the trust stray-invoice-fields rule;
+      x-show fields) are silently zeroed, the trust stray-invoice-fields rule
+      — unless it is a refund (``REFUND_KINDS``, *kind*), split like a
+      déboursé: the TPS/TVQ it gives back;
     * a **déboursé** left entirely blank defaults to ``net = amount``,
       taxes 0 (an unventilated expense claims no ITC/ITR — conservative);
     * a **déboursé** with any figure must satisfy
@@ -442,7 +498,7 @@ def validate_ventilation(
             return None
         return v
 
-    if direction != "déboursé":
+    if direction != "déboursé" and kind not in REFUND_KINDS:
         return {"net_amount": 0, "gst_amount": 0, "qst_amount": 0}, ""
 
     n, g, q = _norm(net), _norm(tps), _norm(tvq)
@@ -529,7 +585,9 @@ def results_statement(rows: list[dict]) -> dict:
 
     An ALLOW-list: ``revenue`` sums the ``REVENUE_KINDS`` by kind;
     ``expenses`` / ``expenses_net`` sum the ``EXPENSE_KINDS`` by category,
-    gross amount and net; ``gst`` / ``qst`` are the TPS/TVQ paid on them.
+    gross amount and net; ``gst`` / ``qst`` are the TPS/TVQ paid on them. A
+    refund (``REFUND_KINDS``) counts against its category with the opposite
+    sign — gross, net, and the TPS/TVQ it gives back: never a revenue.
     Every other kind — ``NON_RESULT_KINDS``, a card payment — counts in no
     total. Status-blind, like ``admin_delta``: an annulée pair nets out, and
     a cleared entry reversed later nets with its correction.
@@ -558,7 +616,9 @@ def results_statement(rows: list[dict]) -> dict:
                 kind = original.get("kind") or ""
         if kind in REVENUE_KINDS:
             revenue[kind] += sign * int(r.get("amount") or 0)
-        elif kind in EXPENSE_KINDS:
+        elif kind in CATEGORY_KINDS:
+            if kind in REFUND_KINDS:
+                sign = -sign
             category = r.get("category") or ""
             expenses[category] = expenses.get(category, 0) + sign * int(r.get("amount") or 0)
             expenses_net[category] = (expenses_net.get(category, 0)
@@ -580,10 +640,11 @@ def results_statement(rows: list[dict]) -> dict:
 # ``models/financial_statements`` builds the statements; the ledger's own
 # vocabulary for them lives here, beside the kinds and categories it reads.
 #
-# The cost class of a dépense: linked to a dossier, a DIRECT cost (whatever
-# its category); otherwise usage-billed cloud and AI and office supplies are
-# VARIABLE, every other category FIXED. Costs are net of TPS/TVQ.
-VARIABLE_COST_CATEGORIES = ("infonuagique_ia", "fournitures")
+# The cost class of a dépense — and of a refund, which counts against it:
+# linked to a dossier, a DIRECT cost (whatever its category); otherwise
+# usage-billed cloud and AI, office supplies and research billed by the
+# search are VARIABLE, every other category FIXED. Costs are net of TPS/TVQ.
+VARIABLE_COST_CATEGORIES = ("infonuagique_ia", "fournitures", "recherche")
 COST_CLASSES = ("direct", "variable", "fixe")
 COST_CLASS_LABELS = {
     "direct": "Coûts directs",
@@ -600,19 +661,39 @@ CASH_FLOW_LINES = {
     "encaissement_facture": "encaissements_factures",
     "recette_autre": "autres_recettes",
     "dépense": "depenses",
+    "remboursement_depense": "remboursements_depenses",
     "prélèvement": "prelevements",
     "apport": "apports",
     "virement_interne_sortant": "virements_sortants",
     "virement_interne_entrant": "virements_entrants",
+    "avance_honoraires": "avances_recues",
     "remise_tps_tvq": "remises_tps_tvq",
     "remboursement_tps_tvq": "remboursements_tps_tvq",
     "paiement_carte": "paiements_carte",
 }
+# A virement interne sortant marked « avances » — advances moved to trust —
+# has a line of its own (``cash_flow_line``).
+ADVANCE_TRANSFER_LINE = "avances_versees"
+
+
+def is_advance_transfer(row: dict) -> bool:
+    """Is *row* a virement interne sortant marked « avances » — advances
+    received here, moved to trust (``TRANSFER_PURPOSES``)?"""
+    return (row.get("kind") == TRANSFER_PURPOSE_KIND
+            and row.get("transfer_purpose") == "avances")
+
+
+def cash_flow_line(row: dict) -> str:
+    """The cash-flow line of a row (``CASH_FLOW_LINES``), a marked
+    transfer of advances on its own (``ADVANCE_TRANSFER_LINE``)."""
+    if is_advance_transfer(row):
+        return ADVANCE_TRANSFER_LINE
+    return CASH_FLOW_LINES[row.get("kind") or ""]
 
 
 def cost_class(row: dict) -> str:
-    """The cost class (``COST_CLASSES``) of a dépense row — a resolved
-    correction carries its original's dossier and category."""
+    """The cost class (``COST_CLASSES``) of a dépense or refund row — a
+    resolved correction carries its original's dossier and category."""
     if row.get("dossier_id"):
         return "direct"
     if (row.get("category") or "") in VARIABLE_COST_CATEGORIES:
@@ -631,9 +712,10 @@ def resolve_corrections(rows: list[dict]) -> list[dict]:
     slice (an original may predate its correction's period) — with a
     ``sign``: 1 for an ordinary row; -1 for a correction, copied with what it
     reverses: its original's ``kind``, ``invoice_id``,
-    ``trust_transaction_id``, ``dossier_id`` and ``category`` (a correction
-    carries no invoice or trust link of its own — ``_stage_reverse_legs``),
-    and ``corrects_id``. A correction keeps its own id, account, date,
+    ``trust_transaction_id``, ``dossier_id``, ``category`` and
+    ``transfer_purpose`` (a correction carries no invoice or trust link of
+    its own — ``_stage_reverse_legs``), and ``corrects_id``. A correction
+    keeps its own id, account, date,
     direction, amount and split: it moves the money on its own day, and it
     counts against its original's line.
 
@@ -668,6 +750,7 @@ def resolve_corrections(rows: list[dict]) -> list[dict]:
             "trust_transaction_id": original.get("trust_transaction_id"),
             "dossier_id": original.get("dossier_id"),
             "category": original.get("category"),
+            "transfer_purpose": original.get("transfer_purpose") or "",
             "corrects_id": original.get("id"),
         })
     return out
@@ -798,16 +881,28 @@ _ABORT_MESSAGES = {
         "à aucun dossier : retirez d'abord le lien au dossier (dossier_id "
         "vide)."
     ),
+    "objet_virement_interdit": (
+        "Seul un « " + KIND_LABELS[TRANSFER_PURPOSE_KIND] + " » porte un objet "
+        "(« " + TRANSFER_PURPOSE_LABELS["avances"] + " ») : retirez-le, ou "
+        "choisissez ce type."
+    ),
+    "objet_virement_invalide": (
+        "L'objet du virement est invalide : « avances » (les "
+        + TRANSFER_PURPOSE_LABELS["avances"].lower() + ") ou rien."
+    ),
     "mode_invalide": "Le mode est invalide.",
     "catégorie_invalide": "La catégorie de dépense est invalide.",
-    "catégorie_requise": "Une catégorie est requise pour une dépense.",
+    "catégorie_requise": (
+        "Une catégorie est requise pour une dépense ou un remboursement de "
+        "dépense."
+    ),
     "date_requise": "La date de l'opération est requise.",
     "date_future": "La date ne peut être dans le futur — le registre consigne ce qui est arrivé.",
     "contrepartie_requise": "La contrepartie (payeur / fournisseur) est requise.",
     "dossier_introuvable": "Dossier introuvable.",
     "ventilation_invalide": (
-        "La ventilation (net + TPS + TVQ) doit égaler le montant du déboursé, "
-        "chaque part étant un montant non négatif."
+        "La ventilation (net + TPS + TVQ) doit égaler le montant de la dépense "
+        "ou du remboursement, chaque part étant un montant non négatif."
     ),
     # Lot 5a: a partial correction that changes a déboursé's amount without
     # naming its ventilation used to inherit the stored split and be refused
@@ -815,10 +910,10 @@ _ABORT_MESSAGES = {
     # register never guesses which of net / TPS / TVQ absorbs a correction,
     # so the refusal names the three fields the caller must send.
     "ventilation_requise": (
-        "Le montant de ce déboursé change : fournissez aussi sa ventilation "
-        "— les champs Net, TPS et TVQ (net_amount, gst_amount, qst_amount). "
-        "La ventilation enregistrée correspond à l'ancien montant ; pour un "
-        "déboursé sans taxe réclamée, envoyez les trois à 0."
+        "Le montant de cette dépense ou de ce remboursement change : "
+        "fournissez aussi sa ventilation — les champs Net, TPS et TVQ "
+        "(net_amount, gst_amount, qst_amount). La ventilation enregistrée "
+        "correspond à l'ancien montant ; sans taxe, envoyez les trois à 0."
     ),
     "période_verrouillée": (
         "Cette période est couverte par une conciliation complétée. "
@@ -1188,6 +1283,7 @@ def _build_transaction_doc(
     reverses_id: Optional[str] = None,
     reversed_by_id: Optional[str] = None,
     related_transaction_id: Optional[str] = None,
+    transfer_purpose: str = "",
 ) -> dict:
     """Assemble a full admin_transactions doc, snapshotting the dossier
     labels off the read dossier. ``date`` is stored midnight UTC. There is
@@ -1237,6 +1333,9 @@ def _build_transaction_doc(
         "reverses_id": reverses_id,
         "reversed_by_id": reversed_by_id,
         "related_transaction_id": related_transaction_id,
+        # A virement interne sortant's purpose (``TRANSFER_PURPOSES``), ""
+        # on every other row.
+        "transfer_purpose": transfer_purpose if kind == TRANSFER_PURPOSE_KIND else "",
         "revisions": [],
         **provenance.create_fields(now),
     }
@@ -1263,6 +1362,21 @@ def _nature_refusal(kind: str, supplied: dict) -> Optional[str]:
         return "facture_interdite"
     if kind in NO_DOSSIER_KINDS and _supplied(supplied.get("dossier_id")):
         return "dossier_interdit"
+    return None
+
+
+def _purpose_refusal(kind: str, supplied: dict) -> Optional[str]:
+    """Why a ``transfer_purpose`` the CALLER sent refuses the write — only a
+    virement interne sortant carries one, from ``TRANSFER_PURPOSES``.
+    Judged on the caller's own keys, like ``_nature_refusal``: a stored
+    purpose leaves silently with its kind (``_validate_business``)."""
+    purpose = supplied.get("transfer_purpose")
+    if not _supplied(purpose):
+        return None
+    if kind != TRANSFER_PURPOSE_KIND:
+        return "objet_virement_interdit"
+    if purpose not in TRANSFER_PURPOSES:
+        return "objet_virement_invalide"
     return None
 
 
@@ -1298,14 +1412,20 @@ def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
         return None, "mode_invalide"
     if not counterparty:
         return None, "contrepartie_requise"
-    if kind == "dépense":
+    if kind in CATEGORY_KINDS:
         if not category:
             return None, "catégorie_requise"
         if category not in ADMIN_EXPENSE_CATEGORIES:
             return None, "catégorie_invalide"
     else:
-        # Category belongs to expenses alone; stray values are dropped.
+        # Category belongs to expenses and their refunds alone; stray
+        # values are dropped.
         clean["category"] = None
+    if kind != TRANSFER_PURPOSE_KIND and (clean.get("transfer_purpose") or ""):
+        # A purpose the CALLER sent — on another kind, or outside the
+        # vocabulary — was refused already (``_purpose_refusal``); a stored
+        # one leaves with the kind, and never locks an edit.
+        clean["transfer_purpose"] = ""
 
     tx_date = clean.get("date")
     if _midnight_utc(tx_date) is None:
@@ -1326,6 +1446,7 @@ def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
     ventilation, reason = validate_ventilation(
         direction, amount,
         clean.get("net_amount"), clean.get("gst_amount"), clean.get("qst_amount"),
+        kind=kind,
     )
     if ventilation is None:
         return None, reason
@@ -1354,7 +1475,8 @@ def _prepare_create(
         return None, "lien_fideicommis_réservé", clean
     if not clean.get("account_id"):
         return None, "compte_introuvable", clean
-    reason = _nature_refusal(clean.get("kind") or "", clean)
+    reason = (_nature_refusal(clean.get("kind") or "", clean)
+              or _purpose_refusal(clean.get("kind") or "", clean))
     if reason:
         return None, reason, clean
     ventilation, reason = _validate_business(clean)
@@ -1527,7 +1649,7 @@ def _stage_create(
         invoice_id=ctx["invoice_id"], invoice_number=invoice_number,
         trust_transaction_id=ctx["trust_transaction_id"], now=now,
         status="compensée" if cd is not None else "en_circulation",
-        cleared_date=cd,
+        cleared_date=cd, transfer_purpose=clean.get("transfer_purpose") or "",
     )
 
     # The invoice's payment, computed on the invoice THIS transaction read:
@@ -1719,7 +1841,7 @@ _EDITABLE_FIELDS = (
     "date", "direction", "kind", "amount", "category",
     "net_amount", "gst_amount", "qst_amount",
     "counterparty", "description", "reference", "supplier_invoice_ref",
-    "method", "dossier_id",
+    "method", "dossier_id", "transfer_purpose",
 )
 
 
@@ -1739,9 +1861,10 @@ def _amount_changes_without_ventilation(
         return False
     if not isinstance(new_amount, int) or isinstance(new_amount, bool) or new_amount <= 0:
         return False
-    # Only a dépense carries a split of its own: the natures outside the
-    # results get theirs from ``canonical_ventilation`` on every write.
-    if merged.get("direction") != "déboursé" or merged.get("kind") != "dépense":
+    # Only a dépense or a refund carries a split of its own: the natures
+    # outside the results get theirs from ``canonical_ventilation`` on every
+    # write.
+    if merged.get("kind") not in CATEGORY_KINDS:
         return False
     return not any(k in clean for k in ("net_amount", "gst_amount", "qst_amount"))
 
@@ -1839,7 +1962,8 @@ def update_transaction(
         # first, then a dossier left on an entry that becomes one of the
         # natures that never carry one (cleared by sending ``dossier_id``
         # empty — the web form always does).
-        reason = _nature_refusal(merged.get("kind") or "", clean)
+        reason = (_nature_refusal(merged.get("kind") or "", clean)
+                  or _purpose_refusal(merged.get("kind") or "", clean))
         if reason:
             raise _TxnAbort(reason)
         if merged.get("kind") in NO_DOSSIER_KINDS and merged.get("dossier_id"):
@@ -2379,11 +2503,11 @@ def _stage_reverse_legs(
         info["delta"] += admin_delta(rev_dir, amount)
 
         rev_id = str(uuid.uuid4())
-        # Only a dépense hands its category and split to its correction (the
-        # tax columns net a reversed expense to zero). Any other kind carries
-        # none of its own — a prélèvement's canonical net = amount, copied,
-        # would print as a negative net on the journal.
-        expense = leg.get("kind") == "dépense"
+        # Only a dépense or a refund hands its category and split to its
+        # correction (the tax columns net a reversed entry to zero). Any
+        # other kind carries none of its own — a prélèvement's canonical
+        # net = amount, copied, would print as a negative net on the journal.
+        expense = leg.get("kind") in CATEGORY_KINDS
         reversal = _build_transaction_doc(
             tx_id=rev_id, account_id=aid, sequence=info["seq"], date_value=rd,
             direction=rev_dir, kind=REVERSAL_KIND, amount=amount,

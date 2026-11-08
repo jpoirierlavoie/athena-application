@@ -168,5 +168,7 @@ def test_the_closing_tax_line_names_what_it_sums():
     text = " ".join(page.extract_text()
                     for page in PdfReader(io.BytesIO(resp.data)).pages)
     text = text.replace(" ", " ").replace(" ", " ")
-    assert "TPS/TVQ payées sur les dépenses de la période (CTI/RTI)" in text
+    # 2026-11-08: net of what a supplier's refund gives back.
+    assert ("TPS/TVQ payées sur les dépenses de la période, nettes des "
+            "remboursements (CTI/RTI)") in text.replace("\n", " ")
     assert "Taxes payées sur les déboursés" not in text

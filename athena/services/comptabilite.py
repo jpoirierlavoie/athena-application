@@ -578,6 +578,9 @@ TRUST_PURPOSE_DIRECTIONS: dict = dict(trust.PURPOSE_DIRECTIONS)
 ADMIN_KIND_MOVES: dict = {k: tuple(v) for k, v in al.KIND_MOVES.items()}
 ADMIN_NON_RESULT_KINDS: tuple = tuple(al.NON_RESULT_KINDS)
 ADMIN_NO_DOSSIER_KINDS: tuple = tuple(al.NO_DOSSIER_KINDS)
+#: The kinds that carry a category and a TPS/TVQ split — a dépense and the
+#: refund of one (``admin_ledger.CATEGORY_KINDS``, 2026-11-08).
+ADMIN_CATEGORY_KINDS: tuple = tuple(al.CATEGORY_KINDS)
 
 
 def passage_de_nature_permis(old_kind: str, new_kind: str) -> bool:

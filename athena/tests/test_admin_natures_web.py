@@ -171,7 +171,7 @@ def _data(kind: str, **over) -> dict:
         "date": _d(2031, 9, 1), "description": "", "reference": "",
         "supplier_invoice_ref": "",
     }
-    if kind == "dépense":
+    if kind in al.CATEGORY_KINDS:
         d["category"] = "loyer"
     d.update(over)
     return d
@@ -334,7 +334,15 @@ def test_the_forms_alpine_codes_are_the_models():
     assert f"kind === '{virement}' ? 'Compte de contrepartie'" in src
     assert "noDossierKinds: {{ no_dossier_kinds | join(',') | jsattr }}.split(',')," in src
     assert "salesTaxKinds: {{ sales_tax_kinds | join(',') | jsattr }}.split(',')," in src
-    for kind in (*al.NO_DOSSIER_KINDS, *al.SALES_TAX_KINDS):
+    # Since 2026-11-08 the category kinds (a dépense and its refund), the
+    # refund alone and the advance arrive the same way.
+    assert "categoryKinds: {{ category_kinds | join(',') | jsattr }}.split(',')," in src
+    assert "refundKinds: {{ refund_kinds | join(',') | jsattr }}.split(',')," in src
+    assert "advanceKinds: {{ advance_kinds | join(',') | jsattr }}.split(',')," in src
+    # (« dépense » itself stays named once: a card account's switch away from
+    # an encaissement lands on it.)
+    for kind in (*al.NO_DOSSIER_KINDS, *al.SALES_TAX_KINDS, *al.REFUND_KINDS,
+                 *al.ADVANCE_KINDS):
         assert f"'{kind}'" not in src, kind
     # The dossier's hidden input — disabled, so never posted, for a kind
     # without a dossier. The Type select's @change clears the dossier for
@@ -353,11 +361,13 @@ def test_the_forms_alpine_codes_are_the_models():
     # cell's half column, at 375 px, it ran over eight lines).
     help_at = src.index('x-show="salesTaxKinds.includes(kind)"')
     assert src.index('name="amount"') < help_at < src.index('name="sens_virement"')
-    # Disabled outside a dépense: the category and the split's fieldset —
-    # NOT the supplier's invoice number (the route always sends its key: a
-    # disabled, hence empty, field would erase the stored one).
-    assert ('<select name="category" :disabled="kind !== \'dépense\'"' in src)
-    assert '<fieldset class="min-w-0" :disabled="kind !== \'dépense\'">' in src
+    # Disabled outside a dépense and its refund: the category and the
+    # split's fieldset — NOT the supplier's invoice number (the route always
+    # sends its key: a disabled, hence empty, field would erase the stored
+    # one).
+    assert '<select name="category" :disabled="!categoryKinds.includes(kind)"' in src
+    assert '<fieldset class="min-w-0" :disabled="!categoryKinds.includes(kind)">' in src
+    assert 'x-show="categoryKinds.includes(kind)"' in src
     line = next(l for l in src.splitlines() if 'name="supplier_invoice_ref"' in l)
     assert "disabled" not in line
     assert ('<select name="invoice_id" :disabled="kind !== \'encaissement_facture\'"'
@@ -453,8 +463,8 @@ def test_a_refused_edit_keeps_the_nature_the_sens_and_the_submitted_etag(client,
     # virement the refused POST named.
     selects = _selects(page)
     assert _values(selects["kind"]) == [
-        "dépense", "recette_autre", "apport", "virement_interne",
-        "remboursement_tps_tvq"]
+        "dépense", "recette_autre", "remboursement_depense", "apport",
+        "virement_interne", "avance_honoraires", "remboursement_tps_tvq"]
     assert _selected(selects["kind"]) == ["virement_interne"]
     assert _selected(selects["sens_virement"]) == ["entrant"]
 
@@ -981,6 +991,10 @@ def test_the_new_markup_uses_only_compiled_classes(client, fake, monkeypatch):
         _block(account, "Avoir de l'avocat", "Solde net"),
         _block(form, 'name="sens_virement"', "« Paiement de carte »"),
         form[form.index("<fieldset"):form.index(">", form.index("<fieldset")) + 1],
+        # 2026-11-08: the transfer's purpose and the two help lines.
+        _block(form, 'name="transfer_purpose"', "Ni l'avance ni ce virement"),
+        form[form.rindex("<p", 0, form.index("L'avance d'un client")):
+             form.index("</p>", form.index("Ce qu'un fournisseur rembourse"))],
     ]
     _failing(monkeypatch)
     unavailable = _get(client, "/administration/comptes/ops1")
@@ -992,3 +1006,82 @@ def test_the_new_markup_uses_only_compiled_classes(client, fake, monkeypatch):
     assert {"grid-cols-2", "sm:grid-cols-3", "text-lg", "min-w-0",
             "hover:underline"} <= classes
     assert not _absent_classes(classes), _absent_classes(classes)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# The client's advance, the supplier's refund, the transfer's purpose
+# (the lawyer's decisions of 2026-11-08)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_the_form_records_a_refund_with_its_category_and_split(client, fake):
+    resp = client.post("/administration/", data=_form(
+        "remboursement_depense", counterparty="Fournisseur fictif",
+        category="infonuagique_ia", net_amount="95,24", gst_amount="4,76",
+        qst_amount=""))
+    assert resp.status_code in (302, 303), resp.get_data(as_text=True)[:400]
+    (entry,) = _entries(fake).values()
+    assert (entry["kind"], entry["direction"], entry["category"]) == (
+        "remboursement_depense", "recette", "infonuagique_ia")
+    assert (entry["net_amount"], entry["gst_amount"], entry["qst_amount"]) == (
+        9524, 476, 0)
+
+
+def test_the_form_records_an_advance_with_its_dossier(client, fake):
+    resp = client.post("/administration/", data=_form(
+        "avance_honoraires", counterparty="Client fictif", dossier_id="dos1",
+        category="loyer", net_amount="100,00"))
+    assert resp.status_code in (302, 303), resp.get_data(as_text=True)[:400]
+    (entry,) = _entries(fake).values()
+    # The stale category and split the browser posted were neutralized.
+    assert (entry["kind"], entry["category"], entry["dossier_id"]) == (
+        "avance_honoraires", None, "dos1")
+    assert (entry["net_amount"], entry["gst_amount"], entry["qst_amount"]) == (0, 0, 0)
+
+
+def test_the_form_marks_a_transfer_of_advances_and_only_a_sortant(client, fake):
+    for sens in ("sortant", "entrant"):
+        resp = client.post("/administration/", data=_form(
+            "virement_interne", sens_virement=sens, transfer_purpose="avances"))
+        assert resp.status_code in (302, 303), sens
+    by_kind = {e["kind"]: e for e in _entries(fake).values()}
+    assert by_kind["virement_interne_sortant"]["transfer_purpose"] == "avances"
+    # A stale purpose posted with the other sens is neutralized by the route.
+    assert by_kind["virement_interne_entrant"]["transfer_purpose"] == ""
+
+
+def test_the_form_offers_the_purpose_and_explains_the_two_natures(client, fake):
+    page = _get(client, "/administration/nouvelle")     # entities decoded
+    selects = _selects(page)
+    assert _values(selects["transfer_purpose"]) == ["", "avances"]
+    assert _selected(selects["transfer_purpose"]) == [""]
+    assert "Avances à verser au fidéicommis" in page
+    assert "L'avance d'un client reçue à ce compte plutôt qu'au fidéicommis" in page
+    assert "Ce qu'un fournisseur rembourse d'une dépense" in page
+    assert 'x-show="kind === \'virement_interne\' && sens === \'sortant\'"' in page
+    made = _create("virement_interne_sortant", transfer_purpose="avances")
+    edit = client.get(f"/administration/{made['id']}/modifier").get_data(as_text=True)
+    assert _selected(_selects(edit)["transfer_purpose"]) == ["avances"]
+
+
+def test_a_refund_gives_its_tax_back_on_the_journal_and_the_export():
+    """A refund's ventilation prints NEGATIVE (a recette), so the sheet's
+    Σ TPS / Σ TVQ — the CTI/RTI a bookkeeper hands to the tax return — is
+    net of what the supplier gave back; its reversal restores it."""
+    refund = {"kind": "remboursement_depense", "direction": "recette",
+              "net_amount": 2000, "gst_amount": 100, "qst_amount": 0}
+    assert ra._ventilation_signed(refund) == (-2000, -100, 0)
+    reversal = {"kind": "correction", "direction": "déboursé",
+                "net_amount": 2000, "gst_amount": 100, "qst_amount": 0}
+    assert ra._ventilation_signed(reversal) == (2000, 100, 0)
+    advance = {"kind": "avance_honoraires", "direction": "recette",
+               "net_amount": 0, "gst_amount": 0, "qst_amount": 0}
+    assert ra._ventilation_signed(advance) == (None, None, None)
+
+
+def test_the_entry_page_names_a_transfers_purpose(client, fake):
+    marked = _create("virement_interne_sortant", transfer_purpose="avances")
+    page = _get(client, f"/administration/{marked['id']}")
+    assert "Objet du virement" in page and "Avances à verser au fidéicommis" in page
+    plain = _create("virement_interne_sortant")
+    assert "Objet du virement" not in _get(client, f"/administration/{plain['id']}")

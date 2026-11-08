@@ -121,7 +121,8 @@ def _row(id_, kind, amount, *, category=None, net=0, gst=0, qst=0, **extra):
 def test_the_two_natures_sit_outside_the_results_and_carry_no_dossier():
     assert al.SALES_TAX_KINDS == (REMISE, REMBOURSEMENT)
     assert al.NON_RESULT_KINDS == (
-        al.OWNER_KINDS + al.INTERNAL_TRANSFER_KINDS + al.SALES_TAX_KINDS)
+        al.OWNER_KINDS + al.INTERNAL_TRANSFER_KINDS + al.SALES_TAX_KINDS
+        + al.ADVANCE_KINDS)
     assert al.NO_DOSSIER_KINDS == al.OWNER_KINDS + al.SALES_TAX_KINDS
     for kind in al.SALES_TAX_KINDS:
         assert kind not in al.REVENUE_KINDS + al.EXPENSE_KINDS

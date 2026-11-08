@@ -4579,6 +4579,53 @@ Notes:
   their findings by TEXT. Change Impact: none of items 1 to 7 (a script and
   its tests; the registers are not DAV-exposed). A rollback of lot A
   restores this lot's data first (above).
+- **A client's advance, a supplier's refund, two categories (2026-11-08).**
+  Lot E, the lawyer's decisions of 2026-11-08. The administration ledger
+  gains `avance_honoraires` (« Avance d'honoraires », the trust register's
+  label): a client's advance received in the operations account instead of
+  in trust — client money, among the natures outside the results
+  (`NON_RESULT_KINDS`), a dossier allowed — and a virement interne sortant
+  may carry `transfer_purpose` « avances » (`TRANSFER_PURPOSES`), the
+  transfer that moves those advances to trust. It gains
+  `remboursement_depense` (« Remboursement de dépense »): a supplier's
+  refund, a recette that carries a category and a split like a dépense
+  (`CATEGORY_KINDS`) and counts against them in `results_statement` —
+  gross, net and the CTI/RTI it gives back —, never as a revenue. Two dépense
+  categories: `documentation` (« Documentation juridique », a fixed cost) and
+  `recherche` (« Frais de recherche », variable); `abonnements` is labelled
+  « Logiciels et bureautique », its code kept. The statements show the
+  advances not yet moved to trust as a liability (« Avances de clients à
+  verser au fidéicommis ») — neither an advance nor its marked transfer
+  moves the net assets —, lower each category by its refunds, and list the
+  advances still owed, the marked transfers beyond the advances recorded,
+  and an « autre recette » sent on within 14 days by an unmarked transfer of
+  the same amount. The PDF journal's tax line is net of refunds. Change
+  Impact: item 1 touched (record_admin_entry, update_admin_entry,
+  get_admin_ledger: the kinds, the categories, `transfer_purpose` in the
+  inputs and the rows — optional in the write outputs, which a same-key
+  retry may replay from before —, the descriptions kept under the
+  2 048-character cut; the consent partial and the write box name the two
+  natures; plugin 1.5.0), without the §11 train by the lawyer's decision of
+  2026-11-08 — the token in force reaches the new kinds at deploy; item 4:
+  two refusal reasons (`objet_virement_interdit`, `objet_virement_invalide`);
+  item 5: two form fields under the existing CSRF; item 6: the form's new
+  lines on compiled classes only; items 2, 3 and 7 not touched. In order:
+  1. *Before the push*: both integrity scripts, read-only.
+  2. *The push.*
+  3. *Plugin 1.5.0*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day.
+  4. *Then the data*, on the lawyer's lists, each a dry run first: the
+     documentation and research entries through
+     `scripts/reclassify_admin_category.py`; the advances of 2026 kept as
+     « autre recette », their transfers' purpose and the Anthropic credit
+     need a one-shot of their own (`reclassify_admin_ledger.py` writes no
+     money field and no purpose), shipped with its plan.
+  A rollback restores those data first, then the code: under the older code
+  an entry of either kind makes the statements « indisponibles » (a kind
+  the register does not know), its check 11 names it and its form refuses
+  to edit it, while a `transfer_purpose` is ignored. Redeliver plugin 1.4.0
+  with the code.
 
 ## 16. Troubleshooting
 

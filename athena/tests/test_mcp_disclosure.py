@@ -361,6 +361,13 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # dépenses; a remittance settles TPS/TVQ too, so the phrase now reads
     # « tax-credit (CTI/RTI) total ».
     "a revenue, expense or tps/tvq total counts only",
+    # 2026-11-08 — a supplier's refund of an expense (remboursement_depense)
+    # carries a category and a split and counts against the expenses: the
+    # sentences that kept them to the dépense alone, quoted as they stood
+    # (lower-cased), are false now.
+    "(revenue) and dépense (expenses",
+    "mean something only on a dépense or its correction",
+    "mean something only on a dépense: no other kind",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -1614,6 +1621,15 @@ def test_the_texts_name_the_natures_outside_the_results():
         "TPS/TVQ",
         "ils ne portent ni catégorie, ni ventilation, ni facture, et ne se "
         "rattachent à aucun dossier",
+        # 2026-11-08 — a client's advance received here, the mark of the
+        # transfer that moves it to trust, and a supplier's refund.
+        "Inscrire encore les <strong>avances d'honoraires</strong> de "
+        "clients reçues au compte d'opérations plutôt qu'au fidéicommis — "
+        "l'argent du client, jamais un revenu — et marquer le virement "
+        "interne qui les verse au fidéicommis",
+        "les <strong>remboursements de dépense</strong> d'un fournisseur, qui "
+        "réduisent la catégorie de la dépense remboursée et la TPS/TVQ "
+        "qu'elle réclamait — jamais un revenu",
         # Guidance, qualified to a card OF THIS LEDGER (review fix: an
         # unqualified « jamais » promised what no code refuses, and was
         # false for the lawyer's own card, a prélèvement).
@@ -1634,7 +1650,9 @@ def test_the_texts_name_the_natures_outside_the_results():
     for fragment in (
         "des paiements de carte, vos prélèvements et vos apports, des "
         "virements internes vers ou depuis un compte hors de ce registre, "
-        "et les remises et remboursements de TPS/TVQ du cabinet",
+        "les remises et remboursements de TPS/TVQ du cabinet, des avances "
+        "d'honoraires de clients reçues au compte d'opérations et des "
+        "remboursements de dépense",
         "des recettes et des déboursés, et des paiements d'honoraires — "
         "dont chacun inscrit",
     ):
@@ -1710,14 +1728,16 @@ def test_the_texts_name_the_natures_outside_the_results():
               and al.kind_move_allowed(a, b)}
     assert across == {("dépense", "recette_autre"), ("recette_autre", "dépense")}
     outside = (set(al.VALID_KINDS) - set(al.REVENUE_KINDS)
-               - set(al.EXPENSE_KINDS) - {al.REVERSAL_KIND})
+               - set(al.EXPENSE_KINDS) - set(al.REFUND_KINDS) - {al.REVERSAL_KIND})
     assert set(al.NON_RESULT_KINDS) | {"paiement_carte"} == outside
     never = ledger[ledger.index("Never in any such total"):]
     for kind in sorted(outside):
         assert kind in never, kind
-    for kind in al.REVENUE_KINDS + al.EXPENSE_KINDS:
+    for kind in al.REVENUE_KINDS + al.EXPENSE_KINDS + al.REFUND_KINDS:
         assert kind not in never, kind
-    assert "net, TPS and TVQ mean something only on a dépense" in ledger
+    # 2026-11-08: a refund counts against the expenses, and carries a split.
+    assert "and dépense less remboursement_depense (expenses" in ledger
+    assert "net, TPS and TVQ mean something only on those two" in ledger
     assert ("A revenue, expense or tax-credit (CTI/RTI) total counts only "
             "encaissement_facture and recette_autre") in ledger
     assert "it settles the TPS/TVQ balance, never an expense nor a tax credit" in ledger

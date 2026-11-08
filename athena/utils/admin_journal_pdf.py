@@ -259,13 +259,15 @@ def build_admin_journal_pdf(
     else:
         # The fiscal payoff, spelled out beside the totals row that already
         # carries it — a bookkeeper hands THIS line to the tax return. It
-        # names what it sums (the TPS/TVQ claimed on the dépenses, CTI/RTI):
-        # a « Remise de TPS/TVQ » is a déboursé of the period too, and it is
+        # names what it sums (the TPS/TVQ claimed on the dépenses, CTI/RTI,
+        # less what a supplier's refund gives back — 2026-11-08): a
+        # « Remise de TPS/TVQ » is a déboursé of the period too, and it is
         # NOT in this line (2026-11-07).
         story += [
             Spacer(1, 8),
             Paragraph(escape(
-                f"TPS/TVQ payées sur les dépenses de la période (CTI/RTI) — "
+                f"TPS/TVQ payées sur les dépenses de la période, nettes des "
+                f"remboursements (CTI/RTI) — "
                 f"TPS : {format_cents_fr(int(tps_total))} · "
                 f"TVQ : {format_cents_fr(int(tvq_total))}"
             ), tax_style),

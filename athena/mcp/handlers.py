@@ -17353,6 +17353,7 @@ def _admin_register_row(e: dict) -> dict:
         "reverses_id": e.get("reverses_id") or "",
         "reversed_by_id": e.get("reversed_by_id") or "",
         "related_transaction_id": e.get("related_transaction_id") or "",
+        "transfer_purpose": e.get("transfer_purpose") or "",
         "has_receipt": bool(e.get("receipt_storage_path")),
         "revisions_count": len(e.get("revisions") or []),
         "created_via": e.get("created_via", "") or "",
@@ -17861,19 +17862,27 @@ _ADMIN_COMMON_ARGS = {"account_id", "kind", "amount_cents", "date", "method",
 # The arguments each kind takes beyond the common ones — any other is
 # REFUSED, never ignored (_refuse_foreign_args) — and the one source of what
 # _record_admin_entry_impl reads: each optional link is read only when its
-# kind's set holds it. The natures outside the firm's results
-# (admin_ledger.NON_RESULT_KINDS: the lawyer's prélèvement and apport, a
-# virement interne either way, a TPS/TVQ remittance or refund) take no
+# kind's set holds it. A dépense and the refund of one
+# (admin_ledger.CATEGORY_KINDS) take a category and a ventilation. The
+# natures outside the firm's results (admin_ledger.NON_RESULT_KINDS: the
+# lawyer's prélèvement and apport, a virement interne either way, a TPS/TVQ
+# remittance or refund, a client's advance received here) take no
 # category, ventilation, invoice nor supplier invoice — the model writes
 # their split itself (admin_ledger.canonical_ventilation) — and only a
-# virement interne may name a dossier: the lawyer's own money and the
-# firm's TPS/TVQ never do (admin_ledger._nature_refusal, refused here
-# naming the argument).
+# virement interne or an advance may name a dossier: the lawyer's own money
+# and the firm's TPS/TVQ never do (admin_ledger._nature_refusal, refused
+# here naming the argument). Only a virement interne sortant carries a
+# `transfer_purpose` (admin_ledger.TRANSFER_PURPOSES).
 _ADMIN_KIND_ARGS = {
     "dépense": {"category", "ventilation", "net_cents", "gst_cents",
                 "qst_cents", "dossier_id", "supplier_invoice_ref",
                 "counterparty", "reference", "description",
                 "already_cleared_date"},
+    "remboursement_depense": {"category", "ventilation", "net_cents",
+                              "gst_cents", "qst_cents", "dossier_id",
+                              "supplier_invoice_ref", "counterparty",
+                              "reference", "description",
+                              "already_cleared_date"},
     "recette_autre": {"dossier_id", "supplier_invoice_ref", "counterparty",
                       "reference", "description", "already_cleared_date"},
     "encaissement_facture": {"invoice_id", "counterparty", "reference",
@@ -17883,9 +17892,12 @@ _ADMIN_KIND_ARGS = {
     "apport": {"counterparty", "reference", "description",
                "already_cleared_date"},
     "virement_interne_sortant": {"dossier_id", "counterparty", "reference",
-                                 "description", "already_cleared_date"},
+                                 "description", "already_cleared_date",
+                                 "transfer_purpose"},
     "virement_interne_entrant": {"dossier_id", "counterparty", "reference",
                                  "description", "already_cleared_date"},
+    "avance_honoraires": {"dossier_id", "counterparty", "reference",
+                          "description", "already_cleared_date"},
     "remise_tps_tvq": {"counterparty", "reference", "description",
                        "already_cleared_date"},
     "remboursement_tps_tvq": {"counterparty", "reference", "description",
@@ -17894,21 +17906,30 @@ _ADMIN_KIND_ARGS = {
 }
 _KIND_WHAT = {
     "dépense": "une dépense",
+    "remboursement_depense": "un remboursement de dépense",
     "recette_autre": "une autre recette",
     "encaissement_facture": "un encaissement de facture",
     "prélèvement": "un prélèvement de l'avocat",
     "apport": "un apport de l'avocat",
     "virement_interne_sortant": "un virement interne",
     "virement_interne_entrant": "un virement interne",
+    "avance_honoraires": "une avance d'honoraires",
     "remise_tps_tvq": "une remise de TPS/TVQ",
     "remboursement_tps_tvq": "un remboursement de TPS/TVQ",
     "paiement_carte": "un paiement de carte",
 }
+# The demonstrative of each kind that carries a category
+# (admin_ledger.CATEGORY_KINDS) — « Le montant de cette dépense change ».
+_KIND_THIS = {
+    "dépense": "cette dépense",
+    "remboursement_depense": "ce remboursement de dépense",
+}
 
 
-def _ventilation_split(args: dict, amount: int) -> dict:
-    """A dépense's TPS/TVQ split from its declared mode — the model's own
-    fields. The register never guesses: no mode, no split."""
+def _ventilation_split(args: dict, amount: int, kind: str = "dépense") -> dict:
+    """The TPS/TVQ split of a dépense or of its refund (*kind*) from its
+    declared mode — the model's own fields. The register never guesses: no
+    mode, no split."""
     mode = args.get("ventilation")
     triple = [k for k in ("net_cents", "gst_cents", "qst_cents") if k in args]
     if mode != "détaillée" and triple:
@@ -17933,11 +17954,12 @@ def _ventilation_split(args: dict, amount: int) -> dict:
                 f"net_cents + gst_cents + qst_cents ({net + tps + tvq}) "
                 f"doivent égaler le montant ({amount}).")
     else:
+        what = _KIND_WHAT.get(kind, kind)
         raise ToolArgumentError(
-            "Une dépense exige `ventilation` : « ventiler » (extraire la "
-            "TPS et la TVQ du montant taxes incluses), « sans_taxe » (aucun "
-            "crédit de taxe réclamé) ou « détaillée » (net_cents, gst_cents, "
-            "qst_cents).")
+            f"{what[:1].upper()}{what[1:]} exige `ventilation` : « ventiler » "
+            "(extraire la TPS et la TVQ du montant taxes incluses), "
+            "« sans_taxe » (aucun crédit de taxe réclamé) ou « détaillée » "
+            "(net_cents, gst_cents, qst_cents).")
     return {"net_amount": net, "gst_amount": tps, "qst_amount": tvq}
 
 
@@ -18006,7 +18028,8 @@ def _record_admin_entry_impl(args: dict) -> dict:
             "le document bancaire le nomme — pour un virement interne, "
             "l'autre compte (« Compte en fidéicommis », un compte "
             "d'épargne) ; pour une remise ou un remboursement de TPS/TVQ, "
-            "l'administration fiscale.")
+            "l'administration fiscale ; pour une avance d'honoraires, le "
+            "client.")
     cleared = _write_date(args, "already_cleared_date", required=False)
     if cleared is not None:
         _not_future(cleared, "already_cleared_date")
@@ -18035,13 +18058,16 @@ def _record_admin_entry_impl(args: dict) -> dict:
         if dossier_id:
             _read_dossier_strict(dossier_id)
             data["dossier_id"] = dossier_id
-    if kind == "dépense":
+    if "transfer_purpose" in allowed and args.get("transfer_purpose"):
+        data["transfer_purpose"] = args["transfer_purpose"]
+    if kind in comptabilite_service.ADMIN_CATEGORY_KINDS:
         if not args.get("category"):
             raise ToolArgumentError(
-                "Une dépense exige `category` (get_reference_vocabulary ne "
-                "la liste pas : voyez l'énumération du schéma).")
+                f"{_KIND_WHAT[kind][:1].upper()}{_KIND_WHAT[kind][1:]} exige "
+                "`category` (get_reference_vocabulary ne la liste pas : voyez "
+                "l'énumération du schéma).")
         data["category"] = args["category"]
-        data.update(_ventilation_split(args, amount))
+        data.update(_ventilation_split(args, amount, kind))
     if kind == "encaissement_facture":
         invoice_id = (args.get("invoice_id") or "").strip()
         if not invoice_id:
@@ -18097,7 +18123,7 @@ def _record_admin_entry_impl(args: dict) -> dict:
 _ADMIN_EDIT_KEYS = ("date", "kind", "amount_cents", "method", "category",
                     "ventilation", "net_cents", "gst_cents", "qst_cents",
                     "dossier_id", "supplier_invoice_ref", "counterparty",
-                    "reference", "description")
+                    "reference", "description", "transfer_purpose")
 
 
 def _kind_move_refusal(before: str, after: str) -> str:
@@ -18197,23 +18223,36 @@ def _update_admin_entry_impl(args: dict) -> dict:
             "été écrit.", reason="accounting_refused")
     if data.get("dossier_id"):
         _read_dossier_strict(data["dossier_id"])
+    # Only a virement interne sortant carries a purpose
+    # (admin_ledger.TRANSFER_PURPOSES; the model refuses it too) — judged on
+    # the kind the entry WILL be, naming the argument.
+    if "transfer_purpose" in args:
+        purpose = str(args.get("transfer_purpose") or "")
+        if purpose and kind_after != "virement_interne_sortant":
+            raise ToolArgumentError(
+                "`transfer_purpose` ne vaut que pour un virement interne "
+                "sortant (« avances » : les avances de clients reçues ici, "
+                "versées au fidéicommis). Rien n'a été écrit.",
+                reason="accounting_refused")
+        data["transfer_purpose"] = purpose
 
     amount_after = data.get("amount", int(existing.get("amount") or 0))
-    if kind_after == "dépense":
+    if kind_after in comptabilite_service.ADMIN_CATEGORY_KINDS:
+        what = _KIND_WHAT.get(kind_after, kind_after)
         category = args.get("category") or existing.get("category")
         if not category:
             raise ToolArgumentError(
-                "Une dépense exige `category`.")
+                f"{what[:1].upper()}{what[1:]} exige `category`.")
         if "category" in args:
             data["category"] = args["category"]
-        becomes = existing.get("kind") != "dépense"
+        becomes = existing.get("kind") != kind_after
         amount_moves = "amount" in data and data["amount"] != existing.get("amount")
         if "ventilation" in args or any(
                 k in args for k in ("net_cents", "gst_cents", "qst_cents")):
-            data.update(_ventilation_split(args, amount_after))
+            data.update(_ventilation_split(args, amount_after, kind_after))
         elif becomes or amount_moves:
-            lead = ("Le montant de cette dépense change" if amount_moves
-                    else "Cette écriture devient une dépense")
+            lead = (f"Le montant de {_KIND_THIS[kind_after]} change"
+                    if amount_moves else f"Cette écriture devient {what}")
             raise ToolArgumentError(
                 lead + " : fournissez sa `ventilation` — « ventiler », "
                 "« sans_taxe » ou « détaillée » (net_cents, gst_cents, "
@@ -18224,17 +18263,20 @@ def _update_admin_entry_impl(args: dict) -> dict:
         stray = [k for k in ("category", "ventilation", "net_cents",
                              "gst_cents", "qst_cents") if k in args]
         if stray:
-            # The kinds it names are the model's editable ones but the
-            # dépense (KIND_MOVES' keys, through the service): a nature
-            # joining them names itself (final review of lot A — the
-            # list was restated by hand and went stale twice).
+            # The kinds it names are the model's editable ones but those
+            # that carry a category (KIND_MOVES' keys, through the
+            # service): a nature joining them names itself (final review
+            # of lot A — the list was restated by hand and went stale
+            # twice).
             others = list(dict.fromkeys(
                 _KIND_WHAT.get(k, k)
-                for k in comptabilite_service.ADMIN_KIND_MOVES if k != "dépense"))
+                for k in comptabilite_service.ADMIN_KIND_MOVES
+                if k not in comptabilite_service.ADMIN_CATEGORY_KINDS))
             listed = ", ".join(others[:-1]) + " et " + others[-1]
             raise ToolArgumentError(
                 ", ".join(f"`{k}`" for k in stray) + " ne vaut que pour une "
-                f"dépense : {listed} ne portent ni catégorie ni ventilation.")
+                "dépense ou un remboursement de dépense : "
+                f"{listed} ne portent ni catégorie ni ventilation.")
 
     report = comptabilite_service.modifier_ecriture_administration(
         tx_id, data, expected_etag=wanted)

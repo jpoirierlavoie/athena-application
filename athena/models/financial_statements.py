@@ -16,10 +16,17 @@ The rules (the plan of 2026-11-07, « The rules (Lot B) »):
   statements are « selon l'état actuel des inscriptions ».
 * **Costs** are the administration dépenses, net of TPS/TVQ, classed by
   ``admin_ledger.cost_class`` (dossier ⇒ direct; ``VARIABLE_COST_CATEGORIES``
-  ⇒ variable; the rest fixed). « Autres produits » are the « autre recette »
-  entries carrying no trust link; one that may stand for a fee payment
-  drawn from trust is marked (``fee_payment.manual_recette_candidates``),
-  never moved.
+  ⇒ variable; the rest fixed); a supplier's refund
+  (``admin_ledger.REFUND_KINDS``, 2026-11-08) lowers the class and category
+  of the cost it refunds, and gives its CTI/RTI back. « Autres produits »
+  are the « autre recette » entries carrying no trust link; one that may
+  stand for a fee payment drawn from trust is marked
+  (``fee_payment.manual_recette_candidates``), never moved.
+* **Clients' advances received here** (``admin_ledger.ADVANCE_KINDS``,
+  2026-11-08) are no revenue: until a virement interne marked « avances »
+  moves them to trust they are owed to the clients — a liability, «
+  Avances de clients à verser au fidéicommis » — and neither they nor that
+  transfer move the net assets.
 * **TPS/TVQ is never revenue nor expense**: the tax of billed invoices is a
   liability, the CTI/RTI of the dépenses reduce it, a remittance pays it, a
   refund comes back on it.
@@ -110,15 +117,17 @@ REQUIRED_FOR_PDF = ("resultats", "flux", "bilan")
 #: line (pinned by a test).
 CASH_FLOW_LINE_ORDER = (
     "encaissements_factures", "encaissements_factures_absentes",
-    "autres_recettes", "depenses", "paiements_carte",
+    "autres_recettes", "depenses", "remboursements_depenses", "paiements_carte",
     "remises_tps_tvq", "remboursements_tps_tvq",
     "apports", "prelevements", "virements_entrants", "virements_sortants",
+    "avances_recues", "avances_versees",
 )
 CASH_FLOW_LINE_LABELS = {
     "encaissements_factures": "Encaissements de factures",
     "encaissements_factures_absentes": "Virements du fidéicommis non rattachés à une facture",
     "autres_recettes": "Autres recettes",
     "depenses": "Dépenses payées (taxes comprises)",
+    "remboursements_depenses": "Remboursements de dépenses reçus (taxes comprises)",
     "paiements_carte": "Paiements de la carte de crédit",
     "remises_tps_tvq": "Remises de TPS/TVQ",
     "remboursements_tps_tvq": "Remboursements de TPS/TVQ",
@@ -126,6 +135,8 @@ CASH_FLOW_LINE_LABELS = {
     "prelevements": "Prélèvements de l'avocat",
     "virements_entrants": "Virements internes reçus",
     "virements_sortants": "Virements internes versés",
+    "avances_recues": "Avances d'honoraires de clients reçues",
+    "avances_versees": "Avances versées au fidéicommis",
 }
 
 #: Categories that are normally a dossier's cost: one filed without its
@@ -274,9 +285,22 @@ def _signed(row: dict) -> int:
     return row["sign"] * row["_amount"]
 
 
+def _factor(row: dict) -> int:
+    """+1 for a dépense, -1 for its refund (``admin_ledger.REFUND_KINDS``),
+    which counts against the same category and tax credits."""
+    return -1 if row.get("kind") in al.REFUND_KINDS else 1
+
+
 def _cost(row: dict) -> int:
-    """A resolved dépense's cost, net of TPS/TVQ."""
-    return row["sign"] * _cents(row, "net_amount")
+    """A resolved dépense's cost, net of TPS/TVQ — a refund's, negative."""
+    return _factor(row) * row["sign"] * _cents(row, "net_amount")
+
+
+def _tax_credits(row: dict) -> tuple:
+    """``(CTI, RTI)`` a resolved dépense claims — a refund gives them back
+    (negative)."""
+    factor = _factor(row) * row["sign"]
+    return factor * _cents(row, "gst_amount"), factor * _cents(row, "qst_amount")
 
 
 # ── Invoices ────────────────────────────────────────────────────────────────
@@ -476,6 +500,7 @@ class Position:
     tax_payable: int
     unattached: int
     provisions: int           # provision coverage received (never in a total)
+    advances: int = 0         # clients' advances received here, not yet moved to trust
 
     @property
     def assets(self) -> int:
@@ -483,7 +508,8 @@ class Position:
 
     @property
     def liabilities(self) -> int:
-        return sum(self.card.values()) + self.tax_payable + self.unattached
+        return (sum(self.card.values()) + self.tax_payable + self.unattached
+                + self.advances)
 
     @property
     def net(self) -> int:
@@ -494,7 +520,7 @@ def _position(world: _World, day: date) -> Position:
     admin = world.admin
     cash = {aid: 0 for aid in admin.ops_ids}
     card = {aid: 0 for aid in admin.card_ids}
-    tax = 0
+    tax = advances = 0
     for r in admin.rows:
         if r["_day"] > day:
             continue
@@ -503,12 +529,16 @@ def _position(world: _World, day: date) -> Position:
         else:
             card[r["account_id"]] -= r["_delta"]
         kind = r.get("kind")
-        if kind == "dépense":
-            tax -= r["sign"] * (_cents(r, "gst_amount") + _cents(r, "qst_amount"))
+        if kind in al.CATEGORY_KINDS:
+            tax -= sum(_tax_credits(r))
         elif kind == "remise_tps_tvq":
             tax -= _signed(r)
         elif kind == "remboursement_tps_tvq":
             tax += _signed(r)
+        elif kind in al.ADVANCE_KINDS:
+            advances += _signed(r)
+        elif al.is_advance_transfer(r):
+            advances -= _signed(r)
     receivables = provisions = 0
     for iid, inv in world.invoices.by_id.items():
         if world.taken(iid, day):
@@ -517,7 +547,8 @@ def _position(world: _World, day: date) -> Position:
             provisions += world.provision_part(iid, day)
     unattached = sum(p.amount for p in world.payments
                      if p.day <= day and not world.taken(p.invoice_id, day))
-    return Position(day, cash, card, receivables, tax, unattached, provisions)
+    return Position(day, cash, card, receivables, tax, unattached, provisions,
+                    advances)
 
 
 # ── The statements ──────────────────────────────────────────────────────────
@@ -584,7 +615,8 @@ def _income(admin: _Admin, invoices: _Invoices, start: date, end: date,
         kind = r.get("kind")
         if kind == "recette_autre" and not r.get("trust_transaction_id"):
             other.append(r)
-        elif kind == "dépense":
+        elif kind in al.CATEGORY_KINDS:
+            # A refund lowers the class and category of the cost it refunds.
             bucket = costs[al.cost_class(r)]
             category = r.get("category") or ""
             bucket[category] = bucket.get(category, 0) + _cost(r)
@@ -613,7 +645,7 @@ def _cash_flow(world: _World, start: date, end: date,
             continue
         moved = True
         kind = r.get("kind")
-        line = al.CASH_FLOW_LINES[kind]
+        line = al.cash_flow_line(r)
         if kind == "recette_autre" and r.get("trust_transaction_id"):
             line = ("encaissements_factures" if _is_attributed(world.attribution, r)
                     else "encaissements_factures_absentes")
@@ -646,9 +678,11 @@ def _rollforward(world: _World, start: date, end: date, income: dict,
         if r["_delta"] != expected_delta:
             defects["direction"] += r["_delta"] - expected_delta
             defect_ids["direction"].append(r["id"])
-        if kind == "dépense":
-            gap = r["sign"] * (_cents(r, "net_amount") + _cents(r, "gst_amount")
-                               + _cents(r, "qst_amount") - r["_amount"])
+        if kind in al.CATEGORY_KINDS:
+            # A refund's inexact split moves the net assets the other way.
+            gap = _factor(r) * r["sign"] * (
+                _cents(r, "net_amount") + _cents(r, "gst_amount")
+                + _cents(r, "qst_amount") - r["_amount"])
             if gap:
                 defects["split"] += gap
                 defect_ids["split"].append(r["id"])
@@ -658,7 +692,9 @@ def _rollforward(world: _World, start: date, end: date, income: dict,
             terms["prelevements"] += signed
         elif kind == "virement_interne_entrant":
             terms["virements"] += signed
-        elif kind == "virement_interne_sortant":
+        elif kind == "virement_interne_sortant" and not al.is_advance_transfer(r):
+            # A transfer of advances settles the advances owed (a liability):
+            # like the advance it moves, it leaves the net assets alone.
             terms["virements"] -= signed
         elif (kind == "recette_autre" and r.get("trust_transaction_id")
               and not _is_attributed(world.attribution, r)):
@@ -712,9 +748,10 @@ def _taxes(admin: _Admin, invoices: _Invoices, start: date, end: date,
         if not _within(r["_day"], start, end):
             continue
         kind = r.get("kind")
-        if kind == "dépense":
-            cti += r["sign"] * _cents(r, "gst_amount")
-            rti += r["sign"] * _cents(r, "qst_amount")
+        if kind in al.CATEGORY_KINDS:
+            gst_credit, qst_credit = _tax_credits(r)
+            cti += gst_credit
+            rti += qst_credit
         elif kind == "remise_tps_tvq":
             remitted += _signed(r)
         elif kind == "remboursement_tps_tvq":
@@ -945,9 +982,58 @@ def _points(st: Statements, world: Optional[_World], admin: Optional[_Admin],
                [r["id"] for r in card_refunds],
                amount=sum(_signed(r) for r in card_refunds),
                refs=[_ref(r) for r in card_refunds])
+        # An « autre recette » the same account sends on within 14 days, for
+        # the same amount, by a virement interne not marked « avances »: the
+        # shape of a client's advance that reached the wrong account.
+        window = timedelta(days=14)
+        sent = [r for r in admin.rows if r.get("kind") == "virement_interne_sortant"
+                and not al.is_advance_transfer(r) and r["sign"] == 1
+                and not r.get("reversed_by_id")]
+        maybe = [r for r in period_rows if r.get("kind") == "recette_autre"
+                 and r["sign"] == 1 and not r.get("trust_transaction_id")
+                 and not r.get("reversed_by_id")
+                 and any(s["account_id"] == r["account_id"] and s["_amount"] == r["_amount"]
+                         and r["_day"] <= s["_day"] <= r["_day"] + window for s in sent)]
+        _point(points, "avance_possible", "Autres recettes suivies, dans les 14 "
+               "jours, d'un virement interne sortant du même montant — l'avance "
+               "d'un client, à inscrire en « Avance d'honoraires » ?",
+               [r["id"] for r in maybe], amount=sum(r["_amount"] for r in maybe),
+               refs=[_ref(r) for r in maybe])
+    bilan = st.sections.get("bilan")
+    if admin is not None and bilan is not None:
+        owed = bilan["closing"].advances
+
+        def newest(rows: list, total: int) -> list:
+            """The latest of *rows* whose amounts reach *total* — under a
+            first-in, first-out settlement, the ones still open."""
+            picked, reached = [], 0
+            for r in sorted(rows, key=lambda r: (r["_day"], r.get("id") or ""),
+                            reverse=True):
+                if reached >= total:
+                    break
+                picked.append(r)
+                reached += r["_amount"]
+            return picked
+
+        standing = [r for r in admin.rows if r["sign"] == 1 and r["_day"] <= end
+                    and not r.get("reversed_by_id")]
+        if owed > 0:
+            open_rows = newest([r for r in standing
+                                if r.get("kind") in al.ADVANCE_KINDS], owed)
+            _point(points, "avances_a_verser", "Avances d'honoraires reçues au "
+                   "compte d'opérations, pas encore versées au fidéicommis",
+                   [r["id"] for r in open_rows], amount=owed,
+                   refs=[_ref(r) for r in open_rows])
+        elif owed < 0:
+            extra = newest([r for r in standing if al.is_advance_transfer(r)], -owed)
+            _point(points, "avances_non_inscrites", "Virements marqués « avances » "
+                   "au-delà des avances inscrites — une avance inscrite en autre "
+                   "recette ?", [r["id"] for r in extra], amount=-owed,
+                   refs=[_ref(r) for r in extra])
     roll = st.sections.get("avoir")
     if roll:
-        for key, label in (("split", "Dépenses dont la ventilation n'égale pas le montant"),
+        for key, label in (("split", "Dépenses ou remboursements dont la ventilation "
+                                     "n'égale pas le montant"),
                            ("card", "Paiements de carte dont les jambes tombent dans "
                                     "des périodes différentes"),
                            ("direction", "Écritures dont le sens contredit la nature"),
@@ -1142,6 +1228,8 @@ def _present_balance(st: Statements, data: dict) -> dict:
     rows.append(_row("TPS/TVQ à remettre", opening.tax_payable, closing.tax_payable, level=1))
     rows.append(_row("Sommes reçues à rattacher", opening.unattached, closing.unattached,
                      level=1))
+    rows.append(_row("Avances de clients à verser au fidéicommis", opening.advances,
+                     closing.advances, level=1))
     rows.append(_row("Total du passif", opening.liabilities, closing.liabilities,
                      style="subtotal"))
     rows.append(_row("Avoir net (actif − passif)", opening.net, closing.net, style="total"))
@@ -1157,7 +1245,8 @@ def _present_rollforward(data: dict) -> dict:
             _row("Bénéfice net", data["net_income"], level=1),
             _row("Apports de l'avocat", data["apports"], level=1),
             _row("Prélèvements de l'avocat", -data["prelevements"], level=1),
-            _row("Virements internes (nets)", data["virements"], level=1),
+            _row("Virements internes (nets, hors avances versées au fidéicommis)",
+                 data["virements"], level=1),
             _row("Virements du fidéicommis non rattachés à une facture",
                  data["factures_absentes"], level=1),
             _row("Soldes de factures présumés réglés", -data["settled"], level=1),

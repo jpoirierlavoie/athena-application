@@ -2200,6 +2200,7 @@ _NATURE_COUNTERPARTY = {
     "virement_interne_entrant": "Compte d'épargne",
     "remise_tps_tvq": "Administration fiscale",
     "remboursement_tps_tvq": "Administration fiscale",
+    "avance_honoraires": "Client fictif",
 }
 
 
@@ -2219,11 +2220,24 @@ def _recette(amount: int = 11498, **over) -> dict:
     return args
 
 
+def _remboursement(amount: int = 11498, **over) -> dict:
+    """A supplier's refund of an expense (2026-11-08): a recette with the
+    category and the split of the expense it refunds."""
+    args = {"account_id": "ops1", "kind": "remboursement_depense",
+            "amount_cents": amount, "date": "2026-09-05", "method": "virement",
+            "counterparty": "Fournisseur fictif", "category": "fournitures",
+            "ventilation": "sans_taxe"}
+    args.update(over)
+    return args
+
+
 def _made(kind: str, **over) -> dict:
-    """An entry of *kind* (dépense, recette_autre or a nature), recorded
-    through the connector — its entity."""
+    """An entry of *kind* (dépense, its refund, recette_autre or a nature),
+    recorded through the connector — its entity."""
     if kind == "dépense":
         args = _depense(**over)
+    elif kind == "remboursement_depense":
+        args = _remboursement(**over)
     elif kind == "recette_autre":
         args = _recette(**over)
     else:
@@ -2253,6 +2267,7 @@ _ARG_VALUES = {
     "already_cleared_date": "2026-09-08",
     "invoice_id": "inv1",
     "card_account_id": "card1",
+    "transfer_purpose": "avances",
 }
 _ARG_AMOUNT = 9000 + 450 + 898
 _ARG_EVIDENCE = {
@@ -2273,6 +2288,7 @@ _ARG_EVIDENCE = {
         "invoices/inv1")["amount_paid"] == _ARG_AMOUNT),
     "card_account_id": lambda e, f: f.peek(
         f"admin_transactions/{e['related_transaction_id']}")["account_id"] == "card1",
+    "transfer_purpose": lambda e, f: e["transfer_purpose"] == "avances",
 }
 
 
@@ -2324,6 +2340,7 @@ def test_the_connectors_kind_tables_are_the_models():
     ("virement_interne_sortant", "déboursé"),
     ("virement_interne_entrant", "recette"),
     ("remise_tps_tvq", "déboursé"), ("remboursement_tps_tvq", "recette"),
+    ("avance_honoraires", "recette"),
 ])
 def test_each_nature_is_recorded_with_its_sign_and_the_ledgers_own_split(
         fake, kind, direction):
@@ -2405,7 +2422,8 @@ def test_every_argument_a_kind_does_not_take_is_refused_naming_it(fake):
 
 
 @pytest.mark.parametrize("kind", ["virement_interne_sortant",
-                                  "virement_interne_entrant"])
+                                  "virement_interne_entrant",
+                                  "avance_honoraires"])
 def test_a_virement_interne_may_name_a_dossier(fake, kind):
     payload = _call("record_admin_entry", **_nature(kind, dossier_id="dos1"))
     _conforms("record_admin_entry", payload)
@@ -2435,12 +2453,13 @@ def test_a_nature_without_its_counterparty_is_told_whom_to_name(fake, kind):
         "`counterparty` est requis : le payeur ou le fournisseur, comme le "
         "document bancaire le nomme — pour un virement interne, l'autre "
         "compte (« Compte en fidéicommis », un compte d'épargne) ; pour une "
-        "remise ou un remboursement de TPS/TVQ, l'administration fiscale.")
+        "remise ou un remboursement de TPS/TVQ, l'administration fiscale ; "
+        "pour une avance d'honoraires, le client.")
     assert _entries(fake, "admin_transactions") == before
     described = tools.TOOLS["record_admin_entry"]["input_schema"][
         "properties"]["counterparty"]["description"]
     assert ("on a remise_tps_tvq or a remboursement_tps_tvq, the tax "
-            "authority.") in described
+            "authority; on an avance_honoraires, the client.") in described
 
 
 def test_the_model_refuses_what_the_handler_refuses_first(fake):
@@ -2524,7 +2543,7 @@ def test_every_change_of_kind_is_the_models_verdict(fake, old, new):
     refuses."""
     made = _made(old)
     extra = ({"category": "fournitures", "ventilation": "sans_taxe"}
-             if new == "dépense" else {})
+             if new in al.CATEGORY_KINDS else {})
     if al.kind_move_allowed(old, new):
         payload = _call("update_admin_entry", tx_id=made["id"],
                         expected_etag=made["etag"], kind=new, **extra)
@@ -2532,15 +2551,18 @@ def test_every_change_of_kind_is_the_models_verdict(fake, old, new):
         stored = fake.peek(f"admin_transactions/{made['id']}")
         direction = al._KIND_DIRECTION[new]
         assert (stored["kind"], stored["direction"]) == (new, direction)
-        assert stored["category"] == ("fournitures" if new == "dépense" else None)
+        assert stored["category"] == ("fournitures" if new in al.CATEGORY_KINDS
+                                      else None)
         canonical = al.canonical_ventilation(new, direction, 11498)
         if canonical is not None:
             assert _split_of(stored) == (canonical["net_amount"],
                                          canonical["gst_amount"],
                                          canonical["qst_amount"])
         else:
+            # A dépense or its refund, « sans_taxe »: net = amount — on
+            # either sign (a refund is split like the expense it refunds).
             assert _split_of(stored) == (
-                (11498, 0, 0) if direction == "déboursé" else (0, 0, 0))
+                (11498, 0, 0) if new in al.CATEGORY_KINDS else (0, 0, 0))
         return
     before = _entries(fake, "admin_transactions")
     refusal = _refused("update_admin_entry", tx_id=made["id"],
@@ -2670,14 +2692,17 @@ def test_a_nature_takes_an_amount_or_a_description_alone(fake, kind):
                            expected_etag=stored["etag"], amount_cents=30000,
                            **extra)
         text = str(refusal)
-        assert text.startswith(f"`{key}` ne vaut que pour une dépense : "), key
+        assert text.startswith(f"`{key}` ne vaut que pour une dépense ou un "
+                               "remboursement de dépense : "), key
         assert text.endswith(" ne portent ni catégorie ni ventilation."), key
-        # Every editable kind but the dépense names itself — derived from
-        # the model, so a nature joining them cannot go unnamed (final
-        # review of lot A: the text was a fixed string).
+        # Every editable kind but those that carry a category names itself
+        # — derived from the model, so a nature joining them cannot go
+        # unnamed (final review of lot A: the text was a fixed string).
+        listed = text.split(" : ", 1)[1]
         for other in al._EDITABLE_KINDS:
-            if other != "dépense":
-                assert handlers._KIND_WHAT[other] in text, (key, other)
+            if other not in al.CATEGORY_KINDS:
+                assert handlers._KIND_WHAT[other] in listed, (key, other)
+        assert handlers._KIND_WHAT["remboursement_depense"] not in listed
     assert fake.peek(f"admin_transactions/{made['id']}")["amount"] == 20000
 
 
@@ -2719,3 +2744,48 @@ def test_a_nature_reverses_through_the_connector_with_no_split_of_its_own(fake):
     assert correction["reverses_kind"] == "prélèvement"
     assert correction["category"] is None and _split_of(correction) == (0, 0, 0)
     assert fake.peek("admin_accounts/ops1")["ledger_balance"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# A client's advance, a supplier's refund, the transfer's purpose
+# (the lawyer's decisions of 2026-11-08)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_transfer_of_advances_is_marked_through_the_connector(fake):
+    advance = _call("record_admin_entry", **_nature("avance_honoraires", dossier_id="dos1"))
+    _conforms("record_admin_entry", advance)
+    assert advance["entity"]["kind_label"] == "Avance d'honoraires"
+    marked = _call("record_admin_entry", **_nature(
+        "virement_interne_sortant", transfer_purpose="avances"))
+    _conforms("record_admin_entry", marked)
+    assert marked["entity"]["transfer_purpose"] == "avances"
+    stored = fake.peek(f"admin_transactions/{marked['entity']['id']}")
+    assert stored["transfer_purpose"] == "avances"
+    # The mark comes off, and goes nowhere but a virement interne sortant.
+    cleared = _call("update_admin_entry", tx_id=marked["entity"]["id"],
+                    expected_etag=marked["entity"]["etag"], transfer_purpose="")
+    _conforms("update_admin_entry", cleared)
+    assert cleared["entity"]["transfer_purpose"] == ""
+    before = _entries(fake, "admin_transactions")
+    refusal = _refused("update_admin_entry", tx_id=advance["entity"]["id"],
+                       expected_etag=advance["entity"]["etag"],
+                       transfer_purpose="avances")
+    assert refusal.reason == "accounting_refused"
+    assert str(refusal).startswith("`transfer_purpose` ne vaut que pour un virement "
+                                   "interne sortant")
+    assert _entries(fake, "admin_transactions") == before
+
+
+def test_a_refund_is_recorded_with_its_category_and_split(fake):
+    payload = _call("record_admin_entry", **_remboursement(
+        amount=2100, ventilation="détaillée", net_cents=2000, gst_cents=100,
+        qst_cents=0, category="infonuagique_ia"))
+    _conforms("record_admin_entry", payload)
+    entity = payload["entity"]
+    assert (entity["kind"], entity["direction"], entity["category"]) == (
+        "remboursement_depense", "recette", "infonuagique_ia")
+    assert _split_of(fake.peek(f"admin_transactions/{entity['id']}")) == (2000, 100, 0)
+    refusal = _refused("record_admin_entry", **{
+        k: v for k, v in _remboursement().items() if k != "ventilation"})
+    assert str(refusal).startswith("Un remboursement de dépense exige `ventilation`")

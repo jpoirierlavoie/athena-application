@@ -1819,23 +1819,30 @@ _TRUST_METHODS = ["chèque", "virement", "traite", "dépôt_direct", "comptant"]
 # order (correction: minted by a reversal only). The natures outside the
 # firm's results (NON_RESULT_KINDS: the lawyer's prélèvement and apport, a
 # virement interne either way — 2026-10-07 —, a TPS/TVQ remittance or
-# refund — 2026-11-07) are in all three.
+# refund — 2026-11-07 —, a client's advance received here — 2026-11-08) and
+# the refund of an expense (REFUND_KINDS, 2026-11-08) are in all three.
 _ADMIN_ENTRY_KINDS = [
     "dépense", "recette_autre", "encaissement_facture", "prélèvement",
     "apport", "virement_interne_sortant", "virement_interne_entrant",
     "remise_tps_tvq", "remboursement_tps_tvq", "paiement_carte",
+    "remboursement_depense", "avance_honoraires",
 ]
 _ADMIN_EDIT_KINDS = [
     "dépense", "recette_autre", "prélèvement", "apport",
     "virement_interne_sortant", "virement_interne_entrant",
     "remise_tps_tvq", "remboursement_tps_tvq",
+    "remboursement_depense", "avance_honoraires",
 ]
 _ADMIN_KINDS = [
-    "encaissement_facture", "recette_autre", "dépense", "prélèvement",
-    "apport", "virement_interne_sortant", "virement_interne_entrant",
-    "remise_tps_tvq", "remboursement_tps_tvq", "paiement_carte",
-    "correction",
+    "encaissement_facture", "recette_autre", "dépense", "remboursement_depense",
+    "prélèvement", "apport", "virement_interne_sortant",
+    "virement_interne_entrant", "avance_honoraires", "remise_tps_tvq",
+    "remboursement_tps_tvq", "paiement_carte", "correction",
 ]
+# The purpose a virement interne sortant may carry (admin_ledger
+# .TRANSFER_PURPOSES): « avances » — the advances received here, moved to
+# trust; "" — any other transfer.
+_ADMIN_TRANSFER_PURPOSES = ["avances", ""]
 _ADMIN_METHODS = [
     "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant",
     "autre",
@@ -1843,8 +1850,9 @@ _ADMIN_METHODS = [
 _ADMIN_CATEGORIES = [
     "loyer", "internet", "téléphone", "abonnements", "infonuagique_ia",
     "équipement", "fournitures", "assurances", "cotisations_professionnelles",
-    "formation", "publicité", "honoraires_professionnels", "huissier",
-    "sténographe", "frais_bancaires", "intérêts", "taxes_permis", "autre",
+    "formation", "documentation", "recherche", "publicité",
+    "honoraires_professionnels", "huissier", "sténographe", "frais_bancaires",
+    "intérêts", "taxes_permis", "autre",
 ]
 _REGISTER_STATUSES = ["en_circulation", "compensée", "annulée"]
 # How a dépense's TPS/TVQ split is given: extracted from the taxes-included
@@ -1874,10 +1882,11 @@ def _ventilation_props() -> dict:
         "ventilation": {
             "type": "string", "enum": _VENTILATION_MODES,
             "description": (
-                "A dépense's TPS/TVQ split: ventiler (extract both from the "
-                "taxes-included amount), sans_taxe (no tax credit claimed: "
-                "net = amount) or détaillée (net_cents + gst_cents + "
-                "qst_cents, summing exactly to the amount)."
+                "The TPS/TVQ split of a dépense (paid) or a "
+                "remboursement_depense (refunded): ventiler (extract both "
+                "from the taxes-included amount), sans_taxe (no tax: net = "
+                "amount) or détaillée (net_cents + gst_cents + qst_cents, "
+                "summing exactly to the amount)."
             ),
         },
         "net_cents": {**part, "description": "détaillée only: net amount."},
@@ -6738,18 +6747,20 @@ TOOLS: dict[str, dict] = {
             "kind, status or category filter. A revenue, expense or "
             "tax-credit (CTI/RTI) total counts only encaissement_facture and "
             "recette_autre "
-            "(revenue) and dépense (expenses — a row's net, TPS and TVQ "
-            "mean something only on a dépense or its correction), a "
-            "correction counting as the entry it reverses (`reverses_id`), "
-            "sign inverted. Never in any such total: prélèvement (the "
-            "lawyer's DRAWING — not the method « prélèvement », a "
-            "pre-authorized debit), apport (money he puts in), "
-            "virement_interne_sortant / virement_interne_entrant (to or "
-            "from an account outside this ledger), remise_tps_tvq / "
-            "remboursement_tps_tvq (TPS/TVQ paid to or refunded by the tax "
-            "authorities: it settles the TPS/TVQ balance, never an expense "
-            "nor a tax credit) and paiement_carte (between two accounts of "
-            "this ledger)."
+            "(revenue) and dépense less remboursement_depense (expenses — a "
+            "row's net, TPS and TVQ mean something only on those two or "
+            "their correction), a correction counting as the entry it "
+            "reverses (`reverses_id`), sign inverted. Never in any such "
+            "total: prélèvement (the lawyer's DRAWING — not the method "
+            "« prélèvement », a pre-authorized debit), apport (money he puts "
+            "in), virement_interne_sortant / virement_interne_entrant (to or "
+            "from an account outside this ledger; `transfer_purpose` "
+            "« avances » marks advances moved to trust), avance_honoraires "
+            "(a client's advance received here: client money), "
+            "remise_tps_tvq / remboursement_tps_tvq (TPS/TVQ paid to or "
+            "refunded by the tax authorities: it settles the TPS/TVQ "
+            "balance, never an expense nor a tax credit) and paiement_carte "
+            "(between two accounts of this ledger)."
         ),
         "input_schema": {
             "type": "object",
@@ -6769,7 +6780,8 @@ TOOLS: dict[str, dict] = {
                 "status": {"type": "string", "enum": _REGISTER_STATUSES,
                            "description": "Only the entries in this status."},
                 "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
-                             "description": "Only the dépenses of this category."},
+                             "description": ("Only the dépenses and refunds "
+                                             "of this category.")},
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -6874,41 +6886,41 @@ TOOLS: dict[str, dict] = {
     "record_admin_entry": {
         "title": "Inscrire une écriture d'administration",
         "description": (
-            "ACCOUNTING — WRITE to the administration ledger (operations "
-            "account, corporate card). Records what HAPPENED, dated the day "
-            "it happened: never future, never on or before the account's "
-            "last completed reconciliation. The kind decides the sign — "
-            "there is no direction: dépense (a déboursé: `category` and "
-            "`ventilation` required), recette_autre, encaissement_facture — "
-            "RECORDS A PAYMENT on the Pallas Athéna invoice `invoice_id` in "
-            "the SAME transaction, up to its balance, which may turn it "
-            "payée (an operations account only; the dossier is the "
-            "invoice's) —, paiement_carte (pays the card `card_account_id` "
-            "FROM the operations account `account_id`: two linked entries; "
-            "paying a card of this ledger is always this, never a virement "
-            "interne). The natures OUTSIDE the firm's results take no "
-            "`category`, `ventilation`, invoice nor supplier invoice; the "
-            "ledger writes their split itself, no TPS/TVQ claimed: "
-            "prélèvement (a déboursé: the lawyer's DRAWING — never the method "
-            "« prélèvement », a pre-authorized debit) and apport (a recette: "
-            "money the lawyer puts in), neither ever with a dossier; "
-            "virement_interne_sortant / virement_interne_entrant (money "
-            "moving to / from an account OUTSIDE this ledger — the trust "
-            "account, a savings account — named as `counterparty`; a "
-            "dossier allowed); remise_tps_tvq / remboursement_tps_tvq "
-            "(TPS/TVQ paid to / refunded by the tax authorities, its whole "
-            "amount — never a dépense nor a recette_autre; interest or "
-            "penalties paid are a dépense apart, interest received a "
-            "recette_autre apart; never with a dossier). Fees drawn from "
-            "trust are never a "
-            "virement interne: record_trust_entry purpose "
-            "virement_honoraires records them, this ledger's recette "
-            "included. These natures and paiement_carte enter no revenue, "
-            "expense or tax-credit total. "
-            "`already_cleared_date` records it born compensée at that "
-            "statement date. Corrected with update_admin_entry while still "
-            "editable, otherwise only by reversal; never deleted here. "
-            "idempotency_key REQUIRED."
+            "ACCOUNTING — WRITE to the administration ledger. Dated the day "
+            "it HAPPENED: never "
+            "future, never on or before the account's last completed "
+            "reconciliation. The kind decides the sign — there is no "
+            "direction: dépense (a déboursé: `category` and `ventilation` "
+            "required); remboursement_depense (a recette: a supplier's "
+            "refund, `category` and `ventilation` as on a dépense — it "
+            "lowers that category); recette_autre; "
+            "encaissement_facture — RECORDS A PAYMENT on the Pallas Athéna "
+            "invoice `invoice_id` in the SAME transaction, up to its "
+            "balance, which may turn it payée (an operations account only; "
+            "the dossier is the invoice's) —; paiement_carte (pays the card "
+            "`card_account_id` FROM the operations account `account_id`: two "
+            "linked entries; paying a card of this ledger is always this, "
+            "never a virement interne). The natures OUTSIDE the firm's "
+            "results take no `category`, `ventilation`, invoice nor supplier "
+            "invoice; their split is the ledger's: prélèvement (a déboursé: "
+            "the lawyer's DRAWING — never the method « prélèvement », a "
+            "pre-authorized debit) and apport (a recette: money the lawyer "
+            "puts in), neither ever with a dossier; virement_interne_sortant "
+            "/ virement_interne_entrant (money moving to / from an account "
+            "OUTSIDE this ledger — the trust account, a savings account — "
+            "named as `counterparty`; a dossier allowed); avance_honoraires "
+            "(a client's advance received here, not in trust: client "
+            "money — see `transfer_purpose`); remise_tps_tvq / "
+            "remboursement_tps_tvq (TPS/TVQ paid to / refunded by the tax "
+            "authorities, its whole amount — never a dépense nor a "
+            "recette_autre; interest or penalties paid are a dépense apart, "
+            "interest received a recette_autre apart; never with a "
+            "dossier). Fees drawn from trust are never a virement interne: "
+            "record_trust_entry purpose virement_honoraires records them. "
+            "These natures and paiement_carte enter no revenue, expense or "
+            "tax-credit total. `already_cleared_date`: born compensée. "
+            "Corrected by update_admin_entry while editable, else by "
+            "reversal; never deleted here. idempotency_key REQUIRED."
         ),
         "input_schema": {
             "type": "object",
@@ -6938,9 +6950,15 @@ TOOLS: dict[str, dict] = {
                 "category": {
                     "type": "string", "enum": _ADMIN_CATEGORIES,
                     "description": (
-                        "dépense only, required. Usage-billed cloud and AI "
-                        "(API credits, hosting, compute): infonuagique_ia; "
-                        "a flat monthly plan stays abonnements."
+                        "dépense or remboursement_depense only, required. "
+                        "Usage-billed cloud and AI (API credits, hosting, "
+                        "compute; every Anthropic charge): infonuagique_ia; "
+                        "a flat monthly plan stays abonnements (« Logiciels "
+                        "et bureautique »). Law reports, journals, books: "
+                        "documentation; research billed by the search "
+                        "(SOQUIJ, land or bankruptcy registers): recherche; "
+                        "a court stamp stays taxes_permis; a course or a "
+                        "degree, formation."
                     ),
                 },
                 **_ventilation_props(),
@@ -6953,15 +6971,26 @@ TOOLS: dict[str, dict] = {
                     "(get_admin_ledger)."
                 ),
                 "dossier_id": _id(
-                    "dépense, recette_autre or a virement interne only: an "
+                    "dépense, remboursement_depense, recette_autre, "
+                    "avance_honoraires or a virement interne only: an "
                     "optional dossier link — never on a prélèvement, an "
                     "apport, a remise_tps_tvq or a remboursement_tps_tvq."
                 ),
                 "supplier_invoice_ref": {
                     "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
                     "description": (
-                        "dépense / recette_autre only: the supplier's own "
-                        "invoice number."
+                        "dépense / remboursement_depense / recette_autre "
+                        "only: the supplier's own invoice number."
+                    ),
+                },
+                "transfer_purpose": {
+                    "type": "string", "enum": _ADMIN_TRANSFER_PURPOSES,
+                    "description": (
+                        "virement_interne_sortant only: « avances » when it "
+                        "moves to trust the advances received here "
+                        "(avance_honoraires) — then neither touches the "
+                        "results, and the statements settle the advances "
+                        "owed with it; omit (or \"\") for any other transfer."
                     ),
                 },
                 **_register_text_props(
@@ -6969,7 +6998,8 @@ TOOLS: dict[str, dict] = {
                     "(its two accounts name each other). On a virement "
                     "interne, the other account (« Compte en fidéicommis », "
                     "a savings account); on a remise_tps_tvq or a "
-                    "remboursement_tps_tvq, the tax authority."
+                    "remboursement_tps_tvq, the tax authority; on an "
+                    "avance_honoraires, the client."
                 ),
                 "already_cleared_date": _date(
                     "The bank statement date, YYYY-MM-DD, when the movement "
@@ -7011,16 +7041,19 @@ TOOLS: dict[str, dict] = {
             "the bank movement's sign: dépense, prélèvement, "
             "virement_interne_sortant and remise_tps_tvq (déboursés) move "
             "among themselves, recette_autre, apport, "
-            "virement_interne_entrant and remboursement_tps_tvq (recettes) "
-            "among themselves; across signs only dépense <-> recette_autre, "
-            "the sign following. Any other change of sign is refused: "
-            "reverse the entry, then record the right one. Changing a "
-            "dépense's amount, or making an entry a dépense, REQUIRES "
-            "`ventilation` (the latter `category` too). Net, TPS and TVQ "
-            "mean something only on a dépense: no other kind takes "
-            "`category` or `ventilation` (the natures outside the results "
-            "get the ledger's own split, no TPS/TVQ claimed, whatever their "
-            "amount). A prélèvement, an apport, a remise_tps_tvq or a "
+            "virement_interne_entrant, remboursement_tps_tvq, "
+            "remboursement_depense and avance_honoraires (recettes) among "
+            "themselves; across signs only dépense <-> recette_autre, the "
+            "sign following. Any other change of sign is refused: reverse "
+            "the entry, then record the right one. Changing the amount of a "
+            "dépense or a remboursement_depense, or making an entry one, "
+            "REQUIRES `ventilation` (the latter `category` too). Net, TPS "
+            "and TVQ mean something only on a dépense or a "
+            "remboursement_depense: no other kind takes `category` or "
+            "`ventilation` (the natures outside the results get the "
+            "ledger's own split, no TPS/TVQ claimed, whatever their amount). "
+            "`transfer_purpose` goes only on a virement_interne_sortant. A "
+            "prélèvement, an apport, a remise_tps_tvq or a "
             "remboursement_tps_tvq never carries a dossier: making a linked "
             "entry one requires `dossier_id` \"\". idempotency_key REQUIRED."
         ),
@@ -7042,7 +7075,8 @@ TOOLS: dict[str, dict] = {
                                "pre-authorized debit, not the kind."
                            )},
                 "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
-                             "description": "New dépense category."},
+                             "description": ("New category of a dépense or a "
+                                             "remboursement_depense.")},
                 **_ventilation_props(),
                 "dossier_id": {
                     "type": "string", "maxLength": 64,
@@ -7050,6 +7084,14 @@ TOOLS: dict[str, dict] = {
                         "New dossier link; '' removes it — never one on a "
                         "prélèvement, an apport, a remise_tps_tvq or a "
                         "remboursement_tps_tvq."
+                    ),
+                },
+                "transfer_purpose": {
+                    "type": "string", "enum": _ADMIN_TRANSFER_PURPOSES,
+                    "description": (
+                        "virement_interne_sortant only: « avances » marks "
+                        "the advances (avance_honoraires) it moved to "
+                        "trust; \"\" removes the mark."
                     ),
                 },
                 "supplier_invoice_ref": {

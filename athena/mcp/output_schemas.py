@@ -1693,7 +1693,8 @@ def _admin_register_props() -> dict[str, Any]:
         **_money("net_amount", "The TPS/TVQ split, as stored."),
         **_money("gst_amount"),
         **_money("qst_amount"),
-        "category": _str("A dépense's category; '' otherwise."),
+        "category": _str("A dépense's or a remboursement_depense's category; "
+                         "'' otherwise."),
         "counterparty": _str(),
         "description": _str(),
         "reference": _str(),
@@ -1708,6 +1709,10 @@ def _admin_register_props() -> dict[str, Any]:
         "reverses_id": _str("On a correction: the entry it reverses; ''."),
         "reversed_by_id": _str("Its reversal; '' while standing."),
         "related_transaction_id": _str("A card payment's other leg; ''."),
+        "transfer_purpose": _str(
+            "A virement_interne_sortant's purpose: 'avances' when it moved to "
+            "trust the advances received here (avance_honoraires); '' "
+            "otherwise."),
         "has_receipt": _bool("A supporting document is attached (in the "
                              "application only)."),
         "revisions_count": _int("Corrections kept in its revision trail."),
@@ -1718,9 +1723,11 @@ def _admin_register_props() -> dict[str, Any]:
 
 
 def _admin_register_row() -> dict:
-    """An administration entry AS STORED after an accounting write."""
+    """An administration entry AS STORED after an accounting write.
+    ``transfer_purpose`` (2026-11-08) is optional here: a same-key retry
+    replays a payload written before it existed."""
     return _obj({**_admin_register_props(), **_written_etag()},
-                optional=("etag", "created_via", "updated_via"))
+                optional=("etag", "created_via", "updated_via", "transfer_purpose"))
 
 
 def _admin_ledger_row() -> dict:

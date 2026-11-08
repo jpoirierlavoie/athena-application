@@ -46,6 +46,12 @@
              Alpine — aucun code ne porte de virgule. #}
           noDossierKinds: {{ no_dossier_kinds | join(',') | jsattr }}.split(','),
           salesTaxKinds: {{ sales_tax_kinds | join(',') | jsattr }}.split(','),
+          {# Les natures qui portent une catégorie et une ventilation
+             (CATEGORY_KINDS : la dépense et son remboursement), le
+             remboursement seul (REFUND_KINDS) et l'avance (ADVANCE_KINDS). #}
+          categoryKinds: {{ category_kinds | join(',') | jsattr }}.split(','),
+          refundKinds: {{ refund_kinds | join(',') | jsattr }}.split(','),
+          advanceKinds: {{ advance_kinds | join(',') | jsattr }}.split(','),
           accountType: 'opérations',
           dossierId: {{ ((entry.dossier_id if entry else '') or '') | jsattr }},
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
@@ -109,6 +115,8 @@
     {# Pleine largeur, hors de la grille Type / Montant : dans sa demi-colonne,
        à 375 px, la phrase courait sur huit lignes (revue du lot A). #}
     <p x-show="salesTaxKinds.includes(kind)" x-cloak class="text-xs text-gray-500">Ce que le cabinet verse à l'administration fiscale au titre de la TPS/TVQ, ou en reçoit : ni une dépense, ni un revenu. Des intérêts ou des pénalités payés s'inscrivent à part, en dépense ; des intérêts reçus, à part, en autre recette.</p>
+    <p x-show="advanceKinds.includes(kind)" x-cloak class="text-xs text-gray-500">L'avance d'un client reçue à ce compte plutôt qu'au fidéicommis : l'argent du client, jamais un revenu. Virez-la au fidéicommis par un virement interne sortant dont l'objet est « Avances à verser au fidéicommis ».</p>
+    <p x-show="refundKinds.includes(kind)" x-cloak class="text-xs text-gray-500">Ce qu'un fournisseur rembourse d'une dépense : il réduit la catégorie de cette dépense, jamais un revenu. La ventilation est la TPS/TVQ remboursée.</p>
 
     {# ── Sens d'un virement interne — désactivé (donc non soumis) pour tout
        autre type. Sans sens valide, la route refuse (400) et n'écrit rien.
@@ -129,6 +137,22 @@
       <p class="text-xs text-gray-500 mt-1">Un virement interne relie ce compte à un compte hors de ce registre — le fidéicommis, un compte d'épargne. Le paiement de la carte de crédit est un <a href="{{ url_for('admin_ledger.card_payment') }}" class="text-indigo-600 hover:underline">« Paiement de carte »</a>, jamais un virement interne ; des honoraires tirés du fidéicommis s'inscrivent au registre du fidéicommis (paiement d'honoraires).</p>
     </div>
     {% endif %}
+
+    {# ── Objet d'un virement interne SORTANT (admin_ledger.TRANSFER_PURPOSES)
+       — désactivé (donc non soumis) pour tout autre type ou sens ; la route
+       le neutralise aussi. « Avances » : les avances de clients reçues à ce
+       compte, versées au fidéicommis — les états les soldent avec lui. #}
+    <div x-show="kind === 'virement_interne' &amp;&amp; sens === 'sortant'" x-cloak>
+      <label for="objet-virement" class="block text-sm font-medium text-gray-700 mb-1">Objet du virement</label>
+      <select id="objet-virement" name="transfer_purpose"
+              :disabled="!(kind === 'virement_interne' &amp;&amp; sens === 'sortant')"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        {% for value, label in transfer_purpose_choices %}
+        <option value="{{ value }}"{% if value == form_transfer_purpose %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-500 mt-1">« Avances à verser au fidéicommis » : les avances de clients reçues à ce compte (type « Avance d'honoraires »), que ce virement verse au fidéicommis. Ni l'avance ni ce virement ne touchent les revenus.</p>
+    </div>
 
     <div class="grid grid-cols-2 gap-4">
       <div>
@@ -184,18 +208,18 @@
     </div>
     {% endif %}
 
-    {# ── Champs propres à une dépense ───────────────────────────────────
-       La catégorie et la ventilation sont DÉSACTIVÉES hors d'une dépense :
-       non soumises, elles ne peuvent rien porter de périmé vers un autre
-       type (la route les neutralise aussi pour les natures hors
-       résultats). PAS le n° de facture fournisseur : la route en envoie
-       toujours la clé, et un champ désactivé — donc vide — effacerait le
-       numéro enregistré d'une écriture dont seule la nature change. #}
-    <div x-show="kind === 'dépense'" x-cloak class="space-y-4">
+    {# ── Champs propres à une dépense et à son remboursement
+       (categoryKinds) — DÉSACTIVÉS pour tout autre type : non soumis, ils
+       ne peuvent rien porter de périmé vers un autre type (la route les
+       neutralise aussi pour les natures hors résultats). PAS le n° de
+       facture fournisseur : la route en envoie toujours la clé, et un champ
+       désactivé — donc vide — effacerait le numéro enregistré d'une
+       écriture dont seule la nature change. #}
+    <div x-show="categoryKinds.includes(kind)" x-cloak class="space-y-4">
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
-          <select name="category" :disabled="kind !== 'dépense'" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          <select name="category" :disabled="!categoryKinds.includes(kind)" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
             <option value="">Choisir…</option>
             {% for c in valid_categories %}
             <option value="{{ c }}" {% if entry and entry.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>
@@ -208,7 +232,7 @@
         </div>
       </div>
 
-      <fieldset class="min-w-0" :disabled="kind !== 'dépense'">
+      <fieldset class="min-w-0" :disabled="!categoryKinds.includes(kind)">
       <div class="p-3 border border-gray-200 rounded-xl space-y-3">
         <div class="flex items-center justify-between">
           <p class="text-xs font-medium text-gray-500">Ventilation des taxes <span class="font-normal">(vide = aucune TPS/TVQ réclamée)</span></p>

@@ -51,10 +51,14 @@ module deliberately does not have (balances are computed at read). Checks:
      named, never skipped — and the natures outside the results
      (``admin_ledger.NON_RESULT_KINDS``: the lawyer's prélèvement and apport,
      the internal transfers, since 2026-11-07 the TPS/TVQ remittances and
-     refunds) carry what their model writes: no category, the canonical
-     split (``canonical_ventilation`` — no TPS, no TVQ claimed), no invoice,
-     no trust link, and no dossier on a nature of
-     ``admin_ledger.NO_DOSSIER_KINDS``.
+     refunds, since 2026-11-08 a client's advance) carry what their model
+     writes: no category, the canonical split (``canonical_ventilation`` — no
+     TPS, no TVQ claimed), no invoice, no trust link, and no dossier on a
+     nature of ``admin_ledger.NO_DOSSIER_KINDS``. A supplier's refund
+     (``admin_ledger.REFUND_KINDS``) carries a category of the vocabulary and
+     a split that sums to its amount, no invoice and no trust link; a
+     ``transfer_purpose`` sits only on a virement interne sortant, from
+     ``admin_ledger.TRANSFER_PURPOSES``.
      A correction reversing one of them carries no category and no split at
      all (net included): either would leak into the journal's totals. What
      a correction reverses is its ``reverses_kind`` stamp, else its
@@ -273,6 +277,13 @@ def collect() -> tuple[list[str], list[str]]:
         # 11. A kind the register knows; the natures outside the results
         # carry what their model writes (see the docstring).
         kind = t.get("kind") or ""
+        purpose = t.get("transfer_purpose") or ""
+        if purpose and (kind != al.TRANSFER_PURPOSE_KIND
+                        or purpose not in al.TRANSFER_PURPOSES):
+            problems.append(
+                f"écriture {tid}: objet de virement « {purpose} » sur une écriture "
+                f"« {al.KIND_LABELS.get(kind, kind or '(vide)')} » — seul un "
+                f"virement interne sortant porte « avances »")
         if kind not in al.VALID_KINDS:
             problems.append(f"écriture {tid}: type « {kind or '(vide)'} » inconnu du registre")
         elif kind in al.NON_RESULT_KINDS:
@@ -294,6 +305,21 @@ def collect() -> tuple[list[str], list[str]]:
                 problems.append(f"écriture {tid}: {label} liée au fidéicommis")
             if kind in al.NO_DOSSIER_KINDS and t.get("dossier_id"):
                 problems.append(f"écriture {tid}: {label} rattachée à un dossier")
+        elif kind in al.REFUND_KINDS:
+            label = al.KIND_LABELS[kind]
+            if (t.get("category") or "") not in al.ADMIN_EXPENSE_CATEGORIES:
+                problems.append(
+                    f"écriture {tid}: {label} sans catégorie connue "
+                    f"({t.get('category') or 'aucune'})")
+            split = sum(int(t.get(k) or 0) for k in ("net_amount", "gst_amount", "qst_amount"))
+            if split != int(t.get("amount", 0)):
+                problems.append(
+                    f"écriture {tid}: {label} dont la ventilation ({split}) n'égale "
+                    f"pas le montant ({int(t.get('amount', 0))})")
+            if t.get("invoice_id"):
+                problems.append(f"écriture {tid}: {label} liée à une facture")
+            if t.get("trust_transaction_id"):
+                problems.append(f"écriture {tid}: {label} liée au fidéicommis")
         elif kind == al.REVERSAL_KIND:
             # What the correction reverses: its stamp, else its original's
             # kind (a reversal by an older release carries no stamp).

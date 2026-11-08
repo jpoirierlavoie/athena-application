@@ -132,7 +132,7 @@ def _ledger(fake, account: str = "ops1") -> int:
 
 
 def test_every_kind_falls_in_exactly_one_results_bucket():
-    buckets = (al.REVENUE_KINDS, al.EXPENSE_KINDS, al.NON_RESULT_KINDS,
+    buckets = (al.REVENUE_KINDS, al.EXPENSE_KINDS, al.REFUND_KINDS, al.NON_RESULT_KINDS,
                ("paiement_carte",), (al.REVERSAL_KIND,))
     flat = [k for b in buckets for k in b]
     assert sorted(flat) == sorted(al.VALID_KINDS)
@@ -148,6 +148,7 @@ def test_the_natures_have_labels_directions_and_are_creatable_and_editable():
         "virement_interne_sortant": "déboursé",
         "virement_interne_entrant": "recette",
         "remise_tps_tvq": "déboursé", "remboursement_tps_tvq": "recette",
+        "avance_honoraires": "recette",
     }
     assert set(SORTIES + ENTREES) == set(al.NON_RESULT_KINDS)
 

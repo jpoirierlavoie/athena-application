@@ -69,7 +69,7 @@ def _tx(id_, kind, amount, day, *, account="ops1", direction=None, **extra):
            "counterparty": "Contrepartie fictive",
            "date": day, "direction": direction or al.implied_direction(kind),
            "net_amount": 0, "gst_amount": 0, "qst_amount": 0, "status": "compensée"}
-    if kind == "dépense" and "net_amount" not in extra:
+    if kind in al.CATEGORY_KINDS and "net_amount" not in extra:
         row["net_amount"] = amount
     if (kind in al.NON_RESULT_KINDS and row["direction"] == "déboursé"
             and "net_amount" not in extra):
@@ -79,13 +79,14 @@ def _tx(id_, kind, amount, day, *, account="ops1", direction=None, **extra):
 
 
 def _correction(id_, original, day):
+    split = original["kind"] in al.CATEGORY_KINDS     # a dépense or its refund
     return {"id": id_, "account_id": original["account_id"], "kind": "correction",
             "amount": original["amount"], "date": day,
             "direction": "recette" if original["direction"] == "déboursé" else "déboursé",
-            "net_amount": original["net_amount"] if original["kind"] == "dépense" else 0,
-            "gst_amount": original["gst_amount"] if original["kind"] == "dépense" else 0,
-            "qst_amount": original["qst_amount"] if original["kind"] == "dépense" else 0,
-            "category": original.get("category") if original["kind"] == "dépense" else None,
+            "net_amount": original["net_amount"] if split else 0,
+            "gst_amount": original["gst_amount"] if split else 0,
+            "qst_amount": original["qst_amount"] if split else 0,
+            "category": original.get("category") if split else None,
             "dossier_id": original.get("dossier_id"), "invoice_id": None,
             "trust_transaction_id": None, "reverses_id": original["id"],
             "reverses_kind": original["kind"], "status": "en_circulation"}
@@ -132,15 +133,18 @@ def test_the_books_start_on_the_lawyers_day():
 
 def test_every_kind_has_one_cash_flow_line_and_every_line_a_label():
     assert set(al.CASH_FLOW_LINES) == set(al.VALID_KINDS) - {al.REVERSAL_KIND}
+    # The trust-linked receipts' own line, and a transfer of advances's.
     assert set(fs.CASH_FLOW_LINE_ORDER) == (
-        set(al.CASH_FLOW_LINES.values()) | {"encaissements_factures_absentes"})
+        set(al.CASH_FLOW_LINES.values())
+        | {"encaissements_factures_absentes", al.ADVANCE_TRANSFER_LINE})
     assert len(fs.CASH_FLOW_LINE_ORDER) == len(set(fs.CASH_FLOW_LINE_ORDER))
     assert set(fs.CASH_FLOW_LINE_LABELS) == set(fs.CASH_FLOW_LINE_ORDER)
 
 
 def test_the_cost_classes_and_revenue_statuses_are_the_models():
     assert set(al.VARIABLE_COST_CATEGORIES) <= set(al.ADMIN_EXPENSE_CATEGORIES)
-    assert al.VARIABLE_COST_CATEGORIES == ("infonuagique_ia", "fournitures")
+    # Research billed by the search joined them (the lawyer, 2026-11-08).
+    assert al.VARIABLE_COST_CATEGORIES == ("infonuagique_ia", "fournitures", "recherche")
     assert set(al.COST_CLASS_LABELS) == set(al.COST_CLASSES)
     assert inv_model.REVENUE_STATUSES == ("envoyée", "en_retard", "payée")
     assert set(inv_model.REVENUE_STATUSES) <= set(inv_model.VALID_STATUSES)
@@ -159,10 +163,112 @@ def test_the_service_reads_every_collection_of_the_snapshot():
     ({"category": "fournitures"}, "variable"),
     ({"category": "abonnements"}, "fixe"),
     ({"category": "huissier"}, "fixe"),
+    # 2026-11-08: research billed by the search is variable, the library fixed.
+    ({"category": "recherche"}, "variable"),
+    ({"category": "recherche", "dossier_id": "dos1"}, "direct"),
+    ({"category": "documentation"}, "fixe"),
     ({}, "fixe"),
 ])
 def test_cost_class(row, expected):
     assert al.cost_class(row) == expected
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 1b. A supplier's refund, a client's advance (the lawyer, 2026-11-08)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_refund_lowers_its_category_and_gives_its_tax_credits_back():
+    """A refund is never a revenue: it lowers the class and category of the
+    cost it refunds — net of tax —, gives back its CTI/RTI (the TPS/TVQ
+    payable grows), and has its own cash-flow line; the costs stay the
+    ledger's own (``results_statement``)."""
+    rows = [_tx("e1", "dépense", 11498, _d(2031, 5, 2), category="infonuagique_ia",
+                net_amount=10000, gst_amount=500, qst_amount=998),
+            _tx("r1", "remboursement_depense", 2100, _d(2031, 5, 20),
+                category="infonuagique_ia", net_amount=2000, gst_amount=100,
+                qst_amount=0)]
+    st = _compute(_snapshot(transactions=rows), "2031-05")
+    income = st.sections["resultats"]
+    assert income["costs"]["variable"] == {"infonuagique_ia": 8000}
+    assert income["other_total"] == 0 and income["revenue"] == 0
+    statement = al.results_statement(al.resolve_corrections(rows))
+    assert statement["expenses_net"] == {"infonuagique_ia": 8000}
+    assert (statement["gst"], statement["qst"]) == (400, 998)
+    taxes = st.sections["taxes"]
+    assert (taxes["cti"], taxes["rti"]) == (400, 998)
+    assert st.sections["flux"]["lines"]["remboursements_depenses"] == 2100
+    assert st.sections["flux"]["lines"]["depenses"] == -11498
+    assert st.sections["avoir"]["unexplained"] == 0
+    # Reversed, a refund gives everything back.
+    fixed = rows + [_correction("c1", rows[1], _d(2031, 5, 25))]
+    st = _compute(_snapshot(transactions=fixed), "2031-05")
+    assert st.sections["resultats"]["costs"]["variable"] == {"infonuagique_ia": 10000}
+    assert st.sections["taxes"]["cti"] == 500
+
+
+def test_a_clients_advance_is_owed_until_its_marked_transfer():
+    """A client's advance received here is no revenue: owed to the client —
+    « Avances de clients à verser au fidéicommis » — until the virement
+    interne marked « avances » moves it to trust; neither moves the net
+    assets, and the month it waits is listed."""
+    rows = [_tx("v1", "avance_honoraires", 172463, _d(2031, 10, 28),
+                dossier_id="dos1", counterparty="Client fictif"),
+            _tx("w1", "virement_interne_sortant", 172463, _d(2031, 11, 3),
+                transfer_purpose="avances", counterparty="Compte en fidéicommis")]
+    snap = _snapshot(transactions=rows)
+    october = _compute(snap, "2031-10")
+    assert october.sections["resultats"]["revenue"] == 0
+    assert october.sections["bilan"]["closing"].advances == 172463
+    assert october.sections["bilan"]["closing"].net == 0
+    assert october.sections["flux"]["lines"]["avances_recues"] == 172463
+    owed = _points(october)["avances_a_verser"]
+    assert (owed["ids"], owed["amount"]) == (["v1"], 172463)
+    roll = october.sections["avoir"]
+    assert roll["unexplained"] == 0 and roll["virements"] == 0
+    november = _compute(snap, "2031-11")
+    assert november.sections["bilan"]["closing"].advances == 0
+    assert november.sections["flux"]["lines"]["avances_versees"] == -172463
+    assert november.sections["flux"]["lines"]["virements_sortants"] == 0
+    assert november.sections["avoir"]["virements"] == 0
+    assert "avances_a_verser" not in _points(november)
+    whole = _compute(snap, "2031")
+    assert whole.sections["avoir"]["unexplained"] == 0
+    assert whole.sections["bilan"]["closing"].net == 0
+    rows_shown = fs.present(october)["sections"]
+    bilan = next(s for s in rows_shown if s["key"] == "bilan")
+    assert ["Avances de clients à verser au fidéicommis", 0, 172463] in [
+        [r["label"], *r["values"]] for r in bilan["rows"]]
+
+
+def test_a_marked_transfer_without_an_advance_is_listed_never_a_gap():
+    """A transfer marked « avances » with no advance recorded — the advance
+    kept as an « autre recette » — leaves a negative balance owed, listed,
+    while the rollforward still closes."""
+    rows = [_tx("o1", "recette_autre", 50000, _d(2031, 3, 2), counterparty="Client fictif"),
+            _tx("w1", "virement_interne_sortant", 50000, _d(2031, 3, 4),
+                transfer_purpose="avances")]
+    st = _compute(_snapshot(transactions=rows), "2031-03")
+    assert st.sections["bilan"]["closing"].advances == -50000
+    listed = _points(st)["avances_non_inscrites"]
+    assert (listed["ids"], listed["amount"]) == (["w1"], 50000)
+    assert st.sections["avoir"]["unexplained"] == 0
+
+
+def test_an_autre_recette_sent_on_by_an_unmarked_transfer_is_flagged():
+    """The shape of an advance that reached the wrong account and kept its
+    first nature: an « autre recette » sent on within 14 days, same amount,
+    same account, by a transfer NOT marked « avances » — still a revenue
+    and a virement until the lawyer reclassifies it, but listed."""
+    rows = [_tx("o1", "recette_autre", 100000, _d(2031, 6, 5), counterparty="Client fictif"),
+            _tx("w1", "virement_interne_sortant", 100000, _d(2031, 6, 11)),
+            _tx("o2", "recette_autre", 7700, _d(2031, 6, 6)),
+            _tx("w2", "virement_interne_sortant", 7700, _d(2031, 6, 30))]
+    st = _compute(_snapshot(transactions=rows), "2031-06")
+    assert _points(st)["avance_possible"]["ids"] == ["o1"]      # o2: past 14 days
+    assert st.sections["resultats"]["other_total"] == 107700
+    assert st.sections["avoir"]["virements"] == -107700
+    assert st.sections["avoir"]["unexplained"] == 0
 
 
 @pytest.mark.parametrize("cited, stored, expected", [
@@ -511,7 +617,8 @@ def _random_world(rng: random.Random):
         kind = rng.choice(["encaissement_facture", "recette_autre", "dépense", "prélèvement",
                            "apport", "virement_interne_sortant", "virement_interne_entrant",
                            "remise_tps_tvq", "remboursement_tps_tvq", "paiement_carte",
-                           "trust_receipt"])
+                           "trust_receipt", "remboursement_depense", "avance_honoraires",
+                           "virement_avances"])
         amount = rng.choice([100, 2500, 9999, 31415])
         account = rng.choice(["ops1", "ops2", "card1"])
         tid = f"a{n:03d}"
@@ -542,10 +649,15 @@ def _random_world(rng: random.Random):
                             trust_transaction_id=fee_id))
             continue
         extra = {}
+        if kind == "virement_avances":
+            # A transfer of advances to trust (2026-11-08): sometimes with no
+            # advance before it — a negative balance, listed, never a gap.
+            kind = "virement_interne_sortant"
+            extra["transfer_purpose"] = "avances"
         if kind == "encaissement_facture":
             account = "ops1"
             extra["invoice_id"] = rng.choice([i["id"] for i in invoices] + ["gone"])
-        if kind == "dépense":
+        if kind in al.CATEGORY_KINDS:                 # a dépense or its refund
             extra.update(category=rng.choice(al.ADMIN_EXPENSE_CATEGORIES),
                          dossier_id=rng.choice([None, "dos1"]))
             gst = amount // 20
@@ -1048,3 +1160,23 @@ def test_the_figures_agree_with_the_ledgers_own_authorities(seed):
             assert cents == sum(al.admin_delta(r["direction"], r["amount"])
                                 for r in snap.admin_transactions
                                 if r["account_id"] == aid and r["date"].date() <= as_of)
+
+
+def test_a_reversed_transfer_of_advances_owes_them_again():
+    """A marked transfer reversed (the money came back from trust): the
+    advances are owed again — the correction counts on its original's line
+    and settles nothing, through the purpose ``resolve_corrections`` copies
+    from the original; the correction itself carries none."""
+    advance = _tx("v1", "avance_honoraires", 172463, _d(2031, 10, 28))
+    sent = _tx("w1", "virement_interne_sortant", 172463, _d(2031, 10, 30),
+               transfer_purpose="avances")
+    back = _correction("c1", sent, _d(2031, 11, 5))
+    assert "transfer_purpose" not in back
+    st = _compute(_snapshot(transactions=[advance, sent, back]), "2031-11")
+    assert st.sections["bilan"]["opening"].advances == 0
+    assert st.sections["bilan"]["closing"].advances == 172463
+    assert st.sections["flux"]["lines"]["avances_versees"] == 172463
+    assert st.sections["flux"]["lines"]["virements_sortants"] == 0
+    assert st.sections["avoir"]["virements"] == 0
+    assert st.sections["avoir"]["unexplained"] == 0
+    assert _points(st)["avances_a_verser"]["ids"] == ["v1"]

@@ -100,6 +100,7 @@
       <div><p class="text-xs text-gray-500">Compte</p><p class="text-gray-900">{{ account.name if account else '' }}</p></div>
       <div class="col-span-2"><p class="text-xs text-gray-500">Payeur / Fournisseur</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
       {% if entry.category %}<div><p class="text-xs text-gray-500">Catégorie</p><p class="text-gray-900">{{ category_labels.get(entry.category, entry.category) }}</p></div>{% endif %}
+      {% if entry.transfer_purpose %}<div><p class="text-xs text-gray-500">Objet du virement</p><p class="text-gray-900">{{ transfer_purpose_labels.get(entry.transfer_purpose, entry.transfer_purpose) }}</p></div>{% endif %}
       {% if entry.supplier_invoice_ref %}<div><p class="text-xs text-gray-500">N° facture fournisseur</p><p class="text-gray-900">{{ entry.supplier_invoice_ref }}</p></div>{% endif %}
       {% if entry.dossier_id %}<div><p class="text-xs text-gray-500">N/Réf</p><p class="text-gray-900"><a href="{{ url_for('dossiers.dossier_detail', dossier_id=entry.dossier_id) }}" class="text-indigo-600 hover:underline">{{ entry.dossier_file_number }}</a></p></div>{% endif %}
       {% if entry.reference %}<div><p class="text-xs text-gray-500">Référence</p><p class="text-gray-900">{{ entry.reference }}</p></div>{% endif %}

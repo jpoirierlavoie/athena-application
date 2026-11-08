@@ -408,7 +408,8 @@ FAMILIES: tuple[Family, ...] = (
         # outside the firm's results (models/admin_ledger.NON_RESULT_KINDS)
         # — the lawyer's prélèvement and apport, a virement interne either
         # way — are named beside the others; 2026-11-07: so are the firm's
-        # TPS/TVQ remittances and refunds.
+        # TPS/TVQ remittances and refunds; 2026-11-08: a client's advance
+        # received here and a supplier's refund of an expense.
         checkbox_summary_fr=(
             "inscrire au fidéicommis des recettes et des déboursés, et des "
             "paiements d'honoraires — dont chacun inscrit, dans la même "
@@ -418,10 +419,12 @@ FAMILIES: tuple[Family, ...] = (
             "encaissements de facture (qui inscrivent le paiement sur la "
             "facture), des paiements de carte, vos prélèvements et vos "
             "apports, des virements internes vers ou depuis un compte hors "
-            "de ce registre, et les remises et remboursements de TPS/TVQ du "
-            "cabinet, corriger une écriture d'administration tant qu'elle "
-            "reste modifiable, compenser des écritures à la date du relevé "
-            "bancaire et contre-passer une écriture"
+            "de ce registre, les remises et remboursements de TPS/TVQ du "
+            "cabinet, des avances d'honoraires de clients reçues au compte "
+            "d'opérations et des remboursements de dépense, corriger une "
+            "écriture d'administration tant qu'elle reste modifiable, "
+            "compenser des écritures à la date du relevé bancaire et "
+            "contre-passer une écriture"
         ),
         # The writers' own rule, verbatim (review of E3): the index line once
         # read « what the bank shows », which excludes a cheque just written
