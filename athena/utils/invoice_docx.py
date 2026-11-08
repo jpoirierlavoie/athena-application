@@ -15,6 +15,23 @@ Every money figure is READ from the invoice and only *formatted* — the
 builder performs no tax arithmetic (§7.2). Its only arithmetic is integer
 addition of line-item cents for the two derived disbursement subtotals
 (§6.4), which is exact.
+
+The payments (2026-11-08) join only when the caller passes them
+(:class:`InvoicePayments`; ``services/note_honoraires`` does so only for a
+template that PRINTS them, :func:`prints_payments`): the region
+``ligne_paiement`` — the provision of an imported invoice, then each
+standing encaissement imputed on the invoice —, its flag ``si_paiements``
+and ``facture.solde_restant``. Without them the context holds exactly the
+keys every earlier template was filled with, so its fingerprint
+(``services.note_honoraires.fill_fingerprint``) does not move. The balance
+arrives computed (``models.invoice.balance_of``, its one authority); the
+payment rows are read and formatted, never summed here.
+
+Declared exception to « one source per list »: :data:`PAYMENT_SOURCE_LABELS`
+words ``models.admin_ledger.VALID_METHODS`` for a CLIENT document (the
+register's « Autre » reads « Paiement » there). Its keys are that
+vocabulary exactly, pinned by ``tests/test_invoice_lifecycle.py`` — this
+pure module may not import ``models``.
 """
 
 from dataclasses import dataclass, field
@@ -35,12 +52,61 @@ from utils.template_fields import CATALOG, FLAT_ALIASES, resolve_values
 _GST_SCALE = 100
 _QST_SCALE = 1000
 
+# ── Payments (2026-11-08) ──────────────────────────────────────────────────
+PAYMENT_REGION = "ligne_paiement"
+PAYMENT_FLAG = "si_paiements"
+#: The row-scoped fields of ``ligne_paiement`` — exactly the keys of every
+#: row :func:`_payment_rows` emits (pinned by tests/test_invoice_docx.py).
+PAYMENT_ROW_FIELDS = ("p.date", "p.source", "p.montant")
+#: The fields whose presence in a template's placeholder inventory makes
+#: the note read and print the payments (:func:`prints_payments`). The
+#: markers ``{{#ligne_paiement}}`` and ``{{?si_paiements}}`` never enter the
+#: inventory (``docx_fill.PLACEHOLDER_RE`` excludes them): the fields do.
+PAYMENT_FIELDS = PAYMENT_ROW_FIELDS + ("facture.solde_restant",)
+#: ``p.source`` of a payment drawn from trust — a fee payment's encaissement
+#: (``trust_transaction_id`` set) — and of an imported invoice's provision.
+PAYMENT_SOURCE_TRUST = "Fidéicommis"
+#: ``p.source`` of every other encaissement, by its ``method`` (the module
+#: docstring declares this vocabulary). A method outside it prints the
+#: « autre » wording: the row is a payment either way.
+PAYMENT_SOURCE_LABELS = {
+    "chèque": "Chèque",
+    "virement": "Virement",
+    "prélèvement": "Prélèvement",
+    "dépôt_direct": "Dépôt direct",
+    "carte": "Carte",
+    "comptant": "Comptant",
+    "autre": "Paiement",
+}
+
 
 @dataclass
 class InvoiceContext:
     values: dict[str, str] = field(default_factory=dict)
     rows: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     conditions: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InvoicePayments:
+    """What the note prints of the invoice's payments.
+
+    ``receipts`` — the STANDING encaissements imputed on the invoice
+    (``models.admin_ledger.list_invoice_receipts_strict``, kept by
+    ``receipt_stands``), oldest first; ``balance_cents`` — its live balance
+    (``models.invoice.balance_of``). The caller has checked that the two
+    agree (``models.invoice.payments_print_defect``).
+    """
+
+    receipts: list[dict]
+    balance_cents: int
+
+
+def prints_payments(placeholders) -> bool:
+    """True when a template prints the payments: its placeholder inventory
+    names one of :data:`PAYMENT_FIELDS`. Exact names, as the fill matches
+    them (row fields case-sensitively, ``facture.*`` values by key)."""
+    return any(name in PAYMENT_FIELDS for name in (placeholders or ()))
 
 
 def _as_date(value) -> Optional[date]:
@@ -149,6 +215,45 @@ def _build_rows(line_items: list[dict]) -> dict[str, list[dict[str, str]]]:
     }
 
 
+def _payment_source(receipt: dict) -> str:
+    """« Fidéicommis » for a fee payment's encaissement, else its method's
+    client-facing wording."""
+    if receipt.get("trust_transaction_id"):
+        return PAYMENT_SOURCE_TRUST
+    return PAYMENT_SOURCE_LABELS.get(
+        receipt.get("method") or "", PAYMENT_SOURCE_LABELS["autre"])
+
+
+def _payment_rows(invoice: dict, receipts: list[dict]) -> list[dict[str, str]]:
+    """The ``ligne_paiement`` rows, oldest first.
+
+    First the provision of an imported invoice (``retainer_applied``, the
+    « Avances en fidéicommis » deducted when it was issued — dated the
+    invoice's date, drawn from trust), so that the region REPLACES the
+    Avances line and TOTAL APRÈS TAXES less the rows gives the balance;
+    then each standing encaissement, in the caller's ``(date, sequence)``
+    order. The sort is stable on the calendar day: the provision stays first
+    on its day, the register's order holds within a day. Dates are the UTC
+    calendar day (date-only values at UTC midnight, never ``to_mtl``).
+    """
+    entries = []
+    retainer = int(invoice.get("retainer_applied", 0) or 0)
+    if retainer > 0:
+        entries.append((_as_date(invoice.get("date")), PAYMENT_SOURCE_TRUST, retainer))
+    for receipt in receipts:
+        entries.append((_as_date(receipt.get("date")), _payment_source(receipt),
+                        int(receipt.get("amount", 0) or 0)))
+    entries.sort(key=lambda entry: entry[0] or date.min)
+    return [
+        {
+            "p.date": format_date_fr(day) if day else "",
+            "p.source": source,
+            "p.montant": format_cents_fr_parens(amount),
+        }
+        for day, source, amount in entries
+    ]
+
+
 def build_invoice_context(
     invoice: dict,
     line_items: list[dict],
@@ -157,12 +262,16 @@ def build_invoice_context(
     destinataire: Optional[dict],
     dossier: Optional[dict],
     today: date,
+    payments: Optional[InvoicePayments] = None,
 ) -> InvoiceContext:
     """Build the note-d'honoraires context from a stored invoice (§6).
 
     ``destinataire`` is the client partie; when ``None`` (partie deleted) the
     billing_address snapshot is used so generation never fails (§6.6). Header
     fields are resolved through the Phase H catalog by canonical name.
+    ``payments`` adds the payment region, its flag and
+    ``facture.solde_restant`` (module docstring); ``None`` leaves the
+    context exactly as it was before them.
     """
     dest = destinataire or _partie_from_billing_address(invoice.get("billing_address") or {})
 
@@ -194,4 +303,8 @@ def build_invoice_context(
         "si_debours_tx": bool(rows["ligne_debours_tx"]),
         "si_debours_ntx": bool(rows["ligne_debours_ntx"]),
     }
+    if payments is not None:
+        values["facture.solde_restant"] = format_cents_fr(payments.balance_cents)
+        rows[PAYMENT_REGION] = _payment_rows(invoice, payments.receipts)
+        conditions[PAYMENT_FLAG] = bool(rows[PAYMENT_REGION])
     return InvoiceContext(values=values, rows=rows, conditions=conditions)

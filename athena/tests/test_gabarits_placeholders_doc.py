@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from utils.invoice_docx import build_invoice_context
+from utils.invoice_docx import InvoicePayments, build_invoice_context
 from utils.note_docx import build_note_context
 from utils.template_fields import (
     CATALOG,
@@ -124,6 +124,13 @@ def test_facture_fields_regions_and_conditions_match_the_builder(cited):
     ctx = build_invoice_context(
         invoice, items, firm={}, destinataire=None, dossier=None,
         today=datetime.date(2026, 4, 25),
+        # The payments too (2026-11-08): their region, flag, row fields and
+        # facture.solde_restant are held to the document like the rest.
+        payments=InvoicePayments(
+            receipts=[{"kind": "encaissement_facture", "amount": 63,
+                       "date": datetime.datetime(2026, 4, 30),
+                       "method": "virement"}],
+            balance_cents=100),
     )
     produced = {k for k in ctx.values if k.startswith("facture.")}
     documented = {n for n in cited if n.startswith("facture.")}

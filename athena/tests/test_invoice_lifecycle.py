@@ -773,6 +773,55 @@ def test_le_predicat_d_encaissement_debout_est_celui_du_grand_livre(fake):
     assert admin_ledger_model.sum_invoice_receipts(INV) == expected
 
 
+def test_la_copie_du_predicat_tranche_comme_receipt_stands():
+    """receipt_stands (2026-11-08) est LE prédicat du grand livre, que
+    partagent sum_invoice_receipts et les lignes de paiement de la note
+    d'honoraires : la copie du modèle de facture tranche pareil, ligne par
+    ligne."""
+    rows = [
+        {"kind": "encaissement_facture", "status": "compensée"},
+        {"kind": "encaissement_facture", "status": "en_circulation"},
+        {"kind": "encaissement_facture", "status": "annulée"},
+        {"kind": "encaissement_facture", "status": "compensée", "reversed_by_id": "x"},
+        {"kind": "recette_autre", "status": "compensée"},
+        {"kind": "correction", "status": "en_circulation"},
+        {},
+    ]
+    verdicts = [admin_ledger_model.receipt_stands(r) for r in rows]
+    assert verdicts == [True, True, False, False, False, False, False]
+    assert verdicts == [invoice_model._standing_admin_encaissement(r) for r in rows]
+
+
+def test_les_libelles_de_paiement_de_la_note_sont_les_modes_du_registre():
+    """utils/invoice_docx.PAYMENT_SOURCE_LABELS formule pour un document
+    CLIENT les modes du registre d'administration (module pur : il ne peut
+    pas importer models) — ses clés sont exactement ce vocabulaire."""
+    from utils.invoice_docx import PAYMENT_SOURCE_LABELS
+
+    assert set(PAYMENT_SOURCE_LABELS) == set(admin_ledger_model.VALID_METHODS)
+
+
+def test_des_paiements_imprimables_menent_au_solde():
+    """payments_print_defect (2026-11-08) : la note d'honoraires n'imprime
+    ses paiements que si, sur papier, le total moins les lignes donne le
+    solde — sinon elle refuse, en disant pourquoi."""
+    lignes = [{"amount": 30000}, {"amount": 12000}]
+    envoyee = {"status": "envoyée", "amount_due": 90000, "amount_paid": 42000}
+    assert invoice_model.payments_print_defect(envoyee, lignes) is None
+    # Le registre et la facture ont dérivé.
+    assert invoice_model.payments_print_defect(
+        dict(envoyee, amount_paid=30000), lignes) == "payments_mismatch"
+    # « payée » par le registre : le solde est nul, rien à redire.
+    soldee = {"status": "payée", "amount_due": 42000, "amount_paid": 42000}
+    assert invoice_model.payments_print_defect(soldee, lignes) is None
+    # « payée » posée à la main, un solde restant : la note le contredirait.
+    a_la_main = {"status": "payée", "amount_due": 90000, "amount_paid": 0}
+    assert invoice_model.payments_print_defect(a_la_main, []) == "paid_by_hand"
+    # Rien d'inscrit, rien de dû au-delà du solde : une facture envoyée.
+    assert invoice_model.payments_print_defect(
+        {"status": "envoyée", "amount_due": 5000}, []) is None
+
+
 # ══════════════════════════════════════════════════════════════════════
 # L'application (routes + gabarits réels)
 # ══════════════════════════════════════════════════════════════════════

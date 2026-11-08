@@ -226,7 +226,8 @@ STATUS_TRANSITIONS = {
 def _standing_admin_encaissement(row: dict) -> bool:
     """An administration entry whose payment on its invoice still STANDS.
 
-    The predicate of ``models.admin_ledger.sum_invoice_receipts`` —
+    The predicate of ``models.admin_ledger.receipt_stands`` (that of
+    ``sum_invoice_receipts`` and of the note d'honoraires' payment rows) —
     ``encaissement_facture``, not annulée, not contre-passée — copied rather
     than imported (import cycle; the test suite pins the two against each
     other on the same rows).
@@ -1875,6 +1876,33 @@ def balance_of(invoice: dict) -> int:
     invoice, so it has never been a balance despite reading like one.
     """
     return int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+
+
+def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optional[str]:
+    """Why the invoice's payments cannot be PRINTED as they stand, or ``None``.
+
+    The note d'honoraires lists the standing encaissements imputed on the
+    invoice (``models.admin_ledger.receipt_stands``) above its live balance
+    (:func:`balance_of`): on paper, TOTAL APRÈS TAXES less the rows must give
+    that balance. Two states break the sum, and the note refuses rather than
+    print figures that do not close (``services/note_honoraires``):
+
+    * ``payments_mismatch`` — the rows do not sum to ``amount_paid``: the
+      register and the invoice drifted (``scripts/verify_admin_integrity``,
+      check 8, reports the same);
+    * ``paid_by_hand`` — « payée » with a balance left: a status the lawyer
+      set by hand, with nothing (or not everything) recorded, since
+      :func:`payment_updates` flips to « payée » only at a zero balance. The
+      note would print a balance owing under the lawyer's own « payée ».
+
+    PURE: the caller reads the rows (strictly) and keeps the standing ones.
+    """
+    paid = int(invoice.get("amount_paid", 0) or 0)
+    if sum(int(r.get("amount", 0) or 0) for r in standing_receipts) != paid:
+        return "payments_mismatch"
+    if invoice.get("status") == "payée" and balance_of(invoice) > 0:
+        return "paid_by_hand"
+    return None
 
 
 class PaymentRefused(Exception):

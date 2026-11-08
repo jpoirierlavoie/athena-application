@@ -849,3 +849,213 @@ def test_the_web_button_says_where_to_look_before_another_click(
     assert "n'a pas pu être confirmé" in body
     assert "Vérifiez « Mandat › Factures »" in body
     assert "réessayez" not in body.lower()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Les paiements imputés (2026-11-08)
+# ══════════════════════════════════════════════════════════════════════
+# Un gabarit qui IMPRIME les paiements (un champ p.* ou
+# facture.solde_restant) les lit — strictement — et refuse quand ils ne
+# mènent pas au solde ; tout autre gabarit ne lit rien et garde le contexte,
+# donc l'empreinte, qu'il a toujours eus.
+
+
+def _paragraph(text: str) -> str:
+    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+
+def _cell(text: str) -> str:
+    return f"<w:tc>{_paragraph(text)}</w:tc>"
+
+
+def _docx_body(body_xml: str) -> bytes:
+    body = (
+        '<?xml version="1.0"?><w:document xmlns:w="http://schemas.'
+        'openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+        f'{body_xml}</w:body></w:document>'
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", _CT)
+        zf.writestr("word/document.xml", body)
+    return buf.getvalue()
+
+
+# Le bloc des totaux d'une note, réduit à trois rangées : la rangée des
+# paiements tient la place de celle des « Avances en fidéicommis ».
+_TOTALS = (
+    "<w:tbl><w:tblPr/>"
+    "<w:tr>" + _cell("TOTAL APRÈS TAXES") + _cell("{{facture.total_apres_taxes}}") + "</w:tr>"
+    "<w:tr>" + _cell("{{#ligne_paiement}}{{p.date}} — {{p.source}}")
+    + _cell("{{p.montant}}") + "</w:tr>"
+    "<w:tr>" + _cell("SOLDE") + _cell("{{facture.solde_restant}}") + "</w:tr>"
+    "</w:tbl>"
+)
+
+
+def _print_payments(store) -> dict:
+    """Le gabarit désigné reçoit ce bloc — une NOUVELLE version, comme
+    l'avocat la téléverserait ; la désignation suit le gabarit."""
+    _db, _bucket, template = store
+    data = _docx_body(_paragraph("Note {{facture.numero}}") + _TOTALS)
+    updated, errors, changed = tpl.update_template(
+        template["id"], {}, io.BytesIO(data), "note.docx", len(data),
+        expected_version=template["version"])
+    assert errors == [] and changed
+    assert "p.montant" in updated["placeholders"]
+    return updated
+
+
+def _receipt(rid: str, amount: int, day: int, **extra) -> dict:
+    row = {"id": rid, "kind": "encaissement_facture", "direction": "recette",
+           "status": "compensée", "amount": amount, "method": "virement",
+           "date": datetime(2026, 9, day, tzinfo=UTC), "sequence": day,
+           "invoice_id": "i1", "invoice_number": "2026-F031"}
+    row.update(extra)
+    return row
+
+
+def _seed_payments(db) -> None:
+    """Un paiement d'honoraires du fidéicommis et un virement debout, un
+    chèque contre-passé (sans provision) — et la facture qui porte leur
+    cumul, comme l'écrivent les registres (517,39 − 450,00 = 67,39 $)."""
+    db.external_write("admin_transactions/a1",
+                      _receipt("a1", 30000, 10, trust_transaction_id="t1"))
+    db.external_write("admin_transactions/a2",
+                      _receipt("a2", 6739, 12, method="chèque", reversed_by_id="a9"))
+    db.external_write("admin_transactions/a3", _receipt("a3", 15000, 15))
+    db.external_write("invoices/i1", _invoice(
+        amount_paid=45000, paid_date=datetime(2026, 9, 15, tzinfo=UTC)))
+
+
+def _fail_admin_reads(db, monkeypatch) -> list:
+    """Toute requête du registre d'administration échoue au SERVEUR ; le
+    reste se lit. Rend les requêtes refusées (un test vérifie qu'il y en a)."""
+    real = db._fake_server.run_query
+    refused: list = []
+
+    def _run_query(request, metadata=None, **kw):
+        sq = request["structured_query"]._pb
+        if any(f.collection_id == "admin_transactions" for f in sq.from_):
+            refused.append(request["parent"])
+            raise RuntimeError("firestore indisponible")
+        return real(request, metadata=metadata, **kw)
+
+    monkeypatch.setattr(db._fake_server, "run_query", _run_query)
+    return refused
+
+
+def test_a_note_that_prints_the_payments_lists_the_standing_ones(store, events):
+    db, bucket, _template = store
+    _print_payments(store)
+    _seed_payments(db)
+
+    note = _generate()
+
+    text = _stored_text(bucket, db.peek(f"documents/{note.document['id']}")["storage_path"])
+    assert "10 septembre 2026 — Fidéicommis" in text
+    assert "15 septembre 2026 — Virement" in text
+    assert "(300,00)" in text and "(150,00)" in text
+    assert "Chèque" not in text and "(67,39)" not in text   # contre-passé : jamais imprimé
+    assert "SOLDE" in text and "67,39" in text               # le solde restant
+    assert "{{" not in text
+    assert text.count("<w:tr>") == 4                         # total + 2 paiements + solde
+    assert note.counts["rows_paiement"] == 2
+    assert events[-1][0] == "document_generated"
+    assert events[-1][1]["rows_paiement"] == 2
+
+
+def test_a_note_that_prints_no_payment_never_reads_them(store, monkeypatch):
+    """Le gabarit de toujours (aucun champ de paiement) : aucune lecture du
+    registre, et l'empreinte se calcule sur les MÊMES clés qu'avant — une
+    note déjà classée reste la réponse du connecteur."""
+    db, _bucket, _template = store
+    _seed_payments(db)
+    monkeypatch.setattr(nh, "list_invoice_receipts_strict",
+                        lambda iid: pytest.fail("payments read for a template that prints none"))
+    seen = []
+    real = nh.fill_fingerprint
+
+    def _spy(template, values, ctx):
+        seen.append((set(ctx.rows), set(ctx.conditions)))
+        return real(template, values, ctx)
+
+    monkeypatch.setattr(nh, "fill_fingerprint", _spy)
+
+    note = _generate()
+
+    assert note.reused is False and "rows_paiement" not in note.counts
+    assert seen == [({"ligne_honoraire", "ligne_debours_tx", "ligne_debours_ntx"},
+                     {"si_honoraires", "si_debours_tx", "si_debours_ntx"})]
+
+
+def test_a_failed_payments_read_is_refused_never_printed_as_unpaid(
+    store, events, monkeypatch,
+):
+    db, _bucket, _template = store
+    template = _print_payments(store)
+    _seed_payments(db)
+    refused = _fail_admin_reads(db, monkeypatch)
+
+    refusal = _refused("payments_unreadable")
+
+    assert refused                      # the register read is what failed
+    assert refusal.message == nh.PAYMENTS_UNREADABLE
+    _nothing_written(db)
+    assert events == [("generation_failed", {
+        "reason": "payments_unreadable", "template_id": template["id"],
+        "invoice_id": "i1"})]
+
+
+def test_payments_that_do_not_lead_to_the_balance_are_refused(store, events):
+    """Le registre et la facture ont dérivé (450,00 $ debout, 300,00 $
+    inscrits sur la facture) : les lignes imprimées ne mèneraient pas au
+    solde imprimé."""
+    db, _bucket, _template = store
+    _print_payments(store)
+    _seed_payments(db)
+    db.external_write("invoices/i1", _invoice(amount_paid=30000))
+
+    refusal = _refused("payments_mismatch")
+
+    assert refusal.message == nh.PAYMENT_DEFECT_MESSAGES["payments_mismatch"]
+    _nothing_written(db)
+    assert events[-1][1]["reason"] == "payments_mismatch"
+
+
+def test_a_hand_set_payee_with_a_balance_refuses_only_a_note_that_prints_payments(
+    store,
+):
+    """« payée » posée à la main, rien d'inscrit : le gabarit de toujours
+    l'imprime comme avant (une donnée ancienne ne verrouille rien) ; celui
+    qui imprime les paiements refuserait d'afficher un solde dû sous ce
+    statut, et dit quoi faire."""
+    db, _bucket, _template = store
+    db.external_write("invoices/i1", _invoice(status="payée"))
+    assert _generate().reused is False
+
+    _print_payments(store)
+    refusal = _refused("paid_by_hand")
+
+    assert refusal.message == nh.PAYMENT_DEFECT_MESSAGES["paid_by_hand"]
+    assert len(_documents(db)) == 1     # only the note of the former template
+
+
+def test_a_new_payment_makes_a_new_note_and_none_reuses_it(store):
+    db, _bucket, _template = store
+    _print_payments(store)
+    _seed_payments(db)
+    first = _generate()
+    assert _generate().reused is True
+
+    db.external_write("admin_transactions/a4",
+                      _receipt("a4", 6739, 22, method="comptant"))
+    db.external_write("invoices/i1", _invoice(
+        status="payée", amount_paid=51739,
+        paid_date=datetime(2026, 9, 22, tzinfo=UTC)))
+
+    again = _generate()
+
+    assert again.reused is False
+    assert again.fingerprint != first.fingerprint
+    assert again.counts["rows_paiement"] == 3

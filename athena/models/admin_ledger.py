@@ -3040,32 +3040,72 @@ def list_by_trust_transaction(trust_tx_id: str, txn=None) -> list[dict]:
     return rows
 
 
-def sum_invoice_receipts(invoice_id: str) -> int:
-    """Σ of ``encaissement_facture`` amounts linked to an invoice whose
-    economic effect still stands — the recomputable cumulative behind the
-    payment each encaissement stages on its invoice (single-field equality,
-    auto-indexed).
+def receipt_stands(row: dict) -> bool:
+    """An ``encaissement_facture`` whose payment on its invoice still STANDS.
 
     Excludes annulée rows AND reversed ones (``reversed_by_id`` set): a
     compensée encaissement corrected by contre-passation (the bounced-
     cheque case) stays « compensée » in the register, but its payment was
-    reduced in the reversal's own commit — counting it would report a false
-    mismatch against ``amount_paid`` after the one correction flow the
-    two-step lifecycle exists for. Raises on read failure (fail CLOSED —
-    callers project money from this)."""
+    reduced in the reversal's own commit — status alone never decides.
+
+    The ONE predicate of :func:`sum_invoice_receipts` and of the payment
+    rows the note d'honoraires prints (``services/note_honoraires``).
+    ``models.invoice._standing_admin_encaissement`` is its copy (import
+    cycle), pinned against it by ``tests/test_invoice_lifecycle.py``.
+    """
+    return (
+        row.get("kind") == "encaissement_facture"
+        and row.get("status") != "annulée"
+        and not row.get("reversed_by_id")
+    )
+
+
+def sum_invoice_receipts(invoice_id: str) -> int:
+    """Σ of ``encaissement_facture`` amounts linked to an invoice whose
+    economic effect still stands (:func:`receipt_stands`) — the recomputable
+    cumulative behind the payment each encaissement stages on its invoice
+    (single-field equality, auto-indexed).
+
+    Counting a reversed row would report a false mismatch against
+    ``amount_paid`` after the one correction flow the two-step lifecycle
+    exists for. Raises on read failure (fail CLOSED — callers project money
+    from this)."""
     q = db.collection(TRANSACTIONS_COLLECTION).where(
         filter=FieldFilter("invoice_id", "==", invoice_id)
     )
     total = 0
     for snap in q.stream():
         r = snap.to_dict() or {}
-        if (
-            r.get("kind") == "encaissement_facture"
-            and r.get("status") != "annulée"
-            and not r.get("reversed_by_id")
-        ):
+        if receipt_stands(r):
             total += int(r.get("amount", 0))
     return total
+
+
+def list_invoice_receipts_strict(invoice_id: str) -> list[dict]:
+    """The register entries imputed on an invoice, oldest first — STRICT:
+    a read failure RAISES, and so does a blank id, before any query.
+
+    The strict twin of :func:`list_invoice_receipts`: the same query, the
+    same rows (annulée and contre-passées included), the same order. It
+    serves a reader that decides what a CLIENT document prints — the
+    payment rows of the note d'honoraires, which keep the rows that
+    :func:`receipt_stands` — where a read failure answered « no payment »
+    would print a blip as an unpaid invoice.
+
+    Single-field equality, served by the automatic index. The sort is in
+    PYTHON, like ``_list_cleared_after``: ordering server-side would demand
+    an ``(invoice_id, date)`` composite, and the row count per invoice is a
+    handful.
+    """
+    if not invoice_id:
+        raise ValueError("list_invoice_receipts_strict: invoice_id is required")
+    q = db.collection(TRANSACTIONS_COLLECTION).where(
+        filter=FieldFilter("invoice_id", "==", invoice_id)
+    )
+    rows = [snap.to_dict() or {} for snap in q.stream()]
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    rows.sort(key=lambda r: (r.get("date") or epoch, int(r.get("sequence") or 0)))
+    return rows
 
 
 def list_invoice_receipts(invoice_id: str) -> list[dict]:
@@ -3083,26 +3123,16 @@ def list_invoice_receipts(invoice_id: str) -> list[dict]:
 
     It fails OPEN (``[]`` + a warning): a display aid must never take a
     page down. ``sum_invoice_receipts`` keeps its fail-closed posture —
-    money is decided from it.
-
-    Single-field equality, served by the automatic index. The sort is in
-    PYTHON, like ``_list_cleared_after``: ordering server-side would demand
-    an ``(invoice_id, date)`` composite for a display block, and the row
-    count per invoice is a handful.
+    money is decided from it — and so does
+    :func:`list_invoice_receipts_strict`, whose query this wraps.
     """
     if not invoice_id:
         return []
     try:
-        q = db.collection(TRANSACTIONS_COLLECTION).where(
-            filter=FieldFilter("invoice_id", "==", invoice_id)
-        )
-        rows = [snap.to_dict() or {} for snap in q.stream()]
+        return list_invoice_receipts_strict(invoice_id)
     except Exception:
         logger.warning("admin list_invoice_receipts failed")
         return []
-    epoch = datetime.min.replace(tzinfo=timezone.utc)
-    rows.sort(key=lambda r: (r.get("date") or epoch, int(r.get("sequence") or 0)))
-    return rows
 
 
 # ── Reconciliation as-of machinery ─────────────────────────────────────────

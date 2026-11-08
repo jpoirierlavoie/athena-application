@@ -31,9 +31,18 @@ surfaces log identically:
    turned a blip into ``None``, and the note was filed with « [CHAMP
    MANQUANT : …] » in every dossier field while the call reported success
    — review of lot 3a, step 2), the client as before (a client gone falls
-   back to the invoice's frozen billing snapshot) —, the values, and their
-   FINGERPRINT (:func:`fill_fingerprint` — the template's id and version
-   plus a SHA-256 of everything the fill prints);
+   back to the invoice's frozen billing snapshot), the payments when the
+   template PRINTS them (``utils/invoice_docx.prints_payments``, 2026-11-08:
+   the encaissements imputed on the invoice through the STRICT reader
+   ``models/admin_ledger.list_invoice_receipts_strict`` — a read failure
+   refuses, ``payments_unreadable``: « no payment » on a client document
+   must never be a blip —, and the standing ones refused when they do not
+   explain its payment state, ``models.invoice.payments_print_defect``:
+   ``payments_mismatch``, ``paid_by_hand``; a template without a payment
+   field reads nothing, and keeps the context and fingerprint it always
+   had) —, the values, and their FINGERPRINT (:func:`fill_fingerprint` —
+   the template's id and version plus a SHA-256 of everything the fill
+   prints);
 6. unless *regenerate*: a note already generated from THIS invoice with the
    SAME fingerprint is returned instead of a duplicate (``reused=True``,
    nothing written, no log line — the connector's own ``mcp_write`` says
@@ -78,6 +87,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
+from models.admin_ledger import list_invoice_receipts_strict, receipt_stands
 from models.doc_template import (
     TemplateReadError,
     get_active_template,
@@ -90,7 +100,12 @@ from models.folder import (
     SYSTEM_FOLDER_PARENTS,
     SYSTEM_ROLE_FACTURES,
 )
-from models.invoice import get_invoice_with_items_strict, line_items_missing
+from models.invoice import (
+    balance_of,
+    get_invoice_with_items_strict,
+    line_items_missing,
+    payments_print_defect,
+)
 from models.partie import get_partie
 from services.gabarits import (
     FACTURES,
@@ -102,7 +117,12 @@ from utils import storage_identity
 from utils.cabinet import cabinet_dict
 from utils.deadlines import today_mtl
 from utils.docx_fill import DocxFillError, fill_docx
-from utils.invoice_docx import build_invoice_context
+from utils.invoice_docx import (
+    PAYMENT_REGION,
+    InvoicePayments,
+    build_invoice_context,
+    prints_payments,
+)
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import classify_placeholders, fallback_value, manual_value
 from utils.tracing_setup import add_attributes, span
@@ -143,6 +163,25 @@ GENERATED_LOOKUP_FAILED = (
 TEMPLATE_FILE_UNAVAILABLE = (
     "Le fichier du gabarit est introuvable. Téléversez-le à nouveau."
 )
+PAYMENTS_UNREADABLE = (
+    "Les paiements inscrits sur cette facture n'ont pas pu être lus — "
+    "lecture impossible. Rien n'a été généré : réessayez dans un instant."
+)
+# models.invoice.payments_print_defect's codes → their sentence.
+PAYMENT_DEFECT_MESSAGES = {
+    "payments_mismatch": (
+        "Les encaissements inscrits au registre d'administration pour cette "
+        "facture ne concordent pas avec son montant payé : la note "
+        "imprimerait des paiements qui ne mènent pas à son solde. Rien n'a "
+        "été généré : vérifiez les encaissements de la facture."
+    ),
+    "paid_by_hand": (
+        "Cette facture est marquée « payée » sans que ses paiements soient "
+        "tous inscrits au registre d'administration : la note imprimerait un "
+        "solde restant dû. Rien n'a été généré : inscrivez les encaissements "
+        "manquants."
+    ),
+}
 TEMPLATE_INVALID = "Le gabarit est invalide et n'a pas pu être rempli."
 FILL_ERROR = "Erreur lors de la génération. Veuillez réessayer."
 SAVE_FAILED = "Erreur lors de l'enregistrement."
@@ -312,9 +351,32 @@ def generer_note_honoraires(
     client = get_partie(client_id) if client_id else None
     day = today or today_mtl()
 
+    # The payments — only for a template that PRINTS them. STRICT: the note
+    # is filed on this answer, and « no payment » on a read failure would
+    # print a blip as an unpaid invoice. The standing rows must explain the
+    # invoice's payment state, or the printed rows would not lead to the
+    # printed balance (models.invoice.payments_print_defect).
+    payments = None
+    if prints_payments(template.get("placeholders")):
+        try:
+            standing = [row for row in list_invoice_receipts_strict(invoice_id)
+                        if receipt_stands(row)]
+        except Exception:
+            log_unexpected("note d'honoraires: payments read failed",
+                           invoice_id=invoice_id)
+            raise _refuse("payments_unreadable", PAYMENTS_UNREADABLE,
+                          template_id=template_id, invoice_id=invoice_id)
+        defect = payments_print_defect(invoice, standing)
+        if defect:
+            raise _refuse(defect, PAYMENT_DEFECT_MESSAGES[defect],
+                          template_id=template_id, invoice_id=invoice_id)
+        payments = InvoicePayments(receipts=standing,
+                                   balance_cents=balance_of(invoice))
+
     ctx = build_invoice_context(
         invoice, items,
         firm=cabinet_dict(), destinataire=client, dossier=dossier, today=day,
+        payments=payments,
     )
     values = assemble_note_values(template, ctx)
     counts = {
@@ -322,6 +384,8 @@ def generer_note_honoraires(
         "rows_debours_tx": len(ctx.rows["ligne_debours_tx"]),
         "rows_debours_ntx": len(ctx.rows["ligne_debours_ntx"]),
     }
+    if PAYMENT_REGION in ctx.rows:
+        counts["rows_paiement"] = len(ctx.rows[PAYMENT_REGION])
     add_attributes(template_id=template_id, invoice_id=invoice_id, **counts)
     fingerprint = fill_fingerprint(template, values, ctx)
 

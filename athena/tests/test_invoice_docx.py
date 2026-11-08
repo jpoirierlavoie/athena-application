@@ -355,3 +355,148 @@ def test_end_to_end_fill_note_template():
     assert "{{facture." not in out
     assert "{{h." not in out and "{{d." not in out
     assert "{{destinataire.nom_complet}}" not in out
+
+
+# ── Payments (2026-11-08) ────────────────────────────────────────────────
+# A fictional year and invented amounts (house rule for this public repo).
+
+from utils.invoice_docx import (  # noqa: E402
+    PAYMENT_FIELDS,
+    PAYMENT_FLAG,
+    PAYMENT_REGION,
+    PAYMENT_ROW_FIELDS,
+    InvoicePayments,
+    _payment_rows,
+    prints_payments,
+)
+
+
+def _receipt(amount, d, *, method="virement", trust=False, sequence=1):
+    row = {"kind": "encaissement_facture", "status": "compensée",
+           "amount": amount, "date": d, "method": method, "sequence": sequence}
+    if trust:
+        row["trust_transaction_id"] = "tx-fidei"
+    return row
+
+
+def _paid_invoice(**overrides):
+    fields = dict(invoice_number="2031-F012", date=_dt(2031, 3, 3),
+                  due_date=_dt(2031, 4, 3), total=86231, amount_due=86231)
+    fields.update(overrides)
+    return _invoice(**fields)
+
+
+def test_without_payments_the_context_keeps_its_former_keys():
+    """The gate's promise: a template that prints no payment is filled from
+    the very context it always was — the same keys, hence the same
+    fingerprint (services.note_honoraires.fill_fingerprint)."""
+    ctx = _build(_paid_invoice(), [_fee("R", 1, 25000, 25000)])
+    assert set(ctx.rows) == {"ligne_honoraire", "ligne_debours_tx", "ligne_debours_ntx"}
+    assert set(ctx.conditions) == {"si_honoraires", "si_debours_tx", "si_debours_ntx"}
+    assert "facture.solde_restant" not in ctx.values
+
+
+def test_payment_rows_name_trust_or_the_method_and_print_a_deduction():
+    receipts = [
+        # A fee payment's encaissement carries the trust withdrawal's method;
+        # its source is the trust account all the same.
+        _receipt(40000, _dt(2031, 3, 10), trust=True, sequence=4),
+        _receipt(12500, _dt(2031, 3, 17), method="chèque", sequence=7),
+        _receipt(3105, _dt(2031, 3, 24), method="autre", sequence=9),
+        _receipt(626, _dt(2031, 4, 1), method="carte", sequence=11),
+    ]
+    ctx = _build(_paid_invoice(amount_paid=56231), [],
+                 payments=InvoicePayments(receipts=receipts, balance_cents=30000))
+    assert ctx.rows[PAYMENT_REGION] == [
+        {"p.date": "10 mars 2031", "p.source": "Fidéicommis",
+         "p.montant": f"(400,00){NBSP}$"},
+        {"p.date": "17 mars 2031", "p.source": "Chèque",
+         "p.montant": f"(125,00){NBSP}$"},
+        {"p.date": "24 mars 2031", "p.source": "Paiement",
+         "p.montant": f"(31,05){NBSP}$"},
+        {"p.date": "1er avril 2031", "p.source": "Carte",
+         "p.montant": f"(6,26){NBSP}$"},
+    ]
+    assert ctx.conditions[PAYMENT_FLAG] is True
+    assert ctx.values["facture.solde_restant"] == f"300,00{NBSP}$"
+    # The former fields keep their meaning: solde is the amount due at issuance.
+    assert ctx.values["facture.solde"] == f"862,31{NBSP}$"
+
+
+def test_a_method_outside_the_vocabulary_still_prints_a_payment():
+    rows = _payment_rows({}, [_receipt(100, _dt(2031, 5, 5), method="interac"),
+                              {"amount": 200, "date": _dt(2031, 5, 6)}])
+    assert [r["p.source"] for r in rows] == ["Paiement", "Paiement"]
+
+
+def test_the_provision_of_an_imported_invoice_leads_the_rows():
+    """retainer_applied rides in the series — the region REPLACES the
+    Avances line, so on paper TOTAL less the rows gives the balance."""
+    inv = _paid_invoice(retainer_applied=20000, amount_due=66231, amount_paid=15000)
+    receipts = [_receipt(15000, _dt(2031, 3, 3), method="comptant", sequence=2)]
+    ctx = _build(inv, [], payments=InvoicePayments(receipts=receipts,
+                                                   balance_cents=51231))
+    assert [(r["p.date"], r["p.source"], r["p.montant"])
+            for r in ctx.rows[PAYMENT_REGION]] == [
+        ("3 mars 2031", "Fidéicommis", f"(200,00){NBSP}$"),
+        ("3 mars 2031", "Comptant", f"(150,00){NBSP}$"),
+    ]
+    assert ctx.values["facture.solde_restant"] == f"512,31{NBSP}$"
+
+
+def test_rows_follow_the_calendar_day_then_the_register_order():
+    receipts = [  # the strict reader's order: (date, sequence)
+        _receipt(100, _dt(2031, 3, 5), method="chèque", sequence=3),
+        _receipt(200, _dt(2031, 3, 5), method="virement", sequence=8),
+    ]
+    rows = _payment_rows(_paid_invoice(retainer_applied=300, date=_dt(2031, 3, 9)),
+                         receipts)
+    assert [r["p.source"] for r in rows] == ["Chèque", "Virement", "Fidéicommis"]
+
+
+def test_no_payment_yet_empties_the_region_and_lowers_its_flag():
+    ctx = _build(_paid_invoice(), [],
+                 payments=InvoicePayments(receipts=[], balance_cents=86231))
+    assert ctx.rows[PAYMENT_REGION] == []
+    assert ctx.conditions[PAYMENT_FLAG] is False
+    assert ctx.values["facture.solde_restant"] == f"862,31{NBSP}$"
+
+
+def test_the_gate_reads_the_template_inventory_by_exact_name():
+    assert prints_payments(["facture.total_apres_taxes", "p.montant"])
+    assert prints_payments(["facture.solde_restant"])
+    assert not prints_payments(["facture.solde", "h.date", "facture.avances_fideicommis"])
+    assert not prints_payments(["P.MONTANT"])      # row fields match case-sensitively
+    assert not prints_payments(None)
+    assert set(PAYMENT_FIELDS) == set(PAYMENT_ROW_FIELDS) | {"facture.solde_restant"}
+
+
+def test_the_row_fields_are_the_keys_every_payment_row_carries():
+    rows = _payment_rows({"retainer_applied": 1, "date": _dt(2031, 1, 2)},
+                         [_receipt(1, _dt(2031, 1, 3), trust=True),
+                          _receipt(1, _dt(2031, 1, 4))])
+    assert len(rows) == 3 and all(tuple(r) == PAYMENT_ROW_FIELDS for r in rows)
+
+
+def test_end_to_end_fill_lists_the_payments_in_place_of_the_avances_line():
+    totals = _tbl(
+        _tr(_tc("TOTAL APRÈS TAXES"), _tc("{{facture.total_apres_taxes}}")),
+        _tr(_tc("{{#ligne_paiement}}{{p.date}} — {{p.source}}"), _tc("{{p.montant}}")),
+        _tr(_tc("SOLDE"), _tc("{{facture.solde_restant}}")),
+    )
+    docx = _make_docx(_p("Facture {{facture.numero}}") + totals)
+    receipts = [_receipt(40000, _dt(2031, 3, 10), trust=True),
+                _receipt(16231, _dt(2031, 3, 17), method="chèque", sequence=2)]
+    ctx = _build(_paid_invoice(amount_paid=56231), [],
+                 payments=InvoicePayments(receipts=receipts, balance_cents=30000))
+    values = _assemble(extract_placeholders(docx), ctx)
+    out = _document_xml(fill_docx(docx, values,
+                                  rows_by_region=ctx.rows, conditions=ctx.conditions))
+
+    ET.fromstring(out)
+    assert out.count("<w:tr>") == 4         # total + 2 payments + solde
+    assert "10 mars 2031 — Fidéicommis" in out
+    assert "17 mars 2031 — Chèque" in out
+    assert f"(400,00){NBSP}$" in out and f"(162,31){NBSP}$" in out
+    assert f"300,00{NBSP}$" in out and f"862,31{NBSP}$" in out
+    assert "{{" not in out

@@ -452,7 +452,8 @@ stored invoice — never recomputed.
 | `{{facture.tvq_montant}}` | QST amount |
 | `{{facture.total_apres_taxes}}` | Total after taxes |
 | `{{facture.avances_fideicommis}}` | Retainer applied, **parenthesized** deduction (« (1 150,00) $ ») |
-| `{{facture.solde}}` | Balance due |
+| `{{facture.solde}}` | Balance due **at issuance** (`amount_due`) — a payment never lowers it |
+| `{{facture.solde_restant}}` | Balance left after the payments recorded when the note is generated — the invoice page's « Solde ». Only in a template that prints the payments ([below](#payments-ligne_paiement)) |
 | `{{facture.nombre_heures}}` | Total billed hours (« 0,50 ») |
 | `{{facture.taux_horaire}}` | Hourly rate (uniform billed rate; else dossier fallback; else blank) |
 
@@ -465,10 +466,11 @@ stored invoice — never recomputed.
 | `{{#ligne_honoraire}}` | `{{h.date}}` · `{{h.description}}` · `{{h.temps}}` |
 | `{{#ligne_debours_tx}}` (taxable) | `{{d.date}}` · `{{d.description}}` · `{{d.cout}}` |
 | `{{#ligne_debours_ntx}}` (non-taxable) | `{{d.date}}` · `{{d.description}}` · `{{d.cout}}` |
+| `{{#ligne_paiement}}` (payments — [below](#payments-ligne_paiement)) | `{{p.date}}` · `{{p.source}}` · `{{p.montant}}` |
 
 The two disbursement regions share the identical `d.*` field set — only which
 line items populate each differs (taxable vs. non-taxable). Row-scoped fields
-are prefixed `h.` / `d.` so they never collide with the global scalars.
+are prefixed `h.` / `d.` / `p.` so they never collide with the global scalars.
 
 ### Conditional flags
 
@@ -477,8 +479,59 @@ are prefixed `h.` / `d.` so they never collide with the global scalars.
 | `{{?si_honoraires}}` … `{{/si_honoraires}}` | there is ≥ 1 fee line |
 | `{{?si_debours_tx}}` … `{{/si_debours_tx}}` | there is ≥ 1 taxable disbursement |
 | `{{?si_debours_ntx}}` … `{{/si_debours_ntx}}` | there is ≥ 1 non-taxable disbursement |
+| `{{?si_paiements}}` … `{{/si_paiements}}` | there is ≥ 1 payment row (only in a template that prints the payments — below) |
 
 Wrap each section's table in its flag so an empty section disappears cleanly.
+
+### Payments (`ligne_paiement`)
+
+Since 2026-11-08 the region lists what was paid on the invoice **when the
+note is generated**. A note generated at issuance shows no payment, so
+generate it again after one: the web button files a new note on every
+click, and the connector files a new one once the payments have changed.
+
+- **The rows.** An imported invoice's provision comes first
+  (`retainer_applied`, the « Avances en fidéicommis » deducted when it was
+  issued), dated the invoice's date, with source « Fidéicommis ». Then
+  come the encaissements imputed on the invoice in the administration
+  register, oldest first. A fee payment from trust is included, since it
+  lands there too. A reversed (contre-passé) or annulled encaissement
+  never prints.
+- **`{{p.date}}`** — the encaissement's date in the register (the date the
+  invoice page shows), in long French form.
+- **`{{p.source}}`** — « Fidéicommis » for a payment drawn from trust.
+  Otherwise the method recorded: Chèque, Virement, Prélèvement, Dépôt
+  direct, Carte, Comptant, and « Paiement » for « Autre ».
+- **`{{p.montant}}`** — parenthesized, the deduction form of
+  `{{facture.avances_fideicommis}}`: « (500,00) $ ».
+- **The balance.** `{{facture.solde}}` stays the amount due at issuance.
+  The balance after the rows is `{{facture.solde_restant}}`: on paper,
+  TOTAL APRÈS TAXES less the rows equals it.
+- **Put the region IN PLACE OF the « Avances en fidéicommis » line**, never
+  beside it. The region already carries the provision, and keeping both
+  would deduct it twice.
+
+In the totals table:
+
+| | |
+|---|---|
+| `TOTAL APRÈS TAXES` | `{{facture.total_apres_taxes}}` |
+| `{{#ligne_paiement}}{{p.date}} — {{p.source}}` | `{{p.montant}}` |
+| `SOLDE` | `{{facture.solde_restant}}` |
+
+**When the payments are read.** Only for a template that prints them, that
+is, one naming `{{p.date}}`, `{{p.source}}`, `{{p.montant}}` or
+`{{facture.solde_restant}}`. Any other template is filled exactly as
+before. For the same reason, `{{?si_paiements}}` works only in a template
+that also prints one of those fields: its markers are not part of the field
+list the application keeps for a template, and elsewhere they stay as typed.
+
+**Refusals** — nothing is generated, and the message says why, when:
+
+- the payments could not be read;
+- the encaissements recorded do not add up to the invoice's amount paid;
+- the invoice was marked « payée » by hand and a balance is left. Record the
+  missing encaissements first.
 
 ---
 

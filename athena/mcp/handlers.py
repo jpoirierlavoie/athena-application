@@ -1936,13 +1936,14 @@ TEMPLATE_READ_ERROR = "Lecture des gabarits impossible — réessayez dans un mo
 _SLOT_ENTRIES_FR = {"client_id": "clients", "adverse_id": "parties adverses"}
 # The namespaces a SPECIAL kind's own flow fills: utils/note_docx for
 # « note » (note.*), utils/invoice_docx for « note_honoraires » (facture.*,
-# and the h./d. fields of its repeated rows). The gabarit classifier knows
-# none of them and files them under passthrough — reported as « blocs to
-# write » they would send a caller composing the invoice total by hand.
+# and the h./d./p. fields of its repeated rows — p. since 2026-11-08, the
+# payments). The gabarit classifier knows none of them and files them under
+# passthrough — reported as « blocs to write » they would send a caller
+# composing the invoice total by hand.
 # tests/test_mcp_template_reads.py pins these prefixes against the builders.
 _FLOW_PREFIXES = {
     "note": ("note.",),
-    "note_honoraires": ("facture.", "h.", "d."),
+    "note_honoraires": ("facture.", "h.", "d.", "p."),
 }
 # Each flow runs on BOTH surfaces — the application's button and the
 # connector's create_document (lot 2A: source « markdown »; lot 3b: source

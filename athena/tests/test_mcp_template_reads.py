@@ -433,16 +433,18 @@ def test_a_special_kinds_own_fields_are_never_reported_as_blocs_to_write(store):
 def test_the_flow_prefixes_are_the_builders_own_namespaces():
     """Pinned against the two builders (pure modules): a field either
     flow starts filling under a new namespace must be taught here."""
-    from utils.invoice_docx import _build_rows, _facture_values
+    from utils.invoice_docx import _build_rows, _facture_values, _payment_rows
     from utils.note_docx import build_note_context
 
     facture = _facture_values({}, [])
     assert facture and all(k.startswith("facture.") for k in facture)
     rows = _build_rows([{"type": "fee"}, {"type": "expense", "taxable": True},
                         {"type": "expense", "taxable": False}])
+    rows["ligne_paiement"] = _payment_rows({}, [{"amount": 1}])   # 2026-11-08
     row_keys = {k for region in rows.values() for row in region for k in row}
-    assert row_keys and {k.split(".", 1)[0] + "." for k in row_keys} == {"h.", "d."}
-    assert handlers._FLOW_PREFIXES["note_honoraires"] == ("facture.", "h.", "d.")
+    assert row_keys and {k.split(".", 1)[0] + "." for k in row_keys} == {
+        "h.", "d.", "p."}
+    assert handlers._FLOW_PREFIXES["note_honoraires"] == ("facture.", "h.", "d.", "p.")
 
     ctx = build_note_context({"title": "T"}, dossier=None, firm={},
                              today=datetime(2026, 9, 27).date())

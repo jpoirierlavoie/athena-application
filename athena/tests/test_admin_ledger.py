@@ -1127,6 +1127,46 @@ def test_list_invoice_receipts_sans_identifiant_ne_requete_pas(store):
     assert al.list_invoice_receipts("") == []
 
 
+def test_list_invoice_receipts_strict_leve_sur_une_lecture_ratee(store, monkeypatch):
+    """Le jumeau STRICT (2026-11-08) sert les lignes de paiement de la note
+    d'honoraires : une panne LÈVE — un document client n'imprime jamais
+    « aucun paiement » sur un hoquet de lecture. L'aîné d'affichage, lui,
+    échoue toujours ouvert sur la même panne. La panne survient où Firestore
+    la rend : au flux de la requête, une fois celle-ci construite."""
+    class _Requete:
+        def where(self, *args, **kwargs):
+            return self
+
+        def stream(self, *args, **kwargs):
+            raise RuntimeError("firestore indisponible")
+
+    class _Panne:
+        def collection(self, _name):
+            return _Requete()
+
+    monkeypatch.setattr(al, "db", _Panne())
+    with pytest.raises(RuntimeError):
+        al.list_invoice_receipts_strict("fac1")
+    assert al.list_invoice_receipts("fac1") == []
+    # Un identifiant vide est refusé AVANT toute requête (« '' » viserait
+    # toutes les écritures sans facture) : ValueError, jamais la panne.
+    with pytest.raises(ValueError):
+        al.list_invoice_receipts_strict("")
+
+
+def test_list_invoice_receipts_strict_rend_les_lignes_de_l_affichage(store):
+    tardif, _ = al.create_transaction(_encaissement(amount=10000, date=_d(2026, 3, 9)))
+    ancien, _ = al.create_transaction(_encaissement(amount=5000, date=_d(2026, 1, 4)))
+    al.reverse_transaction(tardif["id"], "erreur", allow_linked=True)
+
+    strict = al.list_invoice_receipts_strict("fac1")
+
+    assert strict == al.list_invoice_receipts("fac1")
+    assert [r["id"] for r in strict] == [ancien["id"], tardif["id"]]
+    # La note n'en garde que ce qui tient encore.
+    assert [r["id"] for r in strict if al.receipt_stands(r)] == [ancien["id"]]
+
+
 def test_find_by_trust_transaction_est_supprime(store):
     """Réécrit délibérément au lot 5a (étape 2). find_by_trust_transaction
     échouait OUVERT à None et ne rendait que le PREMIER rang : son seul
