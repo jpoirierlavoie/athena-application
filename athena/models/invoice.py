@@ -40,7 +40,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, concurrency, db, provenance
+from models import aggregation_values, concurrency, db, full_reads, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.deadlines import today_mtl, today_utc
@@ -172,6 +172,12 @@ VALID_STATUSES = ("brouillon", "envoyée", "payée", "en_retard", "annulée")
 #: qu'importé de `models.admin_ledger` / `models.trust`, qui en tiennent
 #: chacun le leur : doctrine du vocabulaire du dépôt.
 _ISSUED_STATUSES = ("envoyée", "en_retard")
+
+#: The statuses of a BILLED invoice — the financial statements' revenue
+#: (lot B, the lawyer's decision of 2026-11-07: billed basis, in the period
+#: of the invoice date, before tax). A brouillon is not billed yet; an
+#: annulée invoice counts in no period, whenever it was voided.
+REVENUE_STATUSES = ("envoyée", "en_retard", "payée")
 
 STATUS_LABELS = {
     "brouillon": "Brouillon",
@@ -1702,6 +1708,47 @@ def list_invoices(
         return results
     except Exception:
         return []
+
+
+def list_invoices_strict(transaction) -> list[dict]:
+    """Every invoice of every status, read inside *transaction* — strict and
+    capped (``models/full_reads``): the financial statements' reader, where
+    a failed or truncated read must never pass for « no invoice »
+    (``list_invoices`` above fails open, for display)."""
+    return full_reads.stream_all(db.collection(COLLECTION), transaction=transaction)
+
+
+def normalize_reference(reference: str) -> str:
+    """The matching key of an invoice number cited from outside Athéna — a
+    trust fee payment's ``invoice_external_ref``, an invoice's number or its
+    ``legacy_ref`` (stored as ``facture:<number>``): the ``facture:`` prefix
+    dropped, every character that is not an ASCII letter or digit dropped,
+    upper case. The previous system's reprise lost the dashes on the way
+    (« 251601-01 » cited, « 25160101 » stored): the same identifier, spelt
+    two ways — the key the 2026-08 reprise matched on
+    (``scripts/reprise_encaissements.normaliser``), with the prefix it strips
+    too. A comparison of identifiers, never a fuzzy one: the caller still
+    demands ONE invoice per key. Linear, no regex."""
+    text = str(reference or "").strip()
+    if text.lower().startswith("facture:"):
+        text = text[len("facture:"):]
+    return "".join(ch for ch in text if ch.isascii() and ch.isalnum()).upper()
+
+
+def is_imported(invoice: dict) -> bool:
+    """True when *invoice* was taken over from the previous system
+    (``import_invoice``) — PURE. A copy of ``mcp.import_audit.is_imported``
+    (which may import no model), pinned equal to it by a test: the
+    ``imported`` marker decides when present; without it (invoices stored
+    before 2026-09-28), a ``legacy_ref`` or a connector creation
+    (``created_via`` « mcp » — import_invoice was then its only creator)."""
+    invoice = invoice or {}
+    marker = invoice.get("imported")
+    if isinstance(marker, bool):
+        return marker
+    if str(invoice.get("legacy_ref") or "").strip():
+        return True
+    return str(invoice.get("created_via") or "") == "mcp"
 
 
 def _page_query(

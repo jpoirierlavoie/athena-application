@@ -111,5 +111,18 @@
     </div>
     {% endif %}
   </section>
+
+  {# ── États financiers (lot B, 2026-11-07) — un lien seulement : la page
+     lit ses propres données (aucune nouvelle requête ici, la docstring de
+     routes/comptabilite.py). #}
+  <section class="mt-8">
+    <div class="bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between gap-3">
+      <div>
+        <p class="font-medium text-gray-900">États financiers</p>
+        <p class="text-sm text-gray-500">Résultats, flux de trésorerie et bilan du cabinet, par mois, par trimestre ou par année.</p>
+      </div>
+      <a href="{{ url_for('etats_financiers.index') }}" class="inline-flex items-center px-3 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Consulter</a>
+    </div>
+  </section>
 </div>
 {% endblock %}

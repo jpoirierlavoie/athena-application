@@ -224,6 +224,14 @@ def today_utc() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def now_utc() -> datetime:
+    """The current instant, tz-aware UTC — for a figure stamped with the
+    moment it was computed (the financial statements' « Calculé le … »,
+    shown through ``to_mtl``). Same clock as ``today_mtl``, so one freeze
+    pins the day and the instant together."""
+    return datetime.now(timezone.utc)
+
+
 def _as_date(value) -> Optional[date]:
     """Coerce a stored value to its own calendar date, or None.
 

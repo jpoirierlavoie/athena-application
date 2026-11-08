@@ -76,7 +76,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import concurrency, db, provenance
+from models import concurrency, db, full_reads, provenance
 # The invoice payment is STAGED in this module's own transactions (lot 5a):
 # ``payment_updates`` is the one computation of amount_paid / paid_date /
 # the status flip, and PaymentRefused must abort the ledger transaction it
@@ -520,8 +520,12 @@ class UnresolvedCorrection(Exception):
 
 def results_statement(rows: list[dict]) -> dict:
     """The results statement of *rows*, in cents — the ONE authority for
-    what counts as the firm's revenue, expenses and input taxes (spec of
-    2026-10-07, §2.4).
+    what the LEDGER counts as the firm's revenue, expenses and input taxes
+    (spec of 2026-10-07, §2.4): its receipts as recorded. The financial
+    statements' income statement is on the BILLED basis instead — revenue
+    from invoices, costs from the dépenses net of tax
+    (``models/financial_statements``, lot B), its costs pinned equal to
+    this function's ``expenses_net``.
 
     An ALLOW-list: ``revenue`` sums the ``REVENUE_KINDS`` by kind;
     ``expenses`` / ``expenses_net`` sum the ``EXPENSE_KINDS`` by category,
@@ -570,6 +574,103 @@ def results_statement(rows: list[dict]) -> dict:
         "total_revenue": sum(revenue.values()),
         "total_expenses": sum(expenses.values()),
     }
+
+
+# ── Financial statements (lot B, the lawyer's decisions of 2026-11-07) ──────
+# ``models/financial_statements`` builds the statements; the ledger's own
+# vocabulary for them lives here, beside the kinds and categories it reads.
+#
+# The cost class of a dépense: linked to a dossier, a DIRECT cost (whatever
+# its category); otherwise usage-billed cloud and AI and office supplies are
+# VARIABLE, every other category FIXED. Costs are net of TPS/TVQ.
+VARIABLE_COST_CATEGORIES = ("infonuagique_ia", "fournitures")
+COST_CLASSES = ("direct", "variable", "fixe")
+COST_CLASS_LABELS = {
+    "direct": "Coûts directs",
+    "variable": "Coûts variables",
+    "fixe": "Frais fixes",
+}
+# The cash-flow line of every kind but the correction, which counts on its
+# original's line (``resolve_corrections``). A trust-linked « autre recette »
+# — a fee payment booked before the encaissement path, or citing an invoice
+# outside Athéna — is placed by the statements' attribution, not by this map:
+# with the invoice receipts when it names an Athéna invoice, on a line of
+# its own otherwise.
+CASH_FLOW_LINES = {
+    "encaissement_facture": "encaissements_factures",
+    "recette_autre": "autres_recettes",
+    "dépense": "depenses",
+    "prélèvement": "prelevements",
+    "apport": "apports",
+    "virement_interne_sortant": "virements_sortants",
+    "virement_interne_entrant": "virements_entrants",
+    "remise_tps_tvq": "remises_tps_tvq",
+    "remboursement_tps_tvq": "remboursements_tps_tvq",
+    "paiement_carte": "paiements_carte",
+}
+
+
+def cost_class(row: dict) -> str:
+    """The cost class (``COST_CLASSES``) of a dépense row — a resolved
+    correction carries its original's dossier and category."""
+    if row.get("dossier_id"):
+        return "direct"
+    if (row.get("category") or "") in VARIABLE_COST_CATEGORIES:
+        return "variable"
+    return "fixe"
+
+
+def implied_direction(kind: str) -> Optional[str]:
+    """The sign a simple kind implies (``_KIND_DIRECTION``), or None for the
+    card payment and the correction, whose legs carry their own."""
+    return _KIND_DIRECTION.get(kind)
+
+
+def resolve_corrections(rows: list[dict]) -> list[dict]:
+    """Every row of *rows* — a WHOLE ledger, every account, never a period's
+    slice (an original may predate its correction's period) — with a
+    ``sign``: 1 for an ordinary row; -1 for a correction, copied with what it
+    reverses: its original's ``kind``, ``invoice_id``,
+    ``trust_transaction_id``, ``dossier_id`` and ``category`` (a correction
+    carries no invoice or trust link of its own — ``_stage_reverse_legs``),
+    and ``corrects_id``. A correction keeps its own id, account, date,
+    direction, amount and split: it moves the money on its own day, and it
+    counts against its original's line.
+
+    RAISES :class:`UnresolvedCorrection` when a correction's original is not
+    among *rows* — stamped or not: a stamp names the kind, never the links
+    an attribution follows — or sits on another account (a reversal is
+    written on its original's account), or is itself a correction; and
+    ``ValueError`` for a row naming no account or a kind the register does
+    not know. Nothing is guessed."""
+    by_id = {r.get("id"): r for r in rows if r.get("id")}
+    out = []
+    for r in rows:
+        kind = r.get("kind") or ""
+        if not r.get("account_id"):
+            raise ValueError(f"admin row {r.get('id')}: no account")
+        if kind not in VALID_KINDS:
+            raise ValueError(f"admin row {r.get('id')}: unknown kind")
+        if kind != REVERSAL_KIND:
+            out.append({**r, "sign": 1})
+            continue
+        original = by_id.get(r.get("reverses_id"))
+        if (original is None
+                or original.get("account_id") != r.get("account_id")
+                or (original.get("kind") or "") not in VALID_KINDS
+                or original.get("kind") == REVERSAL_KIND):
+            raise UnresolvedCorrection(r.get("id") or "")
+        out.append({
+            **r,
+            "sign": -1,
+            "kind": original.get("kind"),
+            "invoice_id": original.get("invoice_id"),
+            "trust_transaction_id": original.get("trust_transaction_id"),
+            "dossier_id": original.get("dossier_id"),
+            "category": original.get("category"),
+            "corrects_id": original.get("id"),
+        })
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3061,6 +3162,28 @@ def list_reconciliations(account_id: Optional[str] = None) -> list[dict]:
         query = query.where(filter=FieldFilter("account_id", "==", account_id))
     query = query.order_by("period_end", direction=firestore.Query.DESCENDING)
     return [d.to_dict() for d in query.stream()]
+
+
+# The financial statements' whole-ledger readers (lot B): strict, inside the
+# caller's (read-only) transaction, capped — ``models/full_reads``.
+
+
+def list_accounts_strict(transaction) -> list[dict]:
+    """Every administration account, closed ones included."""
+    return full_reads.stream_all(db.collection(ACCOUNTS_COLLECTION),
+                                 transaction=transaction)
+
+
+def list_all_transactions_strict(transaction) -> list[dict]:
+    """Every administration entry of every account and status."""
+    return full_reads.stream_all(db.collection(TRANSACTIONS_COLLECTION),
+                                 transaction=transaction)
+
+
+def list_reconciliations_strict(transaction) -> list[dict]:
+    """Every administration reconciliation, drafts included."""
+    return full_reads.stream_all(db.collection(RECONCILIATIONS_COLLECTION),
+                                 transaction=transaction)
 
 
 def delete_reconciliation(rec_id: str) -> tuple[bool, list[str]]:

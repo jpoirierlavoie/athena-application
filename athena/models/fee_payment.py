@@ -686,6 +686,43 @@ def _standing(row: dict) -> bool:
     )
 
 
+def _utc_day(value):
+    """The UTC calendar day of a date-only field (stored at midnight UTC),
+    or None — the trust register's own reading (``trust._as_utc``)."""
+    v = trust._as_utc(value)
+    return v.date() if isinstance(v, datetime) else None
+
+
+def manual_recette_candidates(fee: dict, unlinked: list) -> list[dict]:
+    """The UNLINKED standing administration recettes that can be the one
+    the lawyer entered by hand for the fee payment *fee* — what the trust
+    page's banner tells him to do when the automatic recette fails
+    (« inscrivez-la manuellement »): the link travels only as a keyword no
+    form can fill, so a manual recette is never linked. Same amount,
+    dated on or after the fee payment, and — when the fee payment names an
+    Athéna invoice — an encaissement of THAT invoice. A candidate is a
+    presumption to confirm, never a link: trust integrity check 10 turns
+    a missing link into a note with it, and the financial statements
+    mark an « autre recette » that is one (lot B; this predicate lived in
+    ``scripts/verify_trust_integrity`` until then). *unlinked* is the
+    caller's choice of standing recettes carrying no trust link."""
+    amount = int(fee.get("amount", 0))
+    fee_day = _utc_day(fee.get("date"))
+    out = []
+    for row in unlinked:
+        if int(row.get("amount", 0)) != amount:
+            continue
+        row_day = _utc_day(row.get("date"))
+        if fee_day is not None and (row_day is None or row_day < fee_day):
+            continue
+        if fee.get("invoice_id"):
+            if (row.get("kind") != "encaissement_facture"
+                    or row.get("invoice_id") != fee.get("invoice_id")):
+                continue
+        out.append(row)
+    return out
+
+
 def reverse_fee_payment(
     tx_id: str, reason: str, *, expected_etag: Optional[str] = None,
     _report_out: Optional[dict] = None,

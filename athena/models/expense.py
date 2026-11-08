@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, billing_move, concurrency, db, provenance
+from models import aggregation_values, billing_move, concurrency, db, full_reads, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -734,6 +734,13 @@ def list_expenses_strict(dossier_id: str) -> list[dict]:
         filter=FieldFilter("dossier_id", "==", dossier_id)
     )
     return [doc.to_dict() or {} for doc in query.stream()]
+
+
+def list_all_strict(transaction) -> list[dict]:
+    """Every disbursement of every dossier, read inside *transaction* —
+    strict and capped (``models/full_reads``): the financial statements'
+    work-in-progress reader (lot B)."""
+    return full_reads.stream_all(db.collection(COLLECTION), transaction=transaction)
 
 
 def get_unbilled_expenses_strict(dossier_id: str) -> list[dict]:

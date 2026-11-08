@@ -33,7 +33,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import aggregation_values, concurrency, db, provenance
+from models import aggregation_values, concurrency, db, full_reads, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
@@ -790,6 +790,22 @@ def list_accounts(status: Optional[str] = None) -> list[dict]:
     accounts = [d.to_dict() for d in query.stream()]
     accounts.sort(key=lambda a: a.get("name", ""))
     return accounts
+
+
+# The financial statements' whole-register readers (lot B): strict, inside
+# the caller's (read-only) transaction, capped — ``models/full_reads``.
+
+
+def list_accounts_strict(transaction) -> list[dict]:
+    """Every trust account, closed ones included."""
+    return full_reads.stream_all(db.collection(ACCOUNTS_COLLECTION),
+                                 transaction=transaction)
+
+
+def list_all_transactions_strict(transaction) -> list[dict]:
+    """Every trust entry of every account and status."""
+    return full_reads.stream_all(db.collection(TRANSACTIONS_COLLECTION),
+                                 transaction=transaction)
 
 
 def update_account(account_id: str, data: dict) -> tuple[Optional[dict], list[str]]:

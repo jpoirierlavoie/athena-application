@@ -4502,6 +4502,41 @@ Notes:
   Redeliver plugin 1.3.0 with the code, or the 1.4.0 recipe steers Claude to
   kinds and a category the older schema refuses (`schema_invalid`, nothing
   written).
+- **Financial statements (2026-11-08).** Lot B of the lawyer's plan of
+  2026-11-07: the page `/comptabilite/etats` (a card on the Comptabilité
+  hub) and its PDF give, for a month, a quarter or a calendar year from
+  2025-01-01, the income statement (billed basis), the cash flow of the
+  operations accounts, the balance sheet at the period's start and end, the
+  equity rollforward, the TPS/TVQ table, the prior-period adjustments and
+  two memos (trust funds, unbilled work), computed by
+  `models/financial_statements` over ONE read-only Firestore transaction
+  (`services/financial_statements`) — the application's first read-only
+  transaction. Each model it reads gained a strict whole-collection reader
+  capped at `models/full_reads.FULL_READ_CAP` (a truncated read raises; the
+  sections that need it say « indisponible »). Change Impact: item 1 in name
+  only (new pure functions and readers in models a tool reaches —
+  `admin_ledger`, `invoice`, `fee_payment`, `trust`, `time_entry`,
+  `expense` — and no tool, schema or text change); item 4 (`admin_export` widened with `document`,
+  `period_kind` and `counts`; three new `log_unexpected` messages); item 5
+  (a GET-only blueprint under `@login_required`, never CSRF-exempt, under no
+  special-cased prefix); item 6 (a new template on compiled classes only —
+  no recompile); item 7 not touched (whole-collection reads with no filter
+  or order: no index). The trust integrity script's manual-recette
+  predicate moved into `models/fee_payment`, unchanged. Nothing is
+  written; no rule, secret, dependency or DAV change. After the deploy:
+  1. Open the page on the phone (375 px) and on the desktop, light and
+     dark, and download the PDF of the last complete month.
+  2. For a closed month, compare the cash with the operations journal's
+     balance that day, the card with the account page, the TPS/TVQ perçue
+     with the « Journal des honoraires » less its brouillon and annulée
+     rows, and today's receivables with the dashboard's « Factures
+     impayées », net of the listed points.
+  3. Read the « Points à vérifier »: the trust receipts attributed by the
+     number they cite (« rattachement présumé »), those whose invoice is
+     absent from Athéna, the « payée » invoices presumed settled — each
+     moves a figure until it is fixed in its own register.
+  « Écart non expliqué » reads 0,00 $; any other value is a bug of the
+  computation, not of the data. A rollback is the code alone.
 
 ## 16. Troubleshooting
 

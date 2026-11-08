@@ -36,6 +36,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.comptabilite as rc
     import routes.trust as rt
     import routes.admin_ledger as ra
+    import routes.financial_statements as rfs
 
 from flask import Flask  # noqa: E402
 
@@ -81,8 +82,9 @@ _ADMIN_SNAP = {
 
 @pytest.fixture()
 def web_rendu(monkeypatch):
-    """Rendu réel avec les TROIS blueprints — le gabarit du hub émet des
-    url_for('trust.…') ET url_for('admin_ledger.…') inconditionnels ;
+    """Rendu réel avec les blueprints que le hub nomme — le gabarit émet des
+    url_for('trust.…'), url_for('admin_ledger.…') et, depuis le lot B
+    (2026-11-07), url_for('etats_financiers.index') inconditionnels ;
     contraste voulu avec les smoke admin, qui n'enregistrent que admin_bp
     (leurs liens croisés sont gardés par des {% if %})."""
     from utils.format_fr import format_cents_fr
@@ -97,6 +99,7 @@ def web_rendu(monkeypatch):
     app.register_blueprint(rc.comptabilite_bp)
     app.register_blueprint(rt.trust_bp)
     app.register_blueprint(ra.admin_bp)
+    app.register_blueprint(rfs.etats_bp)
     client = app.test_client()
     with client.session_transaction() as s:
         s["user_id"] = "u1"

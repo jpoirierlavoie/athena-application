@@ -143,3 +143,11 @@ def format_date_fr(value: date | datetime) -> str:
         value = value.date()
     day = "1er" if value.day == 1 else str(value.day)
     return f"{day} {_FRENCH_MONTHS[value.month - 1]} {value.year}"
+
+
+def month_name_fr(month: int) -> str:
+    """``10`` → ``"octobre"`` — the month's French name, lower case (the
+    financial statements' period labels, ``utils/periods.label_fr``)."""
+    if isinstance(month, bool) or not isinstance(month, int) or not 1 <= month <= 12:
+        raise ValueError(f"mois invalide : {month!r}")
+    return _FRENCH_MONTHS[month - 1]

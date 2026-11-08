@@ -710,28 +710,11 @@ def _admin_rows_by_trust_link(problems: list) -> Optional[tuple[dict, list]]:
 
 def _manual_recettes(fee: dict, unlinked: list) -> list[dict]:
     """The UNLINKED standing recettes that can be the one the lawyer entered
-    by hand for *fee* — what the trust page's banner tells him to do when
-    the automatic recette fails (« inscrivez-la manuellement »): the link
-    itself travels only as a keyword no form can fill, so a manual recette
-    is never linked. Same amount, dated on or after the fee payment, and —
-    when the fee payment names an Athéna invoice — an encaissement of THAT
-    invoice (which also carries the payment onto it). A candidate turns a
-    missing link into a NOTE to confirm, never into a silent pass."""
-    amount = int(fee.get("amount", 0))
-    fee_day = _day(fee.get("date"))
-    out = []
-    for row in unlinked:
-        if int(row.get("amount", 0)) != amount:
-            continue
-        row_day = _day(row.get("date"))
-        if fee_day is not None and (row_day is None or row_day < fee_day):
-            continue
-        if fee.get("invoice_id"):
-            if (row.get("kind") != "encaissement_facture"
-                    or row.get("invoice_id") != fee.get("invoice_id")):
-                continue
-        out.append(row)
-    return out
+    by hand for *fee* — the model's predicate since lot B
+    (``models/fee_payment.manual_recette_candidates``, which the financial
+    statements share). A candidate turns a missing link into a NOTE to
+    confirm, never into a silent pass."""
+    return fee_payment.manual_recette_candidates(fee, unlinked)
 
 
 def _admin_standing(row: dict) -> bool:
