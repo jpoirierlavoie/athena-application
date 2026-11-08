@@ -4619,8 +4619,25 @@ Notes:
      documentation and research entries through
      `scripts/reclassify_admin_category.py`; the advances of 2026 kept as
      « autre recette », their transfers' purpose and the Anthropic credit
-     need a one-shot of their own (`reclassify_admin_ledger.py` writes no
-     money field and no purpose), shipped with its plan.
+     through the one-shot `scripts/reclassify_admin_nature.py`
+     (`reclassify_admin_ledger.py` writes no money field and no purpose). It
+     writes, OUTSIDE the models like the category script (its docstring
+     says why), the nature, category, split and purpose of each entry its
+     plan names — the target the model's own rules make of the line
+     (`kind_move_allowed`, `_nature_refusal`, `_purpose_refusal`,
+     `_validate_business`) —, with the same controls, fingerprint, backup
+     and restoration. From `athena/`, with the environment of « Active
+     gabarits » above — even the dry run reads production:
+
+     ```bash
+     python -m scripts.reclassify_admin_nature PLAN.csv --rapport RAPPORT.md       # dry run
+     python -m scripts.reclassify_admin_nature PLAN.csv --rapport RAPPORT.md --sauvegarde DOSSIER --appliquer EMPREINTE
+     python -m scripts.reclassify_admin_nature --restaurer SAUVEGARDE.json --rapport RAPPORT.md [--appliquer EMPREINTE]
+     ```
+
+     The plan's header: `ligne,entry_id,date,montant_cents,nature_actuelle,categorie_actuelle,objet_actuel,nature_cible,categorie_cible,net_cible,tps_cible,tvq_cible,objet_cible,motif`.
+     Run both integrity scripts before and after, and compare their
+     findings by TEXT.
   A rollback restores those data first, then the code: under the older code
   an entry of either kind makes the statements « indisponibles » (a kind
   the register does not know), its check 11 names it and its form refuses
