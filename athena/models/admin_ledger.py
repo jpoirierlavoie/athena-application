@@ -39,20 +39,26 @@ ledger runs negative; the « Solde dû » shown is the positive owed amount), a
 card payment or refund a ``recette``. The account TYPE decides display only
 (labels + the statement-sign conversion at reconciliation).
 
-Four kinds stand OUTSIDE the firm's results (the lawyer's spec of
-2026-10-07): his own drawings and contributions (``prélèvement``,
-``apport`` — a sole practitioner's equity, never an expense nor a revenue)
-and the firm's money moving to or from an account outside this ledger
+The natures OUTSIDE the firm's results (``NON_RESULT_KINDS``): the
+lawyer's own drawings and contributions (``prélèvement``, ``apport`` — a
+sole practitioner's equity, never an expense nor a revenue) and the firm's
+money moving to or from an account outside this ledger
 (``virement_interne_sortant`` / ``virement_interne_entrant`` — the trust
-account, a savings account). They move the balance, clear and reconcile
-like any entry; they carry no category, no invoice and no tax split (the
-model writes the canonical one on every write: net = amount on a déboursé,
-zeros on a recette); and no revenue, expense or TPS/TVQ total counts them.
-``results_statement`` is the one authority for those totals,
-``owner_equity`` for the « Avoir de l'avocat » figures. A payment between
-two accounts OF this ledger stays ``paiement_carte`` (two linked legs), and
-fees taken from trust stay the trust register's fee payment: neither is
-ever a virement interne.
+account, a savings account), both by the lawyer's spec of 2026-10-07; and
+since 2026-11-07 the TPS/TVQ the firm remits to the tax authorities or is
+refunded (``remise_tps_tvq`` / ``remboursement_tps_tvq``). They move the
+balance, clear and reconcile like any entry; they carry no category, no
+invoice and no tax split (the model writes the canonical one on every
+write: net = amount on a déboursé, zeros on a recette); and no revenue,
+expense or input-tax total counts them — a remittance or a refund SETTLES
+the firm's TPS/TVQ balance with the tax authorities (owed by the firm, or
+to it), never an expense, a revenue nor a tax credit. The lawyer's
+own money and the two TPS/TVQ natures never carry a dossier
+(``NO_DOSSIER_KINDS``). ``results_statement`` is the one authority for the
+revenue, expense and input-tax totals, ``owner_equity`` for the « Avoir de
+l'avocat » figures. A payment between two accounts OF this ledger stays
+``paiement_carte`` (two linked legs), and fees taken from trust stay the
+trust register's fee payment: neither is ever a virement interne.
 
 The first section is the pure, Firestore-free layer: the delta/display
 arithmetic, the TPS/TVQ ventilation (incl. ``extract_taxes_from_gross``) and
@@ -126,20 +132,28 @@ VALID_KINDS = (
     "apport",
     "virement_interne_sortant",
     "virement_interne_entrant",
+    "remise_tps_tvq",
+    "remboursement_tps_tvq",
     "paiement_carte",
     "correction",
 )
 REVERSAL_KIND = "correction"
 # The kinds outside the firm's results (module docstring): the lawyer's own
-# money, and the firm's money moving to or from an account outside this
-# ledger. ``kind`` « prélèvement » is the lawyer's DRAWING — never the
-# method « prélèvement » (a pre-authorized debit), a different field.
+# money, the firm's money moving to or from an account outside this
+# ledger, and the TPS/TVQ it remits or is refunded. ``kind``
+# « prélèvement » is the lawyer's DRAWING — never the method « prélèvement »
+# (a pre-authorized debit), a different field.
 OWNER_KINDS = ("prélèvement", "apport")
 INTERNAL_TRANSFER_KINDS = ("virement_interne_sortant", "virement_interne_entrant")
-NON_RESULT_KINDS = OWNER_KINDS + INTERNAL_TRANSFER_KINDS
+SALES_TAX_KINDS = ("remise_tps_tvq", "remboursement_tps_tvq")
+NON_RESULT_KINDS = OWNER_KINDS + INTERNAL_TRANSFER_KINDS + SALES_TAX_KINDS
+# The natures that never carry a dossier: the lawyer's own money, and the
+# firm's TPS/TVQ settlements (owed by the firm, never by a dossier). A
+# virement interne may name one.
+NO_DOSSIER_KINDS = OWNER_KINDS + SALES_TAX_KINDS
 # The results statement's ALLOW-list (``results_statement``): every kind not
-# named here stays out of every revenue, expense and tax total — the four
-# above, and a card payment (a transfer between two accounts of this
+# named here stays out of every revenue, expense and tax total — the
+# natures above, and a card payment (a transfer between two accounts of this
 # ledger). A correction counts as the kind it reverses.
 REVENUE_KINDS = ("encaissement_facture", "recette_autre")
 EXPENSE_KINDS = ("dépense",)
@@ -150,17 +164,25 @@ _SIMPLE_KINDS = ("encaissement_facture", "recette_autre", "dépense") + NON_RESU
 _EDITABLE_KINDS = ("recette_autre", "dépense") + NON_RESULT_KINDS
 # The passages an edit may make between kinds (spec of 2026-10-07, §2.2):
 # within ONE sign — the bank movement's direction is a fact, only its nature
-# was misjudged — plus the historical dépense <-> recette_autre switch, which
-# predates the four natures and re-derives the sign (pinned by tests). Any
-# other change of kind is ``changement_de_sens``. Judged only when the kind
-# changes: a direction named alone stays ``sens_incohérent``.
+# was misjudged — every editable kind may become any other of its sign,
+# plus the historical dépense <-> recette_autre switch, which predates the
+# natures and re-derives the sign (pinned by tests). Any other change of
+# kind is ``changement_de_sens``. Judged only when the kind changes: a
+# direction named alone stays ``sens_incohérent``.
 KIND_MOVES = {
-    "dépense": ("prélèvement", "virement_interne_sortant", "recette_autre"),
-    "prélèvement": ("dépense", "virement_interne_sortant"),
-    "virement_interne_sortant": ("dépense", "prélèvement"),
-    "recette_autre": ("apport", "virement_interne_entrant", "dépense"),
-    "apport": ("recette_autre", "virement_interne_entrant"),
-    "virement_interne_entrant": ("recette_autre", "apport"),
+    "dépense": ("prélèvement", "virement_interne_sortant", "remise_tps_tvq",
+                "recette_autre"),
+    "prélèvement": ("dépense", "virement_interne_sortant", "remise_tps_tvq"),
+    "virement_interne_sortant": ("dépense", "prélèvement", "remise_tps_tvq"),
+    "remise_tps_tvq": ("dépense", "prélèvement", "virement_interne_sortant"),
+    "recette_autre": ("apport", "virement_interne_entrant",
+                      "remboursement_tps_tvq", "dépense"),
+    "apport": ("recette_autre", "virement_interne_entrant",
+               "remboursement_tps_tvq"),
+    "virement_interne_entrant": ("recette_autre", "apport",
+                                 "remboursement_tps_tvq"),
+    "remboursement_tps_tvq": ("recette_autre", "apport",
+                              "virement_interne_entrant"),
 }
 # The web form shows the two virement codes as ONE « Virement interne »
 # with a « Sens » select; this value is the form's, never stored.
@@ -179,6 +201,7 @@ INTERNAL_TRANSFER_SENS_LABELS = {
 FORM_KINDS = (
     "dépense", "recette_autre", "encaissement_facture",
     "prélèvement", "apport", INTERNAL_TRANSFER_FORM_KIND,
+    "remise_tps_tvq", "remboursement_tps_tvq",
 )
 # The sign of a simple kind is IMPLIED, never chosen. Until lot 0b only the
 # web route derived it (its form has no « Sens » select); the model checked
@@ -198,6 +221,8 @@ _KIND_DIRECTION = {
     "apport": "recette",
     "virement_interne_sortant": "déboursé",
     "virement_interne_entrant": "recette",
+    "remise_tps_tvq": "déboursé",
+    "remboursement_tps_tvq": "recette",
 }
 
 
@@ -230,6 +255,10 @@ ADMIN_EXPENSE_CATEGORIES = (
     "internet",
     "téléphone",
     "abonnements",
+    # Usage-billed cloud and AI services (API credits, hosting, compute) —
+    # a flat monthly plan stays « abonnements » (the lawyer's decision of
+    # 2026-11-07: a variable cost in the financial statements).
+    "infonuagique_ia",
     "équipement",
     "fournitures",
     "assurances",
@@ -274,6 +303,8 @@ KIND_LABELS = {
     "apport": "Apport de l'avocat",
     "virement_interne_sortant": "Virement interne (sortant)",
     "virement_interne_entrant": "Virement interne (entrant)",
+    "remise_tps_tvq": "Remise de TPS/TVQ",
+    "remboursement_tps_tvq": "Remboursement de TPS/TVQ",
     "paiement_carte": "Paiement de carte",
     "correction": "Correction",
 }
@@ -291,6 +322,7 @@ ADMIN_CATEGORY_LABELS = {
     "internet": "Internet",
     "téléphone": "Téléphone",
     "abonnements": "Abonnements",
+    "infonuagique_ia": "Infonuagique et IA (à l'usage)",
     "équipement": "Équipement",
     "fournitures": "Fournitures de bureau",
     "assurances": "Assurances",
@@ -652,7 +684,8 @@ _ABORT_MESSAGES = {
     ),
     "ventilation_interdite": (
         "Les natures " + _kinds_named(NON_RESULT_KINDS) + " ne se ventilent "
-        "pas : elles ne portent ni TPS ni TVQ."
+        "pas : elles ne réclament ni TPS ni TVQ — une remise ou un "
+        "remboursement de TPS/TVQ s'inscrit pour son montant total."
     ),
     "facture_interdite": (
         "Les natures " + _kinds_named(NON_RESULT_KINDS) + " ne paient aucune "
@@ -660,8 +693,9 @@ _ABORT_MESSAGES = {
         + KIND_LABELS["encaissement_facture"] + " »."
     ),
     "dossier_interdit": (
-        "Les natures " + _kinds_named(OWNER_KINDS) + " ne se rattachent à "
-        "aucun dossier : retirez d'abord le lien au dossier (dossier_id vide)."
+        "Les natures " + _kinds_named(NO_DOSSIER_KINDS) + " ne se rattachent "
+        "à aucun dossier : retirez d'abord le lien au dossier (dossier_id "
+        "vide)."
     ),
     "mode_invalide": "Le mode est invalide.",
     "catégorie_invalide": "La catégorie de dépense est invalide.",
@@ -1126,7 +1160,7 @@ def _nature_refusal(kind: str, supplied: dict) -> Optional[str]:
         return "ventilation_interdite"
     if _supplied(supplied.get("invoice_id")):
         return "facture_interdite"
-    if kind in OWNER_KINDS and _supplied(supplied.get("dossier_id")):
+    if kind in NO_DOSSIER_KINDS and _supplied(supplied.get("dossier_id")):
         return "dossier_interdit"
     return None
 
@@ -1180,7 +1214,7 @@ def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
         # evening must not refuse a date that is still « today ».
         return None, "date_future"
 
-    # The four natures outside the results carry the canonical split on
+    # The natures outside the results carry the canonical split on
     # every write — a split the caller sent was refused by
     # ``_nature_refusal`` already, and a STORED one (the dépense an entry
     # was, or an earlier amount) never decides an edit.
@@ -1604,8 +1638,8 @@ def _amount_changes_without_ventilation(
         return False
     if not isinstance(new_amount, int) or isinstance(new_amount, bool) or new_amount <= 0:
         return False
-    # Only a dépense carries a split of its own: the four natures outside
-    # the results get theirs from ``canonical_ventilation`` on every write.
+    # Only a dépense carries a split of its own: the natures outside the
+    # results get theirs from ``canonical_ventilation`` on every write.
     if merged.get("direction") != "déboursé" or merged.get("kind") != "dépense":
         return False
     return not any(k in clean for k in ("net_amount", "gst_amount", "qst_amount"))
@@ -1624,10 +1658,11 @@ def update_transaction(
     one sign, plus the historical dépense <-> recette_autre switch) — an
     invoice-linked, card-payment or correction entry never reaches here
     (locked). A kind of ``NON_RESULT_KINDS`` refuses the category, split,
-    invoice and (prélèvement, apport) dossier the CALLER sends
+    invoice and (``NO_DOSSIER_KINDS``) dossier the CALLER sends
     (``_nature_refusal``), drops the stored category and takes the
-    canonical split; a dossier left on an entry that becomes a prélèvement
-    or an apport refuses until the caller clears it (``dossier_id`` empty).
+    canonical split; a dossier left on an entry that becomes one of
+    ``NO_DOSSIER_KINDS`` refuses until the caller clears it (``dossier_id``
+    empty).
 
     ``expected_etag`` (lot 5a, D9) — the etag of the version the caller
     read (the web edit form's hidden field). It is the FIRST check inside
@@ -1699,14 +1734,14 @@ def update_transaction(
         if (merged.get("kind") != existing.get("kind")
                 and not kind_move_allowed(existing.get("kind"), merged.get("kind"))):
             raise _TxnAbort("changement_de_sens")
-        # The four natures outside the results: the fields the caller SENT
-        # first, then a dossier left on an entry that becomes the lawyer's
-        # own money (cleared by sending ``dossier_id`` empty — the web form
-        # always does).
+        # The natures outside the results: the fields the caller SENT
+        # first, then a dossier left on an entry that becomes one of the
+        # natures that never carry one (cleared by sending ``dossier_id``
+        # empty — the web form always does).
         reason = _nature_refusal(merged.get("kind") or "", clean)
         if reason:
             raise _TxnAbort(reason)
-        if merged.get("kind") in OWNER_KINDS and merged.get("dossier_id"):
+        if merged.get("kind") in NO_DOSSIER_KINDS and merged.get("dossier_id"):
             raise _TxnAbort("dossier_interdit")
 
         # A kind named without a direction carries its implied sign: turning

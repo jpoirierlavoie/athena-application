@@ -4426,6 +4426,82 @@ Notes:
   plugin release (1.4.0), and `exporter_plugin_athena --check` reports
   that expected drift until then. No index, rule, secret, consent or
   dependency change.
+- **TPS/TVQ remittances and the « Infonuagique et IA » category
+  (2026-11-07).** The lawyer's decisions of that day (lot A of the
+  financial statements). Change Impact: item 1 is touched; item 6 is
+  touched and verified (the form's help line uses compiled classes only, no
+  recompile); item 4 only in the documented refusal reasons (no new event);
+  items 2, 3, 5 and 7 are not. The administration ledger gains
+  `remise_tps_tvq` and `remboursement_tps_tvq`: the firm's TPS/TVQ paid to,
+  or refunded by, the tax authorities, one combined amount. They join
+  `admin_ledger.NON_RESULT_KINDS` — they move, clear and reconcile like any
+  entry, carry no category, no invoice and no tax split, and no revenue,
+  expense or tax-credit total counts them (`results_statement`): they
+  settle the firm's TPS/TVQ balance (owed by the firm, or owed to it).
+  Interest or a penalty paid stays a dépense of its own, interest received
+  an autre recette. Like the lawyer's
+  prélèvement and apport they never carry a dossier
+  (`admin_ledger.NO_DOSSIER_KINDS`, which the model, the web form, the
+  connector, `verify_admin_integrity` and `scripts/reclassify_admin_ledger.py`
+  read — the last one read the owner kinds, so a reclassification into a
+  refund would have kept its dossier; `services/comptabilite.ADMIN_OWNER_KINDS`
+  became `ADMIN_NO_DOSSIER_KINDS`). An edit moves an entry among the kinds of
+  its sign (`KIND_MOVES`), so a TPS/TVQ payment booked as a dépense becomes a
+  remise while the entry is still editable: on the web, the form drops its
+  category, split and dossier; through `update_admin_entry`, the category
+  and split go and a dossier must first be sent empty (`dossier_id` "").
+  The dépense category `infonuagique_ia` (« Infonuagique et IA (à
+  l'usage) ») follows `abonnements`: cloud and AI billed by use; a flat
+  plan stays an abonnement. The PDF journal's closing line now reads
+  « TPS/TVQ payées sur les dépenses de la période (CTI/RTI) », which a
+  remittance is not part of. `verify_admin_integrity` check 11 also names a
+  remittance carrying a category, a tax, an invoice, a trust link or a
+  dossier; its texts now read « ventilée … ne réclame ni TPS ni TVQ » and
+  « rattachée », agreeing with « écriture » (check 11's findings are écarts
+  no review can cover, so no exit code moves). The connector's
+  `record_admin_entry`,
+  `update_admin_entry` and `get_admin_ledger` know both natures and the
+  category (enums and descriptions — no new tool, no output key;
+  `mcp/output_schemas.py` declares no kind or category enum); the consent
+  partial names the remittances in a sentence of their own (they settle
+  the TPS/TVQ balance, so « ces trois dernières natures n'entrent dans
+  aucun total … de TPS/TVQ » cannot cover them), and the write box's
+  summary adds them to its list. No index, no dependency, no DAV account
+  re-add.
+  In order:
+  1. *Before the push*: both integrity scripts, read-only, from this
+     release's checkout.
+  2. *The push — without the §11 train, by the lawyer's decision
+     (2026-11-07)*: the token in force reaches the two natures and the
+     category the moment the deploy lands. No remittance or refund had been
+     made when this shipped.
+  3. *The claude.ai plugin « athena »* moves to **1.4.0** (its accounting
+     recipe routes a remittance, a refund and a usage bill, and the registry
+     fingerprint moved — lot D's descriptions included): rebuild it, unpack
+     it into the mirror repository `athena-plugin` (the old copy removed
+     first), bump the mirror's `.claude-plugin/marketplace.json`, commit and
+     push it the same day.
+  4. *Then, and only once this release serves*, lot C: the one-shot
+     reclassification of past cloud and AI charges into `infonuagique_ia`,
+     on a list the lawyer approves.
+  A rollback restores lot C's data FIRST (its `--restaurer`), then moves
+  every dépense filed as `infonuagique_ia` since this release to another
+  category — an editable one in the app, a locked one (cleared,
+  reconciled) through `scripts/reclassify_admin_ledger.py`; lot C's backup
+  covers only the entries lot C moved —, then rolls the code back. Under
+  the older code such a dépense shows no category in the journal list and
+  the CSV export, prints as « Dépense » in the PDF journal, keeps its raw
+  code only on its own page, and any edit of it is refused unless it picks
+  a category the older code knows: on the web « Une catégorie est requise
+  pour une dépense. » (its select, lacking the code, posts it empty),
+  through the connector « La catégorie de dépense est invalide ». The
+  older code also refuses to edit
+  an entry of the two natures, shows their raw codes, and its check 11 names
+  each as a kind unknown to the register; a reversal under it stays sound
+  (it copies a split from a dépense only and stamps the reversed kind).
+  Redeliver plugin 1.3.0 with the code, or the 1.4.0 recipe steers Claude to
+  kinds and a category the older schema refuses (`schema_invalid`, nothing
+  written).
 
 ## 16. Troubleshooting
 

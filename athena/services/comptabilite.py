@@ -436,8 +436,9 @@ def compenser_fideicommis(tx_ids: list, cleared_date) -> dict:
 def enregistrer_ecriture_administration(data: dict, *, cleared_date=None) -> dict:
     """An administration entry — a dépense, another recette, an encaissement
     (whose payment lands on its invoice in the entry's own commit), or one
-    of the four natures outside the results (the lawyer's prélèvement or
-    apport, an internal transfer in or out). ``cleared_date`` — « déjà
+    of the natures outside the results (``admin_ledger.NON_RESULT_KINDS``:
+    the lawyer's prélèvement or apport, an internal transfer in or out, a
+    TPS/TVQ remittance or refund). ``cleared_date`` — « déjà
     compensée »: born compensée in the SAME commit (never
     create-then-clear)."""
     report: dict = {}
@@ -568,14 +569,15 @@ TRUST_PURPOSE_LABELS: dict = dict(trust.PURPOSE_LABELS)
 #: ``objet_sens_incohérent`` for every caller), which the connector repeats
 #: naming its arguments and the integrity script measures on the history.
 TRUST_PURPOSE_DIRECTIONS: dict = dict(trust.PURPOSE_DIRECTIONS)
-#: The administration ledger's rules for its four natures outside the
-#: results (``admin_ledger.NON_RESULT_KINDS``), which the connector repeats
-#: naming its own arguments — the model refuses them for every caller: the
-#: passages an edit may make between kinds, and the two kinds (the lawyer's
-#: own money) that never carry a dossier.
+#: The administration ledger's rules for its natures outside the results
+#: (``admin_ledger.NON_RESULT_KINDS``), which the connector repeats naming
+#: its own arguments — the model refuses them for every caller: the
+#: passages an edit may make between kinds, and the kinds that never carry
+#: a dossier (``admin_ledger.NO_DOSSIER_KINDS``: the lawyer's own money and
+#: the TPS/TVQ settlements).
 ADMIN_KIND_MOVES: dict = {k: tuple(v) for k, v in al.KIND_MOVES.items()}
 ADMIN_NON_RESULT_KINDS: tuple = tuple(al.NON_RESULT_KINDS)
-ADMIN_OWNER_KINDS: tuple = tuple(al.OWNER_KINDS)
+ADMIN_NO_DOSSIER_KINDS: tuple = tuple(al.NO_DOSSIER_KINDS)
 
 
 def passage_de_nature_permis(old_kind: str, new_kind: str) -> bool:

@@ -48,11 +48,13 @@ module deliberately does not have (balances are computed at read). Checks:
      moves — a time of day only reorders the entry within its day — but it
      is the trace of an edit no trail records.
  11. (2026-10-07) every kind is one the register knows — an unknown kind is
-     named, never skipped — and the four natures outside the results
+     named, never skipped — and the natures outside the results
      (``admin_ledger.NON_RESULT_KINDS``: the lawyer's prélèvement and apport,
-     the internal transfers) carry what their model writes: no category,
-     the canonical split (``canonical_ventilation`` — no TPS, no TVQ), no
-     invoice, no trust link, and no dossier on a prélèvement or an apport.
+     the internal transfers, since 2026-11-07 the TPS/TVQ remittances and
+     refunds) carry what their model writes: no category, the canonical
+     split (``canonical_ventilation`` — no TPS, no TVQ claimed), no invoice,
+     no trust link, and no dossier on a nature of
+     ``admin_ledger.NO_DOSSIER_KINDS``.
      A correction reversing one of them carries no category and no split at
      all (net included): either would leak into the journal's totals. What
      a correction reverses is its ``reverses_kind`` stamp, else its
@@ -268,8 +270,8 @@ def collect() -> tuple[list[str], list[str]]:
                         f"({day.date()} et {other_day.date()}) — un paiement, "
                         f"une date"
                     )
-        # 11. A kind the register knows; the four natures outside the
-        # results carry what their model writes (see the docstring).
+        # 11. A kind the register knows; the natures outside the results
+        # carry what their model writes (see the docstring).
         kind = t.get("kind") or ""
         if kind not in al.VALID_KINDS:
             problems.append(f"écriture {tid}: type « {kind or '(vide)'} » inconnu du registre")
@@ -282,16 +284,16 @@ def collect() -> tuple[list[str], list[str]]:
                 kind, t.get("direction", ""), int(t.get("amount", 0)))
             if split != canonical:
                 problems.append(
-                    f"écriture {tid}: {label} ventilé {split['net_amount']}+"
+                    f"écriture {tid}: {label} ventilée {split['net_amount']}+"
                     f"{split['gst_amount']}+{split['qst_amount']} — cette nature ne "
-                    f"porte ni TPS ni TVQ"
+                    f"réclame ni TPS ni TVQ"
                 )
             if t.get("invoice_id"):
                 problems.append(f"écriture {tid}: {label} liée à une facture")
             if t.get("trust_transaction_id"):
                 problems.append(f"écriture {tid}: {label} liée au fidéicommis")
-            if kind in al.OWNER_KINDS and t.get("dossier_id"):
-                problems.append(f"écriture {tid}: {label} rattaché à un dossier")
+            if kind in al.NO_DOSSIER_KINDS and t.get("dossier_id"):
+                problems.append(f"écriture {tid}: {label} rattachée à un dossier")
         elif kind == al.REVERSAL_KIND:
             # What the correction reverses: its stamp, else its original's
             # kind (a reversal by an older release carries no stamp).

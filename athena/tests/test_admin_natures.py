@@ -1,9 +1,12 @@
-"""The four administration natures outside the firm's results (2026-10-07).
+"""The administration natures outside the firm's results (2026-10-07).
 
 The lawyer's drawings and contributions (``prélèvement``, ``apport``) and the
 firm's transfers to or from an account outside the ledger
 (``virement_interne_sortant`` / ``_entrant``) move the balance like any entry
-but count in no revenue, expense or tax total. These tests pin the MODEL's
+but count in no revenue, expense or tax total. The firm's TPS/TVQ remittances
+and refunds joined ``NON_RESULT_KINDS`` on 2026-11-07: the tests parametrized
+by sign below run over them too, and test_admin_remises_tps_tvq.py pins what
+is theirs alone. These tests pin the MODEL's
 rules (every caller goes through it), the pure ``results_statement`` /
 ``owner_equity`` authorities, the reversal's ``reverses_kind`` stamp and the
 integrity checks that watch the natures (``verify_admin_integrity`` checks 4
@@ -40,8 +43,11 @@ UTC = timezone.utc
 # A fictitious year, on a frozen clock: no date nor amount here is one of the
 # lawyer's (the repository is public).
 TODAY = "2031-06-20T16:00:00+00:00"
-SORTIES = ("prélèvement", "virement_interne_sortant")
-ENTREES = ("apport", "virement_interne_entrant")
+# Every nature outside the results, by sign — derived from the model, whose
+# vocabulary and directions test_the_natures_have_labels_directions_… pins by
+# hand, so a nature joining NON_RESULT_KINDS runs through every test below.
+SORTIES = tuple(k for k in al.NON_RESULT_KINDS if al._KIND_DIRECTION[k] == "déboursé")
+ENTREES = tuple(k for k in al.NON_RESULT_KINDS if al._KIND_DIRECTION[k] == "recette")
 
 
 def _d(y: int, m: int, d: int, h: int = 0) -> datetime:
@@ -141,7 +147,9 @@ def test_the_natures_have_labels_directions_and_are_creatable_and_editable():
         "prélèvement": "déboursé", "apport": "recette",
         "virement_interne_sortant": "déboursé",
         "virement_interne_entrant": "recette",
+        "remise_tps_tvq": "déboursé", "remboursement_tps_tvq": "recette",
     }
+    assert set(SORTIES + ENTREES) == set(al.NON_RESULT_KINDS)
 
 
 def test_kind_moves_keep_the_sign_except_the_historical_switch():
@@ -155,7 +163,7 @@ def test_kind_moves_keep_the_sign_except_the_historical_switch():
             assert al._KIND_DIRECTION[old] == al._KIND_DIRECTION[new], (old, new)
     assert set(al.KIND_MOVES) == set(al._EDITABLE_KINDS)
     assert svc.ADMIN_KIND_MOVES == {k: tuple(v) for k, v in al.KIND_MOVES.items()}
-    assert svc.ADMIN_OWNER_KINDS == al.OWNER_KINDS
+    assert svc.ADMIN_NO_DOSSIER_KINDS == al.NO_DOSSIER_KINDS
     assert svc.ADMIN_NON_RESULT_KINDS == al.NON_RESULT_KINDS
 
 
@@ -211,11 +219,12 @@ def test_a_field_the_nature_never_carries_is_refused(fake, refusals, kind, field
     assert fake.peek_collection("admin_transactions") == {}
 
 
-@pytest.mark.parametrize("kind", al.OWNER_KINDS)
-def test_the_lawyers_own_money_carries_no_dossier(fake, refusals, kind):
+@pytest.mark.parametrize("kind", al.NO_DOSSIER_KINDS)
+def test_the_lawyers_own_money_and_the_remittances_carry_no_dossier(fake, refusals, kind):
     entry, errs = al.create_transaction(_entry(kind, dossier_id="dos1"))
     assert entry is None
     assert errs == [al._ABORT_MESSAGES["dossier_interdit"]]
+    assert refusals == ["dossier_interdit"]
 
 
 @pytest.mark.parametrize("kind", al.INTERNAL_TRANSFER_KINDS)
@@ -533,10 +542,11 @@ def test_a_register_using_the_natures_is_clean(fake, monkeypatch, capsys):
 @pytest.mark.parametrize("patch, expected", [
     ({"category": "autre"}, "Prélèvement de l'avocat portant une catégorie (autre)"),
     ({"net_amount": 31357, "gst_amount": 10000},
-     "Prélèvement de l'avocat ventilé 31357+10000+0"),
+     "Prélèvement de l'avocat ventilée 31357+10000+0 — cette nature ne "
+     "réclame ni TPS ni TVQ"),
     ({"invoice_id": "inv1"}, "Prélèvement de l'avocat liée à une facture"),
     ({"trust_transaction_id": "t1"}, "Prélèvement de l'avocat liée au fidéicommis"),
-    ({"dossier_id": "dos1"}, "Prélèvement de l'avocat rattaché à un dossier"),
+    ({"dossier_id": "dos1"}, "Prélèvement de l'avocat rattachée à un dossier"),
     ({"kind": "retrait_perso"}, "type « retrait_perso » inconnu du registre"),
 ])
 def test_check_11_names_a_broken_nature(fake, monkeypatch, capsys, patch, expected):
@@ -633,7 +643,7 @@ def test_the_refusal_texts_name_every_kind_of_their_source():
     for reason in ("catégorie_interdite", "ventilation_interdite", "facture_interdite"):
         for kind in al.NON_RESULT_KINDS:
             assert f"« {al.KIND_LABELS[kind]} »" in messages[reason], (reason, kind)
-    for kind in al.OWNER_KINDS:
+    for kind in al.NO_DOSSIER_KINDS:
         assert f"« {al.KIND_LABELS[kind]} »" in messages["dossier_interdit"], kind
 
 

@@ -40,6 +40,12 @@
              son sens pour les deux types stockés). #}
           kind: {{ form_kind_value | jsattr }},
           sens: {{ form_sens_value | jsattr }},
+          {# Les listes du MODÈLE, jamais recopiées ici : les natures sans
+             dossier (admin_ledger.NO_DOSSIER_KINDS) et les deux natures de
+             TPS/TVQ (SALES_TAX_KINDS), en une chaîne jsattr découpée par
+             Alpine — aucun code ne porte de virgule. #}
+          noDossierKinds: {{ no_dossier_kinds | join(',') | jsattr }}.split(','),
+          salesTaxKinds: {{ sales_tax_kinds | join(',') | jsattr }}.split(','),
           accountType: 'opérations',
           dossierId: {{ ((entry.dossier_id if entry else '') or '') | jsattr }},
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
@@ -68,9 +74,9 @@
 
     <div class="grid grid-cols-2 gap-4">
       <div>
-        {# Le Sens est IMPLIQUÉ par le type (models/admin_ledger._KIND_DIRECTION) :
-           dépense, prélèvement → déboursé ; encaissement, autre recette,
-           apport → recette. Seul « Virement interne » demande son sens
+        {# Le Sens est IMPLIQUÉ par le type (models/admin_ledger._KIND_DIRECTION,
+           la seule source du sens de chaque type). Seul « Virement interne »
+           demande son sens
            (sens_virement, ci-dessous), qui choisit l'un des DEUX types
            stockés — sortant ou entrant — et le modèle en dérive le signe
            comme pour tout autre type. Aucun champ « direction » : la route
@@ -80,7 +86,8 @@
         <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
         {# Le passage à « encaissement » vide le dossier choisi : sur un
            encaissement, la FACTURE détermine le dossier (le modèle l'impose
-           aussi — ceinture et bretelles). Un prélèvement ou un apport ne le
+           aussi — ceinture et bretelles). Une nature sans dossier
+           (prélèvement, apport, remise ou remboursement de TPS/TVQ) ne le
            vide PAS : le champ caché est désactivé (jamais envoyé) et la
            route l'écarte, de sorte qu'un retour au type précédent rend le
            dossier intact au lieu de l'effacer en silence. #}
@@ -99,6 +106,9 @@
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
       </div>
     </div>
+    {# Pleine largeur, hors de la grille Type / Montant : dans sa demi-colonne,
+       à 375 px, la phrase courait sur huit lignes (revue du lot A). #}
+    <p x-show="salesTaxKinds.includes(kind)" x-cloak class="text-xs text-gray-500">Ce que le cabinet verse à l'administration fiscale au titre de la TPS/TVQ, ou en reçoit : ni une dépense, ni un revenu. Des intérêts ou des pénalités payés s'inscrivent à part, en dépense ; des intérêts reçus, à part, en autre recette.</p>
 
     {# ── Sens d'un virement interne — désactivé (donc non soumis) pour tout
        autre type. Sans sens valide, la route refuse (400) et n'écrit rien.
@@ -177,7 +187,7 @@
     {# ── Champs propres à une dépense ───────────────────────────────────
        La catégorie et la ventilation sont DÉSACTIVÉES hors d'une dépense :
        non soumises, elles ne peuvent rien porter de périmé vers un autre
-       type (la route les neutralise aussi pour les quatre natures hors
+       type (la route les neutralise aussi pour les natures hors
        résultats). PAS le n° de facture fournisseur : la route en envoie
        toujours la clé, et un champ désactivé — donc vide — effacerait le
        numéro enregistré d'une écriture dont seule la nature change. #}
@@ -219,13 +229,13 @@
     </div>
 
     {# ── Dossier (facultatif — un huissier se rattache à un dossier, le loyer
-       non). Pour un encaissement, le dossier vient de la facture. Un
-       prélèvement ou un apport de l'avocat n'en porte aucun : le bloc est
-       masqué et son champ désactivé. Un virement interne peut en porter
-       un. #}
-    <div x-show="kind !== 'encaissement_facture' &amp;&amp; kind !== 'prélèvement' &amp;&amp; kind !== 'apport'" x-cloak class="relative" @click.outside="dossierOpen = false">
+       non). Pour un encaissement, le dossier vient de la facture. Les
+       natures sans dossier (noDossierKinds : l'argent de l'avocat, la
+       TPS/TVQ du cabinet) n'en portent aucun : le bloc est masqué et son
+       champ désactivé. Un virement interne peut en porter un. #}
+    <div x-show="kind !== 'encaissement_facture' &amp;&amp; !noDossierKinds.includes(kind)" x-cloak class="relative" @click.outside="dossierOpen = false">
       <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(facultatif)</span></label>
-      <input type="hidden" name="dossier_id" :value="dossierId" :disabled="kind === 'prélèvement' || kind === 'apport'">
+      <input type="hidden" name="dossier_id" :value="dossierId" :disabled="noDossierKinds.includes(kind)">
       {# name="q" is load-bearing : hx-include="this" sérialise l'élément par
          son nom — sans lui, dossier_search ne reçoit aucune requête. #}
       <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"

@@ -545,19 +545,53 @@ def test_a_change_the_nature_refuses(fake, bench, cli, ligne, columns, code):
     assert code in _codes(verdicts[ligne])
 
 
-def test_an_apport_keeps_no_dossier(fake, bench, cli):
+@pytest.mark.parametrize("kind", ["apport", "remboursement_tps_tvq"])
+def test_an_apport_keeps_no_dossier(fake, bench, cli, kind):
     """The excluded entry carries a dossier: making it an apport without
-    clearing the dossier is refused; with « (aucune) », it is cleared."""
+    clearing the dossier is refused; with « (aucune) », it is cleared.
+    Régression (revue du lot A, 2026-11-07) — the rule read OWNER_KINDS:
+    a recette made a « Remboursement de TPS/TVQ » kept its dossier, written
+    around the model. It reads the model's NO_DOSSIER_KINDS now."""
     e = bench["e"]
     rows = _lines(bench, l10={"statut": "appliquer", "groupe": "B2 apport",
-                              "kind_cible": "apport"})
+                              "kind_cible": kind})
     assert "dossier_interdit" in _codes(_verdicts(rla.prepare(cli.csv(rows)))[10])
     rows = _lines(bench, l10={"statut": "appliquer", "groupe": "B2 apport",
-                              "kind_cible": "apport", "dossier_id_cible": rla.NONE_MARK})
+                              "kind_cible": kind, "dossier_id_cible": rla.NONE_MARK})
     cli.migrate(rows)
     stored = fake.peek(_tx(e["e"]))
     assert (stored["kind"], stored["dossier_id"], stored["dossier_file_number"],
-            stored["dossier_title"]) == ("apport", None, "", "")
+            stored["dossier_title"]) == (kind, None, "", "")
+
+
+@pytest.mark.parametrize("kind", al.NO_DOSSIER_KINDS)
+def test_a_no_dossier_kind_names_itself_in_the_refusal(fake, bench, cli, kind):
+    """Final review of lot A — the refusal reads « une écriture « … » »,
+    right for the feminine « Remise de TPS/TVQ » too, for every kind of the
+    model's NO_DOSSIER_KINDS: a recette on line 10 (it carries the
+    dossier), a déboursé on line 7 (group A gives it the dossier)."""
+    if al._KIND_DIRECTION[kind] == "recette":
+        ligne, columns = 10, {"statut": "appliquer", "kind_cible": kind}
+    else:
+        ligne, columns = 7, {"kind_cible": kind, "category_cible": rla.NONE_MARK}
+    rows = _lines(bench, **{f"l{ligne}": columns})
+    verdict = _verdicts(rla.prepare(cli.csv(rows)))[ligne]
+    assert ("dossier_interdit", f"une écriture « {al.KIND_LABELS[kind]} » ne se "
+            f"rattache à aucun dossier ({DOSSIER_ID})") in verdict.reasons
+
+
+def test_a_remittance_with_a_split_is_refused_in_words_that_fit_it(fake, bench, cli):
+    """Final review of lot A — the refusal said a « Remise de TPS/TVQ » « ne
+    porte ni TPS ni TVQ », false of a remittance: it reads « ne réclame »
+    now, like the model's and check 11's."""
+    _set(fake, _tx(bench["e"]["b1"]), net_amount=21755, gst_amount=1088,
+         qst_amount=2170)
+    rows = _lines(bench, l1={"kind_cible": "remise_tps_tvq"})
+    verdict = _verdicts(rla.prepare(cli.csv(rows)))[1]
+    assert _codes(verdict) == ["ventilation_non_canonique"]
+    (message,) = [m for c, m in verdict.reasons if c == "ventilation_non_canonique"]
+    assert ("« Remise de TPS/TVQ » ne réclame ni TPS ni TVQ, et son net est le "
+            "montant") in message
 
 
 @pytest.mark.parametrize("columns, code", [

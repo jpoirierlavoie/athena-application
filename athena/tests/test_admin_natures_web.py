@@ -1,6 +1,8 @@
-"""The web interface of the four administration natures outside the results
+"""The web interface of the administration natures outside the results
 (2026-10-07): the lawyer's « Prélèvement » and « Apport », and the
-« Virement interne » whose « Sens » names one of two stored kinds.
+« Virement interne » whose « Sens » names one of two stored kinds — joined
+on 2026-11-07 by the « Remise » and the « Remboursement de TPS/TVQ », which
+carry no dossier either (``NO_DOSSIER_KINDS``) and bring a help line.
 
 What the routes and templates add on top of the model's rules
 (``tests/test_admin_natures.py``):
@@ -13,7 +15,7 @@ What the routes and templates add on top of the model's rules
 2. **The refusals.** A virement posted without a valid sens is refused at
    400 — one ``sens_requis`` line, nothing written, the submitted etag kept
    on an edit — and the fields the form hides for a nature (category,
-   split, invoice, and a prélèvement's or an apport's dossier) are
+   split, invoice, and the dossier of a kind of ``NO_DOSSIER_KINDS``) are
    neutralized, so a stale value never turns into the model's refusal.
 3. **What the pages say.** A badge on each nature; the « Avoir de
    l'avocat » in the journal header (full render and the HTMX fragment's
@@ -276,7 +278,8 @@ def test_the_create_form_offers_the_models_natures_and_the_sens(client, fake):
         k: (al.INTERNAL_TRANSFER_FORM_LABEL if k == al.INTERNAL_TRANSFER_FORM_KIND
             else al.KIND_LABELS[k]) for k in al.FORM_KINDS}
     assert {o["label"] for o in kinds} >= {
-        "Prélèvement de l'avocat", "Apport de l'avocat", "Virement interne"}
+        "Prélèvement de l'avocat", "Apport de l'avocat", "Virement interne",
+        "Remise de TPS/TVQ", "Remboursement de TPS/TVQ"}
     assert _selected(selects["kind"]) == ["dépense"]
 
     sens = selects["sens_virement"]
@@ -295,9 +298,22 @@ def test_the_create_form_offers_the_models_natures_and_the_sens(client, fake):
     assert "sens: &#34;&#34;," in page
     assert "dossierId: &#34;&#34;," in page
     assert "kind: '" not in page and "dossierId: '" not in page
+    # The model's lists, joined by the route and split by Alpine: no code
+    # may carry the comma that splits them.
+    assert not [k for k in al.VALID_KINDS if "," in k]
+    assert (f"noDossierKinds: &#34;{','.join(al.NO_DOSSIER_KINDS)}&#34;"
+            ".split(','),") in page
+    assert (f"salesTaxKinds: &#34;{','.join(al.SALES_TAX_KINDS)}&#34;"
+            ".split(','),") in page
 
     text = html.unescape(page)
     assert ">Payeur / Fournisseur</label>" in text
+    # The TPS/TVQ help line, true of both directions (final review of
+    # lot A: it sent a refund's interest to « dépense »).
+    assert ("Ce que le cabinet verse à l'administration fiscale au titre de "
+            "la TPS/TVQ, ou en reçoit : ni une dépense, ni un revenu.") in text
+    assert ("Des intérêts ou des pénalités payés s'inscrivent à part, en "
+            "dépense ; des intérêts reçus, à part, en autre recette.") in text
     # The reminder: a card payment and a fee payment are never a virement.
     assert "« Paiement de carte »" in text
     assert "registre du fidéicommis (paiement d'honoraires)" in text
@@ -305,25 +321,38 @@ def test_the_create_form_offers_the_models_natures_and_the_sens(client, fake):
 
 def test_the_forms_alpine_codes_are_the_models():
     """The Alpine expressions name the model's codes — pinned against
-    them, so a renamed code cannot leave the form testing a dead value."""
+    them, so a renamed code cannot leave the form testing a dead value.
+    Since 2026-11-07 the kinds without a dossier and the TPS/TVQ kinds reach
+    Alpine as the route's copies of the model's lists: no kind of them is
+    restated in the template, so a nature joining a list needs no edit
+    here (it restated « prélèvement » and « apport » before)."""
     src = (_ATHENA / "templates" / "administration" / "form.html").read_text(
         encoding="utf-8")
     virement = al.INTERNAL_TRANSFER_FORM_KIND
     assert f"x-show=\"kind === '{virement}'\"" in src
     assert f":disabled=\"kind !== '{virement}'\"" in src
     assert f"kind === '{virement}' ? 'Compte de contrepartie'" in src
-    owner = " || ".join(f"kind === '{k}'" for k in al.OWNER_KINDS)
-    # The dossier's hidden input — disabled, so never posted, for the
-    # lawyer's own money. The Type select's @change clears the dossier for
+    assert "noDossierKinds: {{ no_dossier_kinds | join(',') | jsattr }}.split(',')," in src
+    assert "salesTaxKinds: {{ sales_tax_kinds | join(',') | jsattr }}.split(',')," in src
+    for kind in (*al.NO_DOSSIER_KINDS, *al.SALES_TAX_KINDS):
+        assert f"'{kind}'" not in src, kind
+    # The dossier's hidden input — disabled, so never posted, for a kind
+    # without a dossier. The Type select's @change clears the dossier for
     # an encaissement ONLY: clearing it for a prélèvement or an apport erased
     # an edited entry's dossier when the lawyer switched back (review fix).
-    assert f'name="dossier_id" :value="dossierId" :disabled="{owner}"' in src
+    assert ('name="dossier_id" :value="dossierId" '
+            ':disabled="noDossierKinds.includes(kind)"') in src
     assert "@change=\"if (kind === 'encaissement_facture') { dossierId = ''; dossierDisplay = ''; }\"" in src
     change = src.split('<select name="kind"', 1)[1].split(">", 1)[0]
-    assert all(f"'{k}'" not in change for k in al.OWNER_KINDS)
-    hidden = " &amp;&amp; ".join(f"kind !== '{k}'" for k in
-                                  ("encaissement_facture", *al.OWNER_KINDS))
-    assert f'x-show="{hidden}"' in src
+    assert "noDossierKinds" not in change
+    assert ('x-show="kind !== \'encaissement_facture\' &amp;&amp; '
+            '!noDossierKinds.includes(kind)"') in src
+    assert 'x-show="salesTaxKinds.includes(kind)"' in src
+    # The TPS/TVQ help line runs full width, after the Type / Montant grid
+    # and before the virement's sens (review of lot A: inside the Type
+    # cell's half column, at 375 px, it ran over eight lines).
+    help_at = src.index('x-show="salesTaxKinds.includes(kind)"')
+    assert src.index('name="amount"') < help_at < src.index('name="sens_virement"')
     # Disabled outside a dépense: the category and the split's fieldset —
     # NOT the supplier's invoice number (the route always sends its key: a
     # disabled, hence empty, field would erase the stored one).
@@ -375,7 +404,8 @@ def test_editing_a_stored_transfer_shows_its_nature_and_sens(client, fake):
                     dossier_id="dos1")
     page = client.get(f"/administration/{entry['id']}/modifier").get_data(as_text=True)
     selects = _selects(page)
-    assert _values(selects["kind"]) == ["dépense", "prélèvement", "virement_interne"]
+    assert _values(selects["kind"]) == [
+        "dépense", "prélèvement", "virement_interne", "remise_tps_tvq"]
     assert _selected(selects["kind"]) == ["virement_interne"]
     assert [(o["value"], o["label"]) for o in selects["sens_virement"]["options"]] == [
         ("sortant", al.INTERNAL_TRANSFER_SENS_LABELS["sortant"])]
@@ -423,7 +453,8 @@ def test_a_refused_edit_keeps_the_nature_the_sens_and_the_submitted_etag(client,
     # virement the refused POST named.
     selects = _selects(page)
     assert _values(selects["kind"]) == [
-        "dépense", "recette_autre", "apport", "virement_interne"]
+        "dépense", "recette_autre", "apport", "virement_interne",
+        "remboursement_tps_tvq"]
     assert _selected(selects["kind"]) == ["virement_interne"]
     assert _selected(selects["sens_virement"]) == ["entrant"]
 
@@ -506,7 +537,8 @@ def test_an_edit_without_the_sens_is_refused_with_the_submitted_etag(
     # is judged against it — never those of the value just refused.
     selects = _selects(page)
     assert _values(selects["kind"]) == [
-        "dépense", "recette_autre", "prélèvement", "virement_interne"]
+        "dépense", "recette_autre", "prélèvement", "virement_interne",
+        "remise_tps_tvq"]
     assert _selected(selects["kind"]) == ["virement_interne"]
     assert _values(selects["sens_virement"]) == ["sortant"]
     assert _selected(selects["sens_virement"]) == ["sortant"]
@@ -602,6 +634,52 @@ def test_the_form_turns_a_depense_into_an_outgoing_transfer(client, fake):
     assert stored["dossier_id"] == "dos1"
 
 
+@pytest.mark.parametrize("kind", al.SALES_TAX_KINDS)
+def test_a_remittance_posted_with_stale_hidden_fields_is_stored_bare(client, fake, kind):
+    """2026-11-07 — a remise or a remboursement de TPS/TVQ hides the
+    category, the split, the invoice AND the dossier: a stale value the
+    browser still posts is neutralized by the route, never turned into the
+    model's refusal of each (test_admin_remises_tps_tvq.py)."""
+    stale = {"category": "loyer", "net_amount": "80,00", "gst_amount": "5,00",
+             "qst_amount": "15,00", "invoice_id": "facture-perimee",
+             "dossier_id": "dos1"}
+    resp = client.post("/administration/", data=_form(
+        kind, counterparty="Administration fiscale", **stale))
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    (stored,) = _entries(fake).values()
+    sortie = al._KIND_DIRECTION[kind] == "déboursé"
+    assert stored["kind"] == kind
+    assert stored["direction"] == ("déboursé" if sortie else "recette")
+    assert stored["category"] is None and stored["invoice_id"] is None
+    assert (stored["net_amount"], stored["gst_amount"], stored["qst_amount"]) == (
+        (10000, 0, 0) if sortie else (0, 0, 0))
+    assert stored["dossier_id"] is None and stored["dossier_file_number"] == ""
+    assert fake.peek("admin_accounts/ops1")["ledger_balance"] == (
+        -10000 if sortie else 10000)
+
+
+def test_the_form_turns_a_depense_into_a_remittance(client, fake):
+    """A TPS/TVQ payment booked as a dépense, its category, split and
+    dossier still in the hidden block: the route clears what a remise
+    cannot carry and the passage (KIND_MOVES) goes through."""
+    dep = _create("dépense", amount=11498, net_amount=10000, gst_amount=500,
+                  qst_amount=998, dossier_id="dos1")
+    resp = client.post(f"/administration/{dep['id']}/modifier", data={
+        **_form("remise_tps_tvq", amount="114,98", category="loyer",
+                net_amount="100,00", gst_amount="5,00", qst_amount="9,98",
+                dossier_id="dos1", counterparty="Administration fiscale"),
+        "expected_etag": fake.peek(_path(dep))["etag"]})
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    stored = fake.peek(_path(dep))
+    assert stored["kind"] == "remise_tps_tvq" and stored["direction"] == "déboursé"
+    assert stored["category"] is None
+    assert (stored["net_amount"], stored["gst_amount"], stored["qst_amount"]) == (
+        11498, 0, 0)
+    assert stored["dossier_id"] is None and stored["dossier_file_number"] == ""
+    assert set(stored["revisions"][-1]["changes"]) >= {
+        "kind", "category", "dossier_id", "net_amount", "gst_amount", "qst_amount"}
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 3. What the pages say
 # ══════════════════════════════════════════════════════════════════════
@@ -611,7 +689,7 @@ _SPAN = re.compile(r'<span class="([^"]*rounded-full[^"]*)">([^<]*)</span>')
 
 
 def test_each_nature_shows_as_plain_text(client, fake):
-    """The lawyer's decision (2026-10-07): the four natures read as plain
+    """The lawyer's decision (2026-10-07): the natures read as plain
     text in the journal and on the fiche, like every other kind — no pill.
     Regression: they wore a purple or teal chip."""
     ids = {}

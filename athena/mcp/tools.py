@@ -1816,32 +1816,35 @@ _TRUST_METHODS = ["chèque", "virement", "traite", "dépôt_direct", "comptant"]
 # edit may keep or become (_EDITABLE_KINDS — a change of kind moves only
 # along KIND_MOVES, the model's table, which the handler repeats through
 # services/comptabilite), and every kind a row may show, in VALID_KINDS
-# order (correction: minted by a reversal only). Since 2026-10-07 the four
-# kinds outside the firm's results (NON_RESULT_KINDS: the lawyer's
-# prélèvement and apport, a virement interne either way) are in all three.
+# order (correction: minted by a reversal only). The natures outside the
+# firm's results (NON_RESULT_KINDS: the lawyer's prélèvement and apport, a
+# virement interne either way — 2026-10-07 —, a TPS/TVQ remittance or
+# refund — 2026-11-07) are in all three.
 _ADMIN_ENTRY_KINDS = [
     "dépense", "recette_autre", "encaissement_facture", "prélèvement",
     "apport", "virement_interne_sortant", "virement_interne_entrant",
-    "paiement_carte",
+    "remise_tps_tvq", "remboursement_tps_tvq", "paiement_carte",
 ]
 _ADMIN_EDIT_KINDS = [
     "dépense", "recette_autre", "prélèvement", "apport",
     "virement_interne_sortant", "virement_interne_entrant",
+    "remise_tps_tvq", "remboursement_tps_tvq",
 ]
 _ADMIN_KINDS = [
     "encaissement_facture", "recette_autre", "dépense", "prélèvement",
     "apport", "virement_interne_sortant", "virement_interne_entrant",
-    "paiement_carte", "correction",
+    "remise_tps_tvq", "remboursement_tps_tvq", "paiement_carte",
+    "correction",
 ]
 _ADMIN_METHODS = [
     "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant",
     "autre",
 ]
 _ADMIN_CATEGORIES = [
-    "loyer", "internet", "téléphone", "abonnements", "équipement",
-    "fournitures", "assurances", "cotisations_professionnelles", "formation",
-    "publicité", "honoraires_professionnels", "huissier", "sténographe",
-    "frais_bancaires", "intérêts", "taxes_permis", "autre",
+    "loyer", "internet", "téléphone", "abonnements", "infonuagique_ia",
+    "équipement", "fournitures", "assurances", "cotisations_professionnelles",
+    "formation", "publicité", "honoraires_professionnels", "huissier",
+    "sténographe", "frais_bancaires", "intérêts", "taxes_permis", "autre",
 ]
 _REGISTER_STATUSES = ["en_circulation", "compensée", "annulée"]
 # How a dépense's TPS/TVQ split is given: extracted from the taxes-included
@@ -6732,8 +6735,9 @@ TOOLS: dict[str, dict] = {
             "window to see older ones. Each row carries its `etag` "
             "(update_admin_entry) and whether it is `locked` and why. A "
             "running balance is given only for ONE account read without a "
-            "kind, status or category filter. A revenue, expense or TPS/TVQ "
-            "total counts only encaissement_facture and recette_autre "
+            "kind, status or category filter. A revenue, expense or "
+            "tax-credit (CTI/RTI) total counts only encaissement_facture and "
+            "recette_autre "
             "(revenue) and dépense (expenses — a row's net, TPS and TVQ "
             "mean something only on a dépense or its correction), a "
             "correction counting as the entry it reverses (`reverses_id`), "
@@ -6741,8 +6745,11 @@ TOOLS: dict[str, dict] = {
             "lawyer's DRAWING — not the method « prélèvement », a "
             "pre-authorized debit), apport (money he puts in), "
             "virement_interne_sortant / virement_interne_entrant (to or "
-            "from an account outside this ledger) and paiement_carte "
-            "(between two accounts of this ledger)."
+            "from an account outside this ledger), remise_tps_tvq / "
+            "remboursement_tps_tvq (TPS/TVQ paid to or refunded by the tax "
+            "authorities: it settles the TPS/TVQ balance, never an expense "
+            "nor a tax credit) and paiement_carte (between two accounts of "
+            "this ledger)."
         ),
         "input_schema": {
             "type": "object",
@@ -6879,19 +6886,25 @@ TOOLS: dict[str, dict] = {
             "invoice's) —, paiement_carte (pays the card `card_account_id` "
             "FROM the operations account `account_id`: two linked entries; "
             "paying a card of this ledger is always this, never a virement "
-            "interne). Four kinds stand OUTSIDE the firm's results — no "
+            "interne). The natures OUTSIDE the firm's results take no "
             "`category`, `ventilation`, invoice nor supplier invoice; the "
-            "ledger writes their split itself, no TPS/TVQ: prélèvement (a "
-            "déboursé: the lawyer's DRAWING — never the method "
+            "ledger writes their split itself, no TPS/TVQ claimed: "
+            "prélèvement (a déboursé: the lawyer's DRAWING — never the method "
             "« prélèvement », a pre-authorized debit) and apport (a recette: "
             "money the lawyer puts in), neither ever with a dossier; "
             "virement_interne_sortant / virement_interne_entrant (money "
             "moving to / from an account OUTSIDE this ledger — the trust "
             "account, a savings account — named as `counterparty`; a "
-            "dossier allowed). Fees drawn from trust are never a virement "
-            "interne: record_trust_entry purpose virement_honoraires records "
-            "them, this ledger's recette included. These four and "
-            "paiement_carte enter no revenue, expense or tax total. "
+            "dossier allowed); remise_tps_tvq / remboursement_tps_tvq "
+            "(TPS/TVQ paid to / refunded by the tax authorities, its whole "
+            "amount — never a dépense nor a recette_autre; interest or "
+            "penalties paid are a dépense apart, interest received a "
+            "recette_autre apart; never with a dossier). Fees drawn from "
+            "trust are never a "
+            "virement interne: record_trust_entry purpose "
+            "virement_honoraires records them, this ledger's recette "
+            "included. These natures and paiement_carte enter no revenue, "
+            "expense or tax-credit total. "
             "`already_cleared_date` records it born compensée at that "
             "statement date. Corrected with update_admin_entry while still "
             "editable, otherwise only by reversal; never deleted here. "
@@ -6924,7 +6937,11 @@ TOOLS: dict[str, dict] = {
                 },
                 "category": {
                     "type": "string", "enum": _ADMIN_CATEGORIES,
-                    "description": "dépense only, required.",
+                    "description": (
+                        "dépense only, required. Usage-billed cloud and AI "
+                        "(API credits, hosting, compute): infonuagique_ia; "
+                        "a flat monthly plan stays abonnements."
+                    ),
                 },
                 **_ventilation_props(),
                 "invoice_id": _id(
@@ -6937,8 +6954,8 @@ TOOLS: dict[str, dict] = {
                 ),
                 "dossier_id": _id(
                     "dépense, recette_autre or a virement interne only: an "
-                    "optional dossier link — never on a prélèvement or an "
-                    "apport."
+                    "optional dossier link — never on a prélèvement, an "
+                    "apport, a remise_tps_tvq or a remboursement_tps_tvq."
                 ),
                 "supplier_invoice_ref": {
                     "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
@@ -6951,7 +6968,8 @@ TOOLS: dict[str, dict] = {
                     "Required, except on a paiement_carte, which takes none "
                     "(its two accounts name each other). On a virement "
                     "interne, the other account (« Compte en fidéicommis », "
-                    "a savings account)."
+                    "a savings account); on a remise_tps_tvq or a "
+                    "remboursement_tps_tvq, the tax authority."
                 ),
                 "already_cleared_date": _date(
                     "The bank statement date, YYYY-MM-DD, when the movement "
@@ -6990,20 +7008,21 @@ TOOLS: dict[str, dict] = {
             "after the last completed reconciliation, linked to no invoice, "
             "fee payment or card payment, part of no reversal — anything "
             "else is corrected by reverse_register_entry. A new `kind` keeps "
-            "the bank movement's sign: dépense, prélèvement and "
-            "virement_interne_sortant (déboursés) move among themselves, "
-            "recette_autre, apport and virement_interne_entrant (recettes) "
+            "the bank movement's sign: dépense, prélèvement, "
+            "virement_interne_sortant and remise_tps_tvq (déboursés) move "
+            "among themselves, recette_autre, apport, "
+            "virement_interne_entrant and remboursement_tps_tvq (recettes) "
             "among themselves; across signs only dépense <-> recette_autre, "
             "the sign following. Any other change of sign is refused: "
             "reverse the entry, then record the right one. Changing a "
             "dépense's amount, or making an entry a dépense, REQUIRES "
             "`ventilation` (the latter `category` too). Net, TPS and TVQ "
             "mean something only on a dépense: no other kind takes "
-            "`category` or `ventilation` (the four outside the results get "
-            "the ledger's own split, no TPS/TVQ, whatever their amount). A "
-            "prélèvement or an apport never carries a dossier: making a "
-            "linked entry one requires `dossier_id` \"\". idempotency_key "
-            "REQUIRED."
+            "`category` or `ventilation` (the natures outside the results "
+            "get the ledger's own split, no TPS/TVQ claimed, whatever their "
+            "amount). A prélèvement, an apport, a remise_tps_tvq or a "
+            "remboursement_tps_tvq never carries a dossier: making a linked "
+            "entry one requires `dossier_id` \"\". idempotency_key REQUIRED."
         ),
         "input_schema": {
             "type": "object",
@@ -7029,7 +7048,8 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "maxLength": 64,
                     "description": (
                         "New dossier link; '' removes it — never one on a "
-                        "prélèvement or an apport."
+                        "prélèvement, an apport, a remise_tps_tvq or a "
+                        "remboursement_tps_tvq."
                     ),
                 },
                 "supplier_invoice_ref": {

@@ -153,3 +153,20 @@ def test_money_columns_hold_a_seven_figure_amount():
             continue
         width = col.ratio * usable - 2 * ajp._PAD
         assert pdfmetrics.stringWidth(sample, ajp._FONT, ajp._SIZE) <= width, col.key
+
+
+def test_the_closing_tax_line_names_what_it_sums():
+    """2026-11-07: a « Remise de TPS/TVQ » is a déboursé of the period too,
+    and it is not in this line — which sums the TPS/TVQ claimed on the
+    dépenses (CTI/RTI) and now says so, where « Taxes payées sur les
+    déboursés » read as if it covered every tax paid."""
+    import io
+
+    from pypdf import PdfReader
+
+    resp = _build([_expense_row()], tps_total=500, tvq_total=998)
+    text = " ".join(page.extract_text()
+                    for page in PdfReader(io.BytesIO(resp.data)).pages)
+    text = text.replace(" ", " ").replace(" ", " ")
+    assert "TPS/TVQ payées sur les dépenses de la période (CTI/RTI)" in text
+    assert "Taxes payées sur les déboursés" not in text

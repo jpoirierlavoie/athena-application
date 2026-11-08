@@ -10,8 +10,9 @@ distinct ``athena:comptabilite`` et son interrupteur
   d'honoraires ATOMIQUE (retrait, recette, paiement sur la facture) ;
 * ``record_admin_entry`` — une écriture d'administration (dépense ventilée,
   autre recette, encaissement qui paie la facture, paiement de carte, et
-  depuis le 2026-10-07 les quatre natures hors des résultats : prélèvement
-  et apport de l'avocat, virement interne sortant ou entrant — section 10) ;
+  depuis le 2026-10-07 les natures hors des résultats : prélèvement et
+  apport de l'avocat, virement interne sortant ou entrant, rejoints le
+  2026-11-07 par la remise et le remboursement de TPS/TVQ — section 10) ;
 * ``update_admin_entry`` — la correction d'une écriture encore modifiable,
   contre l'etag lu, sa nature ne changeant que selon la table du modèle ;
 * ``clear_register_entries`` — la compensation à la date du RELEVÉ ;
@@ -255,6 +256,16 @@ def test_the_hand_copied_vocabularies_are_the_models_own():
     assert set(tools._ADMIN_EDIT_KINDS) == set(al._EDITABLE_KINDS)
     assert tools._ADMIN_METHODS == list(al.VALID_METHODS)
     assert tools._ADMIN_CATEGORIES == list(al.ADMIN_EXPENSE_CATEGORIES)
+    # The lawyer's decision of 2026-11-07 reaches Claude only through
+    # this description: usage-billed cloud and AI is infonuagique_ia, a
+    # flat plan stays abonnements — both names the model's own.
+    category = tools.TOOLS["record_admin_entry"]["input_schema"][
+        "properties"]["category"]
+    for key in ("infonuagique_ia", "abonnements"):
+        assert key in category["description"] and key in category["enum"]
+        assert key in al.ADMIN_EXPENSE_CATEGORIES
+    assert "Usage-billed cloud and AI" in category["description"]
+    assert "a flat monthly plan stays abonnements" in category["description"]
     assert tools._REGISTER_STATUSES == list(trust.VALID_TX_STATUSES)
     assert tools._REGISTER_STATUSES == list(al.VALID_TX_STATUSES)
 
@@ -2169,22 +2180,26 @@ def test_the_new_trust_row_keys_are_optional_in_the_schema():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 10. Les quatre natures hors des résultats (2026-10-07)
+# 10. Les natures hors des résultats (2026-10-07, TPS/TVQ 2026-11-07)
 # ══════════════════════════════════════════════════════════════════════
 #
-# The lawyer's prélèvement and apport, and a virement interne either way
+# The lawyer's prélèvement and apport, a virement interne either way, and
+# — since 2026-11-07 — the firm's TPS/TVQ remittance and refund
 # (models/admin_ledger.NON_RESULT_KINDS): recorded, refused, moved, edited
 # and read through the REAL handlers, service and model — and every
 # handler refusal shown to be the model's own rule, met past the handler.
 
-_NATURES = ("prélèvement", "apport", "virement_interne_sortant",
-            "virement_interne_entrant")
+# Every nature, from the model: one joining NON_RESULT_KINDS runs through
+# every test below (and needs its counterparty here — a KeyError otherwise).
+_NATURES = tuple(al.NON_RESULT_KINDS)
 # Synthetic counterparties, as a bank document would name the other side.
 _NATURE_COUNTERPARTY = {
     "prélèvement": "Avocat — compte personnel",
     "apport": "Avocat — compte personnel",
     "virement_interne_sortant": "Compte en fidéicommis",
     "virement_interne_entrant": "Compte d'épargne",
+    "remise_tps_tvq": "Administration fiscale",
+    "remboursement_tps_tvq": "Administration fiscale",
 }
 
 
@@ -2264,11 +2279,12 @@ _ARG_EVIDENCE = {
 def test_the_connectors_kind_tables_are_the_models():
     """The handler's two tables cover exactly the kinds a create may carry
     (a missing one was a KeyError on the call); the service's copies of the
-    model's rules — the passages between kinds, the four natures, the two
-    that are the lawyer's own money — are the model's; what the handler
-    lets a nature carry holds nothing the model refuses of it (a category,
-    a split, an invoice; a dossier on the lawyer's own money) — nor a card
-    or a supplier invoice —, while a virement interne keeps its dossier;
+    model's rules — the passages between kinds, the natures outside the
+    results, those that never carry a dossier — are the model's; what the
+    handler lets a nature carry holds nothing the model refuses of it (a
+    category, a split, an invoice; a dossier on the lawyer's own money or
+    a TPS/TVQ remittance) — nor a card or a supplier invoice —, while a
+    virement interne keeps its dossier;
     and the handlers reach those rules through the service, never the
     model."""
     assert set(handlers._ADMIN_KIND_ARGS) == set(handlers._KIND_WHAT) == set(
@@ -2278,7 +2294,8 @@ def test_the_connectors_kind_tables_are_the_models():
     for targets in svc.ADMIN_KIND_MOVES.values():
         assert set(targets) <= set(tools._ADMIN_EDIT_KINDS), targets
     assert svc.ADMIN_NON_RESULT_KINDS == tuple(al.NON_RESULT_KINDS)
-    assert svc.ADMIN_OWNER_KINDS == tuple(al.OWNER_KINDS)
+    assert svc.ADMIN_NO_DOSSIER_KINDS == tuple(al.NO_DOSSIER_KINDS)
+    assert set(_NATURE_COUNTERPARTY) == set(al.NON_RESULT_KINDS)
     for old in al.VALID_KINDS:
         for new in al.VALID_KINDS:
             assert svc.passage_de_nature_permis(old, new) is al.kind_move_allowed(
@@ -2288,7 +2305,7 @@ def test_the_connectors_kind_tables_are_the_models():
     for kind in svc.ADMIN_NON_RESULT_KINDS:
         own = handlers._ADMIN_KIND_ARGS[kind]
         assert not own & never, kind
-        assert ("dossier_id" in own) is (kind not in svc.ADMIN_OWNER_KINDS), kind
+        assert ("dossier_id" in own) is (kind not in svc.ADMIN_NO_DOSSIER_KINDS), kind
     tree = ast.parse(pathlib.Path(handlers.__file__).read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
@@ -2306,6 +2323,7 @@ def test_the_connectors_kind_tables_are_the_models():
     ("prélèvement", "déboursé"), ("apport", "recette"),
     ("virement_interne_sortant", "déboursé"),
     ("virement_interne_entrant", "recette"),
+    ("remise_tps_tvq", "déboursé"), ("remboursement_tps_tvq", "recette"),
 ])
 def test_each_nature_is_recorded_with_its_sign_and_the_ledgers_own_split(
         fake, kind, direction):
@@ -2362,9 +2380,9 @@ def test_every_argument_a_kind_does_not_take_is_refused_naming_it(fake):
     """DERIVED from the schema and the handler's table: on each kind, every
     property record_admin_entry declares beyond the common ones and the
     kind's own is REFUSED, named, before anything is written — never
-    silently dropped. Among them, on the four natures: a category, a
-    ventilation, an invoice, a supplier invoice; and on the lawyer's own
-    money, a dossier."""
+    silently dropped. Among them, on the natures outside the results: a
+    category, a ventilation, an invoice, a supplier invoice; and on the
+    kinds that never carry one (NO_DOSSIER_KINDS), a dossier."""
     props = set(tools.TOOLS["record_admin_entry"]["input_schema"]["properties"])
     before = _entries(fake, "admin_transactions")
     refused = set()
@@ -2383,7 +2401,7 @@ def test_every_argument_a_kind_does_not_take_is_refused_naming_it(fake):
         for key in ("category", "ventilation", "net_cents", "invoice_id",
                     "supplier_invoice_ref"):
             assert (kind, key) in refused, (kind, key)
-        assert ((kind, "dossier_id") in refused) is (kind in svc.ADMIN_OWNER_KINDS)
+        assert ((kind, "dossier_id") in refused) is (kind in svc.ADMIN_NO_DOSSIER_KINDS)
 
 
 @pytest.mark.parametrize("kind", ["virement_interne_sortant",
@@ -2403,6 +2421,28 @@ def test_a_virement_interne_may_name_a_dossier(fake, kind):
     assert _entries(fake, "admin_transactions") == before
 
 
+@pytest.mark.parametrize("kind", _NATURES)
+def test_a_nature_without_its_counterparty_is_told_whom_to_name(fake, kind):
+    """The refusal of a missing `counterparty` says whom to name: the other
+    account for a virement interne, the tax authority for a TPS/TVQ
+    remittance or refund (2026-11-07) — nothing written. The schema's
+    description says the same."""
+    args = _nature(kind)
+    del args["counterparty"]
+    before = _entries(fake, "admin_transactions")
+    refusal = _refused("record_admin_entry", **args)
+    assert str(refusal) == (
+        "`counterparty` est requis : le payeur ou le fournisseur, comme le "
+        "document bancaire le nomme — pour un virement interne, l'autre "
+        "compte (« Compte en fidéicommis », un compte d'épargne) ; pour une "
+        "remise ou un remboursement de TPS/TVQ, l'administration fiscale.")
+    assert _entries(fake, "admin_transactions") == before
+    described = tools.TOOLS["record_admin_entry"]["input_schema"][
+        "properties"]["counterparty"]["description"]
+    assert ("on a remise_tps_tvq or a remboursement_tps_tvq, the tax "
+            "authority.") in described
+
+
 def test_the_model_refuses_what_the_handler_refuses_first(fake):
     """The handler's refusals of the natures' foreign arguments are a
     courtesy that names them: past the handler, the MODEL refuses the same
@@ -2414,8 +2454,8 @@ def test_the_model_refuses_what_the_handler_refuses_first(fake):
             ({"category": "loyer"}, "catégorie_interdite"),
             ({"net_amount": 11498}, "ventilation_interdite"),
             ({"invoice_id": "inv1"}, "facture_interdite"),
-            ({"kind": "prélèvement", "dossier_id": "dos1"}, "dossier_interdit"),
-            ({"kind": "apport", "dossier_id": "dos1"}, "dossier_interdit")):
+            *(({"kind": kind, "dossier_id": "dos1"}, "dossier_interdit")
+              for kind in svc.ADMIN_NO_DOSSIER_KINDS)):
         report = svc.enregistrer_ecriture_administration({**base, **extra})
         assert not report["ok"] and report["reason"] == reason, extra
     assert _entries(fake, "admin_transactions") == {}
@@ -2563,13 +2603,49 @@ def test_a_linked_entry_becomes_the_lawyers_own_money_only_unlinked(
     assert _entries(fake, "admin_transactions") == after
 
 
+@pytest.mark.parametrize("kind,old,lead", [
+    ("remise_tps_tvq", "dépense", "Une remise de TPS/TVQ"),
+    ("remboursement_tps_tvq", "recette_autre", "Un remboursement de TPS/TVQ"),
+])
+def test_a_linked_entry_becomes_a_tps_tvq_settlement_only_unlinked(
+        fake, kind, old, lead):
+    """2026-11-07 — a TPS/TVQ remittance or refund never carries a dossier
+    either (NO_DOSSIER_KINDS): an entry of its sign linked to one is refused
+    naming `dossier_id` and its remedy, nothing written — the model refuses
+    the same move —, then accepted with `dossier_id` "": the link, the
+    category and the dépense's split all go."""
+    made = _made(old, dossier_id="dos1")
+    before = _entries(fake, "admin_transactions")
+    refusal = _refused("update_admin_entry", tx_id=made["id"],
+                       expected_etag=made["etag"], kind=kind)
+    assert refusal.reason == "accounting_refused"
+    assert str(refusal) == (
+        f"{lead} ne se rattache à aucun dossier : envoyez `dossier_id` vide "
+        "(\"\"), qui retire le lien. Rien n'a été écrit.")
+    assert _entries(fake, "admin_transactions") == before
+    report = svc.modifier_ecriture_administration(
+        made["id"], {"kind": kind}, expected_etag=made["etag"])
+    assert report["reason"] == "dossier_interdit"
+    assert _entries(fake, "admin_transactions") == before
+
+    payload = _call("update_admin_entry", tx_id=made["id"],
+                    expected_etag=made["etag"], kind=kind, dossier_id="")
+    _conforms("update_admin_entry", payload)
+    stored = fake.peek(f"admin_transactions/{made['id']}")
+    assert (stored["kind"], stored["direction"]) == (kind, al._KIND_DIRECTION[kind])
+    assert stored["dossier_id"] is None and stored["dossier_file_number"] == ""
+    assert stored["category"] is None
+    assert _split_of(stored) == ((11498, 0, 0) if old == "dépense" else (0, 0, 0))
+
+
 @pytest.mark.parametrize("kind", _NATURES)
 def test_a_nature_takes_an_amount_or_a_description_alone(fake, kind):
     """A nature's amount changes WITHOUT a ventilation — the ledger writes
     its split (net = amount on a déboursé, zeros on a recette) on every
     write —, and its description alone changes nothing else. A ventilation
-    or a category sent with it is refused, named, in words that cover the
-    four natures (they said « une recette » until 2026-10-07)."""
+    or a category sent with it is refused, named, in words that cover
+    every nature (they said « une recette » until 2026-10-07, and named no
+    TPS/TVQ remittance until 2026-11-07)."""
     made = _made(kind)
     described = _call("update_admin_entry", tx_id=made["id"],
                       expected_etag=made["etag"], description="Mouvement du mois")
@@ -2593,10 +2669,15 @@ def test_a_nature_takes_an_amount_or_a_description_alone(fake, kind):
         refusal = _refused("update_admin_entry", tx_id=made["id"],
                            expected_etag=stored["etag"], amount_cents=30000,
                            **extra)
-        assert str(refusal) == (
-            f"`{key}` ne vaut que pour une dépense : une autre recette, un "
-            "prélèvement ou un apport de l'avocat et un virement interne ne "
-            "portent ni catégorie ni ventilation."), key
+        text = str(refusal)
+        assert text.startswith(f"`{key}` ne vaut que pour une dépense : "), key
+        assert text.endswith(" ne portent ni catégorie ni ventilation."), key
+        # Every editable kind but the dépense names itself — derived from
+        # the model, so a nature joining them cannot go unnamed (final
+        # review of lot A: the text was a fixed string).
+        for other in al._EDITABLE_KINDS:
+            if other != "dépense":
+                assert handlers._KIND_WHAT[other] in text, (key, other)
     assert fake.peek(f"admin_transactions/{made['id']}")["amount"] == 20000
 
 

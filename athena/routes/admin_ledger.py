@@ -15,10 +15,13 @@ through ``services/comptabilite`` (lot 5a, step 3) — the ONE orchestration
 the connector will share — and « déjà compensée » is a single create, born
 compensée, never create-then-clear.
 
-The four natures outside the firm's results (2026-10-07,
-``models/admin_ledger.NON_RESULT_KINDS``) ride the same form: the lawyer's
-« Prélèvement » and « Apport », and one « Virement interne » whose « Sens »
-names the stored kind. They show as plain text, like every kind. The
+The natures outside the firm's results
+(``models/admin_ledger.NON_RESULT_KINDS``) ride the same form: the lawyer's
+« Prélèvement » and « Apport », one « Virement interne » whose « Sens »
+names the stored kind (2026-10-07), and the « Remise » and « Remboursement
+de TPS/TVQ » (2026-11-07). The form hides the dossier of the kinds that
+never carry one from the model's own list (``NO_DOSSIER_KINDS``). They
+show as plain text, like every kind. The
 account page (for the calendar year) shows his « Avoir de l'avocat »
 (``owner_equity``) — only over a register read whole; neither the journal
 header nor the PDF journal does (the lawyer's decision, 2026-10-07).
@@ -298,14 +301,15 @@ def _entry_form_data() -> dict:
     sens leaves the form's own value (``INTERNAL_TRANSFER_FORM_KIND``), which
     no model call ever receives: both routes refuse it first (``_SENS_REQUIS``).
 
-    The four natures outside the results carry no category, no split, no
-    invoice — and a prélèvement or an apport no dossier. Their fields stay
-    hidden (and disabled) in the form, but a stale value the browser still
-    posts (no Alpine, a dossier picked before the Type changed) is
-    NEUTRALIZED here, its key KEPT: the model judges only what a write
-    carries and reads these empties as absent, while a present empty
-    ``dossier_id`` is what clears a dossier left on an entry that becomes
-    the lawyer's own money (``dossier_interdit`` otherwise)."""
+    The natures outside the results carry no category, no split, no
+    invoice — and those of ``NO_DOSSIER_KINDS`` (the lawyer's own money, a
+    TPS/TVQ remittance or refund) no dossier. Their fields stay hidden (and
+    disabled) in the form, but a stale value the browser still posts (no
+    Alpine, a dossier picked before the Type changed) is NEUTRALIZED here,
+    its key KEPT: the model judges only what a write carries and reads these
+    empties as absent, while a present empty ``dossier_id`` is what clears a
+    dossier left on an entry that becomes one of them (``dossier_interdit``
+    otherwise)."""
     f = request.form
     kind = f.get("kind", "").strip()
     if kind == al.INTERNAL_TRANSFER_FORM_KIND:
@@ -331,7 +335,7 @@ def _entry_form_data() -> dict:
     if kind in al.NON_RESULT_KINDS:
         data.update(category="", net_amount=None, gst_amount=None,
                     qst_amount=None, invoice_id="")
-        if kind in al.OWNER_KINDS:
+        if kind in al.NO_DOSSIER_KINDS:
             data["dossier_id"] = None
     return data
 
@@ -414,6 +418,11 @@ def _form_context(entry, errors: list[str], mode: str = "create",
         factures=_factures_impayees() if mode == "create" else [],
         kind_choices=kind_choices, sens_choices=sens_choices,
         form_kind_value=kind_value, form_sens_value=sens_value,
+        # The kinds whose dossier block the form hides, and those its
+        # TPS/TVQ help line follows — the model's lists, never restated in
+        # the template.
+        no_dossier_kinds=list(al.NO_DOSSIER_KINDS),
+        sales_tax_kinds=list(al.SALES_TAX_KINDS),
         **_labels(),
     )
 

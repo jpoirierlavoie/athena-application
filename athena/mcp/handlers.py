@@ -17861,12 +17861,14 @@ _ADMIN_COMMON_ARGS = {"account_id", "kind", "amount_cents", "date", "method",
 # The arguments each kind takes beyond the common ones — any other is
 # REFUSED, never ignored (_refuse_foreign_args) — and the one source of what
 # _record_admin_entry_impl reads: each optional link is read only when its
-# kind's set holds it. The four kinds outside the firm's results (2026-10-07:
-# the lawyer's prélèvement and apport, a virement interne either way) take
-# no category, ventilation, invoice nor supplier invoice — the model writes
+# kind's set holds it. The natures outside the firm's results
+# (admin_ledger.NON_RESULT_KINDS: the lawyer's prélèvement and apport, a
+# virement interne either way, a TPS/TVQ remittance or refund) take no
+# category, ventilation, invoice nor supplier invoice — the model writes
 # their split itself (admin_ledger.canonical_ventilation) — and only a
-# virement interne may name a dossier: the lawyer's own money never does
-# (admin_ledger._nature_refusal, refused here naming the argument).
+# virement interne may name a dossier: the lawyer's own money and the
+# firm's TPS/TVQ never do (admin_ledger._nature_refusal, refused here
+# naming the argument).
 _ADMIN_KIND_ARGS = {
     "dépense": {"category", "ventilation", "net_cents", "gst_cents",
                 "qst_cents", "dossier_id", "supplier_invoice_ref",
@@ -17884,6 +17886,10 @@ _ADMIN_KIND_ARGS = {
                                  "description", "already_cleared_date"},
     "virement_interne_entrant": {"dossier_id", "counterparty", "reference",
                                  "description", "already_cleared_date"},
+    "remise_tps_tvq": {"counterparty", "reference", "description",
+                       "already_cleared_date"},
+    "remboursement_tps_tvq": {"counterparty", "reference", "description",
+                              "already_cleared_date"},
     "paiement_carte": {"card_account_id", "reference", "description"},
 }
 _KIND_WHAT = {
@@ -17894,6 +17900,8 @@ _KIND_WHAT = {
     "apport": "un apport de l'avocat",
     "virement_interne_sortant": "un virement interne",
     "virement_interne_entrant": "un virement interne",
+    "remise_tps_tvq": "une remise de TPS/TVQ",
+    "remboursement_tps_tvq": "un remboursement de TPS/TVQ",
     "paiement_carte": "un paiement de carte",
 }
 
@@ -17997,7 +18005,8 @@ def _record_admin_entry_impl(args: dict) -> dict:
             "`counterparty` est requis : le payeur ou le fournisseur, comme "
             "le document bancaire le nomme — pour un virement interne, "
             "l'autre compte (« Compte en fidéicommis », un compte "
-            "d'épargne).")
+            "d'épargne) ; pour une remise ou un remboursement de TPS/TVQ, "
+            "l'administration fiscale.")
     cleared = _write_date(args, "already_cleared_date", required=False)
     if cleared is not None:
         _not_future(cleared, "already_cleared_date")
@@ -18174,11 +18183,12 @@ def _update_admin_entry_impl(args: dict) -> dict:
                 kind_before, kind_after)):
         raise ToolArgumentError(_kind_move_refusal(kind_before, kind_after),
                                 reason="accounting_refused")
-    # The lawyer's own money never carries a dossier (the model refuses it
-    # too) — judged on the entry as it WILL be: the dossier the call sends,
-    # or the one the entry keeps. Before the dossier's read: its existence
-    # is not the question.
-    if (kind_after in comptabilite_service.ADMIN_OWNER_KINDS
+    # The lawyer's own money and the firm's TPS/TVQ never carry a dossier
+    # (admin_ledger.NO_DOSSIER_KINDS; the model refuses it too) — judged on
+    # the entry as it WILL be: the dossier the call sends, or the one the
+    # entry keeps. Before the dossier's read: its existence is not the
+    # question.
+    if (kind_after in comptabilite_service.ADMIN_NO_DOSSIER_KINDS
             and data.get("dossier_id", existing.get("dossier_id"))):
         what = _KIND_WHAT.get(kind_after, kind_after)
         raise ToolArgumentError(
@@ -18214,11 +18224,17 @@ def _update_admin_entry_impl(args: dict) -> dict:
         stray = [k for k in ("category", "ventilation", "net_cents",
                              "gst_cents", "qst_cents") if k in args]
         if stray:
+            # The kinds it names are the model's editable ones but the
+            # dépense (KIND_MOVES' keys, through the service): a nature
+            # joining them names itself (final review of lot A — the
+            # list was restated by hand and went stale twice).
+            others = list(dict.fromkeys(
+                _KIND_WHAT.get(k, k)
+                for k in comptabilite_service.ADMIN_KIND_MOVES if k != "dépense"))
+            listed = ", ".join(others[:-1]) + " et " + others[-1]
             raise ToolArgumentError(
                 ", ".join(f"`{k}`" for k in stray) + " ne vaut que pour une "
-                "dépense : une autre recette, un prélèvement ou un apport de "
-                "l'avocat et un virement interne ne portent ni catégorie ni "
-                "ventilation.")
+                f"dépense : {listed} ne portent ni catégorie ni ventilation.")
 
     report = comptabilite_service.modifier_ecriture_administration(
         tx_id, data, expected_etag=wanted)

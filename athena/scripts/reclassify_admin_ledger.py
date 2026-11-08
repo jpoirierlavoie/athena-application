@@ -6,9 +6,11 @@ What it does
 The lawyer's verification of the operations account found his own drawings
 and contributions, and the firm's transfers to and from accounts outside this
 ledger (the trust account, a savings account), booked as « dépense » or
-« autre recette »: every results figure counted them. The model now has four
-natures for them (``prélèvement``, ``apport``, ``virement_interne_sortant``,
-``virement_interne_entrant`` — ``models/admin_ledger.NON_RESULT_KINDS``). A
+« autre recette »: every results figure counted them. The model has had
+natures for them since that day (``prélèvement``, ``apport``,
+``virement_interne_sortant``, ``virement_interne_entrant``, all in
+``models/admin_ledger.NON_RESULT_KINDS``, which since 2026-11-07 also holds
+the TPS/TVQ remittance and refund). A
 CSV the lawyer approved, kept OUTSIDE the public repository, names every
 entry to change, with the stored values it expects (``*_actuel``) and the
 targets (``*_cible``): natures, and a few categories and dossiers (group A),
@@ -91,7 +93,9 @@ passes for an absence)
   ``NON_RESULT_KINDS``, no TPS, no TVQ and the canonical net
   (``canonical_ventilation`` — the migration writes no money field, it
   refuses one that is not already right), no category left, and no dossier
-  left on a prélèvement or an apport. A category stays on a dépense only.
+  left on a nature of ``NO_DOSSIER_KINDS`` (the lawyer's own money, and
+  since 2026-11-07 a TPS/TVQ remittance or refund). A category stays on a
+  dépense only.
 * A dossier target is read strictly; its ``file_number`` must be the CSV's
   ``dossier_cible``; the entry gets the dossier's ``dossier_file_number`` and
   ``dossier_title`` snapshots. The tax split of a dépense is never touched.
@@ -832,8 +836,8 @@ def _nature_refusals(doc: dict, kind_before: str, kind_after: str) -> list[tuple
             shown = ("illisible" if split is None else
                      f"{split['net_amount']}+{split['gst_amount']}+{split['qst_amount']}")
             out.append(("ventilation_non_canonique",
-                        f"ventilation {shown} — « {al.KIND_LABELS[kind_after]} » ne porte ni "
-                        f"TPS ni TVQ, et son net est "
+                        f"ventilation {shown} — « {al.KIND_LABELS[kind_after]} » ne réclame "
+                        f"ni TPS ni TVQ, et son net est "
                         f"{'le montant' if doc.get('direction') == 'déboursé' else 'nul'} ; "
                         f"la migration n'écrit aucun champ monétaire"))
     return out
@@ -934,10 +938,10 @@ def judge_line(line: Line, store: Store, today: date, dossiers: dict) -> Verdict
     if "kind" in pending or "category" in pending:
         for code, message in _category_refusals(kind_after, category_after):
             verdict.refuse(code, message)
-    if ("kind" in pending or "dossier_id" in pending) and kind_after in al.OWNER_KINDS \
+    if ("kind" in pending or "dossier_id" in pending) and kind_after in al.NO_DOSSIER_KINDS \
             and dossier_after:
-        verdict.refuse("dossier_interdit", f"un « {al.KIND_LABELS[kind_after]} » ne se "
-                                           f"rattache à aucun dossier ({dossier_after})")
+        verdict.refuse("dossier_interdit", f"une écriture « {al.KIND_LABELS[kind_after]} » "
+                                           f"ne se rattache à aucun dossier ({dossier_after})")
     if "dossier_id" in pending:
         _judge_dossier(verdict, dossiers)
     if "date" in pending:

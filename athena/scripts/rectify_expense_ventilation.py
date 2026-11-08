@@ -54,8 +54,8 @@ moved refuses the whole run.
 Judging a line — every read is strict
 -------------------------------------
 A line is refused when its entry is not on the plan's account; is not a
-``dépense`` (a recette carries no split; the four natures outside the
-results carry their canonical one; a correction or a card payment is
+``dépense`` (a recette carries no split; the natures outside the results
+carry their canonical one; a correction or a card payment is
 structural); is a member of a reversal (its correction copies the split:
 the pair would no longer net to zero); is annulée, linked to an invoice or a
 trust entry, or carries more than ``_REVISIONS_CAP - 2`` trail entries; or

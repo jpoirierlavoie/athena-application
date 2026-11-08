@@ -349,6 +349,18 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # as before. update_admin_entry's sentence that confined it to those
     # two, quoted as it stood (backticks included).
     "`kind` moves only between dépense and recette_autre",
+    # 2026-11-07 — the firm's TPS/TVQ remittances and refunds
+    # (remise_tps_tvq, remboursement_tps_tvq) joined the kinds outside the
+    # results: the descriptions that counted those kinds in prose, quoted as
+    # they stood (lower-cased, as the scan reads), are false of the list
+    # now — the texts name the natures, never their number.
+    "four kinds stand outside the firm's results",
+    "these four and paiement_carte",
+    "the four outside the results",
+    # get_admin_ledger's « TPS/TVQ total » meant the tax CLAIMED on the
+    # dépenses; a remittance settles TPS/TVQ too, so the phrase now reads
+    # « tax-credit (CTI/RTI) total ».
+    "a revenue, expense or tps/tvq total counts only",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -1562,10 +1574,13 @@ def test_the_2026_10_05_false_claim_entries_bite_on_the_texts_that_stood():
         assert not _false_claims_in(true), true[:80]
 
 
-def test_the_2026_10_07_texts_name_the_four_natures_outside_the_results():
-    """2026-10-07 — the administration ledger's four kinds outside the
-    firm's results (models/admin_ledger.NON_RESULT_KINDS: the lawyer's
-    prélèvement and apport, a virement interne either way). The consent
+def test_the_texts_name_the_natures_outside_the_results():
+    """2026-10-07 — the administration ledger's kinds outside the firm's
+    results (models/admin_ledger.NON_RESULT_KINDS: the lawyer's prélèvement
+    and apport, a virement interne either way — joined on 2026-11-07 by the
+    firm's TPS/TVQ remittance and refund, in a sentence of their own: they
+    settle the TPS/TVQ balance, so « n'entrent dans aucun total … de TPS/TVQ »
+    would be false of them). The consent
     partial and the write box's summary name them for the lawyer, beside
     the fragments pinned before them; the three ledger tools' descriptions
     name every kind their enums take (DERIVED), what the natures refuse,
@@ -1591,6 +1606,14 @@ def test_the_2026_10_07_texts_name_the_four_natures_outside_the_results():
         "de dépenses ni de TPS/TVQ",
         "elles ne portent ni catégorie, ni ventilation, ni facture, et un "
         "prélèvement ou un apport ne se rattache à aucun dossier",
+        # 2026-11-07 — the remittances, in their own sentence.
+        "Inscrire aussi les <strong>remises</strong> et les "
+        "<strong>remboursements de TPS/TVQ</strong> du cabinet auprès de "
+        "l'administration fiscale, pour leur montant total",
+        "ni revenu, ni dépense, ni crédit de taxe, ils règlent le solde de "
+        "TPS/TVQ",
+        "ils ne portent ni catégorie, ni ventilation, ni facture, et ne se "
+        "rattachent à aucun dossier",
         # Guidance, qualified to a card OF THIS LEDGER (review fix: an
         # unqualified « jamais » promised what no code refuses, and was
         # false for the lawyer's own card, a prélèvement).
@@ -1609,8 +1632,9 @@ def test_the_2026_10_07_texts_name_the_four_natures_outside_the_results():
     accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
     summary = accounting.checkbox_summary_fr
     for fragment in (
-        "des paiements de carte, vos prélèvements et vos apports, et des "
-        "virements internes vers ou depuis un compte hors de ce registre",
+        "des paiements de carte, vos prélèvements et vos apports, des "
+        "virements internes vers ou depuis un compte hors de ce registre, "
+        "et les remises et remboursements de TPS/TVQ du cabinet",
         "des recettes et des déboursés, et des paiements d'honoraires — "
         "dont chacun inscrit",
     ):
@@ -1635,14 +1659,31 @@ def test_the_2026_10_07_texts_name_the_four_natures_outside_the_results():
         "interne",
         "Fees drawn from trust are never a virement interne: "
         "record_trust_entry purpose virement_honoraires records them",
-        "These four and paiement_carte enter no revenue, expense or tax "
-        "total.",
+        "remise_tps_tvq / remboursement_tps_tvq (TPS/TVQ paid to / refunded "
+        "by the tax authorities, its whole amount — never a dépense nor a "
+        "recette_autre; interest or penalties paid are a dépense apart, "
+        "interest received a recette_autre apart; never with a dossier)",
+        "These natures and paiement_carte enter no revenue, expense or "
+        "tax-credit total.",
     ):
         assert fragment in record, fragment
-    # The descriptions say « four » in prose (« Four kinds stand OUTSIDE… »,
-    # « These four… », « the four outside the results… »): pinned to the
-    # model's source, so a fifth kind fails here on the prose (review fix).
-    assert len(al.NON_RESULT_KINDS) == 4
+    # The descriptions said « four » in prose until 2026-11-07, and a len()
+    # tripwire held that count to the model's; they name the natures now,
+    # and the retired counts are KNOWN_FALSE_CLAIMS (asserted absent below).
+    # The sentence of update_admin_entry that names the kinds without a
+    # dossier names every kind of the model's list (NO_DOSSIER_KINDS).
+    end = update.index(" never carries a dossier")
+    no_dossier = update[update.rindex(". ", 0, end) + 2:end]
+    for kind in al.NO_DOSSIER_KINDS:
+        assert kind in no_dossier, kind
+    # So do both tools' `dossier_id` property texts (review of lot A):
+    # each lists, after « never », every kind that carries no dossier.
+    for name in ("record_admin_entry", "update_admin_entry"):
+        prop = tools.TOOLS[name]["input_schema"]["properties"]["dossier_id"]
+        never_text = prop["description"]
+        never_text = never_text[never_text.index("never"):]
+        for kind in al.NO_DOSSIER_KINDS:
+            assert kind in never_text, (name, kind)
     for fragment in (
         "A new `kind` keeps the bank movement's sign",
         "across signs only dépense <-> recette_autre",
@@ -1677,11 +1718,24 @@ def test_the_2026_10_07_texts_name_the_four_natures_outside_the_results():
     for kind in al.REVENUE_KINDS + al.EXPENSE_KINDS:
         assert kind not in never, kind
     assert "net, TPS and TVQ mean something only on a dépense" in ledger
+    assert ("A revenue, expense or tax-credit (CTI/RTI) total counts only "
+            "encaissement_facture and recette_autre") in ledger
+    assert "it settles the TPS/TVQ balance, never an expense nor a tax credit" in ledger
     assert "not the method « prélèvement »" in ledger
 
     retired = ("`kind` moves only between dépense and recette_autre (its "
                "sign follows).")
     assert _false_claims_in(retired)
+    # The prose counts of the descriptions before 2026-11-07, as they stood.
+    for retired in (
+        "interne). Four kinds stand OUTSIDE the firm's results — no",
+        "These four and paiement_carte enter no revenue, expense or tax total.",
+        "`category` or `ventilation` (the four outside the results get the "
+        "ledger's own split, no TPS/TVQ, whatever their amount).",
+        "kind, status or category filter. A revenue, expense or TPS/TVQ total "
+        "counts only encaissement_facture and recette_autre",
+    ):
+        assert _false_claims_in(retired), retired
     for true in (partial, summary, record, update, ledger):
         assert not _false_claims_in(true), true[:80]
 
