@@ -212,13 +212,12 @@ def test_a_correction_counts_against_its_originals_kind_and_links():
 def test_an_unresolvable_correction_raises_even_when_stamped(damage):
     original = _tx("o1", "dépense", 5000, _d(2031, 3, 1), category="loyer")
     fix = _correction("c1", original, _d(2031, 4, 2))
-    rows = [original, fix]
-    if damage == "absent":
-        rows = [fix]
-    elif damage == "other_account":
-        rows = [{**original, "account_id": "ops2"}, fix]
-    else:
-        rows = [original, fix, _correction("c2", {**fix, "kind": "correction"}, _d(2031, 4, 3))]
+    rows = {
+        "absent": [fix],
+        "other_account": [{**original, "account_id": "ops2"}, fix],
+        "of_a_correction": [original, fix,
+                            _correction("c2", {**fix, "kind": "correction"}, _d(2031, 4, 3))],
+    }[damage]
     with pytest.raises(al.UnresolvedCorrection):
         al.resolve_corrections(rows)
 

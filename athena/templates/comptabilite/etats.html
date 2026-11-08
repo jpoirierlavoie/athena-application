@@ -89,7 +89,7 @@
             {% for row in section.rows %}
             {% if row.style == 'note' %}
             <tr>
-              <td colspan="{{ section.columns | length + 1 }}" class="px-3 py-2 text-xs text-gray-500">{{ row.label }}</td>
+              <td colspan="{{ (section.columns | length) + 1 }}" class="px-3 py-2 text-xs text-gray-500">{{ row.label }}</td>
             </tr>
             {% else %}
             <tr class="{% if row.style in ('subtotal', 'total') %}font-semibold border-t border-gray-200{% elif row.style == 'heading' %}font-medium{% endif %}{% if row.style == 'total' %} bg-gray-50{% endif %}">

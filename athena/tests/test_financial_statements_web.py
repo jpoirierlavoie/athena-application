@@ -29,8 +29,8 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import admin_ledger as al  # noqa: F401 — installed by _fake_modules
-    from models import expense, full_reads, invoice, settings, time_entry, trust  # noqa: F401
+    from models import admin_ledger as al
+    from models import expense, full_reads, invoice, settings, time_entry, trust
     from models import financial_statements as fs
     import routes.auth_routes as auth_routes
     import routes.financial_statements as rfs
@@ -52,9 +52,12 @@ def _d(y, m, d):
 
 
 def _fake_modules() -> list:
-    return [m for n, m in sorted(sys.modules.items())
-            if (n.startswith("models.") or n == "dav.sync")
-            and getattr(m, "db", None) is not None]
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.") or n == "dav.sync")
+               and getattr(m, "db", None) is not None]
+    # Every model the page reads runs on the fake, never on the patched client.
+    assert {al, expense, invoice, settings, time_entry, trust} <= set(modules)
+    return modules
 
 
 @pytest.fixture

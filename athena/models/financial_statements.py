@@ -1285,14 +1285,14 @@ def present(st: Statements) -> dict:
     cards, the sections in order (each computed or carrying its
     « indisponible » sentence), the points to verify and the lock floors."""
     builders = {
-        "resultats": lambda d: _present_income(d),
-        "flux": lambda d: _present_cash_flow(d),
+        "resultats": _present_income,
+        "flux": _present_cash_flow,
         "bilan": lambda d: _present_balance(st, d),
-        "avoir": lambda d: _present_rollforward(d),
-        "taxes": lambda d: _present_taxes(d),
-        "redressements": lambda d: _present_adjustments(d),
-        "fideicommis": lambda d: _present_trust(d),
-        "travaux": lambda d: _present_wip(d),
+        "avoir": _present_rollforward,
+        "taxes": _present_taxes,
+        "redressements": _present_adjustments,
+        "fideicommis": _present_trust,
+        "travaux": _present_wip,
     }
     sections = []
     for key, title in SECTION_TITLES.items():
