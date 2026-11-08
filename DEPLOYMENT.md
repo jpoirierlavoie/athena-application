@@ -4537,6 +4537,48 @@ Notes:
      moves a figure until it is fixed in its own register.
   « Écart non expliqué » reads 0,00 $; any other value is a bug of the
   computation, not of the data. A rollback is the code alone.
+- **Past cloud and AI charges into `infonuagique_ia` (2026-11-08).** Lot C
+  of the lawyer's plan of 2026-11-07, to run only once lot A serves. The
+  one-shot `scripts/reclassify_admin_category.py` writes, OUTSIDE the
+  models like `scripts/rectify_expense_ventilation.py` (its docstring says
+  why), the category of the dépenses the lawyer lists, line by line from a
+  CSV kept outside this repository: the category, the stamps (`updated_via`
+  `script`) and one `revisions` entry naming the plan line — never an
+  amount, a split, a date, a link or a counterparty, no account and no
+  reconciliation. A locked entry (cleared, or dated in a reconciled period)
+  is accepted: a category moves no balance, no reconciliation and no tax
+  figure, only the line `results_statement` reports the cost under. From
+  `athena/`, with the environment of « Active gabarits » above (ADC, the
+  variables inline, never `ENV=production`) — even the listing and the dry
+  run read production:
+
+  ```bash
+  python -m scripts.reclassify_admin_category --lister abonnements [--beneficiaire TEXTE]   # read-only: candidates, plan lines
+  python -m scripts.reclassify_admin_category PLAN.csv --rapport RAPPORT.md                  # dry run: verdicts, controls, fingerprint
+  python -m scripts.reclassify_admin_category PLAN.csv --rapport RAPPORT.md --sauvegarde DOSSIER --appliquer EMPREINTE
+  python -m scripts.reclassify_admin_category --restaurer SAUVEGARDE.json --rapport RAPPORT.md [--appliquer EMPREINTE]
+  ```
+
+  The listing writes nothing and creates no file: for each dépense of the
+  category, its lock and whether the script would refuse it, then the plan
+  lines (`ligne,entry_id,date,montant_cents,categorie_actuelle,categorie_cible,motif`)
+  of the entries it would accept — keep the ones to move, fill the target
+  and the motif. A line is refused and reported, never forced, when the
+  base no longer holds what it states, or when its entry is not a dépense,
+  belongs to a reversal pair (seen from either end), is annulée, is linked
+  to an invoice or to trust, or has a nearly full trail; the other lines
+  still apply. `--appliquer` takes the fingerprint the APPROVED dry run
+  printed — it covers the plan file, the project, every write and every
+  refusal — and refuses everything when anything moved since, or when a
+  control cannot be computed or moved; the backup is written, re-read and
+  verified first, then one batch guarded by the time each entry was read.
+  `--restaurer` puts the saved categories back, all or nothing; an entry
+  written since the migration (cleared, edited: a new etag) refuses the
+  whole restoration — move such an entry back with a new plan of this
+  script instead. Run both integrity scripts before and after, and compare
+  their findings by TEXT. Change Impact: none of items 1 to 7 (a script and
+  its tests; the registers are not DAV-exposed). A rollback of lot A
+  restores this lot's data first (above).
 
 ## 16. Troubleshooting
 
