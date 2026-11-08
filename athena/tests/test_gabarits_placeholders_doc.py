@@ -131,6 +131,7 @@ def test_facture_fields_regions_and_conditions_match_the_builder(cited):
                        "date": datetime.datetime(2026, 4, 30),
                        "method": "virement"}],
             balance_cents=100),
+        trust_balance_cents=200,
     )
     produced = {k for k in ctx.values if k.startswith("facture.")}
     documented = {n for n in cited if n.startswith("facture.")}

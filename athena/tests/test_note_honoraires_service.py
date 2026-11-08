@@ -1059,3 +1059,125 @@ def test_a_new_payment_makes_a_new_note_and_none_reuses_it(store):
     assert again.reused is False
     assert again.fingerprint != first.fingerprint
     assert again.counts["rows_paiement"] == 3
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. Le solde en fidéicommis (2026-11-08)
+# ══════════════════════════════════════════════════════════════════════
+# {{facture.solde_fideicommis}} : le solde AU REGISTRE du client dans le
+# dossier de la facture, au moment de la génération — un retrait encore en
+# circulation compris, si bien qu'un paiement d'honoraires tout juste
+# inscrit est déjà déduit.
+
+
+def _print_trust_balance(store, extra: str = "") -> dict:
+    """Le gabarit désigné imprime le solde (et, au besoin, *extra*)."""
+    _db, _bucket, template = store
+    data = _docx_body(
+        _paragraph("Note {{facture.numero}}") + extra
+        + _paragraph("Solde en fidéicommis : {{facture.solde_fideicommis}}"))
+    updated, errors, changed = tpl.update_template(
+        template["id"], {}, io.BytesIO(data), "note.docx", len(data),
+        expected_version=template["version"])
+    assert errors == [] and changed
+    return updated
+
+
+def _dossier(**over) -> dict:
+    doc = {"id": "d1", "file_number": "2026-001", "title": "Tremblay c. Lavoie",
+           "clients": [], "client_ids": ["p1"], "status": "actif",
+           "trust_balance_by_client": {}, "trust_cleared_by_client": {}}
+    doc.update(over)
+    return doc
+
+
+def _note_text(db, bucket, note) -> str:
+    return _stored_text(bucket, db.peek(f"documents/{note.document['id']}")["storage_path"])
+
+
+def test_the_trust_balance_is_the_book_balance_in_circulation_included(store):
+    """Un retrait que la banque n'a pas encore compensé est déjà déduit :
+    c'est le solde AU REGISTRE qui s'imprime (100,00 $), jamais le solde
+    compensé (400,00 $), ni les fonds d'un autre client du dossier."""
+    db, bucket, _template = store
+    _print_trust_balance(store)
+    db.external_write("dossiers/d1", _dossier(
+        client_ids=["p1", "p9"],
+        trust_balance_by_client={"p1": 10000, "p9": 99900},
+        trust_cleared_by_client={"p1": 40000, "p9": 99900}))
+
+    text = _note_text(db, bucket, _generate())
+
+    assert "Solde en fidéicommis : 100,00" in text
+    assert "400,00" not in text and "999,00" not in text
+    assert "{{" not in text
+
+
+def test_the_note_shows_the_accounting_work_done_before_it(store):
+    """Le cheminement de l'avocat : la facture, puis l'imputation des
+    avances (un paiement d'honoraires — le retrait du fidéicommis, la
+    recette d'administration et le paiement de la facture, tels que sa
+    transaction unique les écrit), puis la note. Elle montre la rangée
+    « Fidéicommis », le solde restant de la facture et ce qui reste au
+    registre ; le connecteur ne rend plus l'ancienne note."""
+    import re
+
+    db, bucket, _template = store
+    _print_trust_balance(store, extra=_TOTALS)
+    db.external_write("dossiers/d1", _dossier(
+        trust_balance_by_client={"p1": 80000}, trust_cleared_by_client={"p1": 80000}))
+    before = _generate()
+    text = _note_text(db, bucket, before)
+    assert "Solde en fidéicommis : 800,00" in text
+    assert "— Fidéicommis" not in text                 # nothing imputed yet
+
+    # The fee payment's single transaction, as it lands in the store.
+    db.external_write("admin_transactions/a1",
+                      _receipt("a1", 51739, 20, trust_transaction_id="t1",
+                               status="en_circulation"))
+    db.external_write("invoices/i1", _invoice(
+        status="payée", amount_paid=51739,
+        paid_date=datetime(2026, 9, 20, tzinfo=UTC)))
+    db.external_write("dossiers/d1", _dossier(
+        trust_balance_by_client={"p1": 28261}, trust_cleared_by_client={"p1": 80000}))
+
+    after = _generate()
+
+    assert after.reused is False and after.fingerprint != before.fingerprint
+    text = _note_text(db, bucket, after)
+    assert "20 septembre 2026 — Fidéicommis" in text and "(517,39)" in text
+    assert re.search(r"SOLDE</w:t>.*?<w:t[^>]*>0,00", text)
+    assert "Solde en fidéicommis : 282,61" in text
+
+
+def test_an_imported_invoice_without_client_reports_its_dossiers_only_client(store):
+    """Une facture importée sans client, dans un dossier qui n'en compte
+    qu'un : la règle d'un paiement d'honoraires (D21) — ce client-là."""
+    db, bucket, _template = store
+    _print_trust_balance(store)
+    db.external_write("invoices/i1", _invoice(client_id=""))
+    db.external_write("dossiers/d1", _dossier(trust_balance_by_client={"p1": 7500}))
+
+    text = _note_text(db, bucket, _generate())
+
+    assert "Solde en fidéicommis : 75,00" in text
+
+
+def test_no_client_to_name_refuses_only_a_note_that_prints_the_balance(store, events):
+    """Sans client nommé, dans un dossier qui en compte deux, rien ne dit de
+    qui imprimer le solde : la note qui l'imprime refuse ; le gabarit de
+    toujours s'imprime comme avant (une donnée ancienne ne verrouille rien)."""
+    db, _bucket, _template = store
+    db.external_write("invoices/i1", _invoice(client_id=""))
+    db.external_write("dossiers/d1", _dossier(
+        client_ids=["p1", "p2"], trust_balance_by_client={"p1": 100, "p2": 200}))
+    assert _generate().reused is False
+
+    template = _print_trust_balance(store)
+    refusal = _refused("trust_balance_unavailable")
+
+    assert refusal.message == nh.TRUST_BALANCE_UNAVAILABLE
+    assert len(_documents(db)) == 1     # only the note of the former template
+    assert events[-1] == ("generation_failed", {
+        "reason": "trust_balance_unavailable", "template_id": template["id"],
+        "invoice_id": "i1"})

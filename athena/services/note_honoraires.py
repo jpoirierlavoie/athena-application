@@ -40,9 +40,13 @@ surfaces log identically:
    explain its payment state, ``models.invoice.payments_print_defect``:
    ``payments_mismatch``, ``paid_by_hand``; a template without a payment
    field reads nothing, and keeps the context and fingerprint it always
-   had) —, the values, and their FINGERPRINT (:func:`fill_fingerprint` —
-   the template's id and version plus a SHA-256 of everything the fill
-   prints);
+   had), the client's trust balance when the template prints it
+   (``utils/invoice_docx.prints_trust_balance``: the book balance the
+   dossier just read strictly carries for the client whose funds stand
+   against the invoice, ``models.trust.invoice_trust_client`` — refused,
+   ``trust_balance_unavailable``, when none can be named) —, the values,
+   and their FINGERPRINT (:func:`fill_fingerprint` — the template's id and
+   version plus a SHA-256 of everything the fill prints);
 6. unless *regenerate*: a note already generated from THIS invoice with the
    SAME fingerprint is returned instead of a duplicate (``reused=True``,
    nothing written, no log line — the connector's own ``mcp_write`` says
@@ -107,6 +111,7 @@ from models.invoice import (
     payments_print_defect,
 )
 from models.partie import get_partie
+from models.trust import client_book_balance, invoice_trust_client
 from services.gabarits import (
     FACTURES,
     GenerationRefused,
@@ -122,6 +127,7 @@ from utils.invoice_docx import (
     InvoicePayments,
     build_invoice_context,
     prints_payments,
+    prints_trust_balance,
 )
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import classify_placeholders, fallback_value, manual_value
@@ -182,6 +188,11 @@ PAYMENT_DEFECT_MESSAGES = {
         "manquants."
     ),
 }
+TRUST_BALANCE_UNAVAILABLE = (
+    "Le solde en fidéicommis ne peut pas être établi pour cette facture : "
+    "elle ne nomme pas de client et son dossier n'en compte pas un seul. "
+    "Rien n'a été généré."
+)
 TEMPLATE_INVALID = "Le gabarit est invalide et n'a pas pu être rempli."
 FILL_ERROR = "Erreur lors de la génération. Veuillez réessayer."
 SAVE_FAILED = "Erreur lors de l'enregistrement."
@@ -373,10 +384,23 @@ def generer_note_honoraires(
         payments = InvoicePayments(receipts=standing,
                                    balance_cents=balance_of(invoice))
 
+    # The client's trust balance — only for a template that PRINTS it: the
+    # book balance the dossier read above carries (no second read), for the
+    # client whose funds a fee payment on this invoice draws. With no
+    # dossier the save below refuses anyway (« Factures » has none to live
+    # in).
+    trust_balance = None
+    if dossier is not None and prints_trust_balance(template.get("placeholders")):
+        trust_client = invoice_trust_client(invoice, dossier)
+        if not trust_client:
+            raise _refuse("trust_balance_unavailable", TRUST_BALANCE_UNAVAILABLE,
+                          template_id=template_id, invoice_id=invoice_id)
+        trust_balance = client_book_balance(dossier, trust_client)
+
     ctx = build_invoice_context(
         invoice, items,
         firm=cabinet_dict(), destinataire=client, dossier=dossier, today=day,
-        payments=payments,
+        payments=payments, trust_balance_cents=trust_balance,
     )
     values = assemble_note_values(template, ctx)
     counts = {

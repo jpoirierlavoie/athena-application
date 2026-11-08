@@ -1146,6 +1146,42 @@ def test_d21_la_regle_est_une_seule_fonction_pure(invoice_client, client_ids,
     ) == expected
 
 
+@pytest.mark.parametrize("invoice_client, client_ids, expected", [
+    ("c1", ["c1", "c2"], "c1"),
+    ("c2", ["c1"], "c2"),
+    ("", ["c1", "c2"], None),
+    (None, ["c1", "c2", "c1"], None),
+    ("", ["c1"], "c1"),
+    ("", ["c1", "c1", ""], "c1"),        # one client, however spelled
+    ("  ", ["c1"], "c1"),
+    ("", [], None),
+])
+def test_le_client_du_solde_imprime_est_celui_que_le_paiement_vise(
+    invoice_client, client_ids, expected,
+):
+    """trust.invoice_trust_client (2026-11-08) nomme le client dont la note
+    d'honoraires imprime le solde en fidéicommis : celui dont un paiement
+    d'honoraires sur cette facture peut tirer les fonds — la règle D21, lue
+    à l'endroit."""
+    invoice, dossier = {"client_id": invoice_client}, {"client_ids": client_ids}
+    resolved = trust.invoice_trust_client(invoice, dossier)
+    assert resolved == expected
+    if resolved:
+        assert trust.fee_invoice_client_refusal(invoice, dossier, resolved) is None
+
+
+def test_le_solde_au_registre_est_celui_que_le_dossier_porte():
+    """trust.client_book_balance : le solde AU REGISTRE de la carte-client —
+    un retrait encore en circulation déjà déduit —, jamais le compensé ; un
+    couple qui n'a jamais bougé ne détient rien."""
+    dossier = {"trust_balance_by_client": {"c1": 12500},
+               "trust_cleared_by_client": {"c1": 40000}}
+    assert trust.client_book_balance(dossier, "c1") == 12500
+    assert trust.client_book_balance(dossier, "c2") == 0
+    assert trust.client_book_balance({"trust_balance_by_client": None}, "c1") == 0
+    assert trust.client_book_balance(None, "c1") == 0
+
+
 def test_d23_le_beneficiaire_est_l_avocat_ou_son_cabinet(fake):
     """Régression — D23 (art. 58, « chèque tiré à l'ordre de l'avocat ») :
     le bénéficiaire d'un paiement d'honoraires était un texte libre ; « Jean

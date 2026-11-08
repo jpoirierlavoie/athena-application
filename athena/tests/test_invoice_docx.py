@@ -365,9 +365,11 @@ from utils.invoice_docx import (  # noqa: E402
     PAYMENT_FLAG,
     PAYMENT_REGION,
     PAYMENT_ROW_FIELDS,
+    TRUST_BALANCE_FIELD,
     InvoicePayments,
     _payment_rows,
     prints_payments,
+    prints_trust_balance,
 )
 
 
@@ -394,6 +396,25 @@ def test_without_payments_the_context_keeps_its_former_keys():
     assert set(ctx.rows) == {"ligne_honoraire", "ligne_debours_tx", "ligne_debours_ntx"}
     assert set(ctx.conditions) == {"si_honoraires", "si_debours_tx", "si_debours_ntx"}
     assert "facture.solde_restant" not in ctx.values
+    assert TRUST_BALANCE_FIELD not in ctx.values
+
+
+def test_the_trust_balance_prints_as_a_plain_amount_only_when_given():
+    ctx = _build(_paid_invoice(), [], trust_balance_cents=115000)
+    assert ctx.values["facture.solde_fideicommis"] == f"1{NBSP}150,00{NBSP}$"
+    # A scalar only: no region, no flag.
+    assert set(ctx.rows) == {"ligne_honoraire", "ligne_debours_tx", "ligne_debours_ntx"}
+    assert set(ctx.conditions) == {"si_honoraires", "si_debours_tx", "si_debours_ntx"}
+    empty = _build(_paid_invoice(), [], trust_balance_cents=0)
+    assert empty.values[TRUST_BALANCE_FIELD] == f"0,00{NBSP}$"
+
+
+def test_the_trust_balance_gate_reads_its_exact_name():
+    assert prints_trust_balance(["facture.numero", "facture.solde_fideicommis"])
+    assert not prints_trust_balance(
+        ["facture.avances_fideicommis", "facture.solde", "facture.solde_restant", "p.montant"])
+    assert not prints_trust_balance(None)
+    assert TRUST_BALANCE_FIELD == "facture.solde_fideicommis"
 
 
 def test_payment_rows_name_trust_or_the_method_and_print_a_deduction():

@@ -454,6 +454,7 @@ stored invoice — never recomputed.
 | `{{facture.avances_fideicommis}}` | Retainer applied, **parenthesized** deduction (« (1 150,00) $ ») |
 | `{{facture.solde}}` | Balance due **at issuance** (`amount_due`) — a payment never lowers it |
 | `{{facture.solde_restant}}` | Balance left after the payments recorded when the note is generated — the invoice page's « Solde ». Only in a template that prints the payments ([below](#payments-ligne_paiement)) |
+| `{{facture.solde_fideicommis}}` | The client's trust balance in the invoice's dossier when the note is generated, entries not yet cleared included ([below](#trust-balance-facturesolde_fideicommis)) |
 | `{{facture.nombre_heures}}` | Total billed hours (« 0,50 ») |
 | `{{facture.taux_horaire}}` | Hourly rate (uniform billed rate; else dossier fallback; else blank) |
 
@@ -532,6 +533,22 @@ list the application keeps for a template, and elsewhere they stay as typed.
 - the encaissements recorded do not add up to the invoice's amount paid;
 - the invoice was marked « payée » by hand and a balance is left. Record the
   missing encaissements first.
+
+### Trust balance (`facture.solde_fideicommis`)
+
+The balance held in trust for the invoice's client **in the invoice's
+dossier** (that client's carte-client for the dossier), at the moment the
+note is generated. Entries the bank has not yet cleared count, so a fee
+payment just recorded is already deducted. Record the payment from trust
+first (« Paiement d'honoraires »), then generate the note: its payment row
+shows the amount drawn, and this field shows what is left. Funds the client
+holds in another dossier never count.
+
+- It prints as a plain amount: « 1 150,00 $ ».
+- The client is the one the invoice names. For an imported invoice that
+  names none, it is the dossier's only client, the same rule a fee payment
+  follows. When neither exists, generation is refused.
+- Like the payments, it is read only for a template that prints it.
 
 ---
 

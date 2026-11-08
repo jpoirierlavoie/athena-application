@@ -27,6 +27,11 @@ keys every earlier template was filled with, so its fingerprint
 arrives computed (``models.invoice.balance_of``, its one authority); the
 payment rows are read and formatted, never summed here.
 
+So does the client's trust balance, ``facture.solde_fideicommis``
+(2026-11-08): given only for a template that prints it
+(:func:`prints_trust_balance`), computed by the trust model
+(``models.trust.client_book_balance``), formatted here.
+
 Declared exception to « one source per list »: :data:`PAYMENT_SOURCE_LABELS`
 words ``models.admin_ledger.VALID_METHODS`` for a CLIENT document (the
 register's « Autre » reads « Paiement » there). Its keys are that
@@ -78,6 +83,10 @@ PAYMENT_SOURCE_LABELS = {
     "comptant": "Comptant",
     "autre": "Paiement",
 }
+#: The client's trust balance in the invoice's dossier, at generation —
+#: given, hence printable, only when a template names it
+#: (:func:`prints_trust_balance`).
+TRUST_BALANCE_FIELD = "facture.solde_fideicommis"
 
 
 @dataclass
@@ -107,6 +116,12 @@ def prints_payments(placeholders) -> bool:
     names one of :data:`PAYMENT_FIELDS`. Exact names, as the fill matches
     them (row fields case-sensitively, ``facture.*`` values by key)."""
     return any(name in PAYMENT_FIELDS for name in (placeholders or ()))
+
+
+def prints_trust_balance(placeholders) -> bool:
+    """True when a template prints :data:`TRUST_BALANCE_FIELD` (its exact
+    name in the placeholder inventory)."""
+    return TRUST_BALANCE_FIELD in (placeholders or ())
 
 
 def _as_date(value) -> Optional[date]:
@@ -263,6 +278,7 @@ def build_invoice_context(
     dossier: Optional[dict],
     today: date,
     payments: Optional[InvoicePayments] = None,
+    trust_balance_cents: Optional[int] = None,
 ) -> InvoiceContext:
     """Build the note-d'honoraires context from a stored invoice (§6).
 
@@ -270,8 +286,9 @@ def build_invoice_context(
     billing_address snapshot is used so generation never fails (§6.6). Header
     fields are resolved through the Phase H catalog by canonical name.
     ``payments`` adds the payment region, its flag and
-    ``facture.solde_restant`` (module docstring); ``None`` leaves the
-    context exactly as it was before them.
+    ``facture.solde_restant``; ``trust_balance_cents`` adds
+    ``facture.solde_fideicommis`` (module docstring). Left ``None``, each
+    leaves the context exactly as it was before it.
     """
     dest = destinataire or _partie_from_billing_address(invoice.get("billing_address") or {})
 
@@ -307,4 +324,6 @@ def build_invoice_context(
         values["facture.solde_restant"] = format_cents_fr(payments.balance_cents)
         rows[PAYMENT_REGION] = _payment_rows(invoice, payments.receipts)
         conditions[PAYMENT_FLAG] = bool(rows[PAYMENT_REGION])
+    if trust_balance_cents is not None:
+        values[TRUST_BALANCE_FIELD] = format_cents_fr(trust_balance_cents)
     return InvoiceContext(values=values, rows=rows, conditions=conditions)

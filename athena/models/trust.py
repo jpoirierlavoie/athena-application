@@ -370,6 +370,39 @@ def fee_invoice_client_refusal(
     return "facture_sans_client" if len(clients) > 1 else None
 
 
+def invoice_trust_client(invoice: dict, dossier: Optional[dict]) -> Optional[str]:
+    """The client whose trust funds stand against *invoice* — by the rule of
+    :func:`fee_invoice_client_refusal`, the funds a fee payment may draw:
+    the client the invoice names; for an invoice naming none (only an import
+    can lack one), the dossier's ONLY client; otherwise ``None``, since
+    nothing says whose funds they would be. PURE.
+
+    Serves the note d'honoraires' ``{{facture.solde_fideicommis}}``
+    (``services/note_honoraires``, 2026-11-08): the balance it prints is
+    the one the fee payments on this invoice draw down.
+    """
+    invoice_client = str((invoice or {}).get("client_id") or "").strip()
+    if invoice_client:
+        return invoice_client
+    clients = {str(c).strip() for c in ((dossier or {}).get("client_ids") or [])
+               if str(c or "").strip()}
+    return next(iter(clients)) if len(clients) == 1 else None
+
+
+def client_book_balance(dossier: Optional[dict], client_id: str) -> int:
+    """What the register holds in trust for *client_id* in *dossier*: the
+    carte-client's BOOK balance (« solde au registre ») — entries still in
+    circulation included, so a withdrawal just recorded is already deducted.
+
+    Every trust write keeps it on the dossier (``trust_balance_by_client``)
+    in the same commit as its entry, and ``scripts/verify_trust_integrity``
+    re-proves it; a couple that never moved holds nothing. PURE: the caller
+    reads the dossier, strictly when the figure is printed.
+    """
+    balances = (dossier or {}).get("trust_balance_by_client") or {}
+    return int(balances.get(client_id, 0) or 0)
+
+
 class _TxnAbort(Exception):
     """Raised inside a trust transaction to abort with a machine-stable reason
     (mirrors invoice._SourceConflictError). ``value`` carries an optional int
