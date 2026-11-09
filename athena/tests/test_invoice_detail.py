@@ -336,6 +336,36 @@ def test_a_ledger_backed_paid_invoice_offers_no_reopen():
     assert "invoice_update_status" not in html
 
 
+# ── Mise en page à 375 px (Règle 9) ─────────────────────────────────────
+
+
+def test_the_action_row_wraps_on_a_phone():
+    """À 375 px, un brouillon montre jusqu'à quatre boutons à côté du lien de
+    retour : en une seule rangée, la page s'élargissait à 475 px (Chrome
+    sans tête, émulation mobile, 2026-11-08) et défilait de côté. La rangée
+    du lien ET le groupe des boutons passent donc à la ligne. Et la rangée
+    ne prend qu'un écart VERTICAL : un écart horizontal (`gap-3`, essayé)
+    faisait passer à la ligne, même à 1024 px, la rangée d'un brouillon qui
+    tenait de justesse. `flex-wrap` et `gap-y-1` sont compilées :
+    tests/test_compiled_classes.py le vérifie pour tout gabarit."""
+    import re
+
+    html = _render(invoice={"status": "brouillon"}, can_edit_draft=True,
+                   transitions=("envoyée", "annulée"))
+    debut = html.index("Modifier le brouillon")
+    # Les deux dernières ouvertures de <div> avant le premier bouton : la
+    # rangée du lien de retour, puis le groupe des boutons.
+    rangee, groupe = re.findall(r'<div class="([^"]*)"', html[:debut])[-2:]
+    assert "justify-between" in rangee.split(), rangee
+    assert "flex-wrap" in rangee.split(), rangee
+    assert "flex-wrap" in groupe.split(), groupe
+    ecarts = [c for c in rangee.split() if c.startswith("gap-")]
+    assert ecarts and all(c.startswith("gap-y-") for c in ecarts), rangee
+    for bouton in ("Note d'honoraires (Word)", "Marquer comme envoyée",
+                   "Annuler"):
+        assert html.index(bouton) > debut, bouton
+
+
 # ── Journal des honoraires : la lecture des postes est payée seulement là
 #    où elle sert (audit 2026-08-26) ─────────────────────────────────────
 

@@ -16,13 +16,21 @@
 <div class="max-w-3xl mx-auto px-4 py-6">
 
   {# ── Back + actions ────────────────────────────────────────── #}
-  <div class="flex items-center justify-between mb-6">
+  {# La rangée ET son groupe de boutons passent à la ligne (Règle 9) : à
+     375 px, un brouillon montre jusqu'à quatre boutons à côté du lien de
+     retour, et la rangée d'une seule ligne élargissait la page à 475 px —
+     tout le contenu défilait de côté. Quand la rangée tient sur une ligne,
+     rien ne change ; sinon le groupe passe sous le lien, et ses boutons à
+     la ligne entre eux, au lieu de s'écraser. Un écart VERTICAL seulement
+     (gap-y-1) : un écart horizontal ferait passer à la ligne, même sur un
+     écran large, la rangée d'un brouillon qui tient de justesse. #}
+  <div class="flex flex-wrap items-center justify-between gap-y-1 mb-6">
     <a href="{{ return_to or url_for('invoices.invoice_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       {{ ms('chevron_left', 16) }}
       {{ 'Retour' if return_to else 'Factures' }}
     </a>
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       {# Un brouillon se corrige sur sa propre page (lot 3a) : notes,
          conditions, échéance, adresse — jamais un montant ni une ligne. #}
       {% if can_edit_draft %}

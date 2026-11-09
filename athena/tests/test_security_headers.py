@@ -647,8 +647,6 @@ def _events(records):
 
 
 def test_the_origin_secret_guard_says_when_it_is_disabled(caplog):
-    import logging
-
     app, sec = _guard_app()
     with caplog.at_level(logging.WARNING, logger="pallas.security"):
         with app.test_request_context("/dossiers"):
@@ -660,8 +658,6 @@ def test_the_appcheck_guard_fires_on_a_NON_htmx_request(caplog):
     """The whole point of hoisting the config test above the HX-Request gate:
     a freshly deployed instance nobody has exercised must still say the
     control is off."""
-    import logging
-
     app, sec = _guard_app()
     with caplog.at_level(logging.WARNING, logger="pallas.security"):
         with app.test_request_context("/dossiers"):          # no HX-Request
@@ -672,8 +668,6 @@ def test_the_appcheck_guard_fires_on_a_NON_htmx_request(caplog):
 def test_the_appcheck_guard_fires_even_on_an_exempt_path(caplog):
     """Correct, and worth pinning: this is a fact about the DEPLOYMENT, not
     about the request."""
-    import logging
-
     app, sec = _guard_app()
     with caplog.at_level(logging.WARNING, logger="pallas.security"):
         with app.test_request_context("/auth/login"):
@@ -683,8 +677,6 @@ def test_the_appcheck_guard_fires_even_on_an_exempt_path(caplog):
 
 def test_both_guards_warn_only_once_per_process(caplog):
     """They describe a deployment, so a hot path must not flood the log."""
-    import logging
-
     app, sec = _guard_app()
     with caplog.at_level(logging.WARNING, logger="pallas.security"):
         with app.test_request_context("/dossiers"):
@@ -697,8 +689,6 @@ def test_both_guards_warn_only_once_per_process(caplog):
 
 
 def test_neither_guard_speaks_when_the_control_is_configured(caplog):
-    import logging
-
     app, sec = _guard_app(
         CF_ORIGIN_SECRET="s" * 43, RECAPTCHA_ENTERPRISE_SITE_KEY="k" * 40
     )
@@ -711,8 +701,6 @@ def test_neither_guard_speaks_when_the_control_is_configured(caplog):
 def test_neither_guard_speaks_outside_production(caplog):
     """Unset is the normal local-dev state; warning there would be noise that
     trains the reader to ignore the one that matters."""
-    import logging
-
     app, sec = _guard_app()
     app.config["ENV"] = "development"
     with caplog.at_level(logging.WARNING, logger="pallas.security"):
@@ -765,8 +753,6 @@ def test_both_guards_carry_EXACTLY_event_and_reason(caplog):
     DÉPLOIEMENT, jamais la requête : elles n'ont aucune raison de porter
     autre chose que leur motif.
     """
-    import logging
-
     app, sec = _guard_app()
     with caplog.at_level(logging.WARNING, logger="pallas.security"):
         with app.test_request_context(
