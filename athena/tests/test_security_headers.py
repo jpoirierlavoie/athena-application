@@ -1,8 +1,11 @@
 """Unit tests for security.py response headers — CSP and Early Hints."""
 
+import logging
 import os
 import re
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -178,7 +181,7 @@ def test_link_header_on_full_page_html():
     app = _make_app()
     resp = app.test_client().get("/")
     link = resp.headers.get("Link", "")
-    assert "</static/vendor/app.a02cab05.css>; rel=preload; as=style" in link
+    assert "</static/vendor/app.ef79792d.css>; rel=preload; as=style" in link
     # The font preload MUST keep `crossorigin` + its type — losing either
     # makes the browser fetch the woff2 twice (fonts are CORS-mode fetches).
     assert (
@@ -306,6 +309,120 @@ def test_template_sub_routes_stay_at_1mb():
 
 def test_other_routes_still_capped_at_1mb():
     assert _post_size("/api", _2MB) == 413
+
+
+# ── A refused body SAYS so: one `request_too_large`, ids only ──────────────
+# The event sat in SecurityEvent and OBSERVABILITY.md from the registry's
+# first commit (2026-04-25) to 2026-11-08 with nothing emitting it: all
+# three caps answered 413 in silence, so a probe left no trace and the
+# metric built on the name (security_request_too_large, DEPLOYMENT.md §6.10)
+# could only read zero. Every case below fails on that code — no line at
+# all. The field set is a contract for the reasons the fail-open guards'
+# is (test_both_guards_carry_EXACTLY_event_and_reason): a metric's labels,
+# and privacy — RedactionFilter scrubs by EXACT key name, so a field that
+# carried the path, the host or a header would go out as the client wrote it.
+
+_TOO_LARGE_FIELDS = {"event", "kind", "limit", "content_length", "endpoint"}
+
+
+def _size_app() -> Flask:
+    """The guard's app, plus two routed POSTs: a refusal names the endpoint
+    Flask matched, never the path that reached it.
+
+    CSRF is off HERE ONLY: `csrf.init_app` registers its hook first, so on a
+    routed, non-exempt POST a token-less body stops at the CSRF check (400,
+    `csrf_failure`) before the size guard runs — the order the real chain
+    keeps (tests/test_appspot_block.py pins it). Off, the guard's own line is
+    what these tests measure."""
+    app = _make_app(WTF_CSRF_ENABLED=False)
+
+    @app.route("/factures/<invoice_id>/envoyer", methods=["POST"])
+    def envoyer_facture(invoice_id):
+        return "ok"
+
+    @app.route("/gabarits/<template_id>", methods=["POST"])
+    def remplacer_gabarit(template_id):
+        return "ok"
+
+    return app
+
+
+def _too_large_events(records) -> list:
+    return [
+        dict(r.json_fields)
+        for r in records
+        if r.name == "pallas.security"
+        and getattr(r, "json_fields", {}).get("event") == "request_too_large"
+    ]
+
+
+@pytest.mark.parametrize("method, path, size, kind, limit, endpoint", [
+    # DavX5's cap, on /dav/ and /.well-known/ alike (unrouted here: "").
+    ("PUT", "/dav/addressbook/contact.vcf", security._DAV_MAX_BODY + 1,
+     "dav", security._DAV_MAX_BODY, ""),
+    ("PROPFIND", "/.well-known/carddav", security._DAV_MAX_BODY + 1,
+     "dav", security._DAV_MAX_BODY, ""),
+    # A gabarit's .docx, on its routed replacement endpoint.
+    ("POST", "/gabarits/tpl-123", security._TEMPLATE_UPLOAD_MAX + 1,
+     "gabarit", security._TEMPLATE_UPLOAD_MAX, "remplacer_gabarit"),
+    # Every other route: 1 MB — routed, then unrouted.
+    ("POST", "/factures/inv-123/envoyer", security._DEFAULT_MAX_BODY + 1,
+     "defaut", security._DEFAULT_MAX_BODY, "envoyer_facture"),
+    ("POST", "/nulle-part", security._DEFAULT_MAX_BODY + 1,
+     "defaut", security._DEFAULT_MAX_BODY, ""),
+])
+def test_each_cap_refuses_with_ONE_request_too_large_line(
+        caplog, method, path, size, kind, limit, endpoint):
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        resp = _size_app().test_client().open(
+            path, method=method, data=b"x" * size)
+    assert resp.status_code == 413                      # unchanged
+    events = _too_large_events(caplog.records)
+    assert len(events) == 1, events
+    assert events[0] == {
+        "event": "request_too_large", "kind": kind, "limit": limit,
+        "content_length": size, "endpoint": endpoint,
+    }
+    (record,) = [r for r in caplog.records if r.name == "pallas.security"]
+    assert record.levelno == logging.WARNING
+
+
+@pytest.mark.parametrize("method, path, size", [
+    ("PUT", "/dav/addressbook/contact.vcf", security._DAV_MAX_BODY),
+    ("POST", "/gabarits/tpl-123", security._TEMPLATE_UPLOAD_MAX),
+    ("POST", "/factures/inv-123/envoyer", security._DEFAULT_MAX_BODY),
+])
+def test_a_body_AT_its_cap_passes_and_says_nothing(caplog, method, path, size):
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        resp = _size_app().test_client().open(
+            path, method=method, data=b"x" * size)
+    assert resp.status_code != 413
+    assert _too_large_events(caplog.records) == []
+
+
+def test_the_refusal_line_carries_no_host_path_query_header_or_body(caplog):
+    corps = b"Tremblay " * (security._DEFAULT_MAX_BODY // 9 + 1)
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        resp = _size_app().test_client().post(
+            "/factures/inv-tremblay-42/envoyer"
+            "?client=Tremblay&courriel=jean@example.com",
+            data=corps,
+            headers={
+                "Host": "athena.example.ca",
+                "X-Forwarded-For": "203.0.113.9",
+                "User-Agent": "sonde/1.0",
+                "Cookie": "session=temoin-secret",
+            },
+        )
+    assert resp.status_code == 413
+    events = _too_large_events(caplog.records)
+    assert len(events) == 1 and set(events[0]) == _TOO_LARGE_FIELDS, events
+    assert events[0]["endpoint"] == "envoyer_facture"
+    rendu = repr(events) + " ".join(r.getMessage() for r in caplog.records)
+    for fuite in ("Tremblay", "tremblay", "jean@", "203.0.113.9",
+                  "athena.example.ca", "sonde/1.0", "temoin-secret",
+                  "/factures", "inv-"):
+        assert fuite not in rendu, fuite
 
 
 # ── Origin secret vs App Engine-internal traffic (portail L1 §8.3) ─────────

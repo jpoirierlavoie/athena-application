@@ -17,12 +17,12 @@
 
 {# ── Rebond d'erreur (archive zip…) — se dissipe à la navigation. #}
 {% if erreur %}
-<div class="text-red-600 text-sm mb-4">{{ erreur }}</div>
+<div class="text-red-600 text-sm mb-4 wrap-anywhere">{{ erreur }}</div>
 {% endif %}
 {# ── Son pendant affirmatif : une suppression destructive dit ce qui a
    disparu, sinon elle ne laisse aucune trace à l'écran. #}
 {% if message %}
-<div class="text-gray-600 text-sm mb-4">{{ message }}</div>
+<div class="text-gray-600 text-sm mb-4 wrap-anywhere">{{ message }}</div>
 {% endif %}
 
 {# ── Breadcrumb ───────────────────────────────────────────── #}

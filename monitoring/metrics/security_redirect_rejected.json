@@ -1,0 +1,10 @@
+{
+  "name": "security_redirect_rejected",
+  "description": "Athena : redirection ou lien de retour refusé par security.safe_internal_redirect (événement redirect_rejected).",
+  "filter": "logName=\"projects/athena-pallas/logs/pallas-athena\" AND jsonPayload.event=\"redirect_rejected\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1"
+  }
+}

@@ -157,7 +157,7 @@ nothing — to stop the connector, revoke its tokens (§11).
 | `DAV_PASSWORD_HASH` → secret `dav-password-hash` | ○ (needed for DAV) | `""` | **bcrypt** hash of the DAV password |
 | `RECAPTCHA_ENTERPRISE_SITE_KEY` | ○ (recommended) | `""` | App Check; **fail-open + loud warning** if unset in prod |
 | `APPCHECK_DEBUG_TOKEN` | ○ | `""` | Local dev only |
-| `CF_ORIGIN_SECRET` → secret `cf-origin-secret` | ○ | `""` | Edge origin check; **fail-open and completely SILENT** if unset — no log, no metric. §4.4 and « Paramètres → Configuration » are the only things that will tell you |
+| `CF_ORIGIN_SECRET` → secret `cf-origin-secret` | ○ | `""` | Edge origin check; **fail-open** if unset or unreadable — it then logs `origin_secret_disabled` once per process, which fires the alert « Sécurité — une protection est désactivée » (§6.10); §4.4 and « Paramètres → Configuration » report it too |
 | `REQUIRE_MFA` | ○ | `true` | Enforce Phone MFA. Read by « Paramètres → Sécurité » to decide whether the last enrolled factor may be removed |
 | `SESSION_LIFETIME_HOURS` | ○ | `12` | Server-side session lifetime |
 | `RATE_LIMIT_LOGIN` | ○ | `5 per minute` | Login rate limit |
@@ -245,7 +245,7 @@ and pinned against it by a test.
 | `portail-secret-key` | `portail` | you mint it | entre 32 et 256 chars | le service « portail » NE DÉMARRE PAS |
 | `firebase-api-key` | optional | a console hands it to you | entre 30 et 60 chars | la page de connexion ne peut pas initialiser Firebase |
 | `dav-password-hash` | optional | computed from a password you choose | exactement 60 chars | l'authentification DAV ne peut pas réussir — DavX5 cesse de synchroniser SANS message d'erreur |
-| `cf-origin-secret` | optional | you mint it | entre 32 et 128 chars | le contrôle d'origine est DÉSACTIVÉ en silence (l'accès direct à App Engine n'est plus bloqué) |
+| `cf-origin-secret` | optional | you mint it | entre 32 et 128 chars | absent, vide ou illisible, le secret DÉSACTIVE le contrôle d'origine — l'accès direct à App Engine n'est plus bloqué, et origin_secret_disabled le signale par l'alerte « Sécurité — une protection est désactivée » ; présent mais différent de la Transform Rule, il fait refuser toute requête venue de Cloudflare (403) |
 | `graph-client-secret` | optional | a console hands it to you | entre 20 et 256 chars | le courriel sortant est désactivé |
 
 Created in §6.4. `portail-secret-key` is **required for the `portail` service
@@ -273,7 +273,7 @@ until 2026-09-12 and the checker already knew of fifteen.
 
 | Value | Where the checker finds it |
 |---|---|
-| GCP project id | `athena/app.yaml`, `athena/portail.yaml` |
+| GCP project id | `athena/app.yaml`, `athena/portail.yaml`, `monitoring/metrics/security_redirect_rejected.json`, `monitoring/metrics/security_control_disabled.json`, `monitoring/metrics/security_appspot_blocked.json`, `monitoring/metrics/security_request_too_large.json`, `monitoring/policies/security_appspot_blocked.json` |
 | Storage bucket | `athena/app.yaml` |
 | Firebase app id | `athena/app.yaml`, `athena/portail.yaml` |
 | Authorized user email | `athena/app.yaml` |
@@ -415,7 +415,11 @@ the check.
     The `portail` service arms ITS check only once `portail-svc` may read
     the secret (the commented grant in §6.4) — grant it after the tracer
     shows the rule firing on the portal host as well
-14. Optional: DavX5 (§10), MCP (§11), Android TWA (§12)
+14. **Security alerts** (§6.10) — from the repo's `monitoring/` files: the
+    counters first, then, once their descriptors exist, the policies with
+    your notification channel. Earlier, `security_control_disabled` fires on
+    every fresh instance
+15. Optional: DavX5 (§10), MCP (§11), Android TWA (§12)
 
 ---
 
@@ -439,16 +443,18 @@ gcloud services enable \
   storage.googleapis.com identitytoolkit.googleapis.com \
   recaptchaenterprise.googleapis.com logging.googleapis.com \
   cloudtrace.googleapis.com telemetry.googleapis.com \
-  cloudtasks.googleapis.com cloudscheduler.googleapis.com \
+  monitoring.googleapis.com cloudtasks.googleapis.com \
+  cloudscheduler.googleapis.com \
   --project=$PROJECT
 ```
 
-**Eighteen, not twelve.** This list said twelve until 2026-09-12 and
-omitted six, of which `cloudscheduler` breaks an adopter's very first CI
+**This list said twelve until 2026-09-12 and omitted six**, of which
+`cloudscheduler` breaks an adopter's very first CI
 build — `cloudbuild.yaml` deploys `cron.yaml` unconditionally, as its
 **fourth** step, so the failure lands after `default`, `portail` and
-`dispatch` have already gone out. The block above and the table below are
-both GENERATED from
+`dispatch` have already gone out. `monitoring.googleapis.com` joined it on
+2026-11-08 with the security alerts of §6.10. The block above and the table
+below are both GENERATED from
 [`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
 and pinned against it by a test, so an API added to the code announces
 itself here or the suite goes red.
@@ -471,6 +477,7 @@ itself here or the suite goes red.
 | `logging.googleapis.com` | Le journal structuré, par `CloudLoggingHandler`. Sans elle, il ne reste aucune trace agrégée de ce que la production a fait. | utils/logging_setup.py |
 | `cloudtrace.googleapis.com` | Doit rester activée À CÔTÉ de `telemetry` : la note de migration de Google est explicite — désactiver Cloud Trace fait JETER les traces envoyées à l'API Telemetry, en silence. C'est aussi elle qui sert la LECTURE des traces. | utils/tracing_setup.py, la console |
 | `telemetry.googleapis.com` | La destination OTLP des spans depuis le 2026-07-30. | utils/tracing_setup.py |
+| `monitoring.googleapis.com` | Les politiques d'alerte de sécurité de §6.10 et le canal qui écrit au juriste. Sans elle aucune alerte ne se crée, et la sonde de ces politiques lit « inconnu ». | DEPLOYMENT.md §6.10, scripts/provision.py |
 | `cloudtasks.googleapis.com` | La file « portail » par laquelle le service public signale. | client/services/taches.py |
 | `cloudscheduler.googleapis.com` | EXIGÉE par `gcloud app deploy cron.yaml`. Son absence fait échouer cette étape sur `SERVICE_DISABLED`, et `cloudbuild.yaml` la place en QUATRIÈME : l'échec arrive donc APRÈS que `default`, `portail` et `dispatch` sont déployés. La première construction d'un adoptant se termine rouge sur un déploiement à moitié fait. | cloudbuild.yaml, cron.yaml |
 
@@ -630,7 +637,9 @@ done
 
 **Then write the first version of each.** These are the same commands the
 Configuration page renders for a rotation; on a rotation you run only these,
-never the `create` above.
+never the `create` above — and for `cf-origin-secret`, as the first of the
+three steps of its rotation note (below the IAM grants): the same value in
+the Transform Rule, then both services redeployed.
 
 #### `flask-secret-key` — Clé de signature des sessions Flask
 
@@ -814,7 +823,7 @@ fi
 
 #### `cf-origin-secret` — Secret d'origine Cloudflare
 
-If this value is wrong or absent: le contrôle d'origine est DÉSACTIVÉ en silence (l'accès direct à App Engine n'est plus bloqué).
+If this value is wrong or absent: absent, vide ou illisible, le secret DÉSACTIVE le contrôle d'origine — l'accès direct à App Engine n'est plus bloqué, et origin_secret_disabled le signale par l'alerte « Sécurité — une protection est désactivée » ; présent mais différent de la Transform Rule, il fait refuser toute requête venue de Cloudflare (403).
 
 ```bash
 # 1. Résoudre l'interpréteur en l'ESSAYANT, jamais en le cherchant. Sur Windows, `python3` est un raccourci du Microsoft Store : il EXISTE sur le PATH et sort en code 49 sans rien produire, si bien qu'un `command -v` le choisirait et que la valeur engendrée serait vide.
@@ -952,10 +961,19 @@ done
 # New instances arm; running ones keep the value they read at startup.
 # (Granted on the original deployment 2026-09-30, after the tracer proof.)
 # Both services read the secret ONCE per gunicorn worker (two per
-# instance), so a ROTATION needs `default` AND `portail` redeployed: a
-# worker still holding the old value answers 403 to everything the edge now
-# signs with the new one — and a worker respawned in the meantime re-reads
-# `latest`, so one instance may answer 403 only intermittently.
+# instance), when the worker starts, so a ROTATION is three steps chained
+# without a pause: a new version of the secret (the recipe above), the SAME
+# value in the Cloudflare Transform Rule that injects `X-Origin-Auth`
+# (§7 step 4), then `default` AND `portail` redeployed — by hand, from a
+# clean checkout of the commit the services run (`origin/main`, once its
+# last build is green): `cd athena && gcloud app deploy app.yaml
+# portail.yaml --project=$PROJECT`. A push to `main` runs the test suite
+# first, minutes more. Two 403 windows open, on requests through the edge
+# only (crons, tasks and `/_ah/` pass): from the new secret version until
+# the rule, a worker that STARTS reads the new value and refuses the old one
+# the edge still sends; from the rule until a service's redeploy, its
+# workers started before the new secret version refuse the new value.
+# Expect 403s, some intermittent, for those minutes.
 #   gcloud secrets add-iam-policy-binding cf-origin-secret \
 #     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" \
 #     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
@@ -1271,6 +1289,296 @@ resource below by its id — `sa-portail`, `firestore-portail`,
     submit again — the client still gets the confirmation — then `resume` it
     and watch the lot reach Réception.
 
+### 6.10 Alertes de sécurité (Cloud Monitoring)
+
+Security events of [`athena/OBSERVABILITY.md`](athena/OBSERVABILITY.md)
+(`log_security_event`) feed **log-based counter metrics**, and every counter
+an **alert policy** that emails you, except where the table below says why
+not. They are the only signal of an
+edge control that has switched itself off, or of someone probing the edge:
+none of it shows on any page — which is how `cf-origin-secret` came to be
+missing for months with nothing signalling it. Create them **once, after the
+edge is armed** (§5 step 14): while `cf-origin-secret` or the App Check key
+is unset, `security_control_disabled` fires on every fresh instance, which is
+the normal state *during* provisioning.
+
+**The files are the reference.** Each counter and each policy is one JSON
+file under [`monitoring/`](monitoring/), at the repo root:
+`monitoring/metrics/<counter>.json`, and `monitoring/policies/<counter>.json`
+for the policy that watches it. Every command below reads them — run it from
+the repo root. They were read back from the original deployment and found
+equal to it when they were written (November 2026), and they stay equal only
+if every change goes through them: the policies' French documentation, the
+text of the email, lives only there. To change a counter or a policy, change
+its file, then update the live resource FROM it (step 5); never re-create
+it, since `create` does not deduplicate. `scripts.provision` compares each
+counter's filter with its file; for a policy it checks only that ONE watches
+the counter, enabled, with a channel — nothing compares a policy's condition
+or text with its file.
+
+⚠ **Run these blocks in bash** (Git Bash on Windows, Cloud Shell), like
+every block of this document — never in PowerShell. The guards below
+(`${CHANNEL:?…}`) are bash: PowerShell reads `"${CHANNEL:?…}"` as a variable
+that does not exist and passes an EMPTY value without an error, even with
+`$CHANNEL` set — and `policies create` then makes a policy that emails no
+one.
+
+`SECURITY_METRICS` in
+[`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
+names them, and `athena/tests/test_monitoring_definitions.py` ties each file
+to the code: the application's log name, the project, events that are
+declared AND emitted, a policy that fires on one event. The table and the
+commands below are GENERATED from `SECURITY_METRICS` and pinned by a test.
+`python -m scripts.provision --project=$PROJECT` reports each one by its id
+(the table's last column) and writes nothing.
+
+⚠ **The files name the original deployment's project** — in each counter's
+filter (`logName="projects/…/logs/pallas-athena"`) and in the text of the
+appspot policy. An adopter replaces it first (§4.3 lists the files;
+`python -m scripts.check_config` names the value): a counter created with
+another project's `logName` counts nothing, silently.
+
+| Counter | Counts `jsonPayload.event` | Alert policy | Id |
+|---|---|---|---|
+| `security_redirect_rejected` | `redirect_rejected` | « Sécurité — redirection refusée » | `metrique-redirection-refusee`, `alerte-redirection-refusee` |
+| `security_control_disabled` | `appcheck_disabled` OR `origin_secret_disabled` | « Sécurité — une protection est désactivée » | `metrique-controle-desactive`, `alerte-controle-desactive` |
+| `security_appspot_blocked` | `appspot_blocked` | « Sécurité — accès direct à appspot.com » | `metrique-appspot-bloque`, `alerte-appspot-bloque` |
+| `security_request_too_large` | `request_too_large` | none yet — son volume est inconnu : un robot peut poster de gros corps, une ligne par tentative. Mesurer d'abord, puis choisir un seuil | `metrique-requete-trop-volumineuse` |
+
+Each counter filters the application's log, `pallas-athena`, which **both
+services share**: it counts the portal's lines too, and
+`resource.labels.module_id` (`default`, `portail`) tells them apart. It is
+project-level (no `--bucket-name`), so §6.8's regional log bucket changes
+nothing, and it counts only the lines written after its creation.
+
+**Why `request_too_large` has no alert yet.** Its volume is unknown: the
+event is new (2026-11-08), it logs ONE line per refused request with no cap,
+and anyone on the internet can trigger it by posting a large body, so an
+alert on « more than zero » could email you for every bot. The counter is
+there to measure it: after a week, read it in Metrics Explorer
+(`logging.googleapis.com/user/security_request_too_large`) or with
+`gcloud logging read 'jsonPayload.event="request_too_large"' --project=$PROJECT --freshness=7d`,
+then choose a threshold — or none — in a new policy file.
+
+Every policy is « **count > 0 over 5 minutes** »: the counts summed over
+300-second windows (`ALIGN_SUM`), then across every series (`REDUCE_SUM` —
+both services, every version), compared `COMPARISON_GT 0`. It emails your
+existing notification channel, closes itself after one day without a new
+line, and its French documentation — in the email — says what a firing
+means and what to do; « Reading an alert », below, says more.
+
+**1. The counters — one-time, from the repo root.** Re-running a `create`
+answers `ALREADY_EXISTS` and changes nothing.
+
+```bash
+gcloud logging metrics create security_redirect_rejected --config-from-file=monitoring/metrics/security_redirect_rejected.json --project=$PROJECT
+gcloud logging metrics create security_control_disabled --config-from-file=monitoring/metrics/security_control_disabled.json --project=$PROJECT
+gcloud logging metrics create security_appspot_blocked --config-from-file=monitoring/metrics/security_appspot_blocked.json --project=$PROJECT
+gcloud logging metrics create security_request_too_large --config-from-file=monitoring/metrics/security_request_too_large.json --project=$PROJECT
+```
+
+Then **wait a few minutes**: a policy is refused on a counter whose metric
+descriptor does not exist yet.
+
+**2. Your notification channel — read-only, any time.** The policies email
+the channel you already have (console: Monitoring → Alerting → Edit
+notification channels; no channel yet? add an Email channel on that page
+first). List its id with the command below — the channels group exists only
+under `beta` and `alpha` in the Cloud SDK — or read it off an existing
+security policy: the third column of step 4's `policies list`. `CHANNEL`
+lives in this terminal only: set it again in a new one, before step 3 or 5.
+
+```bash
+gcloud beta monitoring channels list --project=$PROJECT --format="value(name,type,displayName)"
+CHANNEL=projects/$PROJECT/notificationChannels/YOUR_CHANNEL_ID
+```
+
+**3. The policies — one-time, from the repo root**, once step 1's
+descriptors exist. The channel is passed here, never written in the file (the
+repository is public), and guarded: `${CHANNEL:?…}` makes the shell refuse
+the command when `CHANNEL` is unset or empty, because gcloud would take an
+empty `--notification-channels=` as « no channel », without an error, and
+create a policy that emails no one. ⚠ **`policies create` does not
+deduplicate**: running it twice makes two policies and two emails per firing,
+which `scripts.provision` reports as drift — list first (step 4) before you
+re-run anything.
+
+```bash
+gcloud monitoring policies create --policy-from-file=monitoring/policies/security_redirect_rejected.json --notification-channels="${CHANNEL:?step 2 sets CHANNEL}" --project=$PROJECT
+gcloud monitoring policies create --policy-from-file=monitoring/policies/security_control_disabled.json --notification-channels="${CHANNEL:?step 2 sets CHANNEL}" --project=$PROJECT
+gcloud monitoring policies create --policy-from-file=monitoring/policies/security_appspot_blocked.json --notification-channels="${CHANNEL:?step 2 sets CHANNEL}" --project=$PROJECT
+```
+
+**4. Verify — read-only, any time.** These are the commands
+`scripts.provision` runs: each counter must exist and print, after its name,
+its file's filter with YOUR project in its `logName` — a counter that names
+another project's log counts nothing — and no third column: `True` there
+means the counter is DISABLED and counts nothing (step 5 says how to enable
+it). Each policy must come back ONCE, enabled (`True`), with your channel.
+
+```bash
+gcloud logging metrics describe security_redirect_rejected --project=$PROJECT --format="value(name,filter,disabled)"
+gcloud logging metrics describe security_control_disabled --project=$PROJECT --format="value(name,filter,disabled)"
+gcloud logging metrics describe security_appspot_blocked --project=$PROJECT --format="value(name,filter,disabled)"
+gcloud logging metrics describe security_request_too_large --project=$PROJECT --format="value(name,filter,disabled)"
+gcloud monitoring policies list --project=$PROJECT --filter="conditions.conditionThreshold.filter~security_redirect_rejected" --format="value(name,enabled,notificationChannels)"
+gcloud monitoring policies list --project=$PROJECT --filter="conditions.conditionThreshold.filter~security_control_disabled" --format="value(name,enabled,notificationChannels)"
+gcloud monitoring policies list --project=$PROJECT --filter="conditions.conditionThreshold.filter~security_appspot_blocked" --format="value(name,enabled,notificationChannels)"
+```
+
+The policies restrict `resource.type="gae_app"`, the monitored resource
+`CloudLoggingHandler` detects on App Engine. Check it once: it must print
+`gae_app`. It looks back thirty days, because the default single day prints
+nothing on a day without a line — which would read as a wrong type.
+
+```bash
+gcloud logging read "logName=\"projects/$PROJECT/logs/pallas-athena\"" --project=$PROJECT --freshness=30d --limit=1 --format="value(resource.type)"
+```
+
+To see one alert end to end without waiting for an attack, open
+`https://<your-host>/audiences/new?return_to=https://example.com` in your
+signed-in browser: the hearing form opens normally and writes nothing, the
+refused `return_to` logs one `redirect_rejected`, and the email of
+« Sécurité — redirection refusée » arrives within about ten minutes (the
+counter's own delay plus the 5-minute window). The policy then closes by
+itself a day later.
+
+**5. Change a counter or a policy — from its file, never by hand.** Edit the
+file, then update the live resource from it, from the repo root. A counter:
+`update` changes only the fields the file names.
+
+```bash
+M=security_redirect_rejected   # the counter whose file you changed
+gcloud logging metrics update $M --config-from-file=monitoring/metrics/$M.json --project=$PROJECT
+```
+
+A counter step 4 shows disabled: its file does not carry that field, so the
+update above leaves it as it is. Enable it with a one-field file:
+
+```bash
+M=security_redirect_rejected   # the disabled counter
+printf '{"disabled": false}\n' > enable-metric.json
+gcloud logging metrics update $M --config-from-file=enable-metric.json --project=$PROJECT
+rm enable-metric.json
+```
+
+A policy: `M` names the counter it watches (its file's name); `CHANNEL` is
+step 2's, set again in a new terminal — unset, the guard stops the command.
+
+```bash
+M=security_redirect_rejected   # the counter the policy watches
+POLICY=$(gcloud monitoring policies list --project=$PROJECT --filter="conditions.conditionThreshold.filter~$M" --format="value(name)")
+echo "$POLICY"   # exactly ONE name; two lines are a duplicate: gcloud then refuses the update (Invalid value) — see below
+gcloud monitoring policies update "${POLICY:?no policy found}" --policy-from-file=monitoring/policies/$M.json --set-notification-channels="${CHANNEL:?step 2 sets CHANNEL}" --project=$PROJECT
+```
+
+Two names are a duplicate from a second `create`: delete the one that does
+not carry your channel (any one if both do) with
+`gcloud monitoring policies delete <that name> --project=$PROJECT`, then run
+the block again.
+
+⚠ **Sans `--set-notification-channels` — ou avec un `CHANNEL` vide, que le
+garde `${CHANNEL:?…}` refuse —, cette mise à jour remplace toute la
+politique par le fichier, qui ne nomme aucun canal : l'alerte reste activée,
+mais ne prévient plus personne.** (Without `--fields`, gcloud replaces the
+policy with `--policy-from-file`.) Step 4 then shows an empty third column,
+and `scripts.provision` reports « aucun canal de notification ».
+
+**Reading an alert.** The email's text is the policy's documentation; the
+log entry says more. In Logs Explorer, filter
+`jsonPayload.event="<the event>"`: the entry carries the event's own fields —
+ids and codes only (OBSERVABILITY.md) — and, like every line logged inside a
+request, `jsonPayload.route` (the raw path when no route matched) and
+`httpRequest` (`requestUrl` without its query, `userAgent`).
+
+- « Sécurité — redirection refusée » — read `reason`, the time and the
+  route. Every caller sits behind your sign-in, so a line means your
+  signed-in browser opened a crafted link, or an Athena page built a bad
+  target. If, at that time, you had opened a link that came from elsewhere
+  (an email, a message, another site), treat it as phishing: do not follow
+  that link again, and do not sign in from it. Otherwise the route is an
+  Athena page you opened normally: a defect to fix. Step 4's drill makes one
+  on purpose.
+- « Sécurité — une protection est désactivée » — read `reason`,
+  `error_type` and `resource.labels.module_id` (`default`, `portail`). The
+  event is logged once per process, at the first request that reaches the
+  control: up to two lines per instance, and again whenever a process
+  restarts. On the portal, `reason` separates an EMPTY value
+  (`cf_origin_secret_unset`) from a read that FAILED
+  (`cf_origin_secret_unreadable`, the error's class in `error_type`): a
+  secret that does not exist (`NotFound`), a disabled version
+  (`FailedPrecondition`) and a missing grant (`PermissionDenied`) are all
+  failed reads. The main service logs every case as
+  `cf_origin_secret_unset`.
+  - `origin_secret_disabled` — the secret first: the FIRST row of
+    `gcloud secrets versions list cf-origin-secret --project=$PROJECT`, the
+    newest (`latest`, the one both services read), must be `enabled`;
+    `python -m scripts.check_config --prod` (from `athena/`) reads `latest`
+    as they do, with your access. **Disabled**: enable it again
+    (`gcloud secrets versions enable <its number> --secret=cf-origin-secret --project=$PROJECT`)
+    — it normally carries the value the Transform Rule already sends; unless
+    it was disabled to undo a new value the rule never received: then
+    enabling it is finishing that rotation (its value in the Transform Rule,
+    then `default` AND `portail` redeployed, §6.4's rotation note), which is
+    also what a 403 on the confirming page below means.
+    **Destroyed, or the secret deleted**: that is a ROTATION — a new version
+    of the secret, the same value in the Transform Rule, then `default` AND
+    `portail` redeployed (§6.4's rotation note; a deleted secret first needs
+    §6.4's container and grants again). Never a new value without the rule:
+    every request through Cloudflare would answer 403. **Enabled, and still
+    failing**: its access — the portal's is the commented grant in §6.4,
+    given only once the tracer shows the rule firing on the portal host
+    (§5 step 13).
+  - `appcheck_disabled` — the setting: `RECAPTCHA_ENTERPRISE_SITE_KEY` in
+    the service's yaml (§4).
+
+  Then redeploy each service the lines name (`module_id`) — after a change
+  to the secret itself, both, since both read it: a worker reads its secrets
+  when it starts. To confirm, open a page of the NEW version through its
+  domain — it must DISPLAY: a 403 means the value differs from the Transform
+  Rule — then search the event under that service's
+  `resource.labels.module_id` AND the new `resource.labels.version_id`: no
+  line means it is fixed. A cron or a task cannot confirm it: they skip the
+  comparison with the header (on `portail`, the whole check); nor can a
+  line from an older version. The portal's App Check speaks only on a
+  client's POST, so for a `portail` `appcheck_disabled` check its key in
+  `portail.yaml` instead. While the incident stays open (it closes after a
+  day without a line), a new line sends no new email. Paramètres →
+  Configuration sees only the main service, and `check_config --prod` only
+  your own access and your `.env`.
+- « Sécurité — accès direct à appspot.com » — read `service` (`default`,
+  `portail`) and `endpoint`. The firewall admits every Cloudflare range (§7),
+  so anyone's Cloudflare zone can relay a request to an `*.appspot.com` host:
+  the refusal is the tripwire.
+  - `service=portail`: the portal tests the host **before** its origin
+    secret, so a request relayed by another zone ends there — the tripwire
+    working. Check that the firewall rules are unchanged
+    (`gcloud app firewall-rules list --project=$PROJECT`, §7).
+  - `service=default`: with the origin secret armed, the main service checks
+    the secret **before** the host, and refuses a request without it with no
+    line at all. A `default` line therefore comes from a request that
+    **carried the secret**: either the secret leaked, or your own zone routes
+    to the appspot host. Check your zone's origin rules, then rotate
+    `cf-origin-secret` (§6.4: its rotation note — the three steps chained,
+    the 403 windows they open, `default` AND `portail` redeployed by hand;
+    §7 step 4 for the Transform Rule that carries the value). The one
+    exception: a process of the same `default` version logged
+    `origin_secret_disabled` (« Sécurité — une protection est désactivée »)
+    — its disarmed check lets any relayed request through to the refusal;
+    follow that alert instead, no rotation. An `appcheck_disabled` does not
+    count: App Check runs after the origin check.
+
+  To confirm, search `appspot_blocked` lines from `default` after the
+  rotation: one more means the route to the appspot host is still there —
+  your own zone's included, since the Transform Rule is zone-wide and
+  carries the new value too. While the incident stays open (it closes after
+  a day without a line), a new line sends no new email.
+
+The internal chat's alert « Clavardage — charte en repli » and its counter
+`chat_charter_repli`, which could no longer fire once the chat left (§11b),
+were deleted from the original deployment on 2026-11-08; a deployment that
+never ran the chat has neither.
+
 ---
 
 ## 7. Cloudflare edge
@@ -1303,6 +1611,9 @@ rejects direct access. Set up, in order:
    fires before giving it a value** — Cloudflare's request tracer
    (`POST /accounts/{id}/request-tracer/trace`), never inference. The reverse
    order 403s the entire zone with no deploy to explain it; see §5 step 13.
+   That order is for the FIRST provisioning. On a rotation, follow §6.4's
+   rotation note instead: a new version of the secret, then this rule, then
+   both services redeployed.
 5. **Rocket Loader:** leave it **off** — the original enabled it, then disabled
    it at the edge on 2026-07-11, and it is not returning. ⚠️ The end-of-`<body>`
    script order in `base.html` is still load-bearing: the App Check boot runs synchronously and htmx/Alpine

@@ -3,7 +3,7 @@
 import hmac
 import re
 import secrets
-from typing import Optional
+from typing import NoReturn, Optional
 from urllib.parse import urlparse
 
 from flask import Flask, Response, abort, current_app, g, request
@@ -176,7 +176,7 @@ def _add_security_headers(response: Response) -> Response:
 # full list of carriers is DEPLOYMENT.md §15 « Frontend assets », and the
 # recipe is CLAUDE.md « Regenerating the stylesheet ».
 _EARLY_HINTS_BASE = (
-    "</static/vendor/app.a02cab05.css>; rel=preload; as=style",
+    "</static/vendor/app.ef79792d.css>; rel=preload; as=style",
     # Font preloads MUST carry `crossorigin` (fonts are always fetched in CORS
     # mode) — without it the browser fetches the file TWICE. Sans roman only
     # for the text faces (serif loads on demand on note pages, italics too
@@ -198,7 +198,7 @@ _EARLY_HINTS_APPCHECK = (
 # the auth SDK — the heaviest script on the cold-start path this feature
 # exists for) and uses reCAPTCHA for phone MFA regardless of App Check.
 _EARLY_HINTS_LOGIN = (
-    "</static/vendor/app.a02cab05.css>; rel=preload; as=style",
+    "</static/vendor/app.ef79792d.css>; rel=preload; as=style",
     '</static/vendor/noto-sans-v42-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     '</static/vendor/material-symbols-outlined-v371-2ac72714.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
@@ -252,6 +252,7 @@ _DAV_MAX_BODY = 5 * 1024 * 1024  # vCard/iCal payloads are KBs; 5 MB is generous
 # (/gabarits/generer) and the sub-routes stay under the 1 MB default.
 _TEMPLATE_UPLOAD_MAX = 10 * 1024 * 1024
 _TEMPLATE_RESERVED_SEGMENTS = {"new", "generer", "dossier-search", "partie-search"}
+_DEFAULT_MAX_BODY = 1 * 1024 * 1024  # 1 MB: every other route
 
 
 def _is_template_upload_path(path: str) -> bool:
@@ -264,13 +265,43 @@ def _is_template_upload_path(path: str) -> bool:
     return len(parts) == 3 and parts[2] not in _TEMPLATE_RESERVED_SEGMENTS
 
 
+def _refuse_too_large(kind: str, limit: int) -> NoReturn:
+    """Answer 413 after ONE ``request_too_large`` line (Change Impact 4).
+
+    The event was declared, and documented in OBSERVABILITY.md, with the
+    registry itself (2026-04-25), and nothing emitted it until 2026-11-08:
+    the three caps refused in silence, so a probe left no trace and a metric
+    built on the name could only read zero. The event's own fields are ids
+    and categories only: which cap (``kind``: ``dav``, ``gabarit`` or
+    ``defaut``), its ``limit`` and the ``content_length`` the client
+    declared, in bytes, and the matched ``endpoint`` (``""`` when none) —
+    never the host, the path, a header or the body. Like every line logged
+    inside a request, the entry still carries ``route`` and, in production,
+    ``httpRequest.requestUrl`` and ``httpRequest.userAgent``
+    (OBSERVABILITY.md). One line per refusal, like ``redirect_rejected`` and
+    ``appcheck_failure``: only the deployment facts warn once per process,
+    and App Engine's request log already holds one line per such request.
+    """
+    from utils.logging_setup import log_security_event
+
+    log_security_event(
+        "request_too_large",
+        "warning",
+        kind=kind,
+        limit=limit,
+        content_length=request.content_length,
+        endpoint=sanitize_log_value(request.endpoint or ""),
+    )
+    abort(413)
+
+
 def _enforce_request_size() -> Optional[Response]:
     """Reject oversized requests for non-upload and non-DAV endpoints."""
     # DAV payloads (vCard, iCal, PROPFIND XML) get their own cap, above the
     # 1 MB default but far below MAX_CONTENT_LENGTH's 25 MB backstop.
     if request.path.startswith("/dav/") or request.path.startswith("/.well-known/"):
         if request.content_length and request.content_length > _DAV_MAX_BODY:
-            abort(413)
+            _refuse_too_large("dav", _DAV_MAX_BODY)
         return None
     if (
         request.content_length
@@ -278,11 +309,11 @@ def _enforce_request_size() -> Optional[Response]:
         and _is_template_upload_path(request.path)
     ):
         if request.content_length > _TEMPLATE_UPLOAD_MAX:
-            abort(413)
+            _refuse_too_large("gabarit", _TEMPLATE_UPLOAD_MAX)
         return None
     if request.content_length and request.path not in UPLOAD_PATHS:
-        if request.content_length > 1 * 1024 * 1024:  # 1 MB
-            abort(413)
+        if request.content_length > _DEFAULT_MAX_BODY:
+            _refuse_too_large("defaut", _DEFAULT_MAX_BODY)
     return None
 
 

@@ -166,7 +166,8 @@ def _refusal_shown(web, resp) -> str:
     erreur = query["erreur"]
     page = web.get(resp.headers["Location"])
     assert page.status_code == 200
-    banner = f'<div role="alert" class="text-red-600 text-sm mb-4">{escape(erreur)}</div>'
+    banner = (f'<div role="alert" class="text-red-600 text-sm mb-4 wrap-anywhere">'
+              f'{escape(erreur)}</div>')
     assert banner in page.get_data(as_text=True)
     return erreur
 
@@ -628,7 +629,7 @@ def test_a_refusal_whose_page_cannot_be_shown_still_reaches_the_browser(
     assert _landing(page) == ("/documents/", refusal)
     listing = web.get(page.headers["Location"], headers={"HX-Request": "true"})
     assert listing.status_code == 200
-    banner = (f'<div class="text-red-600 text-sm mb-4">'
+    banner = (f'<div class="text-red-600 text-sm mb-4 wrap-anywhere">'
               f'{escape(concurrency.READ_UNAVAILABLE_ERROR)}</div>')
     assert banner in listing.get_data(as_text=True)
     _nothing_deleted(db, bucket)

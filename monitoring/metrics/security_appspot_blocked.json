@@ -1,0 +1,10 @@
+{
+  "name": "security_appspot_blocked",
+  "description": "Athena : requête directe sur *.appspot.com refusée (appspot_blocked).",
+  "filter": "logName=\"projects/athena-pallas/logs/pallas-athena\" AND jsonPayload.event=\"appspot_blocked\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1"
+  }
+}

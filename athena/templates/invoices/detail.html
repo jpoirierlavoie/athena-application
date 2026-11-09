@@ -111,10 +111,10 @@
      reviennent par redirection (?erreur= / ?message=) : ces boutons sont
      des formulaires pleine page, et un fragment 4xx ne s'affiche jamais. #}
   {% if erreur %}
-  <div role="alert" class="mb-4 p-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl">{{ erreur }}</div>
+  <div role="alert" class="mb-4 p-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl wrap-anywhere">{{ erreur }}</div>
   {% endif %}
   {% if message %}
-  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">{{ message }}</div>
+  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800 wrap-anywhere">{{ message }}</div>
   {% endif %}
 
   {# ── Note-d'honoraires generation result (HTMX target) ─────── #}

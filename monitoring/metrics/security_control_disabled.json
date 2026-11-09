@@ -1,0 +1,10 @@
+{
+  "name": "security_control_disabled",
+  "description": "Athena : une protection de bord est désactivée en production — App Check ou le secret d'origine (appcheck_disabled, origin_secret_disabled).",
+  "filter": "logName=\"projects/athena-pallas/logs/pallas-athena\" AND jsonPayload.event=(\"appcheck_disabled\" OR \"origin_secret_disabled\")",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1"
+  }
+}

@@ -24,7 +24,7 @@
   </div>
 
   {% if request.args.get('erreur') %}
-  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 wrap-anywhere">
     {{ request.args.get('erreur')[:500] }}
   </div>
   {% endif %}

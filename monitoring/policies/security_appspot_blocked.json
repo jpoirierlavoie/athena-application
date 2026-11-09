@@ -1,0 +1,33 @@
+{
+  "displayName": "Sécurité — accès direct à appspot.com",
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "Une requête adressée à l'hôte `*.appspot.com` d'un service d'Athena, plutôt qu'à son domaine, a été refusée (403, événement `appspot_blocked`). Le pare-feu App Engine admet toutes les plages de Cloudflare : une telle requête a presque toujours été relayée par une zone Cloudflare — celle d'un tiers, ou la vôtre si elle pointe vers l'hôte appspot.\n\nÀ faire : lire le champ `service` de l'entrée, puis suivre DEPLOYMENT.md, « Alertes de sécurité ». `portail` : le refus a joué son rôle (le portail teste l'hôte avant son secret) ; vérifier que les règles du pare-feu n'ont pas changé (`gcloud app firewall-rules list --project=athena-pallas`, DEPLOYMENT.md §7). `default` : sauf si ce service a émis `origin_secret_disabled` sur la même version, la requête portait le secret d'origine (le service principal le vérifie avant l'hôte) — il a fui, ou votre zone relaie vers l'hôte appspot. La rotation du secret suit DEPLOYMENT.md §6.4 : jamais une nouvelle valeur sans la même valeur dans la Transform Rule de Cloudflare, sinon chaque requête venue de Cloudflare reçoit 403. Tant que l'incident reste ouvert (un jour sans ligne le ferme), une nouvelle ligne n'envoie pas de nouveau courriel."
+  },
+  "conditions": [
+    {
+      "displayName": "au moins un accès direct refusé",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/security_appspot_blocked\" AND resource.type=\"gae_app\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_SUM",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ]
+      }
+    }
+  ],
+  "combiner": "OR",
+  "enabled": true,
+  "alertStrategy": {
+    "autoClose": "86400s"
+  }
+}

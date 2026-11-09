@@ -42,5 +42,33 @@
   "cycle-de-vie-staging": {
     "ok": true,
     "stdout": "{\n  \"lifecycle_config\": {\n    \"rule\": [\n      {\n        \"action\": {\n          \"type\": \"Delete\"\n        },\n        \"condition\": {\n          \"daysSinceNoncurrentTime\": 180,\n          \"isLive\": false\n        }\n      },\n      {\n        \"action\": {\n          \"type\": \"Delete\"\n        },\n        \"condition\": {\n          \"age\": 7,\n          \"matchesPrefix\": [\n            \"staging/\"\n          ]\n        }\n      }\n    ]\n  }\n}"
+  },
+  "metrique-redirection-refusee": {
+    "ok": true,
+    "stdout": "security_redirect_rejected\tlogName=\"projects/projet-temoin/logs/pallas-athena\" AND jsonPayload.event=\"redirect_rejected\""
+  },
+  "metrique-controle-desactive": {
+    "ok": true,
+    "stdout": "security_control_disabled\tlogName=\"projects/projet-temoin/logs/pallas-athena\" AND jsonPayload.event=(\"appcheck_disabled\" OR \"origin_secret_disabled\")"
+  },
+  "metrique-appspot-bloque": {
+    "ok": true,
+    "stdout": "security_appspot_blocked\tlogName=\"projects/projet-temoin/logs/pallas-athena\" AND jsonPayload.event=\"appspot_blocked\""
+  },
+  "metrique-requete-trop-volumineuse": {
+    "ok": true,
+    "stdout": "security_request_too_large\tlogName=\"projects/projet-temoin/logs/pallas-athena\" AND jsonPayload.event=\"request_too_large\""
+  },
+  "alerte-redirection-refusee": {
+    "ok": true,
+    "stdout": "projects/projet-temoin/alertPolicies/111111111111111111\tTrue\tprojects/projet-temoin/notificationChannels/999999999999999999"
+  },
+  "alerte-controle-desactive": {
+    "ok": true,
+    "stdout": "projects/projet-temoin/alertPolicies/222222222222222222\tTrue\tprojects/projet-temoin/notificationChannels/999999999999999999"
+  },
+  "alerte-appspot-bloque": {
+    "ok": true,
+    "stdout": "projects/projet-temoin/alertPolicies/333333333333333333\tTrue\tprojects/projet-temoin/notificationChannels/999999999999999999"
   }
 }

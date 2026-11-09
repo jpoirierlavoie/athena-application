@@ -34,10 +34,10 @@
   {# ── Bandeaux : ce qu'une action vient de faire, ou pourquoi elle a été
        refusée (une redirection 2xx les porte — htmx n'échange que les 2xx). #}
   {% if message %}
-  <div role="status" class="mb-4 p-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-700">{{ message }}</div>
+  <div role="status" class="mb-4 p-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 wrap-anywhere">{{ message }}</div>
   {% endif %}
   {% if erreur %}
-  <div role="alert" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">{{ erreur }}</div>
+  <div role="alert" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 wrap-anywhere">{{ erreur }}</div>
   {% endif %}
 
   {# ── Header card ─────────────────────────────────────────────── #}

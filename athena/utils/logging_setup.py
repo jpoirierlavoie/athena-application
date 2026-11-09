@@ -51,6 +51,14 @@ from flask import Flask, has_request_context, request, session
 
 # ── Public configuration ────────────────────────────────────────────────
 
+# The Cloud Logging log name of both services: ``_build_handler`` names its
+# ``CloudLoggingHandler`` with it. Every log-based counter filters on it (the
+# ``logName`` of each file under the repo root's ``monitoring/metrics/``), so
+# renaming it silently zeroes them all; ``tests/test_monitoring_definitions.py``
+# pins the files to this constant, and ``tests/test_deployment_inventory.py``
+# pins ``utils/deployment_inventory.APP_LOG_NAME`` (the docs' copy) to it.
+APP_LOG_NAME = "pallas-athena"
+
 REDACT_COURT_FILE_NUMBERS: bool = False
 
 SENSITIVE_KEYS: set[str] = {
@@ -410,7 +418,7 @@ def _build_handler(flask_app: Flask) -> logging.Handler:
             # ``message``), keeps the ``pallas-athena`` log name, detects
             # the ``gae_app`` monitored resource, and infers the trace from
             # the active OTel span for native Cloud Trace correlation.
-            return CloudLoggingHandler(client, name="pallas-athena")
+            return CloudLoggingHandler(client, name=APP_LOG_NAME)
         except Exception as exc:
             # Fall through to stderr if Cloud Logging is unreachable —
             # we never want logging configuration to fail the boot.
@@ -1350,6 +1358,7 @@ def log_unexpected(
 
 
 __all__: Iterable[str] = (
+    "APP_LOG_NAME",
     "REDACT_COURT_FILE_NUMBERS",
     "SENSITIVE_KEYS",
     "ContextFilter",

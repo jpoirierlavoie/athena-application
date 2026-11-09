@@ -1,0 +1,33 @@
+{
+  "displayName": "Sécurité — une protection est désactivée",
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "Une protection de bord d'Athena s'est déclarée DÉSACTIVÉE en production : App Check (`appcheck_disabled` : la clé de site reCAPTCHA manque) ou le secret d'origine Cloudflare (`origin_secret_disabled` : `cf-origin-secret` est vide ou ne se lit pas). L'application fonctionne encore, mais cette couche de défense ne filtre plus rien. Le service en cause est dans `resource.labels.module_id` (`default` ou `portail`) ; sur le portail, `reason` et `error_type` disent la cause — le service principal note tous les cas `cf_origin_secret_unset`.\n\nÀ faire : suivre DEPLOYMENT.md, « Alertes de sécurité » : rétablir le secret ou le réglage (DEPLOYMENT.md §4), redéployer le service en cause, puis confirmer sur sa nouvelle version. Avant de créer une nouvelle valeur du secret, lire cette procédure : une version désactivée se réactive, et une nouvelle valeur exige aussi la même valeur dans la Transform Rule de Cloudflare (DEPLOYMENT.md §6.4), sinon chaque requête venue de Cloudflare reçoit 403. Ne pas laisser passer : en août 2026, le secret d'origine n'avait jamais existé, et rien ne l'avait signalé."
+  },
+  "conditions": [
+    {
+      "displayName": "au moins une protection désactivée",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/security_control_disabled\" AND resource.type=\"gae_app\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_SUM",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ]
+      }
+    }
+  ],
+  "combiner": "OR",
+  "enabled": true,
+  "alertStrategy": {
+    "autoClose": "86400s"
+  }
+}

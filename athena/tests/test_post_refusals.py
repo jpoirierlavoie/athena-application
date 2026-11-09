@@ -3286,3 +3286,66 @@ def test_the_invoice_list_prints_a_forwarded_refusal_sanitized(client):
     assert "<b>Refus</b>" not in page
     assert "Refus &amp; suite " + "é" * 100 in page
     assert "é" * 501 not in page
+
+
+# ── A banner holds ANY request text at 375 px (2026-11-08) ───────────────
+# A refusal sentence wraps on its spaces; a hand-made link whose `?erreur=`
+# holds one long unbroken token scrolled the phone sideways, on every page
+# below. Each banner that prints request text now carries `wrap-anywhere`
+# (overflow-wrap: anywhere: the one value that also lowers the min-content
+# width, so the token breaks inside a flex row too — `break-words` does
+# not). Fails on the old code: no banner carried it. Compiled in the
+# stylesheet: tests/test_compiled_classes.py; every template's banners,
+# these and the pages this fixture cannot reach (the invoice sheet, a trust
+# account, Réception): tests/test_banner_wrap.py.
+
+_UNBROKEN = "Z" * 300
+
+
+def _text_parent_tags(html: str, token: str) -> list:
+    """The opening tag of the element whose TEXT holds each occurrence of
+    *token* — an occurrence inside a tag (an attribute) is not text."""
+    tags, start = [], 0
+    while True:
+        i = html.find(token, start)
+        if i < 0:
+            return tags
+        start = i + len(token)
+        lt, gt = html.rfind("<", 0, i), html.rfind(">", 0, i)
+        if lt > gt:
+            continue
+        tags.append(html[lt:gt + 1])
+
+
+def _banner_pages(db, did) -> list:
+    t = quote(_UNBROKEN)
+    both = f"erreur={t}&message={t}"
+    task, hearing = _new_task(did), _new_hearing(did)
+    protocol, document = _new_protocol(did), _seed_document(db, did)
+    template, contact = _new_template(db, did), _presumed_contact(db)
+    return [
+        (f"/taches/?erreur={t}", 1),
+        (f"/taches/{task}?erreur={t}", 1),
+        (f"/temps/?erreur={t}", 1),
+        (f"/factures/?erreur={t}", 1),
+        (f"/documents/?{both}", 2),
+        (f"/documents/{document}?erreur={t}", 1),
+        (f"/audiences/?{both}", 2),
+        (f"/audiences/{hearing}?{both}", 2),
+        (f"/parties/{contact}?{both}", 2),
+        (f"/parties/{contact}?gerer=1&{both}", 2),
+        (f"/protocoles/{protocol}?{both}", 2),
+        (f"/gabarits/{template}?{both}", 2),
+        (f"/fideicommis/?erreur={t}", 1),
+    ]
+
+
+def test_every_banner_wraps_a_long_unbroken_token(db, client, did):
+    for url, banners in _banner_pages(db, did):
+        resp = client.get(url)
+        assert resp.status_code == 200, (url, resp.status_code)
+        tags = _text_parent_tags(resp.get_data(as_text=True), _UNBROKEN)
+        assert len(tags) >= banners, (url, len(tags))
+        for tag in tags:
+            classes = tag.split('class="', 1)[1].split('"', 1)[0].split()
+            assert "wrap-anywhere" in classes, (url, tag)

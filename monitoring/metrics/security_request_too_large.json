@@ -1,0 +1,10 @@
+{
+  "name": "security_request_too_large",
+  "description": "Athena : requête refusée 413, corps trop gros (request_too_large) — métrique seulement, sans alerte.",
+  "filter": "logName=\"projects/athena-pallas/logs/pallas-athena\" AND jsonPayload.event=\"request_too_large\"",
+  "metricDescriptor": {
+    "metricKind": "DELTA",
+    "valueType": "INT64",
+    "unit": "1"
+  }
+}

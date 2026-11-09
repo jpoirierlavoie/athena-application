@@ -31,6 +31,7 @@ partie de ce fichier.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -42,7 +43,9 @@ from utils.deployment_inventory import (
     PHASE_ORDER,
     QUARANTINE_LIFECYCLE,
     RESOURCES,
+    SECURITY_METRICS,
     Resource,
+    metric_path,
     provisioning_plan,
 )
 from utils.deployment_report import FAIL, OK, WARN, Report
@@ -162,6 +165,43 @@ def expected_index_count(repo_root: str = "") -> Optional[int]:
         return None
 
 
+# Le filtre d'un compteur : `logName="projects/<projet>/logs/<journal>" AND
+# <clause>`. Le groupe garde tout ce qui suit le projet. Linéaire (CWE-1333) :
+# `[^/"]+` ne peut franchir le `/` qui le suit, `[^"]+` le `"` qui le suit.
+# Un filtre sur plusieurs lignes ne s'y présente jamais :
+# ``expected_metric_filter`` le refuse avant (voir là).
+_FILTRE_DE_COMPTEUR = re.compile(r'logName="projects/[^/"]+(/logs/[^"]+" AND .+)')
+
+
+def expected_metric_filter(metric: str, project: str,
+                           repo_root: str = "") -> Optional[str]:
+    """Le filtre que ce compteur doit porter DANS CE PROJET.
+
+    DÉRIVÉ de son fichier (`monitoring/metrics/<compteur>.json`), jamais
+    recopié : le filtre du fichier, le projet de son `logName` remplacé par
+    le projet sondé — un compteur ne voit que les lignes de son propre
+    projet, donc un `logName` qui en nomme un autre ne compte rien. Rend
+    ``None`` — jamais un filtre deviné — si le fichier est illisible ou n'a
+    pas cette forme : la sonde le dit alors INCONNU. Un filtre qui porte un
+    séparateur de lignes — un saut de ligne, mais aussi tout séparateur que
+    ``str.splitlines`` reconnaît (CR, U+2028…), même en dernière position —
+    n'a pas cette forme : la sonde ne lit que la première ligne de la sortie
+    de gcloud, et le dirait en dérive à jamais.
+    """
+    chemin = os.path.join(repo_root or _REPO_ROOT, *metric_path(metric).split("/"))
+    try:
+        with open(chemin, encoding="utf-8") as fh:
+            filtre = json.load(fh).get("filter")
+    except Exception:
+        return None
+    if not isinstance(filtre, str) or filtre.splitlines() != [filtre]:
+        return None
+    trouve = _FILTRE_DE_COMPTEUR.fullmatch(filtre)
+    if trouve is None:
+        return None
+    return 'logName="projects/' + project + trouve.group(1)
+
+
 # ⚠ `gcloud --format=value(a,b,c)` sépare par des TABULATIONS et laisse la
 # colonne d'un champ absent VIDE. Un `str.split()` nu réduit les blancs et
 # DÉCALE donc tout ce qui suit d'un cran — mesuré le 2026-09-13 : le seau de
@@ -261,6 +301,64 @@ def _v_existe(run: Run, ctx: dict) -> tuple:
     if not run.stdout.strip():
         return ABSENT, "introuvable"
     return PRESENT, run.stdout.strip().splitlines()[0][:120]
+
+
+def _v_compteur(metric: str) -> Callable:
+    """Le verdict d'UN compteur log-based : il existe, activé, ET il compte ce
+    que dit son fichier, dans le journal du projet sondé.
+
+    Exister ne suffit pas, et c'est une panne silencieuse : un compteur créé
+    d'un fichier dont le `logName` nomme un autre projet (l'adoptant qui n'a
+    pas remplacé le littéral, §4.3), ou resté en arrière d'un fichier
+    modifié sans la mise à jour de §6.10 (étape 5), existe et compte autre
+    chose — ou rien ; un compteur DÉSACTIVÉ (`disabled`, posé hors du dépôt :
+    le fichier ne porte pas ce champ) ne produit aucun point : rien n'est
+    compté, et aucune alerte ne peut s'y déclencher. Le filtre attendu vient
+    du contexte (`probe_all`
+    le lit du fichier, ``expected_metric_filter``) ; absent, rien n'est
+    comparé et le verdict le dit, INCONNU — jamais PRESENT sur une
+    comparaison qui n'a pas eu lieu. Une colonne VIDE ne se juge pas non
+    plus : un filtre est obligatoire, donc une colonne de filtre vide est
+    une projection ratée (INCONNU), et une colonne `disabled` vide, un champ
+    non posé — activé. Une sortie entièrement vide se lit ABSENT, comme
+    partout dans ce module (une commande qui réussit sans rien rendre dit
+    l'absence) : à un compteur absent, `describe` répond NOT_FOUND — un
+    échec, donc INCONNU par ``probe``.
+    """
+    fichier = metric_path(metric)
+
+    def verdict(run: Run, ctx: dict) -> tuple:
+        lignes = [l for l in run.stdout.splitlines() if l.strip()]
+        if not lignes:
+            return ABSENT, "introuvable"
+        champs = colonnes(lignes[0])
+        filtre, desactive = colonne(champs, 1), colonne(champs, 2)
+        if desactive.lower() in ("true", "yes"):
+            return DRIFT, (
+                "le compteur est DÉSACTIVÉ : il ne produit aucun point — rien "
+                "n'est compté, et aucune alerte ne peut s'y déclencher "
+                "(§6.10, étape 5)"
+            )
+        if not filtre:
+            return INCONNU, (
+                "le filtre du compteur n'a pas été lu (colonne vide) : rien "
+                "n'a été comparé"
+            )
+        attendu = (ctx.get("filtres_attendus") or {}).get(metric)
+        if not attendu:
+            return INCONNU, (
+                "le compteur existe, mais le filtre attendu n'a pas pu être "
+                "lu de %s : ce qu'il compte n'a pas été comparé" % fichier
+            )
+        if filtre != attendu:
+            return DRIFT, (
+                "le compteur existe, mais son filtre n'est pas celui de %s "
+                "dans ce projet : il compte autre chose, ou rien" % fichier
+            )
+        return PRESENT, "activé, compte ce que dit " + fichier
+
+    verdict.__name__ = "_v_compteur_" + metric
+    return verdict
 
 
 def _v_seau(run: Run, ctx: dict) -> tuple:
@@ -438,6 +536,36 @@ def _v_pare_feu(run: Run, ctx: dict) -> tuple:
         APPENGINE_INTERNAL_CIDR, interne, len(lignes))
 
 
+def _v_alerte(run: Run, ctx: dict) -> tuple:
+    """UNE politique, activée, qui écrit à quelqu'un.
+
+    Trois défauts se lisent ici, et aucun ne se voit tant que rien ne se
+    déclenche : une politique créée deux fois (`policies create` ne
+    dédoublonne pas) écrit deux courriels par déclenchement ; une politique
+    désactivée, ou sans canal, se déclencherait sans prévenir personne — le
+    silence même que ces alertes existent pour rompre. Une colonne `enabled`
+    VIDE ne se juge pas : un contrôle qui accuse à tort est pire qu'aucun.
+    """
+    lignes = [colonnes(l) for l in run.stdout.splitlines() if l.strip()]
+    if not lignes:
+        return ABSENT, "aucune politique ne surveille ce compteur"
+    if len(lignes) > 1:
+        return DRIFT, (
+            "%d politiques surveillent le même compteur — chaque "
+            "déclenchement écrirait %d fois" % (len(lignes), len(lignes))
+        )
+    activee, canaux = colonne(lignes[0], 1), colonne(lignes[0], 2)
+    if activee.lower() in ("false", "no"):
+        return DRIFT, "la politique est DÉSACTIVÉE : elle ne se déclencherait pas"
+    nombre = len([c for c in canaux.split(";") if c.strip()])
+    if not nombre:
+        return DRIFT, (
+            "aucun canal de notification : elle se déclencherait sans "
+            "prévenir personne"
+        )
+    return PRESENT, "activée, %d canal(aux) de notification" % nombre
+
+
 _VERDICTS: dict = {
     "app-engine": _v_app_engine,
     "firestore-defaut": _v_firestore,
@@ -450,6 +578,11 @@ _VERDICTS: dict = {
     "cycle-de-vie-staging": _v_cycle_de_vie_staging,
     "file-portail": _v_file,
     "pare-feu-interne": _v_pare_feu,
+    # La surveillance de sécurité (§6.10) : un compteur se juge sur ce qu'il
+    # compte (son filtre contre son fichier) ; une politique, sur ce qu'elle
+    # ferait d'un déclenchement.
+    **{m.metric_key: _v_compteur(m.metric) for m in SECURITY_METRICS},
+    **{m.policy_key: _v_alerte for m in SECURITY_METRICS if m.policy},
 }
 
 
@@ -486,7 +619,19 @@ def _motif_de_sonde(stderr: str) -> str:
     if "permission" in bas or "denied" in bas or "403" in bas:
         return ("permission refusée — la ressource existe peut-être ; "
                 "l'inspection, elle, n'a pas eu lieu")
-    if "has not been used" in bas or "disabled" in bas or "service_disabled" in bas:
+    # Le message de gcloud NOMME la ressource, et un nom peut porter
+    # n'importe quel mot : jusqu'au 2026-11-08, un `disabled` nu lisait le
+    # NOT_FOUND du compteur `security_control_disabled` comme « l'API est
+    # désactivée », et envoyait activer une API déjà active. Des tournures
+    # de Google, donc, jamais un mot isolé — et NOT_FOUND reste INCONNU : une
+    # commande qui échoue ne prouve aucune absence (un projet mal tapé répond
+    # pareil).
+    if "not_found" in bas or "does not exist" in bas:
+        return ("gcloud répond NOT_FOUND : la ressource est absente de ce "
+                "projet, ou le projet est le mauvais — rien n'a pu être "
+                "constaté")
+    if ("has not been used" in bas or "service_disabled" in bas
+            or "it is disabled" in bas or "not enabled on project" in bas):
         return "l'API nécessaire est désactivée — rien n'a pu être constaté"
     return "la commande a échoué — rien n'a pu être constaté"
 
@@ -505,6 +650,10 @@ def probe_all(project: str, region: str = "", *,
     ctx = {
         "region_demandee": region,
         "index_attendus": expected_index_count(repo_root),
+        "filtres_attendus": {
+            m.metric: expected_metric_filter(m.metric, project, repo_root)
+            for m in SECURITY_METRICS
+        },
     }
     resultats = []
     for r in provisioning_plan():
@@ -563,6 +712,9 @@ def render_plan(resultats: list) -> str:
     if not restants:
         return "Plan : rien à faire — chaque ressource constatable est en place."
     lignes = ["Plan de provisionnement — ce qui reste, dans l'ordre", ""]
+    # La colonne des identifiants se règle sur le plus long : ceux de la
+    # surveillance (« metrique-requete-trop-volumineuse ») dépassent 26.
+    largeur = max([26] + [len(r.key) for r in restants])
     for phase in PHASE_ORDER:
         du_lot = [r for r in restants if par_cle[r.key].phase == phase]
         if not du_lot:
@@ -575,8 +727,9 @@ def render_plan(resultats: list) -> str:
                 MANUEL: "à la main",
             }[res.state]
             irr = "  ⚠ DÉFINITIF" if ressource.irreversible else ""
-            lignes.append("    %s  %-26s %s%s"
-                          % (marque, ressource.key, ressource.label, irr))
+            lignes.append("    %s  %-*s %s%s"
+                          % (marque, largeur, ressource.key, ressource.label,
+                             irr))
             if res.detail:
                 lignes.append("                 %s" % res.detail)
         lignes.append("")
@@ -611,6 +764,7 @@ __all__ = [
     "colonnes",
     "exit_code",
     "expected_index_count",
+    "expected_metric_filter",
     "gcloud_path",
     "probe",
     "probe_all",

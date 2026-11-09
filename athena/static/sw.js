@@ -5,12 +5,12 @@
 //  - NEVER cached: authenticated HTML, HTMX fragments, signed Storage URLs,
 //    or anything outside /static — legal client data must not persist in
 //    browser caches.
-const STATIC_CACHE = 'athena-static-v15';
+const STATIC_CACHE = 'athena-static-v16';
 const OFFLINE_CACHE = 'athena-offline-v2';
 const OFFLINE_URL = '/offline';
 
 const PRECACHE = [
-  '/static/vendor/app.a02cab05.css',
+  '/static/vendor/app.ef79792d.css',
   // Noto Sans renders the whole UI (incl. the precached /offline page —
   // without it that page falls back to the system stack exactly when it is
   // most visible); Noto Serif renders note content — precached so the first

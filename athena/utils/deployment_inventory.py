@@ -336,8 +336,12 @@ SECRETS: tuple[Secret, ...] = (
         label="Secret d'origine Cloudflare",
         required_for=frozenset(),
         consequence=(
-            "le contrôle d'origine est DÉSACTIVÉ en silence (l'accès direct à "
-            "App Engine n'est plus bloqué)"
+            "absent, vide ou illisible, le secret DÉSACTIVE le contrôle "
+            "d'origine — l'accès direct à App Engine n'est plus bloqué, et "
+            "origin_secret_disabled le signale par l'alerte « Sécurité — une "
+            "protection est désactivée » ; présent mais différent de la "
+            "Transform Rule, il fait refuser toute requête venue de "
+            "Cloudflare (403)"
         ),
         writable=True,
         origin=ORIGIN_GENERATED,
@@ -818,6 +822,15 @@ REQUIRED_APIS: tuple[Api, ...] = (
         consumer="utils/tracing_setup.py",
     ),
     Api(
+        service="monitoring.googleapis.com",
+        reason=(
+            "Les politiques d'alerte de sécurité de §6.10 et le canal qui "
+            "écrit au juriste. Sans elle aucune alerte ne se crée, et la "
+            "sonde de ces politiques lit « inconnu »."
+        ),
+        consumer="DEPLOYMENT.md §6.10, scripts/provision.py",
+    ),
+    Api(
         service="cloudtasks.googleapis.com",
         reason="La file « portail » par laquelle le service public signale.",
         consumer="client/services/taches.py",
@@ -970,6 +983,333 @@ class Resource:
              .replace("{canonical_bucket}", canonical)
             for a in self.detect
         )
+
+
+# ── La surveillance de sécurité : compteurs log-based et alertes ─────────
+#
+# Les événements de sécurité de SECURITY_METRICS (OBSERVABILITY.md,
+# `log_security_event`) alimentent des COMPTEURS log-based — un compteur
+# peut en compter plusieurs —, et chaque compteur qui nomme une politique,
+# une alerte Cloud Monitoring qui écrit au juriste. Rien de tout cela ne se
+# voit sur une page — c'est le signal qui a manqué pendant les mois où
+# `cf-origin-secret` n'existait pas.
+#
+# LA SOURCE, ce sont les FICHIERS du dossier `monitoring/`, à la racine du
+# dépôt : un par compteur (`monitoring/metrics/<compteur>.json`) et un par
+# politique (`monitoring/policies/<compteur>.json`, nommé par le compteur
+# qu'elle surveille). Relus de la production et trouvés égaux à leur
+# écriture (novembre 2026), ils lui restent égaux tant qu'une ressource ne
+# change que DEPUIS son fichier (§6.10, étape 5) : la sonde compare le
+# filtre d'un compteur à son fichier ; d'une politique, elle ne vérifie
+# qu'une chose — qu'UNE seule surveille le compteur, activée, avec un canal —
+# et rien ne compare sa condition ni son texte au fichier. Ce texte — celui
+# des courriels, la documentation française des politiques — ne vit que dans
+# les fichiers. Ce module ne les LIT pas : il
+# est importé à l'exécution sur App Engine (routes/settings.py,
+# utils/config_checks.py), où la racine du dépôt
+# n'existe pas. Il les NOMME, et ne garde que ce dont l'inventaire, la sonde
+# et les documents ont besoin ; chaque valeur qu'il redit d'un fichier — le
+# nom du compteur, ses événements, le nom affiché de la politique, la
+# fenêtre, la fermeture, le type de ressource — est épinglée contre les
+# fichiers par tests/test_monitoring_definitions.py et
+# tests/test_deployment_inventory.py. Les lignes de RESOURCES, les commandes
+# de DEPLOYMENT.md §6.10 et les tables d'OBSERVABILITY.md en DÉRIVENT.
+
+# Le nom de journal de `CloudLoggingHandler` : la copie, pour les documents,
+# de `utils/logging_setup.APP_LOG_NAME` (ce module n'importe pas Flask), à
+# laquelle un test l'épingle. Les deux services le partagent : un compteur
+# filtré sur lui compte les lignes du portail aussi, que
+# `resource.labels.module_id` distingue.
+APP_LOG_NAME = "pallas-athena"
+
+# Le dossier des définitions, RELATIF à la racine du dépôt — comme les
+# chemins de SCAN_FILES, l'appelant les joint.
+MONITORING_DIR = "monitoring"
+
+# Ce que les documents disent de chaque politique : « plus de zéro en cinq
+# minutes », close d'elle-même après un jour sans nouvelle ligne. Épinglé
+# contre l'`alignmentPeriod` et l'`autoClose` de chaque fichier
+# (tests/test_monitoring_definitions.py) ; la prose de §6.10 et
+# d'OBSERVABILITY.md qui redit l'une et l'autre est épinglée contre ces
+# deux constantes (tests/test_deployment_inventory.py).
+ALERT_WINDOW = "300s"
+ALERT_AUTO_CLOSE = "86400s"
+# Le type de ressource que chaque condition restreint : celle que
+# `CloudLoggingHandler` détecte sur App Engine (l'API de Monitoring exige
+# qu'un filtre de seuil restreigne `resource.type`). §6.10 le fait vérifier.
+ALERT_RESOURCE_TYPE = "gae_app"
+
+
+def metric_path(metric: str) -> str:
+    """Le fichier d'un compteur, relatif à la racine du dépôt."""
+    return MONITORING_DIR + "/metrics/" + metric + ".json"
+
+
+def policy_path(metric: str) -> str:
+    """Le fichier de la politique qui surveille ce compteur."""
+    return MONITORING_DIR + "/policies/" + metric + ".json"
+
+
+@dataclass(frozen=True)
+class SecurityMetric:
+    """Un compteur log-based et son alerte, NOMMÉS : leur définition est le
+    fichier de `monitoring/`.
+
+    ``events`` redit les `jsonPayload.event` que compte le filtre du fichier
+    (un test les compare) ; ``policy`` est le `displayName` de la politique ;
+    vide, le compteur n'en porte pas, et ``no_alert_reason`` dit pourquoi.
+    """
+
+    metric: str
+    events: tuple
+    key: str
+    metric_symptom: str
+    policy: str = ""
+    policy_symptom: str = ""
+    no_alert_reason: str = ""
+
+    @property
+    def metric_key(self) -> str:
+        return "metrique-" + self.key
+
+    @property
+    def policy_key(self) -> str:
+        return "alerte-" + self.key
+
+    @property
+    def metric_file(self) -> str:
+        return metric_path(self.metric)
+
+    @property
+    def policy_file(self) -> str:
+        """Vide quand le compteur ne porte pas d'alerte."""
+        return policy_path(self.metric) if self.policy else ""
+
+    def event_clause(self) -> str:
+        """`jsonPayload.event="x"`, ou `=("x" OR "y")` pour plusieurs — la
+        forme du filtre du fichier, pour le rendu de l'inventaire."""
+        valeurs = ['"' + e + '"' for e in self.events]
+        if len(valeurs) == 1:
+            return "jsonPayload.event=" + valeurs[0]
+        return "jsonPayload.event=(" + " OR ".join(valeurs) + ")"
+
+
+SECURITY_METRICS: tuple[SecurityMetric, ...] = (
+    SecurityMetric(
+        metric="security_redirect_rejected",
+        events=("redirect_rejected",),
+        key="redirection-refusee",
+        metric_symptom=(
+            "l'alerte de la redirection refusée n'a rien à compter : un lien "
+            "fabriqué ouvert dans le navigateur connecté du juriste ne laisse "
+            "qu'une ligne de journal que personne ne lit"
+        ),
+        policy="Sécurité — redirection refusée",
+        policy_symptom=(
+            "une redirection refusée n'avertit pas le juriste comme prévu : "
+            "le compteur compte, mais le courriel ne part pas, ou part en "
+            "double"
+        ),
+    ),
+    SecurityMetric(
+        metric="security_control_disabled",
+        events=("appcheck_disabled", "origin_secret_disabled"),
+        key="controle-desactive",
+        metric_symptom=(
+            "App Check ou le secret d'origine peuvent se couper EN SILENCE — "
+            "c'est ainsi que cf-origin-secret a manqué des mois sans qu'aucun "
+            "signal ne parte"
+        ),
+        policy="Sécurité — une protection est désactivée",
+        policy_symptom=(
+            "une protection de la bordure désactivée en production n'avertit "
+            "pas comme prévu (aucun courriel, ou en double) — le défaut exact "
+            "qui a laissé cf-origin-secret absent pendant des mois"
+        ),
+    ),
+    SecurityMetric(
+        metric="security_appspot_blocked",
+        events=("appspot_blocked",),
+        key="appspot-bloque",
+        metric_symptom=(
+            "le fil-piège de la couche 3 ne compte rien : un accès direct à "
+            "l'hôte appspot passe inaperçu"
+        ),
+        policy="Sécurité — accès direct à appspot.com",
+        policy_symptom=(
+            "un accès à l'hôte appspot.com — relayé par une zone Cloudflare, "
+            "que le pare-feu admet — n'avertit pas comme prévu (aucun "
+            "courriel, ou en double)"
+        ),
+    ),
+    SecurityMetric(
+        metric="security_request_too_large",
+        events=("request_too_large",),
+        key="requete-trop-volumineuse",
+        metric_symptom=(
+            "le volume des refus 413 reste inconnu, donc l'alerte qu'on "
+            "voudrait y poser ne peut pas être calibrée"
+        ),
+        no_alert_reason=(
+            "son volume est inconnu : un robot peut poster de gros corps, "
+            "une ligne par tentative. Mesurer d'abord, puis choisir un seuil"
+        ),
+    ),
+)
+
+
+# ── Les commandes de §6.10, ENGENDRÉES ───────────────────────────────────
+# Chacune se lance de la RACINE du dépôt (les chemins sont relatifs) et
+# prend le fichier pour source : jamais un texte recopié dans la commande.
+
+
+def _projet(project: str) -> str:
+    return project or "$PROJECT"
+
+
+def metric_create_command(metric: str, project: str = "") -> str:
+    """Le compteur, créé DEPUIS son fichier — une fois.
+
+    Un compteur simple (pas de `--bucket-name`) : il compte au niveau du
+    PROJET, donc le seau régional de §6.8 n'y change rien. Relancée, elle
+    répond `ALREADY_EXISTS` et ne change rien.
+    """
+    return ("gcloud logging metrics create " + metric
+            + " --config-from-file=" + metric_path(metric)
+            + " --project=" + _projet(project))
+
+
+def metric_update_command(metric: str, project: str = "") -> str:
+    """Le compteur, mis à jour DEPUIS son fichier : seuls les champs que le
+    fichier nomme changent."""
+    return ("gcloud logging metrics update " + metric
+            + " --config-from-file=" + metric_path(metric)
+            + " --project=" + _projet(project))
+
+
+# Le canal du juriste, tel que les commandes le passent : GARDÉ. Un `$CHANNEL`
+# nu, vide — un terminal neuf, où l'étape 2 n'a pas tourné —, devient
+# `--notification-channels=` : gcloud le lit comme une liste VIDE, sans
+# erreur (SDK 580.0.0, `arg_parsers.ArgList` sur la chaîne vide), et la
+# politique créée ou remplacée ne prévient personne. `${CHANNEL:?…}` fait
+# refuser la commande par le shell avant qu'elle parte — le garde même de
+# `FIREBASE_STORAGE_BUCKET` en §15. Un garde de BASH (et de tout shell
+# POSIX) : PowerShell lit `"${CHANNEL:?…}"` comme une variable inexistante
+# et passe une valeur VIDE sans erreur, même `$CHANNEL` posé — d'où
+# l'avertissement de §6.10 (ces blocs se lancent dans bash).
+_CHANNEL_ARG = '"${CHANNEL:?step 2 sets CHANNEL}"'
+
+
+def policy_create_command(metric: str, project: str = "") -> str:
+    """La politique, créée DEPUIS son fichier, avec le canal du juriste.
+
+    Une fois : `policies create` ne dédoublonne pas — deux exécutions font
+    deux politiques et deux courriels par déclenchement. Le canal se passe
+    ici, jamais dans le fichier versionné (le dépôt est public), et gardé
+    (``_CHANNEL_ARG``).
+    """
+    return ("gcloud monitoring policies create --policy-from-file="
+            + policy_path(metric) + " --notification-channels=" + _CHANNEL_ARG
+            + " --project=" + _projet(project))
+
+
+def policy_name_command(metric: str, project: str = "") -> str:
+    """Le nom complet de la politique qui surveille ce compteur — le filtre
+    même de la sonde (RESOURCES), réduit au nom."""
+    return ("gcloud monitoring policies list --project=" + _projet(project)
+            + ' --filter="conditions.conditionThreshold.filter~' + metric
+            + '" --format="value(name)"')
+
+
+def policy_update_command(metric: str, project: str = "") -> str:
+    """La politique `$POLICY`, mise à jour DEPUIS son fichier.
+
+    ⚠ Sans `--fields`, `policies update --policy-from-file` REMPLACE la
+    politique entière par le fichier, qui ne nomme aucun canal : sans
+    `--set-notification-channels` — ou avec un `$CHANNEL` vide, que le garde
+    ``_CHANNEL_ARG`` refuse —, l'alerte resterait activée et ne
+    préviendrait plus personne (la sonde le lirait ensuite en dérive).
+    `$POLICY` est gardé aussi : vide, la liste n'a rien trouvé.
+    """
+    return ('gcloud monitoring policies update "${POLICY:?no policy found}"'
+            + " --policy-from-file=" + policy_path(metric)
+            + " --set-notification-channels=" + _CHANNEL_ARG
+            + " --project=" + _projet(project))
+
+
+def resource_type_check_command(project: str = "") -> str:
+    """Lecture seule : le type de ressource des lignes de l'application, que
+    chaque condition restreint (ALERT_RESOURCE_TYPE).
+
+    `--freshness=30d` : le défaut d'un jour ne rend RIEN un jour sans ligne,
+    ce qui se lirait comme un mauvais type.
+    """
+    projet = _projet(project)
+    return ('gcloud logging read "logName=' + chr(92) + '"projects/' + projet
+            + "/logs/" + APP_LOG_NAME + chr(92) + '"" --project=' + projet
+            + ' --freshness=30d --limit=1 --format="value(resource.type)"')
+
+
+# Les caractères qu'un shell interpréterait dans la valeur d'une option.
+_SHELL_SPECIAL = frozenset("()~,;&|<>*?[]{}!#'` ")
+
+
+def detect_command(resource: "Resource", project: str = "") -> str:
+    """La commande de constat d'une ressource, telle qu'on la tape.
+
+    Une valeur d'option qui porte un caractère spécial du shell (parenthèse,
+    `~`, virgule…) passe entre guillemets doubles ; `$PROJECT` reste nu, pour
+    se développer.
+    """
+    parties = []
+    for a in resource.argv(_projet(project), "$REGION"):
+        if a.startswith("--") and "=" in a:
+            option, valeur = a.split("=", 1)
+            if any(c in _SHELL_SPECIAL for c in valeur):
+                a = option + '="' + valeur + '"'
+        parties.append(a)
+    return " ".join(parties)
+
+
+def _metric_resource(m: SecurityMetric) -> "Resource":
+    # Le FILTRE et l'état avec le nom : exister ne suffit pas. Un compteur
+    # créé d'un fichier dont le `logName` nomme un autre projet ne compte
+    # rien ; resté en arrière de son fichier, il compte autre chose, ou rien ;
+    # DÉSACTIVÉ (`disabled`, un champ que le fichier ne porte pas), il ne
+    # produit aucun point. La sonde compare donc ce filtre à celui du
+    # fichier, au projet sondé près, et lit l'état (deployment_probe).
+    return Resource(
+        key=m.metric_key,
+        label="Compteur log-based " + m.metric,
+        phase=PHASE_BORDURE,
+        detect=("gcloud", "logging", "metrics", "describe", m.metric,
+                "--project={project}", "--format=value(name,filter,disabled)"),
+        expect=("il existe, activé, et son filtre est celui de "
+                + m.metric_file + " (" + m.event_clause()
+                + "), dans le journal de CE projet"),
+        symptom=m.metric_symptom,
+    )
+
+
+def _policy_resource(m: SecurityMetric) -> "Resource":
+    # Le filtre vise le COMPTEUR que la condition lit, par son nom COMPLET —
+    # en ASCII, donc sûr dans un argv Windows, contrairement au nom affiché
+    # accentué. `~` est une RE que gcloud applique côté client, non ancrée :
+    # le passage de `:` à la correspondance de mots entiers, que gcloud
+    # annonce (un préfixe comme `security_` cessera d'y répondre), ne la
+    # touche pas. La sortie dit si la politique est ACTIVÉE et à QUI elle
+    # écrit.
+    return Resource(
+        key=m.policy_key,
+        label="Alerte « " + m.policy + " »",
+        phase=PHASE_BORDURE,
+        detect=("gcloud", "monitoring", "policies", "list",
+                "--project={project}",
+                "--filter=conditions.conditionThreshold.filter~" + m.metric,
+                "--format=value(name,enabled,notificationChannels)"),
+        expect="UNE politique, activée, qui écrit à au moins un canal",
+        symptom=m.policy_symptom,
+    )
 
 
 RESOURCES: tuple[Resource, ...] = (
@@ -1221,6 +1561,16 @@ RESOURCES: tuple[Resource, ...] = (
             "l'étape 2b"
         ),
     ),
+) + tuple(
+    # ── La surveillance de sécurité (DEPLOYMENT.md §6.10), DÉRIVÉE de
+    # SECURITY_METRICS : les compteurs d'abord — une politique ne se crée
+    # que sur un compteur qui existe —, en DERNIER dans la bordure, une fois
+    # la bordure armée : avant, `security_control_disabled` se déclencherait
+    # à chaque instance neuve, le secret d'origine n'étant posé qu'après la
+    # preuve de la Transform Rule (§5).
+    _metric_resource(m) for m in SECURITY_METRICS
+) + tuple(
+    _policy_resource(m) for m in SECURITY_METRICS if m.policy
 )
 
 RESOURCE_KEYS: tuple[str, ...] = tuple(r.key for r in RESOURCES)
@@ -1255,11 +1605,16 @@ REQUIRED_ENV: tuple[str, ...] = (
     "AUTHORIZED_USER_EMAIL",
 )
 
-# Controls that DISABLE THEMSELVES when unset, and are not equally loud about
-# it. App Check logs a warning in production; the origin-secret check says
-# nothing at all — ``if not secret: return None``, no log, no metric. That
-# silence is why ``cf-origin-secret`` never existed in Secret Manager for
-# months with nothing signalling it.
+# Settings whose absence degrades a control. The two edge controls DISABLE
+# THEMSELVES when unset, and now say so in production — ``appcheck_disabled``,
+# and since 2026-09-07 ``origin_secret_disabled``, both feeding the alert
+# « Sécurité — une protection est désactivée » (DEPLOYMENT.md §6.10) since
+# 2026-11-08 — but until 2026-09-07 the origin-secret check said nothing at
+# all (``if not secret: return None``, no log, no metric). That silence is
+# why ``cf-origin-secret`` never existed in Secret Manager for months with
+# nothing signalling it. ``DAV_PASSWORD_HASH`` is the other kind: unset, DAV
+# fails CLOSED — every login is refused (dav/dav_auth.py) — and nothing is
+# logged for it.
 FAIL_OPEN_ENV: dict[str, str] = {
     "RECAPTCHA_ENTERPRISE_SITE_KEY": (
         "Firebase App Check est désactivé (les requêtes HTMX ne sont pas "
@@ -1334,21 +1689,38 @@ SCAN_FILES: tuple[str, ...] = (
     "athena/app.yaml",
     "athena/portail.yaml",
     # Repo ROOT, not athena/ — the first draft of this list said
-    # "athena/dispatch.yaml", which does not exist, and check_config skips a
-    # missing path silently. The derived completeness test below is what
-    # caught it.
+    # "athena/dispatch.yaml", which does not exist, and check_config cannot
+    # scan a missing path: it only reports it « not found ». The derived
+    # completeness test below is what caught it.
     "dispatch.yaml",
     "athena/config.py",
     "athena/main.py",
     "athena/client/config.py",
+) + tuple(
+    # Les définitions de la surveillance (DEPLOYMENT.md §6.10, 2026-11-08)
+    # nomment le projet d'origine : chaque compteur dans le `logName` de son
+    # filtre — tests/test_monitoring_definitions.py exige que ce soit LUI —,
+    # d'où la dérivation ; et la politique de l'accès direct à appspot dans
+    # le texte de son courriel (`--project=…`), d'où la ligne qui suit. Comme
+    # dispatch.yaml, elles sont à la RACINE du dépôt : sur App Engine, où
+    # seule `athena/` est déployée, le rapport les dit « not found », comme
+    # chacune des entrées précédentes.
+    m.metric_file for m in SECURITY_METRICS
+) + (
+    policy_path("security_appspot_blocked"),
 )
 
 __all__ = [
+    "ALERT_AUTO_CLOSE",
+    "ALERT_RESOURCE_TYPE",
+    "ALERT_WINDOW",
     "APPENGINE_INTERNAL_CIDR",
+    "APP_LOG_NAME",
     "API_SERVICES",
     "CANONICAL_BUCKET_SUFFIX",
     "CANONICAL_STAGING_LIFECYCLE",
     "Api",
+    "MONITORING_DIR",
     "PHASE_ORDER",
     "PORTAIL_BUCKET_SUFFIX",
     "PORTAIL_DB_NAME",
@@ -1372,13 +1744,24 @@ __all__ = [
     "SECRETS",
     "SECRET_BACKED_ENV",
     "SECRET_IDS",
+    "SECURITY_METRICS",
     "SERVICES",
     "SERVICE_DEFAULT",
     "SERVICE_PORTAIL",
     "Secret",
+    "SecurityMetric",
     "Shape",
     "WRITABLE_SECRET_IDS",
+    "detect_command",
     "expected_length_fr",
+    "metric_create_command",
+    "metric_path",
+    "metric_update_command",
+    "policy_create_command",
+    "policy_name_command",
+    "policy_path",
+    "policy_update_command",
+    "resource_type_check_command",
     "services_enable_block",
     "gcloud_recipe",
     "provisioning_plan",

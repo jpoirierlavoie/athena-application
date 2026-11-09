@@ -675,6 +675,35 @@ def test_production_uses_structured_cloud_logging_handler(flask_app, monkeypatch
     assert captured["name"] == "pallas-athena"
 
 
+def test_the_handler_takes_its_log_name_from_the_one_constant(
+        flask_app, monkeypatch):
+    # The log name is a contract with GCP: every log-based counter under the
+    # repo root's monitoring/ filters on it, and tests/test_monitoring_
+    # definitions.py pins those files to APP_LOG_NAME. The handler must read
+    # that constant, never a second literal a rename would leave behind.
+    import google.cloud.logging as gcl
+    import google.cloud.logging.handlers as gclh
+    from utils import logging_setup
+
+    captured: dict = {}
+
+    class _FakeCLH(logging.Handler):
+        def __init__(self, client, *, name=None, **kw):
+            super().__init__()
+            captured["name"] = name
+
+        def emit(self, record):  # pragma: no cover — never emitted here
+            pass
+
+    monkeypatch.setattr(gcl, "Client", lambda: "fake-client")
+    monkeypatch.setattr(gclh, "CloudLoggingHandler", _FakeCLH)
+    monkeypatch.setattr(logging_setup, "APP_LOG_NAME", "renamed-for-test")
+    flask_app.config["ENV"] = "production"
+    _build_handler(flask_app)
+
+    assert captured["name"] == "renamed-for-test"
+
+
 def _cloud_logging_chain():
     """The production chain without the network: the library's real
     CloudLoggingHandler (whose __init__ adds its own CloudLoggingFilter), then

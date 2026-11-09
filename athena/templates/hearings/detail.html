@@ -33,10 +33,10 @@
      ?message=, rien n'a changé — ambre, jamais le vert d'une réussite) :
      texte libre assaini, échappé, la forme des bandeaux du calendrier. #}
   {% if message %}
-  <div role="status" class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">{{ message }}</div>
+  <div role="status" class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3 wrap-anywhere">{{ message }}</div>
   {% endif %}
   {% if erreur %}
-  <div role="alert" class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  <div role="alert" class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 wrap-anywhere">{{ erreur }}</div>
   {% endif %}
 
   {# ── Série ───────────────────────────────────────────────────── #}

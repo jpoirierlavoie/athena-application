@@ -1,0 +1,33 @@
+{
+  "displayName": "Sécurité — redirection refusée",
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "Athena a refusé une adresse de retour (`return_to`) ou de connexion (`next`) qui sortait de l'application ou portait des caractères cachés (événement `redirect_rejected`, journal `pallas-athena`) : la redirection n'a pas eu lieu.\n\nAthena ne lit ces adresses qu'après votre connexion : une ligne veut donc dire soit qu'un lien piégé vers Athena a été ouvert dans votre navigateur connecté (un hameçonnage qui cherchait à vous renvoyer ailleurs), soit qu'un lien d'Athena construit une mauvaise adresse (un défaut).\n\nÀ faire : dans Cloud Logging, lire l'entrée (`jsonPayload.event=\"redirect_rejected\"`), sa raison (`reason`), son heure et sa route. Si vous veniez d'ouvrir un lien reçu (courriel, message, autre site), traitez-le comme un hameçonnage, que le refus a déjoué : ne rouvrez pas ce lien et ne vous connectez jamais à partir de lui. Sinon, la page fautive est un défaut à corriger. Voir DEPLOYMENT.md, « Alertes de sécurité »."
+  },
+  "conditions": [
+    {
+      "displayName": "au moins une redirection refusée",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/security_redirect_rejected\" AND resource.type=\"gae_app\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_SUM",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ]
+      }
+    }
+  ],
+  "combiner": "OR",
+  "enabled": true,
+  "alertStrategy": {
+    "autoClose": "86400s"
+  }
+}

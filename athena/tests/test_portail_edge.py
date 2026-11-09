@@ -140,6 +140,68 @@ def test_app_engine_s_own_paths_pass_on_the_appspot_host():
     assert _get(app, host=host, **{"X-Appengine-Cron": "true"}).status_code == 200
 
 
+# ── Layer 3 says so: one `appspot_blocked`, ids only (2026-11-08) ────────
+# Registered with the event registry (2026-04-25) and emitted by nothing:
+# the refusal was a silent 403 on both services, so a tripwire meant to
+# fire « never » could not fire at all. These fail on that code.
+
+
+def _appspot_events(records) -> list:
+    return [dict(r.json_fields) for r in records
+            if r.name == "pallas.security"
+            and getattr(r, "json_fields", {}).get("event") == "appspot_blocked"]
+
+
+@pytest.mark.parametrize("secret", ["", SECRET])
+@pytest.mark.parametrize("path, endpoint", [
+    ("/sante?client=Tremblay&courriel=jean@example.com", "sante"),
+    ("/nulle-part/tremblay", ""),
+])
+def test_the_appspot_refusal_logs_ONE_line_with_ids_only(
+        caplog, secret, path, endpoint):
+    host = "PORTAIL-DOT-ATHENA-PALLAS.NN.R.APPSPOT.COM."
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        resp = _get(_edge_app(secret), path, host=host, **{
+            "X-Origin-Auth": SECRET, "X-Forwarded-For": "203.0.113.9",
+            "User-Agent": "sonde/1.0"})
+    assert resp.status_code == 403                      # unchanged
+    events = _appspot_events(caplog.records)
+    assert events == [{"event": "appspot_blocked", "service": "portail",
+                       "endpoint": endpoint}], events
+    rendu = repr(events) + " ".join(r.getMessage() for r in caplog.records)
+    for fuite in ("appspot.com", "APPSPOT", "athena-pallas", "ATHENA-PALLAS",
+                  "Tremblay", "tremblay", "jean@", "203.0.113.9", "sonde/1.0",
+                  "nulle-part", SECRET):
+        assert fuite not in rendu, fuite
+
+
+def test_the_service_names_are_the_deployment_inventory_s():
+    """`service` tells the two emitters apart in a jsonPayload read alone;
+    its two values are the services' names, from their one table (the main
+    service's is pinned by tests/test_appspot_block.py)."""
+    from utils.deployment_inventory import SERVICE_PORTAIL, SERVICES
+
+    assert SERVICE_PORTAIL == "portail"
+    assert set(SERVICES) == {"default", "portail"}
+
+
+@pytest.mark.parametrize("path, host, headers", [
+    ("/_ah/warmup", "portail-dot-athena-pallas.nn.r.appspot.com", {}),
+    ("/sante", "portail-dot-athena-pallas.nn.r.appspot.com",
+     {"X-AppEngine-QueueName": "portail"}),
+    ("/sante", "portail-dot-athena-pallas.nn.r.appspot.com",
+     {"X-Appengine-Cron": "true"}),
+    ("/sante", "portail.example.ca", {}),
+])
+def test_an_exempt_or_edge_request_logs_no_appspot_line(
+        caplog, path, host, headers):
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        resp = _get(_edge_app(SECRET), path, host=host,
+                    **{"X-Origin-Auth": SECRET, **headers})
+    assert resp.status_code == 200
+    assert _appspot_events(caplog.records) == []
+
+
 # ── The resolver and the factory ─────────────────────────────────────────
 
 

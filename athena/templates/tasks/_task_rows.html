@@ -4,7 +4,7 @@
    un fragment 4xx ne serait jamais échangé). Se dissipe à la
    navigation, comme la bannière de documents/_browser.html. #}
 {% if erreur %}
-<div class="text-red-600 text-sm mb-4">{{ erreur }}</div>
+<div class="text-red-600 text-sm mb-4 wrap-anywhere">{{ erreur }}</div>
 {% endif %}
 
 {% set priority_dot = {

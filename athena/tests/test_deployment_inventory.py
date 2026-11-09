@@ -12,7 +12,7 @@ plutôt qu'une instance :
   propriétaire sans figurer dans la liste. C'est le test qui aurait attrapé
   l'omission de `portail.yaml` — et il a effectivement attrapé, à l'écriture,
   un `athena/dispatch.yaml` inexistant (le fichier est à la RACINE) que
-  `check_config` sautait en silence.
+  `check_config` ne pouvait que dire « not found ».
 * **`REQUIRED_ENV`, par dérivation contre `config.py`.** Les trois variables
   obligatoires sont celles que `config.py` lit par `os.environ[...]` —
   l'accès par crochets, qui lève à l'import. Les recopier à la main serait
@@ -595,6 +595,20 @@ def test_the_bcrypt_expected_length_is_exact_not_a_range():
     assert expected_length_fr(secret_by_id("dav-password-hash")) == "exactement 60"
 
 
+def test_section_6_4_restates_each_consequence_VERBATIM():
+    """§6.4 recopie, en tête de chaque recette, la conséquence d'une valeur
+    fausse ou absente. Une copie à la main dérive de sa source sans que rien
+    ne le dise : la conséquence de `cf-origin-secret` a été réécrite deux
+    fois en novembre 2026 (elle disait le contrôle « DÉSACTIVÉ en
+    silence » des mois après qu'il s'était mis à parler), et chaque fois sa
+    copie de §6.4 a dû suivre à la main."""
+    doc = _deployment_md()
+    for sid in SECRET_IDS:
+        ligne = ("If this value is wrong or absent: "
+                 + secret_by_id(sid).consequence + ".")
+        assert ligne in doc, sid
+
+
 def test_every_recipe_is_valid_bash():
     """Une recette qu'on ne peut pas coller est une recette qui ment. Sauté
     proprement là où `bash` n'existe pas plutôt que rendu vert par accident."""
@@ -636,6 +650,16 @@ def _fichiers_de_configuration() -> list:
 
     Docs et tests sont exclus À DESSEIN : ils citent les identifiants du
     propriétaire comme exemples, ce que le commentaire d'origine disait déjà.
+
+    Les définitions de `monitoring/` en sont depuis le 2026-11-08 : chaque
+    compteur nomme le projet dans son filtre. Elles SEULES parmi les `.json`,
+    à dessein : élargir à tout `.json` ne prendrait aujourd'hui qu'un fichier
+    de plus, `plugin/athena/.claude-plugin/plugin.json`, dont l'adresse est
+    celle de l'AUTEUR du greffon — une métadonnée que son propre circuit
+    (`exporter_plugin_athena`, le miroir `athena-plugin`) livre, pas une
+    configuration du déploiement ; l'exiger dans SCAN_FILES ferait signaler
+    par Paramètres → Configuration une valeur que l'adoptant n'a pas à
+    remplacer pour déployer.
     """
     trouves = []
     for base, dirs, files in os.walk(_ROOT):
@@ -645,9 +669,11 @@ def _fichiers_de_configuration() -> list:
             if d not in (".git", ".venv", "node_modules", "__pycache__", "tests", "docs")
         ]
         for nom in files:
-            if nom.endswith(".yaml") or nom in ("config.py", "main.py"):
-                chemin = os.path.join(base, nom)
-                trouves.append(os.path.relpath(chemin, _ROOT).replace("\\", "/"))
+            chemin = os.path.join(base, nom)
+            rel = os.path.relpath(chemin, _ROOT).replace("\\", "/")
+            if (nom.endswith(".yaml") or nom in ("config.py", "main.py")
+                    or (rel.startswith("monitoring/") and nom.endswith(".json"))):
+                trouves.append(rel)
     return trouves
 
 
@@ -655,8 +681,9 @@ def test_every_config_file_carrying_an_owner_literal_is_scanned():
     """LE test de ce fichier. Il répare la CLASSE de défaut — une liste tenue
     à la main se périme, et CLAUDE.md l'avait prédit par écrit — au lieu de
     l'instance. Il a d'ailleurs attrapé, à l'écriture, un
-    « athena/dispatch.yaml » inexistant que `check_config` sautait en silence
-    alors que le vrai fichier, à la racine, porte deux littéraux."""
+    « athena/dispatch.yaml » inexistant que `check_config` ne pouvait que
+    dire « not found » alors que le vrai fichier, à la racine, porte deux
+    littéraux."""
     manquants = {}
     for rel in _fichiers_de_configuration():
         if rel in SCAN_FILES:
@@ -675,8 +702,10 @@ def test_every_config_file_carrying_an_owner_literal_is_scanned():
 
 
 def test_every_scanned_file_exists():
-    """`check_config` saute un chemin absent EN SILENCE, donc une faute de
-    frappe dans la liste désarme un contrôle sans rien dire."""
+    """`check_config` ne peut pas balayer un chemin absent — il le dit
+    seulement « not found », comme il le dit, sur App Engine, de chaque
+    entrée (la racine du dépôt n'y est pas déployée) —, donc une faute de
+    frappe dans la liste désarme le contrôle de ce fichier."""
     absents = [
         rel for rel in SCAN_FILES if not os.path.exists(os.path.join(_ROOT, rel))
     ]
@@ -1874,3 +1903,333 @@ def test_the_accessor_loop_covers_graph_client_secret():
             assert sid not in boucle
             continue
         assert sid in boucle, sid
+
+
+# ── §6.10 — la surveillance de sécurité (2026-11-08) ────────────────────
+#
+# Les compteurs et les politiques se créent À LA MAIN, depuis les fichiers
+# de `monitoring/` que §6.10 fait lire à gcloud ; la sonde les retrouve
+# ensuite par le nom du compteur. Les FICHIERS sont épinglés contre le code
+# par tests/test_monitoring_definitions.py ; ici s'épingle la TABLE
+# (SECURITY_METRICS) : ses lignes d'inventaire, les commandes qu'elle
+# engendre dans §6.10, et sa copie dans OBSERVABILITY.md. Un document qui
+# dériverait enverrait créer une politique que la sonde ne trouve pas.
+
+
+def _section_6_10() -> str:
+    doc = _deployment_md()
+    return doc[doc.index("### 6.10 "):doc.index("## 7. Cloudflare edge")]
+
+
+def _blocs_de_code(texte: str) -> list:
+    """Les blocs ```bash d'un texte Markdown, sans leurs clôtures."""
+    blocs, courant = [], None
+    for ligne in texte.splitlines():
+        if courant is None:
+            if ligne.strip() == "```bash":
+                courant = []
+        elif ligne.strip() == "```":
+            blocs.append("\n".join(courant))
+            courant = None
+        else:
+            courant.append(ligne)
+    return blocs
+
+
+def _phrases_de_fenetre() -> list:
+    """Ce que la prose dit de chaque politique, DÉRIVÉ des constantes : la
+    fenêtre (« count > 0 over 5 minutes », « 300-second windows ») et la
+    fermeture (« after one day »)."""
+    from utils.deployment_inventory import ALERT_AUTO_CLOSE, ALERT_WINDOW
+
+    secondes = int(ALERT_WINDOW[:-1])
+    assert ALERT_WINDOW.endswith("s") and secondes % 60 == 0
+    fermeture = {"86400s": "one day"}[ALERT_AUTO_CLOSE]
+    return ["count > 0 over %d minutes" % (secondes // 60),
+            "%d-second windows" % secondes,
+            "%d-minute window" % (secondes // 60),
+            "after " + fermeture]
+
+
+def test_every_bash_block_of_section_6_10_parses():
+    """Une recette qu'on ne peut pas coller est une recette qui ment."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("bash"):
+        pytest.skip("bash absent")
+    blocs = _blocs_de_code(_section_6_10())
+    assert blocs
+    for bloc in blocs:
+        r = subprocess.run(["bash", "-n"], input=bloc, text=True,
+                           capture_output=True)
+        assert r.returncode == 0, (bloc, r.stderr)
+
+
+def test_a_policy_command_never_runs_with_an_empty_CHANNEL():
+    """Le piège de §6.10 par l'autre porte : un `$CHANNEL` vide — un terminal
+    neuf, où l'étape 2 n'a pas tourné — passe `--notification-channels=`,
+    une liste VIDE que gcloud accepte sans erreur. Le shell doit refuser la
+    commande avant qu'elle parte ; canal posé, il la passe intacte. Un
+    `gcloud` de paille (une fonction du shell) enregistre ce qui serait
+    parti : aucun processus gcloud ne tourne."""
+    import shutil
+    import subprocess
+
+    from utils.deployment_inventory import (
+        SECURITY_METRICS,
+        policy_create_command,
+        policy_update_command,
+    )
+
+    if not shutil.which("bash"):
+        pytest.skip("bash absent")
+    paille = 'gcloud() { printf "GCLOUD-RAN"; printf " [%s]" "$@"; echo; }\n'
+    canal = "projects/p/notificationChannels/1"
+    for m in [x for x in SECURITY_METRICS if x.policy]:
+        for commande in (policy_create_command(m.metric, "p"),
+                         policy_update_command(m.metric, "p")):
+            sans = subprocess.run(
+                ["bash", "-c", paille + "unset CHANNEL; POLICY=x\n" + commande],
+                text=True, capture_output=True)
+            assert sans.returncode != 0, commande
+            assert "GCLOUD-RAN" not in sans.stdout, commande
+            vide = subprocess.run(
+                ["bash", "-c", paille + "CHANNEL=; POLICY=x\n" + commande],
+                text=True, capture_output=True)
+            assert vide.returncode != 0 and "GCLOUD-RAN" not in vide.stdout
+            avec = subprocess.run(
+                ["bash", "-c", paille + "CHANNEL=" + canal + "; POLICY=x\n"
+                 + commande], text=True, capture_output=True)
+            assert avec.returncode == 0, (commande, avec.stderr)
+            assert "GCLOUD-RAN" in avec.stdout
+            assert "channels=" + canal + "]" in avec.stdout, avec.stdout
+        # Et une mise à jour sans politique trouvée ne part pas non plus.
+        aucune = subprocess.run(
+            ["bash", "-c", paille + "CHANNEL=" + canal + "; POLICY=\n"
+             + policy_update_command(m.metric, "p")],
+            text=True, capture_output=True)
+        assert aucune.returncode != 0 and "GCLOUD-RAN" not in aucune.stdout
+
+
+def _noms_des_fichiers(sous_dossier: str) -> list:
+    dossier = os.path.join(_ROOT, "monitoring", sous_dossier)
+    return sorted(n[:-len(".json")] for n in os.listdir(dossier)
+                  if n.endswith(".json"))
+
+
+def _rangee_6_10(m) -> str:
+    """La rangée de la table de §6.10, ENGENDRÉE de SECURITY_METRICS."""
+    evenements = " OR ".join("`" + e + "`" for e in m.events)
+    if m.policy:
+        alerte = "« " + m.policy + " »"
+        ids = "`" + m.metric_key + "`, `" + m.policy_key + "`"
+    else:
+        alerte = "none yet — " + m.no_alert_reason
+        ids = "`" + m.metric_key + "`"
+    return "| `%s` | %s | %s | %s |" % (m.metric, evenements, alerte, ids)
+
+
+def test_section_6_10_is_GENERATED_from_SECURITY_METRICS():
+    from utils.deployment_inventory import (
+        SECURITY_METRICS,
+        detect_command,
+        metric_create_command,
+        metric_update_command,
+        policy_create_command,
+        policy_name_command,
+        policy_update_command,
+        resource_by_key,
+        resource_type_check_command,
+    )
+
+    section = _section_6_10()
+    assert SECURITY_METRICS
+    # La table, rangée pour rangée et dans l'ordre de la table.
+    rangees = [_rangee_6_10(m) for m in SECURITY_METRICS]
+    manquantes = [r for r in rangees if r not in section]
+    assert not manquantes, (
+        "DEPLOYMENT.md §6.10 a dérivé de SECURITY_METRICS — régénérez ces "
+        "rangées : " + repr(manquantes))
+    positions = [section.index(r) for r in rangees]
+    assert positions == sorted(positions)
+
+    # Les créations, DEPUIS les fichiers : tous les compteurs AVANT toute
+    # politique — une politique est refusée sur un compteur dont le
+    # descripteur n'existe pas encore.
+    compteurs = [metric_create_command(m.metric) for m in SECURITY_METRICS]
+    politiques = [policy_create_command(m.metric) for m in SECURITY_METRICS
+                  if m.policy]
+    for commande in compteurs + politiques:
+        assert commande in section, commande
+    assert (max(section.index(c) for c in compteurs)
+            < min(section.index(c) for c in politiques))
+
+    # Les mises à jour, depuis le fichier : la politique AVEC son canal —
+    # sans lui, `update` REMPLACE la politique par un fichier sans canal.
+    for commande in (metric_update_command("$M"), policy_name_command("$M"),
+                     policy_update_command("$M")):
+        assert commande in section, commande
+    # Et le canal GARDÉ, à la création comme à la mise à jour : un
+    # `$CHANNEL` vide (un terminal neuf) passerait une liste vide sans
+    # erreur — une alerte activée qui ne prévient personne.
+    assert ('--set-notification-channels="${CHANNEL:?'
+            in policy_update_command("$M"))
+    assert '"${POLICY:?' in policy_update_command("$M")
+    for m in SECURITY_METRICS:
+        if m.policy:
+            assert ('--notification-channels="${CHANNEL:?'
+                    in policy_create_command(m.metric)), m.metric
+    assert '="$CHANNEL"' not in section
+    assert 'update "$POLICY"' not in section
+    # Ces gardes sont de bash : PowerShell lit `"${CHANNEL:?…}"` comme une
+    # variable inexistante et passe une valeur VIDE, sans erreur. La section
+    # le dit avant sa première commande.
+    avertissement = "Run these blocks in bash"
+    assert avertissement in section
+    assert section.index(avertissement) < section.index("```bash")
+
+    # La prose redit la fenêtre et la fermeture des fichiers : épinglée
+    # contre les constantes que tests/test_monitoring_definitions.py épingle
+    # contre chaque fichier.
+    for phrase in _phrases_de_fenetre():
+        assert phrase in section, phrase
+
+    # La vérification, en lecture seule : les commandes mêmes de la sonde,
+    # et le type de ressource sur trente jours.
+    for m in SECURITY_METRICS:
+        cles = [m.metric_key] + ([m.policy_key] if m.policy else [])
+        for cle in cles:
+            assert "`" + cle + "`" in section, cle
+            assert detect_command(resource_by_key(cle)) in section, cle
+    assert resource_type_check_command() in section
+    assert "--freshness=30d" in resource_type_check_command()
+
+    # La seconde source est partie : ni JSON recopié dans le document, ni
+    # appel REST qui exigerait d'écrire le canal dans le fichier.
+    assert "<<'JSON'" not in section
+    assert "monitoring.googleapis.com/v3" not in section
+    # La politique du clavardage : une ligne datée, plus une étape — aucune
+    # commande ne la nomme plus.
+    assert "chat_charter_repli" in section
+    assert "« Clavardage — charte en repli »" in section
+    assert "2026-11-08" in section
+    code = "\n".join(_blocs_de_code(section))
+    assert "chat_charter_repli" not in code
+    assert "Clavardage" not in code
+
+
+def test_the_probe_finds_exactly_the_policy_of_its_FILE():
+    """La sonde filtre `conditions.conditionThreshold.filter~<compteur>` :
+    une RE non ancrée, appliquée par gcloud côté client à chaque condition.
+    Le fichier de la politique doit y répondre, et celui d'un AUTRE compteur
+    jamais — sinon deux lignes se liraient comme un doublon. Le motif est le
+    nom COMPLET du compteur : un préfixe (`security_`) répondrait à toutes."""
+    import json
+
+    from utils.deployment_inventory import SECURITY_METRICS, resource_by_key
+
+    avec = [m for m in SECURITY_METRICS if m.policy]
+    filtres = {}
+    for m in avec:
+        doc = json.loads(io.open(os.path.join(_ROOT, m.policy_file),
+                                 encoding="utf-8").read())
+        filtres[m.metric] = [c["conditionThreshold"]["filter"]
+                             for c in doc["conditions"]]
+    for m in avec:
+        r = resource_by_key(m.policy_key)
+        (filtre,) = [a for a in r.detect if a.startswith("--filter=")]
+        cle, motif = filtre[len("--filter="):].split("~", 1)
+        assert cle == "conditions.conditionThreshold.filter"
+        assert motif == m.metric
+        # ASCII seulement : l'argv traverse gcloud.CMD sur Windows, où un
+        # nom affiché accentué n'arrive pas forcément intact.
+        assert all(ord(c) < 128 for c in filtre), filtre
+        for autre, conditions in filtres.items():
+            trouve = any(re.search(motif, f) for f in conditions)
+            assert trouve == (autre == m.metric), (m.metric, autre)
+
+
+def test_one_inventory_row_per_monitoring_file_named_IN_FULL():
+    """Une ligne de constat par fichier de `monitoring/`, et réciproquement :
+    un fichier sans ligne serait une ressource que `scripts.provision` ne
+    regarde jamais ; une ligne sans fichier, une ressource qu'aucune source
+    ne définit. Chaque commande nomme le compteur EN ENTIER."""
+    from utils.deployment_inventory import RESOURCES, SECURITY_METRICS
+
+    decrire = ("gcloud", "logging", "metrics", "describe")
+    prefixe = "--filter=conditions.conditionThreshold.filter~"
+    compteurs = _noms_des_fichiers("metrics")
+    politiques = _noms_des_fichiers("policies")
+    assert compteurs and politiques
+
+    decrits = [r.detect[4] for r in RESOURCES if r.detect[:4] == decrire]
+    assert sorted(decrits) == compteurs
+    surveilles = [a[len(prefixe):] for r in RESOURCES for a in r.detect
+                  if a.startswith(prefixe)]
+    assert sorted(surveilles) == politiques
+    # Une ligne par fichier, pas deux.
+    assert len(decrits) == len(set(decrits))
+    assert len(surveilles) == len(set(surveilles))
+    # Et les clés de la table mènent aux lignes du bon fichier.
+    for m in SECURITY_METRICS:
+        (ligne,) = [r for r in RESOURCES if r.key == m.metric_key]
+        assert ligne.detect[:5] == decrire + (m.metric,)
+        if m.policy:
+            (ligne,) = [r for r in RESOURCES if r.key == m.policy_key]
+            assert prefixe + m.metric in ligne.detect
+
+
+def test_the_inventory_log_name_is_the_handlers():
+    """`deployment_inventory` n'importe pas Flask : il garde sa copie du nom
+    de journal, pour les commandes de §6.10. Cette copie EST celle du
+    gestionnaire — un journal renommé d'un seul côté ferait vérifier à §6.10
+    un journal où plus rien n'écrit."""
+    from utils import logging_setup
+    from utils.deployment_inventory import APP_LOG_NAME
+
+    assert APP_LOG_NAME == logging_setup.APP_LOG_NAME
+
+
+def test_the_config_walk_reaches_the_monitoring_definitions():
+    """Sans quoi l'épingle de complétude de SCAN_FILES passerait sur
+    `monitoring/` sans l'avoir lu."""
+    from utils.deployment_inventory import SECURITY_METRICS
+
+    trouves = _fichiers_de_configuration()
+    for m in SECURITY_METRICS:
+        assert m.metric_file in trouves, m.metric_file
+        if m.policy:
+            assert m.policy_file in trouves, m.policy_file
+    assert not any(f.startswith("plugin/") for f in trouves)
+
+
+def test_section_5_creates_the_alerts_once_the_edge_is_armed():
+    """La liste numérotée est celle qu'on suit : §6.10 y a son étape, APRÈS
+    celle qui arme le secret d'origine — avant, `security_control_disabled`
+    se déclenche sur chaque instance neuve."""
+    doc = _deployment_md()
+    section = doc[doc.index("## 5."):doc.index("## 6.")]
+    liste = section[section.index(chr(10) + "0. "):]
+    assert "§6.10" in liste
+    assert liste.index("§6.10") > liste.index("cf-origin-secret")
+
+
+def test_the_observability_table_restates_SECURITY_METRICS_row_for_row():
+    """OBSERVABILITY.md recopie la table — compteur, événements, alerte — et
+    ceci épingle la copie. Rien de plus : qu'un événement compté soit
+    déclaré ET émis, c'est tests/test_monitoring_definitions.py qui le
+    prouve. Dans sa forme du premier tour, ce test promettait d'empêcher
+    « un compteur sur un événement que rien ne déclare » et passait avec
+    les deux émetteurs retirés."""
+    from utils.deployment_inventory import SECURITY_METRICS
+
+    obs = io.open(os.path.join(_ATHENA, "OBSERVABILITY.md"),
+                  encoding="utf-8").read()
+    for m in SECURITY_METRICS:
+        alerte = ("« " + m.policy + " »") if m.policy else "none yet"
+        rangee = "> | `%s` | %s | %s" % (
+            m.metric, ", ".join("`" + e + "`" for e in m.events), alerte)
+        assert rangee in obs, rangee
+    # Sa phrase sur la fenêtre, dérivée de la constante comme celle de §6.10.
+    assert _phrases_de_fenetre()[0] in obs

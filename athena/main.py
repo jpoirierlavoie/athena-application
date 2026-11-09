@@ -234,6 +234,23 @@ def create_app() -> Flask:
             return None
         host = request.host.split(":", 1)[0].lower().rstrip(".")
         if host == "appspot.com" or host.endswith(".appspot.com"):
+            # Refused, and SAID, since 2026-11-08 (Change Impact 4): the
+            # event was registered with the registry and never emitted. The
+            # event's own fields are ids only — never the host, the path or a
+            # header a client chose; like every line logged inside a request,
+            # the entry still carries `route` and, in production,
+            # httpRequest.requestUrl and httpRequest.userAgent
+            # (OBSERVABILITY.md).
+            from utils.logging_setup import (
+                log_security_event,
+                sanitize_log_value,
+            )
+            log_security_event(
+                "appspot_blocked",
+                "warning",
+                service="default",
+                endpoint=sanitize_log_value(request.endpoint or ""),
+            )
             abort(403)
 
     # ── App Engine warmup (inbound_services: warmup in app.yaml) ──────

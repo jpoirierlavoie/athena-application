@@ -183,7 +183,8 @@ def enforce_edge() -> Optional[Response]:
     limit — was theirs to choose. Same rules as the main service:
 
     * the appspot host is refused (the Host header is spoofable, so this is
-      the weakest layer — but free);
+      the weakest layer — but free), with one ``appspot_blocked`` line since
+      2026-11-08;
     * when ``CF_ORIGIN_SECRET`` is set, every request must carry it in
       ``X-Origin-Auth`` (the zone-wide Transform Rule injects it). Unset or
       unreadable — ``portail-svc`` not yet granted the accessor — the check
@@ -199,6 +200,17 @@ def enforce_edge() -> Optional[Response]:
         return None
     host = request.host.split(":", 1)[0].lower().rstrip(".")
     if host == "appspot.com" or host.endswith(".appspot.com"):
+        # Said, since 2026-11-08, as on the main service. The event's own
+        # fields are ids only — never the host, the path or a header a client
+        # chose; like every line logged inside a request, the entry still
+        # carries `route` and, in production, httpRequest.requestUrl and
+        # httpRequest.userAgent (OBSERVABILITY.md).
+        log_security_event(
+            "appspot_blocked",
+            "warning",
+            service="portail",
+            endpoint=sanitize_log_value(request.endpoint or ""),
+        )
         abort(403)
     secret = current_app.config.get("CF_ORIGIN_SECRET", "")
     if not secret:
@@ -222,7 +234,12 @@ def enforce_edge() -> Optional[Response]:
 
 
 def init_portail_security(app: Flask) -> None:
-    # The edge first: a request the edge refuses reaches no other check.
+    # The edge before App Check, so a request the edge refuses reaches no
+    # check registered here. Not the first hook of the app: flask-wtf's CSRF
+    # check and the rate limiter, registered earlier by create_portail_app,
+    # run before it — a token-less POST to a routed view is a 400 there, on
+    # any host, and the edge never sees it; flask-wtf skips a request no rule
+    # matched, which does reach the edge.
     app.before_request(enforce_edge)
     app.before_request(verify_app_check)
     app.after_request(add_security_headers)

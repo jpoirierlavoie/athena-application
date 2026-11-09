@@ -15,9 +15,15 @@ que ce dépôt a déjà payée ailleurs :
 * **Le corpus de production est REJOUÉ.** ``tests/fixtures/gcloud/
   production.json`` porte la sortie réelle de chaque sonde, caviardée de
   l'identifiant du propriétaire, enregistrée le 2026-09-13 contre un
-  déploiement dont on sait qu'il est complet. Les dix verdicts doivent y lire
-  ``present`` — c'est le seul test de ce fichier qui éprouve les GABARITS de
-  commande et pas seulement la logique.
+  déploiement dont on sait qu'il est complet. Chaque ressource constatable
+  doit y lire ``present`` — c'est le seul test de ce fichier qui éprouve les
+  GABARITS de commande et pas seulement la logique.
+
+Les conventions du corpus : l'identifiant de projet devient ``projet-temoin``
+(« sa-portail ») ; et, depuis le 2026-11-08 (la surveillance de sécurité),
+les identifiants NUMÉRIQUES d'une politique d'alerte ou d'un canal de
+notification deviennent des valeurs SYNTHÉTIQUES, un chiffre répété, un par
+politique — le dépôt est public, et un verdict ne lit que leur nombre.
 """
 
 import io
@@ -82,7 +88,8 @@ def test_a_FAILED_probe_is_never_reported_as_an_absent_resource():
             continue
         for stderr in ("gcloud est introuvable", "PERMISSION_DENIED",
                        "credentials have expired", "délai dépassé (90 s)",
-                       "has not been used in project", ""):
+                       "has not been used in project",
+                       "NOT_FOUND: Metric x does not exist.", ""):
             res = probe(r, "p", "reg", runner=_runner(ok=False, stderr=stderr))
             assert res.state == INCONNU, (r.key, stderr, res.state)
             assert res.state != ABSENT
@@ -100,6 +107,37 @@ def test_a_probe_failure_names_a_REASON_the_operator_can_act_on():
     for stderr, attendu in cas.items():
         res = probe(r, "p", "reg", runner=_runner(ok=False, stderr=stderr))
         assert attendu.lower() in res.detail.lower(), (stderr, res.detail)
+
+
+def test_a_NOT_FOUND_says_so_and_stays_UNKNOWN_whatever_the_name():
+    """Le message de gcloud NOMME la ressource. Jusqu'au 2026-11-08, le mot
+    `disabled` du compteur `security_control_disabled` faisait lire SON
+    NOT_FOUND comme « l'API nécessaire est désactivée » : la ligne même de
+    l'inventaire qui existe pour dire ce compteur absent envoyait activer une
+    API déjà active. NOT_FOUND se dit maintenant — et reste INCONNU : un
+    projet mal tapé répond pareil, donc rien n'est constaté."""
+    from utils.deployment_inventory import SECURITY_METRICS
+
+    for m in SECURITY_METRICS:
+        stderr = ("ERROR: (gcloud.logging.metrics.describe) NOT_FOUND: "
+                  "Metric " + m.metric + " does not exist.")
+        res = probe(_res(m.metric_key), "p", "",
+                    runner=_runner(ok=False, stderr=stderr))
+        assert res.state == INCONNU, (m.metric, res.state)
+        assert "NOT_FOUND" in res.detail, (m.metric, res.detail)
+        assert "API" not in res.detail, (m.metric, res.detail)
+    # L'API désactivée se dit encore — par les tournures de Google, jamais
+    # par un mot isolé qu'un nom de ressource pourrait porter.
+    r = _res("metrique-controle-desactive")
+    for stderr in (
+        "Cloud Logging API has not been used in project 123 before or it "
+        "is disabled.",
+        "API [logging.googleapis.com] not enabled on project [p].",
+        "Error: reason: SERVICE_DISABLED",
+    ):
+        res = probe(r, "p", "", runner=_runner(ok=False, stderr=stderr))
+        assert res.state == INCONNU, (stderr, res.state)
+        assert "API" in res.detail, (stderr, res.detail)
 
 
 def test_an_empty_stdout_on_a_SUCCESSFUL_probe_is_a_real_absence():
@@ -301,17 +339,25 @@ def test_the_plan_marks_the_irreversible_steps():
 # commande en lecture seule), la verser au corpus, puis la retirer d'ici :
 # le test suivant refuse une entrée périmée.
 _CORPUS_EN_ATTENTE: set = set()
-# Vide depuis le 2026-09-28 : « cycle-de-vie-staging » (lot 2A, étape T5) a
-# été relevé ce jour-là sur le seau canonique vivant par la commande en
-# lecture seule de la sonde, et versé au corpus tel quel.
+# Vide depuis le 2026-11-08 : les ressources de la surveillance de sécurité
+# (DEPLOYMENT.md §6.10) ont été relevées ce jour-là sur le déploiement vivant
+# par les commandes en lecture seule de la sonde — les compteurs à nouveau,
+# avec leur filtre, quand la sonde s'est mise à le comparer —, et versées au
+# corpus caviardées (projet → `projet-temoin`, jusque dans les filtres ;
+# identifiants des politiques et du canal → valeurs synthétiques, voir le
+# docstring).
+# Vide aussi du 2026-09-28 au 2026-11-08 : « cycle-de-vie-staging » (lot 2A,
+# étape T5) avait été relevé ce jour-là sur le seau canonique vivant par la
+# commande en lecture seule de la sonde, et versé au corpus tel quel.
 
 
 def test_the_recorded_production_corpus_replays_to_PRESENT():
     """Le seul test qui éprouve les GABARITS et pas seulement la logique.
 
-    Le corpus est la sortie RÉELLE de chaque sonde, enregistrée le 2026-09-13
-    contre un déploiement dont on sait qu'il est complet, et caviardée de
-    l'identifiant du propriétaire. S'il cesse de rendre `present`, soit un
+    Le corpus est la sortie RÉELLE de chaque sonde, enregistrée contre un
+    déploiement dont on sait qu'il est complet (le 2026-09-13 ; le 2026-11-08
+    pour la surveillance de sécurité), et caviardée selon les conventions du
+    docstring du module. S'il cesse de rendre `present`, soit un
     verdict a dérivé, soit un gabarit de commande demande un champ que gcloud
     n'expose pas — le défaut exact que ce corpus existe pour attraper.
     """
@@ -399,6 +445,205 @@ def test_the_canonical_staging_lifecycle_verdict():
     assert not any("quarantaine" in a for a in argv)
 
 
+# ── La surveillance de sécurité (DEPLOYMENT.md §6.10) ───────────────────
+
+
+def test_every_detectable_resource_has_a_verdict():
+    """Sans verdict, une sonde rend « inconnu » à JAMAIS, même sur une
+    ressource en place — un rapport qui ne peut pas dire oui. Les lignes de
+    la surveillance sont dérivées d'une table : leurs verdicts aussi, et
+    ceci épingle qu'aucune n'est oubliée."""
+    from utils.deployment_probe import _VERDICTS
+
+    sans = [r.key for r in RESOURCES if not r.manual and r.key not in _VERDICTS]
+    assert sans == []
+    for r in RESOURCES:
+        if r.manual:
+            continue
+        res = probe(r, "p", "reg", runner=_runner("x"))
+        assert "aucun verdict" not in res.detail, r.key
+
+
+def test_a_security_metric_is_judged_on_what_it_COUNTS():
+    """Exister ne suffit pas : un compteur dont le filtre nomme le journal
+    d'un autre projet — l'adoptant qui a créé le sien d'un fichier non
+    remplacé — existe et ne compte rien, en silence ; un compteur DÉSACTIVÉ
+    ne produit aucun point. Le filtre attendu est celui du FICHIER, au
+    projet sondé près, et l'égalité est EXACTE ; sans lui, ou sans filtre
+    lu, rien n'est comparé, et le verdict ne dit pas PRESENT."""
+    from utils.deployment_inventory import SECURITY_METRICS
+    from utils.deployment_probe import expected_metric_filter
+
+    for m in SECURITY_METRICS:
+        r = _res(m.metric_key)
+        # Le verdict lit le filtre en DEUXIÈME colonne et l'état en
+        # troisième : la commande doit les demander là. Le corpus rejoué ne
+        # le voit pas — il rend la sortie relevée quoi que la commande
+        # demande.
+        assert r.detect[-1] == "--format=value(name,filter,disabled)", r.detect
+        attendu = expected_metric_filter(m.metric, "p")
+        assert attendu and attendu.startswith('logName="projects/p/logs/')
+        ctx = {"filtres_attendus": {m.metric: attendu}}
+
+        def etat(sortie, contexte=ctx):
+            res = probe(r, "p", "", runner=_runner(sortie), ctx=contexte)
+            return res.state, res.detail
+
+        assert etat("") == (ABSENT, "introuvable")
+        present = (PRESENT, "activé, compte ce que dit " + m.metric_file)
+        assert etat(TAB.join([m.metric, attendu])) == present
+        # Une colonne `disabled` vide (champ non posé) ne se juge pas.
+        assert etat(TAB.join([m.metric, attendu, ""])) == present
+        # Désactivé : il ne compte rien, quel que soit son filtre.
+        state, detail = etat(TAB.join([m.metric, attendu, "True"]))
+        assert state == DRIFT and "DÉSACTIVÉ" in detail
+        # Le journal d'un autre projet, un autre événement, une clause en
+        # plus, une négation — et, dans l'autre sens, la clause d'événement
+        # sans son journal, le journal sans sa clause : l'égalité est
+        # exacte, jamais une inclusion, ni dans un sens ni dans l'autre.
+        journal, clause = attendu.split(" AND ", 1)
+        for sortie in (
+                TAB.join([m.metric, attendu.replace("projects/p/",
+                                                     "projects/autre/")]),
+                TAB.join([m.metric, attendu.replace('"' + m.events[0] + '"',
+                                                     '"csrf_failure"')]),
+                TAB.join([m.metric, attendu + " AND severity>=WARNING"]),
+                TAB.join([m.metric, "NOT " + attendu]),
+                TAB.join([m.metric, clause]),
+                TAB.join([m.metric, journal])):
+            state, detail = etat(sortie)
+            assert state == DRIFT and m.metric_file in detail, sortie
+        # Aucun filtre lu (une projection ratée) : rien n'est comparé — un
+        # contrôle qui accuse à tort est pire qu'aucun.
+        state, detail = etat(m.metric)
+        assert state == INCONNU and "colonne vide" in detail
+        # Sans filtre attendu, la comparaison n'a pas eu lieu : INCONNU.
+        for contexte in ({}, {"filtres_attendus": {m.metric: None}}):
+            state, detail = etat(TAB.join([m.metric, attendu]), contexte)
+            assert state == INCONNU and "pas été comparé" in detail
+
+
+def test_the_expected_counter_filter_is_DERIVED_from_its_file(tmp_path):
+    """Le filtre du fichier, le projet de son `logName` remplacé par le
+    projet sondé ; illisible ou d'une autre forme, ``None`` — jamais un
+    filtre deviné."""
+    from utils.deployment_inventory import SECURITY_METRICS
+    from utils.deployment_probe import _REPO_ROOT, expected_metric_filter
+
+    for m in SECURITY_METRICS:
+        with io.open(os.path.join(_REPO_ROOT, *m.metric_file.split("/")),
+                     encoding="utf-8") as fh:
+            fichier = json.load(fh)["filter"]
+        attendu = expected_metric_filter(m.metric, "mon-projet")
+        assert attendu.startswith('logName="projects/mon-projet/logs/')
+        assert attendu.split("/logs/", 1)[1] == fichier.split("/logs/", 1)[1]
+
+    m = SECURITY_METRICS[0]
+    dossier = tmp_path / "monitoring" / "metrics"
+    dossier.mkdir(parents=True)
+    with io.open(os.path.join(_REPO_ROOT, *m.metric_file.split("/")),
+                 "rb") as fh:
+        vrai = fh.read()
+    # Le témoin : la copie exacte du vrai fichier se lit.
+    (dossier / (m.metric + ".json")).write_bytes(vrai)
+    lu = expected_metric_filter(m.metric, "p", str(tmp_path))
+    assert lu and lu.startswith('logName="projects/p/logs/')
+    # Absent, puis le MÊME fichier derrière une BOM (illisible : ce n'est
+    # plus du JSON), puis d'une autre forme — sans `logName`, pas une
+    # chaîne : chaque fois None. Lu AVANT l'assert
+    # (py/side-effect-in-assert).
+    (dossier / (m.metric + ".json")).unlink()
+    lu = expected_metric_filter(m.metric, "p", str(tmp_path))
+    assert lu is None
+    for contenu in (
+            b"\xef\xbb\xbf" + vrai,
+            json.dumps({"filter": 'jsonPayload.event="redirect_rejected"'})
+            .encode("utf-8"),
+            json.dumps({"filter": 7}).encode("utf-8")):
+        (dossier / (m.metric + ".json")).write_bytes(contenu)
+        lu = expected_metric_filter(m.metric, "p", str(tmp_path))
+        assert lu is None, contenu
+
+    # Un séparateur de lignes, à n'importe quelle place — au milieu comme
+    # en dernière position — et de n'importe quelle sorte que `splitlines`
+    # reconnaît : None — la sonde ne lit que la première ligne de gcloud, et
+    # le dirait en dérive à jamais. Le témoin sur une ligne se lit, pour que
+    # chaque variante ne prouve que son séparateur.
+    une_ligne = 'logName="projects/p/logs/x" AND jsonPayload.event=("y" OR "z")'
+    (dossier / (m.metric + ".json")).write_bytes(
+        json.dumps({"filter": une_ligne}).encode("utf-8"))
+    lu = expected_metric_filter(m.metric, "p", str(tmp_path))
+    assert lu == une_ligne
+    for variante in (
+            une_ligne.replace('"y" OR', '"y"' + chr(10) + 'OR'),
+            une_ligne.replace('"y" OR', '"y"' + chr(13) + 'OR'),
+            une_ligne.replace('"y" OR', '"y"' + chr(0x2028) + 'OR'),
+            une_ligne.replace("/logs/x", "/logs/x" + chr(10) + "y"),
+            une_ligne + chr(13),
+            une_ligne + chr(0x85)):
+        (dossier / (m.metric + ".json")).write_bytes(
+            json.dumps({"filter": variante}).encode("utf-8"))
+        lu = expected_metric_filter(m.metric, "p", str(tmp_path))
+        assert lu is None, repr(variante)
+
+
+def test_a_counter_created_from_another_projects_file_is_DRIFT():
+    """Le corpus rejoué pour un AUTRE projet : chaque compteur y nomme le
+    journal de `projet-temoin`, donc aucun ne compterait les lignes de
+    `mon-projet` — la sonde le dit, au lieu de « présent »."""
+    from utils.deployment_inventory import SECURITY_METRICS
+    from utils.deployment_probe import expected_metric_filter
+
+    corpus = _corpus()
+    for m in SECURITY_METRICS:
+        e = corpus[m.metric_key]
+        ctx = {"filtres_attendus": {
+            m.metric: expected_metric_filter(m.metric, "mon-projet")}}
+        res = probe(_res(m.metric_key), "mon-projet", "",
+                    runner=_runner(e["stdout"], e["ok"]), ctx=ctx)
+        assert res.state == DRIFT, (m.metric_key, res.detail)
+        # Et le même relevé, pour le projet qu'il nomme, est PRESENT.
+        ctx = {"filtres_attendus": {
+            m.metric: expected_metric_filter(m.metric, "projet-temoin")}}
+        res = probe(_res(m.metric_key), "projet-temoin", "",
+                    runner=_runner(e["stdout"], e["ok"]), ctx=ctx)
+        assert res.state == PRESENT, (m.metric_key, res.detail)
+
+
+def test_an_alert_policy_is_judged_on_what_a_firing_would_do():
+    """Une politique en double écrit deux fois ; désactivée ou sans canal,
+    elle ne prévient personne. Une colonne `enabled` vide ne se juge pas."""
+    from utils.deployment_inventory import SECURITY_METRICS
+
+    canal = "projects/p/notificationChannels/123"
+    for m in [x for x in SECURITY_METRICS if x.policy]:
+        r = _res(m.policy_key)
+
+        def etat(sortie):
+            res = probe(r, "p", "", runner=_runner(sortie))
+            return res.state, res.detail
+
+        nom = "projects/p/alertPolicies/1"
+        assert etat("") == (ABSENT, "aucune politique ne surveille ce compteur")
+        assert etat(TAB.join([nom, "True", canal])) == (
+            PRESENT, "activée, 1 canal(aux) de notification")
+        assert etat(TAB.join([nom, "True", canal + ";" + canal + "9"]))[1] == (
+            "activée, 2 canal(aux) de notification")
+        # Une colonne `enabled` absente ne se juge pas…
+        assert etat(TAB.join([nom, "", canal]))[0] == PRESENT
+        # …mais une politique désactivée, sans canal ou en double, si.
+        state, detail = etat(TAB.join([nom, "False", canal]))
+        assert state == DRIFT and "DÉSACTIVÉE" in detail
+        state, detail = etat(TAB.join([nom, "True", ""]))
+        assert state == DRIFT and "aucun canal" in detail
+        state, detail = etat(TAB.join([nom, "True"]))
+        assert state == DRIFT and "aucun canal" in detail
+        deux = chr(10).join([TAB.join([nom, "True", canal]),
+                             TAB.join([nom + "2", "True", canal])])
+        state, detail = etat(deux)
+        assert state == DRIFT and "2 politiques" in detail
+
+
 def test_the_corpus_carries_no_owner_literal_and_no_payload():
     """Un corpus de test est un fichier versionné. Celui-ci vient d'un
     déploiement vivant, donc il se caviarde — et aucune commande de ce module
@@ -412,6 +657,32 @@ def test_the_corpus_carries_no_owner_literal_and_no_payload():
         assert valeur not in brut, (cle, "littéral du propriétaire au corpus")
     for mot in ("BEGIN ", "PRIVATE", "password", "$2b$"):
         assert mot.lower() not in brut.lower(), mot
+
+
+def test_the_corpus_policy_and_channel_ids_are_synthetic():
+    """Le dépôt est public : un identifiant numérique de politique ou de
+    canal relevé en production n'entre pas au corpus — un chiffre répété le
+    remplace, distinct par politique. Les verdicts n'en lisent que le
+    NOMBRE (une politique, un canal), donc rien n'est perdu."""
+    politiques, canaux = [], []
+    for e in _corpus().values():
+        for ligne in e["stdout"].splitlines():
+            for champ in colonnes(ligne):
+                for valeur in champ.split(";"):
+                    if "/alertPolicies/" in valeur:
+                        politiques.append(valeur.rsplit("/", 1)[1])
+                    elif "/notificationChannels/" in valeur:
+                        canaux.append(valeur.rsplit("/", 1)[1])
+    # Pas vide : chaque politique de §6.10 est au corpus.
+    from utils.deployment_inventory import SECURITY_METRICS
+
+    attendues = len([m for m in SECURITY_METRICS if m.policy])
+    assert attendues and len(politiques) >= attendues and canaux, (
+        politiques, canaux)
+    for identifiant in politiques + canaux:
+        assert identifiant.isdigit() and len(set(identifiant)) == 1, (
+            identifiant, "identifiant réel au corpus : caviardez-le")
+    assert len(set(politiques)) == len(politiques), politiques
 
 
 def test_gcloud_is_resolved_to_a_full_path_outside_the_working_directory():
