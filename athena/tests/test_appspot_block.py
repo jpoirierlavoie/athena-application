@@ -14,57 +14,27 @@ the line fail on that code — no line at all; the others pin what did not
 change: the status codes, the ``/_ah/`` and ``X-AppEngine-*`` exemptions
 (silent), and the chain's order — the origin secret, then the size guard,
 then App Check, then this block, so a request refused earlier never reaches
-it; and one checks the probe's own guard, which keeps the child off every
-Google API.
+it. The child renders real pages, so it runs behind
+tests/_real_app_probe.py's guard: its Firestore client stays a mock, and a
+credential lookup or a Google API channel fails the fixture.
 """
 
 import json
 import os
-import subprocess
-import sys
 import textwrap
 
 import pytest
 
-ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from tests._real_app_probe import run_probe
 
 APPSPOT = "projet-temoin.nn.r.appspot.com"
 SECRET = "s3cret-token-from-the-edge"
 
+# Runs behind tests/_real_app_probe.PRELUDE: a 200 render runs the Réception
+# badge (main.inject_reception_badge), which counts the « portail »
+# database's invitations — the guard keeps that client a mock.
 _PROBE = textwrap.dedent('''
-    import json, logging, os, sys
-    from unittest import mock
-    sys.path.insert(0, os.getcwd())
-
-    # This child loads no conftest, so it brings the suite's guard itself.
-    # The Firestore client stays a mock for the WHOLE probe, not only for
-    # the import: a 200 render runs the Réception badge
-    # (main.inject_reception_badge), which counts the « portail »
-    # database's invitations — with the patch stopped after the import, that
-    # built a REAL client on the developer's ADC, against production, and
-    # the fail-open reader hid it. Any credential lookup or Google API
-    # channel that still happens is refused and recorded (tests/conftest.py
-    # refuses the same channels in the parent).
-    mock.patch("google.cloud.firestore.Client").start()
-    reached = []
-    import google.auth
-    from google.api_core import grpc_helpers
-
-    def _no_credentials(*args, **kwargs):
-        reached.append("google.auth.default")
-        raise RuntimeError("the probe never looks up credentials")
-
-    _create_channel = grpc_helpers.create_channel
-
-    def _no_google_channel(target, *args, **kwargs):
-        host = str(target).rsplit("/", 1)[-1].rsplit(":", 1)[0].lower()
-        if host == "googleapis.com" or host.endswith(".googleapis.com"):
-            reached.append(str(target))
-            raise RuntimeError("the probe never reaches Google APIs")
-        return _create_channel(target, *args, **kwargs)
-
-    google.auth.default = _no_credentials
-    grpc_helpers.create_channel = _no_google_channel
+    import json, logging
 
     import main
 
@@ -118,16 +88,6 @@ _PROBE = textwrap.dedent('''
     app.config["CF_ORIGIN_SECRET"] = ""
     out["chain"] = [getattr(f, "__name__", repr(f))
                     for f in app.before_request_funcs[None]]
-    out["reached"] = list(reached)
-    # The guard bites: both doors, tried on purpose, are refused and seen.
-    for door in (lambda: google.auth.default(),
-                 lambda: grpc_helpers.create_channel(
-                     "firestore.googleapis.com:443")):
-        try:
-            door()
-        except RuntimeError:
-            pass
-    out["guard_bites"] = reached[len(out["reached"]):]
     print("@@APPSPOT@@" + json.dumps(out))
 ''') % {"appspot": APPSPOT, "secret": SECRET}
 
@@ -147,15 +107,7 @@ def real_app() -> dict:
         "FIREBASE_STORAGE_BUCKET": "test-bucket",
         "AUTHORIZED_USER_EMAIL": "test@example.com",
     })
-    proc = subprocess.run(
-        [sys.executable, "-c", _PROBE],
-        cwd=ATHENA, env=env, capture_output=True, text=True,
-        encoding="utf-8", timeout=180,
-    )
-    assert proc.returncode == 0, proc.stderr[-3000:]
-    line = next(l for l in proc.stdout.splitlines()
-                if l.startswith("@@APPSPOT@@"))
-    return json.loads(line[len("@@APPSPOT@@"):])
+    return run_probe(_PROBE, "@@APPSPOT@@", env=env, timeout=180)
 
 
 def _events(case: dict, event: str) -> list:
@@ -223,15 +175,6 @@ def test_the_before_request_chain_keeps_its_order(real_app):
     assert all(chain.count(n) == 1 for n in order), chain
     assert [chain.index(n) for n in order] == sorted(
         chain.index(n) for n in order), chain
-
-
-def test_the_probe_reached_no_google_api(real_app):
-    """The child renders real pages: it must reach neither credentials nor a
-    Google API — a real client there runs on the developer's ADC, against
-    production — and its guard must be seen to refuse both doors."""
-    assert real_app["reached"] == [], real_app["reached"]
-    assert real_app["guard_bites"] == [
-        "google.auth.default", "firestore.googleapis.com:443"]
 
 
 def test_the_service_name_is_the_deployment_inventory_s(real_app):

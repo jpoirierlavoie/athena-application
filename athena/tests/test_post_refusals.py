@@ -48,12 +48,10 @@ import ast
 import functools
 import importlib
 import io
-import json
 import logging
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import textwrap
 from datetime import date, datetime, timezone
@@ -68,6 +66,8 @@ from markupsafe import escape
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ATHENA))
+
+from tests._real_app_probe import run_probe  # noqa: E402
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
@@ -954,14 +954,14 @@ def test_the_sweep_sees_every_post_route_flask_routes():
 # blueprint, the connector's, the app-level routes) and the portal's
 # ``client.wsgi:app`` — with the source of its view. In a subprocess: both
 # build their app at import (logging handlers, OpenTelemetry, Firebase),
-# state this suite must not inherit (``tests/test_provenance.py``).
+# state this suite must not inherit (``tests/test_provenance.py``). Behind
+# tests/_real_app_probe.PRELUDE, like every real-app probe: the child loads
+# no conftest, and its Firestore client must stay a mock for the whole run.
 _REAL_POST_RULES_PROBE = textwrap.dedent('''
-    import inspect, json, os, sys
-    from unittest import mock
-    sys.path.insert(0, os.getcwd())
-    with mock.patch("google.cloud.firestore.Client"):
-        import main
-        import client.wsgi as portal
+    import inspect, json, os
+
+    import main
+    import client.wsgi as portal
     rows = []
     for label, app in (("main", main.app), ("portail", portal.app)):
         for rule in app.url_map.iter_rules():
@@ -987,15 +987,8 @@ def real_post_rules() -> list:
     # The portal boots only with its own session key (client/config.py) —
     # the value tests/test_portail_*.py set.
     env.setdefault("PORTAIL_SECRET_KEY", "test-portail-secret")
-    proc = subprocess.run(
-        [sys.executable, "-c", _REAL_POST_RULES_PROBE],
-        cwd=str(_ATHENA), env=env, capture_output=True, text=True,
-        encoding="utf-8", timeout=180,
-    )
-    assert proc.returncode == 0, proc.stderr[-3000:]
-    line = next(l for l in proc.stdout.splitlines()
-                if l.startswith("@@POST@@"))
-    return json.loads(line[len("@@POST@@"):])
+    return run_probe(_REAL_POST_RULES_PROBE, "@@POST@@", env=env,
+                     timeout=180)
 
 
 def test_every_post_rule_of_the_real_apps_is_swept_or_declared_out_of_scope(

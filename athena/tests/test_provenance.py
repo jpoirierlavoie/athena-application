@@ -25,11 +25,9 @@ Ce que ces tests épinglent, dans l'ordre d'importance :
 """
 
 import ast
-import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import textwrap
 from datetime import datetime, timezone
@@ -57,6 +55,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import time_entry as time_entry_model
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._real_app_probe import run_probe  # noqa: E402
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 25, 15, 0, tzinfo=UTC)
@@ -246,15 +245,16 @@ def test_the_override_wins_over_the_request():
         assert provenance.current_via() == "dav"
 
 
+# Behind tests/_real_app_probe.PRELUDE, like every real-app probe: the child
+# loads no conftest, and its Firestore client must stay a mock for the whole
+# run.
 _REAL_APP_PROBE = textwrap.dedent('''
-    import json, os, re, sys
-    from unittest import mock
-    sys.path.insert(0, os.getcwd())
-    with mock.patch("google.cloud.firestore.Client"):
-        import main
-        import mcp
-        from models import provenance
-        from security import csrf
+    import json, re
+
+    import main
+    import mcp
+    from models import provenance
+    from security import csrf
     from flask import request
 
     app = main.app
@@ -290,14 +290,7 @@ def real_app():
     inherit."""
     env = {**os.environ}
     env.pop("ENV", None)
-    proc = subprocess.run(
-        [sys.executable, "-c", _REAL_APP_PROBE],
-        cwd=str(ATHENA), env=env, capture_output=True, text=True,
-        encoding="utf-8", timeout=120,
-    )
-    assert proc.returncode == 0, proc.stderr[-3000:]
-    line = next(l for l in proc.stdout.splitlines() if l.startswith("@@PROVENANCE@@"))
-    return json.loads(line[len("@@PROVENANCE@@"):])
+    return run_probe(_REAL_APP_PROBE, "@@PROVENANCE@@", env=env, timeout=120)
 
 
 def _expected_via(bp: dict) -> str:
