@@ -1085,3 +1085,34 @@ def test_the_entry_page_names_a_transfers_purpose(client, fake):
     assert "Objet du virement" in page and "Avances à verser au fidéicommis" in page
     plain = _create("virement_interne_sortant")
     assert "Objet du virement" not in _get(client, f"/administration/{plain['id']}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# The categories of 2026-11-08: a room, a notary, an expert, a lawyer,
+# the court stamps and greffe fees
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_the_form_offers_every_category_of_the_model_in_its_order(client, fake):
+    """Regression — the new categories reach the form from the model alone."""
+    selects = _selects(client.get("/administration/nouvelle").get_data(as_text=True))
+    options = selects["category"]["options"]
+    assert [o["value"] for o in options if o["value"]] == list(al.ADMIN_EXPENSE_CATEGORIES)
+    labels = {o["value"]: o["label"] for o in options}
+    assert labels == {"": "Choisir…", **al.ADMIN_CATEGORY_LABELS}
+    for code, label in (("location_salle", "Location de salle"), ("notaire", "Notaire"),
+                        ("expert", "Expert"), ("avocat", "Avocat"),
+                        ("timbres_judiciaires", "Timbres judiciaires et frais de greffe"),
+                        ("honoraires_professionnels", "Autres honoraires professionnels")):
+        assert labels[code] == label
+
+
+def test_the_form_records_court_stamps_on_their_dossier(client, fake):
+    resp = client.post("/administration/", data=_form(
+        "dépense", counterparty="Greffe fictif", category="timbres_judiciaires",
+        dossier_id="dos1", net_amount="100,00", gst_amount="", qst_amount=""))
+    assert resp.status_code in (302, 303), resp.get_data(as_text=True)[:400]
+    (entry,) = _entries(fake).values()
+    assert (entry["kind"], entry["category"], entry["dossier_id"]) == (
+        "dépense", "timbres_judiciaires", "dos1")
+    assert (entry["net_amount"], entry["gst_amount"], entry["qst_amount"]) == (10000, 0, 0)

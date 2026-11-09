@@ -1848,10 +1848,11 @@ _ADMIN_METHODS = [
     "autre",
 ]
 _ADMIN_CATEGORIES = [
-    "loyer", "internet", "téléphone", "abonnements", "infonuagique_ia",
-    "équipement", "fournitures", "assurances", "cotisations_professionnelles",
-    "formation", "documentation", "recherche", "publicité",
-    "honoraires_professionnels", "huissier", "sténographe", "frais_bancaires",
+    "loyer", "location_salle", "internet", "téléphone", "abonnements",
+    "infonuagique_ia", "équipement", "fournitures", "assurances",
+    "cotisations_professionnelles", "formation", "documentation", "recherche",
+    "publicité", "notaire", "expert", "avocat", "honoraires_professionnels",
+    "huissier", "sténographe", "timbres_judiciaires", "frais_bancaires",
     "intérêts", "taxes_permis", "autre",
 ]
 _REGISTER_STATUSES = ["en_circulation", "compensée", "annulée"]
@@ -6780,8 +6781,15 @@ TOOLS: dict[str, dict] = {
                 "status": {"type": "string", "enum": _REGISTER_STATUSES,
                            "description": "Only the entries in this status."},
                 "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
-                             "description": ("Only the dépenses and refunds "
-                                             "of this category.")},
+                             "description": (
+                                 "Only the dépenses and refunds of this ONE "
+                                 "category, never a heading of the "
+                                 "statements: their « Honoraires "
+                                 "professionnels » gathers notaire, expert, "
+                                 "avocat, honoraires_professionnels (« Autres "
+                                 "honoraires professionnels »), huissier and "
+                                 "sténographe — read without a category to "
+                                 "total them.")},
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -6957,8 +6965,13 @@ TOOLS: dict[str, dict] = {
                         "et bureautique »). Law reports, journals, books: "
                         "documentation; research billed by the search "
                         "(SOQUIJ, land or bankruptcy registers): recherche; "
-                        "a court stamp stays taxes_permis; a course or a "
-                        "degree, formation."
+                        "court stamps, greffe fees and copies: "
+                        "timbres_judiciaires (taxes_permis: permits, other "
+                        "duties); a notary, an expert, a lawyer: notaire, "
+                        "expert, avocat (any other professional: "
+                        "honoraires_professionnels); a room rented for a "
+                        "meeting or hearing: location_salle (an office's "
+                        "rent: loyer); a course or a degree, formation."
                     ),
                 },
                 **_ventilation_props(),

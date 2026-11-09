@@ -368,6 +368,10 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "(revenue) and dépense (expenses",
     "mean something only on a dépense or its correction",
     "mean something only on a dépense: no other kind",
+    # 2026-11-08 — lot F: a court stamp has a category of its own
+    # (timbres_judiciaires); the hint that kept it in taxes_permis, quoted as
+    # it stood (lower-cased), is false now.
+    "a court stamp stays taxes_permis",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before

@@ -4643,6 +4643,62 @@ Notes:
   the register does not know), its check 11 names it and its form refuses
   to edit it, while a `transfer_purpose` is ignored. Redeliver plugin 1.4.0
   with the code.
+- **Five categories and the « Honoraires professionnels » heading
+  (2026-11-08).** Lot F, the lawyer's decisions of 2026-11-08. Five dépense
+  categories: `location_salle` (« Location de salle »: a room rented by the
+  occasion — a VARIABLE cost without a dossier; an office's rent stays
+  `loyer`), `notaire`, `expert` and `avocat` (the fees of another
+  professional; `honoraires_professionnels` is labelled « Autres honoraires
+  professionnels », its code kept) and `timbres_judiciaires` (« Timbres
+  judiciaires et frais de greffe »: court stamps, greffe fees and copies;
+  `taxes_permis` keeps the permits and other duties). The income statement
+  prints « Autres produits » as one total — an « autre recette » that may be
+  a fee payment's recette is now a point of its own
+  (`autres_produits_lies`) —, gathers the notary, the expert, the lawyer,
+  the other professionals, the bailiff and the stenographer under one
+  heading, « Honoraires professionnels » (`admin_ledger
+  .EXPENSE_CATEGORY_GROUPS`: a presentation only, no filter matches it),
+  prints no category line that sums to zero in the period (a heading prints
+  whenever one of its members does, even at zero), and lists court stamps
+  filed without a dossier with the bailiff's. Change Impact: item 1 touched
+  (the category enum of record_admin_entry, update_admin_entry and
+  get_admin_ledger gains five values, every existing value unchanged; the
+  category hint names them, and get_admin_ledger's filter says it matches
+  ONE code, never the statements' heading, whose codes it names; plugin
+  1.6.0), without the §11 train, as for lots A and E — no new kind of data is
+  read and no match is widened; item 6: the new lines reuse the statements'
+  row levels, no template or class changed; items 2, 3, 4, 5 and 7 not
+  touched.
+  In order:
+  1. *Before the push*: both integrity scripts, read-only.
+  2. *The push.*
+  3. *Plugin 1.6.0*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day.
+  4. *Then the data*, on the lawyer's list, a dry run first, through
+     `scripts/reclassify_admin_category.py` (above): the entries of `loyer`,
+     `honoraires_professionnels`, `taxes_permis` or `autre` that belong to a
+     new category. A reversed pair stays where it is (the script refuses
+     either end): it nets to zero, and prints no line, in a period that
+     holds both its ends — a period that holds only one (the correction is
+     dated on its own day) prints that end under the old category, so name
+     such pairs to the lawyer, with their two dates, beside the plan. A
+     supplier's refund (`remboursement_depense`) in one of these categories
+     is neither listed nor accepted by this script: move it with its
+     dépense, through its edit form while it is editable, otherwise through
+     `scripts/reclassify_admin_nature.py` (same nature, the new category, its
+     split restated) — left behind, it prints as a negative line under the
+     old category. Run both integrity scripts before and after, and compare
+     their findings by TEXT.
+  A rollback restores those data first (`--restaurer`), then the code:
+  under the older code an entry in a new category prints its raw code in the
+  statements (a `location_salle` without a dossier counted as a fixed cost),
+  no category in the journal list and the CSV export, its nature
+  (« Dépense », « Remboursement de dépense ») in the PDF journal's
+  « Catégorie » column, an edit form with no category selected (the model
+  refuses to save it, on the web as through update_admin_entry, until an
+  older category is picked), and the integrity script names a refund in
+  one. Redeliver plugin 1.5.0 with the code.
 
 ## 16. Troubleshooting
 

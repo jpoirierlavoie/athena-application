@@ -429,3 +429,39 @@ def test_unread_reconciliations_are_said_on_the_page_and_in_the_pdf(client, fake
     text = _pdf_text(resp.data)
     assert fs.FLOORS_HEADING in text
     assert "Conciliations indisponibles" in text
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The income statement's lines (the lawyer's decisions of 2026-11-08)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_fees_print_under_their_heading_and_other_income_as_one_line(client, fake):
+    """A notary's and a lawyer's fees print beneath « Honoraires
+    professionnels », indented one step further, on the page and in the PDF;
+    an « autre recette » is part of one « Autres produits » line, never a
+    line of its own."""
+    for id_, category, amount in (("a4", "notaire", 11000), ("a5", "avocat", 22000)):
+        fake.seed(f"admin_transactions/{id_}", {
+            "id": id_, "account_id": "ops1", "kind": "dépense", "direction": "déboursé",
+            "amount": amount, "date": _d(2031, 8, 14), "category": category,
+            "counterparty": "Professionnel fictif", "net_amount": amount,
+            "gst_amount": 0, "qst_amount": 0, "status": "compensée"})
+    fake.seed("admin_transactions/a6", {
+        "id": "a6", "account_id": "ops1", "kind": "recette_autre", "direction": "recette",
+        "amount": 1234, "date": _d(2031, 8, 15), "counterparty": "Payeur fictif",
+        "net_amount": 0, "gst_amount": 0, "qst_amount": 0, "status": "compensée"})
+    income = _plain(_section(_page(client, "/comptabilite/etats/?periode=2031-08"),
+                             "État des résultats"))
+    nested = '<span class="block ml-3"><span class="block ml-3">'
+    assert '<span class="block ml-3">Honoraires professionnels</span>' in income
+    assert f"{nested}Notaire</span></span>" in income
+    assert f"{nested}Avocat</span></span>" in income
+    assert (income.index(">Honoraires professionnels<") < income.index(">Notaire<")
+            < income.index(">Avocat<"))
+    assert _money(33000) in income and _money(1234) in income
+    assert "Payeur fictif" not in income
+    text = _pdf_text(client.get("/comptabilite/etats/pdf?periode=2031-08").data)
+    for label in ("Honoraires professionnels", "Notaire", "Avocat", "Autres produits"):
+        assert label in text, label
+    assert "Payeur fictif" not in text

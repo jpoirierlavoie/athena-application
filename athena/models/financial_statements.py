@@ -18,10 +18,15 @@ The rules (the plan of 2026-11-07, « The rules (Lot B) »):
   ``admin_ledger.cost_class`` (dossier ⇒ direct; ``VARIABLE_COST_CATEGORIES``
   ⇒ variable; the rest fixed); a supplier's refund
   (``admin_ledger.REFUND_KINDS``, 2026-11-08) lowers the class and category
-  of the cost it refunds, and gives its CTI/RTI back. « Autres produits »
-  are the « autre recette » entries carrying no trust link; one that may
-  stand for a fee payment drawn from trust is marked
-  (``fee_payment.manual_recette_candidates``), never moved.
+  of the cost it refunds, and gives its CTI/RTI back. Each class prints its
+  categories in the ledger's order, the members of a group
+  (``admin_ledger.EXPENSE_CATEGORY_GROUPS``) beneath their heading, and no
+  category line that sums to zero in the period — a heading prints whenever
+  one of its members does, even at zero (2026-11-08). « Autres produits »
+  are the « autre recette » entries carrying no trust link, printed as ONE
+  total (the lawyer's decision of 2026-11-08); one that may stand for a fee
+  payment drawn from trust (``fee_payment.manual_recette_candidates``) is
+  listed among the points, never moved.
 * **Clients' advances received here** (``admin_ledger.ADVANCE_KINDS``,
   2026-11-08) are no revenue: until a virement interne marked « avances »
   moves them to trust they are owed to the clients — a liability, «
@@ -141,7 +146,7 @@ CASH_FLOW_LINE_LABELS = {
 
 #: Categories that are normally a dossier's cost: one filed without its
 #: dossier lands in the fixed costs, and is listed.
-_DOSSIER_CATEGORIES = ("huissier", "sténographe")
+_DOSSIER_CATEGORIES = ("huissier", "sténographe", "timbres_judiciaires")
 #: Words of a payee or description that name the taxes or the authorities.
 _TAX_WORDS = ("tps", "tvq", "gst", "qst", "arc")
 _TAX_PHRASES = ("revenu québec", "revenu quebec", "agence du revenu")
@@ -957,8 +962,8 @@ def _points(st: Statements, world: Optional[_World], admin: Optional[_Admin],
         depenses = [r for r in period_rows if r.get("kind") == "dépense"]
         no_dossier = [r for r in depenses if not r.get("dossier_id")
                       and (r.get("category") or "") in _DOSSIER_CATEGORIES]
-        _point(points, "huissier_sans_dossier", "Frais d'huissier ou de "
-               "sténographe sans dossier — comptés en frais fixes",
+        _point(points, "huissier_sans_dossier", "Frais d'huissier, de "
+               "sténographe ou de greffe sans dossier — comptés en frais fixes",
                [r["id"] for r in no_dossier], amount=sum(_cost(r) for r in no_dossier),
                refs=[_ref(r) for r in no_dossier])
         fiscal = [r for r in period_rows if r.get("kind") in _FISCAL_SCAN_KINDS
@@ -999,6 +1004,18 @@ def _points(st: Statements, world: Optional[_World], admin: Optional[_Admin],
                "d'un client, à inscrire en « Avance d'honoraires » ?",
                [r["id"] for r in maybe], amount=sum(r["_amount"] for r in maybe),
                refs=[_ref(r) for r in maybe])
+        # « Autres produits » print as one total (2026-11-08): the ones that
+        # may be the recette of a fee payment drawn from trust are named here.
+        income = st.sections.get("resultats")
+        if income is not None:
+            marks = income["marks"]
+            marked = [r for r in income["other"] if r["id"] in marks]
+            _point(points, "autres_produits_lies", "Autres produits qui pourraient "
+                   "être la recette d'un paiement d'honoraires tiré du fidéicommis "
+                   "— à vérifier", [r["id"] for r in marked],
+                   amount=sum(_signed(r) for r in marked),
+                   refs=[f"{_ref(r)} (paiement du fidéicommis du "
+                         f"{format_date_fr(marks[r['id']])})" for r in marked])
     bilan = st.sections.get("bilan")
     if admin is not None and bilan is not None:
         owed = bilan["closing"].advances
@@ -1079,11 +1096,15 @@ def compute(snapshot: Snapshot, period: periods.Period, *, today: date,
         st.unavailable[key] = reason
 
     world = None
+    marks_error = ""
     if core_error:
         for key in ("resultats", "flux", "bilan", "avoir", "taxes"):
             unavailable(key, core_error)
     else:
-        marks, _marks_error = attempt(lambda: _manual_marks(admin, trust_rows))
+        # A trust row the marks cannot read (an unreadable amount) leaves the
+        # figures alone — the marks only name — but the point
+        # « autres_produits_lies » is then unjudged, and the list says so.
+        marks, marks_error = attempt(lambda: _manual_marks(admin, trust_rows))
         marks = marks or {}
         st.sections["resultats"] = _income(admin, invoices, period.start, as_of, marks)
         if trust_rows is None:
@@ -1120,8 +1141,9 @@ def compute(snapshot: Snapshot, period: periods.Period, *, today: date,
     st.floors, st.floors_error = floors, floors_error
     st.points = _points(st, world, admin, invoices)
     # What the points could not judge — never « aucun point » over an unread
-    # collection.
-    for reason in (invoices_error, admin_error, "" if core_error else trust_error):
+    # collection, nor over the marks of a trust row they could not read.
+    for reason in (invoices_error, admin_error, "" if core_error else trust_error,
+                   marks_error):
         if reason and reason not in st.points_unchecked:
             st.points_unchecked.append(reason)
     return st
@@ -1152,31 +1174,46 @@ def _account_name(account: dict) -> str:
     return str(account.get("name") or account.get("id") or "?")
 
 
+def _cost_rows(costs: dict) -> list:
+    """The category lines of one cost class: the ledger's order, a code the
+    vocabulary no longer knows after it; a group's members beneath its
+    heading, which carries their total (``admin_ledger
+    .EXPENSE_CATEGORY_GROUPS``). No category line sums to zero (a reversed
+    pair); a heading prints whenever one of its members does — even at zero,
+    when a refund cancels another member."""
+    codes = [c for c in al.ADMIN_EXPENSE_CATEGORIES if costs.get(c)]
+    codes += sorted(c for c in set(costs) - set(al.ADMIN_EXPENSE_CATEGORIES)
+                    if costs[c])
+    rows, headed = [], set()
+    for code in codes:
+        group = al.category_group(code)
+        if group is None:
+            rows.append(_row(_category_label(code), costs[code], level=1))
+            continue
+        if group in headed:
+            continue
+        headed.add(group)
+        members = [c for c in al.EXPENSE_CATEGORY_GROUPS[group] if costs.get(c)]
+        rows.append(_row(al.EXPENSE_CATEGORY_GROUP_LABELS[group],
+                         sum(costs[c] for c in members), level=1))
+        rows.extend(_row(_category_label(c), costs[c], level=2) for c in members)
+    return rows
+
+
 def _present_income(data: dict) -> dict:
+    # « Autres produits » print as one total (the lawyer's decision of
+    # 2026-11-08); the ones that may be a fee payment's recette are a point.
     rows = [_row("Produits", None, style="heading"),
             _row("Honoraires facturés", data["fees"], level=1),
             _row("Débours refacturés", data["billed_expenses"], level=1),
-            _row("Autres produits", data["other_total"], level=1)]
-    for r in data["other"]:
-        note = ""
-        if r["id"] in data["marks"]:
-            note = ("possiblement le paiement d'honoraires du fidéicommis du "
-                    f"{format_date_fr(data['marks'][r['id']])} — à vérifier")
-        label = f"{format_date_fr(r['_day'])} — {r.get('counterparty') or 'Autre recette'}"
-        if r["sign"] < 0:
-            label = f"{label} (correction)"
-        rows.append(_row(label, _signed(r), level=2, note=note))
-    rows.append(_row("Total des produits", data["revenue"], style="subtotal"))
+            _row("Autres produits", data["other_total"], level=1),
+            _row("Total des produits", data["revenue"], style="subtotal")]
     for cls in al.COST_CLASSES:
         heading = al.COST_CLASS_LABELS[cls]
         if cls == "direct":
             heading += " (dépenses liées à un dossier)"
         rows.append(_row(heading, None, style="heading"))
-        for code in al.ADMIN_EXPENSE_CATEGORIES:
-            if code in data["costs"][cls]:
-                rows.append(_row(_category_label(code), data["costs"][cls][code], level=1))
-        for code in sorted(set(data["costs"][cls]) - set(al.ADMIN_EXPENSE_CATEGORIES)):
-            rows.append(_row(_category_label(code), data["costs"][cls][code], level=1))
+        rows.extend(_cost_rows(data["costs"][cls]))
         rows.append(_row(f"Total — {al.COST_CLASS_LABELS[cls].lower()}",
                          data["cost_totals"][cls], style="subtotal"))
         if cls == "direct":

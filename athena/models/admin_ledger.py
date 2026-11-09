@@ -290,6 +290,10 @@ VALID_METHODS = (
 # FIRM-side payment; the client-billable expense record stays in /temps.
 ADMIN_EXPENSE_CATEGORIES = (
     "loyer",
+    # A room rented by the occasion — a meeting, an examination, a hearing
+    # (the lawyer's decision of 2026-11-08); an office's rent stays
+    # « loyer ». A variable cost when it carries no dossier.
+    "location_salle",
     "internet",
     "téléphone",
     # Software and office subscriptions — labelled « Logiciels et
@@ -311,13 +315,27 @@ ADMIN_EXPENSE_CATEGORIES = (
     # degree stays « formation ».
     "documentation",
     # Research billed by the search: SOQUIJ, the land and bankruptcy
-    # registers (the lawyer's decision of 2026-11-08) — a court stamp stays
-    # « taxes_permis ».
+    # registers (the lawyer's decision of 2026-11-08) — a court stamp is
+    # « timbres_judiciaires ».
     "recherche",
     "publicité",
+    # The fees of another professional (the lawyer's decision of
+    # 2026-11-08): a notary, an expert, a lawyer — « honoraires_
+    # professionnels » reads « Autres honoraires professionnels » and keeps
+    # every other professional. With the bailiff and the stenographer they
+    # print under one heading in the statements (EXPENSE_CATEGORY_GROUPS):
+    # its members follow each other here (pinned by
+    # tests/test_admin_categories_honoraires.py).
+    "notaire",
+    "expert",
+    "avocat",
     "honoraires_professionnels",
     "huissier",
     "sténographe",
+    # Court stamps (droits de greffe), a court's or a tribunal's greffe fees
+    # and copies (the lawyer's decision of 2026-11-08); « taxes_permis »
+    # keeps the permits, registrations and other duties.
+    "timbres_judiciaires",
     "frais_bancaires",
     "intérêts",
     "taxes_permis",
@@ -371,6 +389,7 @@ METHOD_LABELS = {
 }
 ADMIN_CATEGORY_LABELS = {
     "loyer": "Loyer",
+    "location_salle": "Location de salle",
     "internet": "Internet",
     "téléphone": "Téléphone",
     "abonnements": "Logiciels et bureautique",
@@ -383,9 +402,13 @@ ADMIN_CATEGORY_LABELS = {
     "documentation": "Documentation juridique",
     "recherche": "Frais de recherche",
     "publicité": "Publicité et développement",
-    "honoraires_professionnels": "Honoraires professionnels",
+    "notaire": "Notaire",
+    "expert": "Expert",
+    "avocat": "Avocat",
+    "honoraires_professionnels": "Autres honoraires professionnels",
     "huissier": "Huissier",
     "sténographe": "Sténographe",
+    "timbres_judiciaires": "Timbres judiciaires et frais de greffe",
     "frais_bancaires": "Frais bancaires",
     "intérêts": "Intérêts",
     "taxes_permis": "Taxes et permis",
@@ -642,15 +665,38 @@ def results_statement(rows: list[dict]) -> dict:
 #
 # The cost class of a dépense — and of a refund, which counts against it:
 # linked to a dossier, a DIRECT cost (whatever its category); otherwise
-# usage-billed cloud and AI, office supplies and research billed by the
-# search are VARIABLE, every other category FIXED. Costs are net of TPS/TVQ.
-VARIABLE_COST_CATEGORIES = ("infonuagique_ia", "fournitures", "recherche")
+# usage-billed cloud and AI, office supplies, research billed by the search
+# and a room rented by the occasion are VARIABLE, every other category
+# FIXED. Costs are net of TPS/TVQ.
+VARIABLE_COST_CATEGORIES = ("infonuagique_ia", "fournitures", "recherche",
+                            "location_salle")
 COST_CLASSES = ("direct", "variable", "fixe")
 COST_CLASS_LABELS = {
     "direct": "Coûts directs",
     "variable": "Coûts variables",
     "fixe": "Frais fixes",
 }
+# Categories the statements print under one heading of their own (the
+# lawyer's decision of 2026-11-08), its total on the heading's line and each
+# member beneath: the fees of other professionals. A presentation only —
+# every member stays a category of its own in the ledger, the connector, the
+# exports and the cost classes, and no filter matches a group. Its members
+# follow each other in ADMIN_EXPENSE_CATEGORIES (pinned), so the heading
+# prints where its first member stands.
+EXPENSE_CATEGORY_GROUPS = {
+    "honoraires": ("notaire", "expert", "avocat", "honoraires_professionnels",
+                   "huissier", "sténographe"),
+}
+EXPENSE_CATEGORY_GROUP_LABELS = {"honoraires": "Honoraires professionnels"}
+
+
+def category_group(code: str) -> Optional[str]:
+    """The heading (``EXPENSE_CATEGORY_GROUPS``) category *code* prints
+    under in the statements, or None when it prints on its own."""
+    for group, members in EXPENSE_CATEGORY_GROUPS.items():
+        if code in members:
+            return group
+    return None
 # The cash-flow line of every kind but the correction, which counts on its
 # original's line (``resolve_corrections``). A trust-linked « autre recette »
 # — a fee payment booked before the encaissement path, or citing an invoice

@@ -143,8 +143,10 @@ def test_every_kind_has_one_cash_flow_line_and_every_line_a_label():
 
 def test_the_cost_classes_and_revenue_statuses_are_the_models():
     assert set(al.VARIABLE_COST_CATEGORIES) <= set(al.ADMIN_EXPENSE_CATEGORIES)
-    # Research billed by the search joined them (the lawyer, 2026-11-08).
-    assert al.VARIABLE_COST_CATEGORIES == ("infonuagique_ia", "fournitures", "recherche")
+    # Research billed by the search joined them, then a room rented by the
+    # occasion (the lawyer, 2026-11-08).
+    assert al.VARIABLE_COST_CATEGORIES == ("infonuagique_ia", "fournitures", "recherche",
+                                           "location_salle")
     assert set(al.COST_CLASS_LABELS) == set(al.COST_CLASSES)
     assert inv_model.REVENUE_STATUSES == ("envoyée", "en_retard", "payée")
     assert set(inv_model.REVENUE_STATUSES) <= set(inv_model.VALID_STATUSES)
@@ -1180,3 +1182,191 @@ def test_a_reversed_transfer_of_advances_owes_them_again():
     assert st.sections["avoir"]["virements"] == 0
     assert st.sections["avoir"]["unexplained"] == 0
     assert _points(st)["avances_a_verser"]["ids"] == ["v1"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 11. The income statement's lines (the lawyer's decisions of 2026-11-08)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _class_lines(view, cls):
+    """``(label, value, level)`` of every line between a cost class's
+    heading and its total."""
+    rows = _rows(view, "resultats")
+    labels = [r["label"] for r in rows]
+    start = next(i for i, r in enumerate(rows) if r["style"] == "heading"
+                 and r["label"].startswith(al.COST_CLASS_LABELS[cls]))
+    end = labels.index(f"Total — {al.COST_CLASS_LABELS[cls].lower()}")
+    return [(r["label"], r["values"][0], r["level"]) for r in rows[start + 1:end]]
+
+
+def test_other_income_prints_as_one_total():
+    """Regression — each « autre recette » printed on a line of its own
+    under « Autres produits »."""
+    rows = [_tx("r1", "recette_autre", 30000, _d(2031, 5, 7), counterparty="Payeur fictif A"),
+            _tx("r2", "recette_autre", 20000, _d(2031, 5, 8), counterparty="Payeur fictif B")]
+    income = _rows(fs.present(_compute(_snapshot(transactions=rows), "2031-05")), "resultats")
+    labels = [r["label"] for r in income]
+    at = labels.index("Autres produits")
+    assert income[at]["values"] == [50000]
+    assert labels[at + 1] == "Total des produits"
+    assert not [label for label in labels if "Payeur fictif" in label]
+    assert all(r["level"] <= 1 for r in income[:at + 1])
+
+
+def test_an_other_income_that_may_be_a_fee_payment_is_a_point():
+    """Regression — the mark was a note under the « autre recette »'s own
+    line, which the income statement no longer prints: it is a point."""
+    trust_rows = [_fee("t1", 7000, _d(2031, 5, 5), invoice_external_ref="X-1")]
+    rows = [_tx("r1", "recette_autre", 7000, _d(2031, 5, 6), counterparty="Client fictif"),
+            _tx("r2", "recette_autre", 2500, _d(2031, 5, 9), counterparty="Autre payeur")]
+    st = _compute(_snapshot(transactions=rows, trust_rows=trust_rows), "2031-05")
+    point = _points(st)["autres_produits_lies"]
+    assert (point["ids"], point["count"], point["amount"]) == (["r1"], 1, 7000)
+    assert point["refs"] == ["6 mai 2031 — Client fictif (paiement du fidéicommis du 5 mai 2031)"]
+    assert "fidéicommis" in point["label"]
+    view = fs.present(st)
+    assert not [r for r in _rows(view, "resultats") if r["note"]]
+    shown = [r for r in view["points"]["rows"] if r["label"] == point["label"]]
+    assert len(shown) == 1 and "Client fictif" in shown[0]["note"]
+
+
+def test_no_mark_no_point():
+    rows = [_tx("r1", "recette_autre", 7000, _d(2031, 5, 6), counterparty="Client fictif")]
+    assert "autres_produits_lies" not in _points(
+        _compute(_snapshot(transactions=rows), "2031-05"))
+
+
+def test_the_fees_of_other_professionals_print_under_one_heading():
+    rows = [
+        _tx("e1", "dépense", 10000, _d(2031, 5, 2), category="notaire"),
+        _tx("e2", "dépense", 20000, _d(2031, 5, 3), category="avocat"),
+        _tx("e3", "dépense", 5000, _d(2031, 5, 4), category="huissier"),
+        _tx("e4", "dépense", 7000, _d(2031, 5, 5), category="expert", dossier_id="dos1"),
+        _tx("e5", "dépense", 3000, _d(2031, 5, 6), category="loyer"),
+        _tx("e6", "dépense", 1500, _d(2031, 5, 7), category="timbres_judiciaires",
+            dossier_id="dos1"),
+        _tx("e7", "dépense", 900, _d(2031, 5, 8), category="sténographe", dossier_id="dos1"),
+    ]
+    view = fs.present(_compute(_snapshot(transactions=rows), "2031-05"))
+    assert _class_lines(view, "direct") == [
+        ("Honoraires professionnels", 7900, 1),
+        ("Expert", 7000, 2),
+        ("Sténographe", 900, 2),
+        ("Timbres judiciaires et frais de greffe", 1500, 1),
+    ]
+    assert _class_lines(view, "variable") == []
+    assert _class_lines(view, "fixe") == [
+        ("Loyer", 3000, 1),
+        ("Honoraires professionnels", 35000, 1),
+        ("Notaire", 10000, 2),
+        ("Avocat", 20000, 2),
+        ("Huissier", 5000, 2),
+    ]
+
+
+def test_a_line_that_sums_to_zero_is_not_printed():
+    """Regression — a reversed pair printed « 0,00 $ » on its category's line."""
+    fee = _tx("e1", "dépense", 75000, _d(2031, 5, 2), category="honoraires_professionnels")
+    rent = _tx("e3", "dépense", 11498, _d(2031, 5, 2), category="loyer")
+    rows = [fee, _correction("c1", fee, _d(2031, 5, 3)), rent,
+            _correction("c3", rent, _d(2031, 5, 4)),
+            _tx("e2", "dépense", 15500, _d(2031, 5, 4), category="avocat")]
+    view = fs.present(_compute(_snapshot(transactions=rows), "2031-05"))
+    assert _class_lines(view, "fixe") == [
+        ("Honoraires professionnels", 15500, 1), ("Avocat", 15500, 2)]
+
+
+def test_a_room_rented_without_a_dossier_is_a_variable_cost_in_the_statements():
+    rows = [_tx("e1", "dépense", 6000, _d(2031, 5, 2), category="location_salle"),
+            _tx("e2", "dépense", 4000, _d(2031, 5, 3), category="location_salle",
+                dossier_id="dos1")]
+    st = _compute(_snapshot(transactions=rows), "2031-05")
+    costs = st.sections["resultats"]["costs"]
+    assert costs["variable"] == {"location_salle": 6000}
+    assert costs["direct"] == {"location_salle": 4000}
+    assert _class_lines(fs.present(st), "variable") == [("Location de salle", 6000, 1)]
+
+
+def test_court_stamps_without_a_dossier_are_listed():
+    rows = [_tx("e1", "dépense", 12100, _d(2031, 5, 2), category="timbres_judiciaires"),
+            _tx("e2", "dépense", 12100, _d(2031, 5, 3), category="timbres_judiciaires",
+                dossier_id="dos1")]
+    point = _points(_compute(_snapshot(transactions=rows), "2031-05"))["huissier_sans_dossier"]
+    assert point["ids"] == ["e1"] and point["amount"] == 12100
+    assert point["label"] == ("Frais d'huissier, de sténographe ou de greffe sans "
+                              "dossier — comptés en frais fixes")
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_every_cost_line_foots_its_class_and_its_heading(seed):
+    """On random ledgers (every category of the vocabulary drawn): the
+    lines of a class sum to its total, a heading's members to the heading,
+    no category line is zero, and nothing prints beneath « Autres
+    produits »."""
+    snap = _random_world(random.Random(707 + seed))
+    headings = set(al.EXPENSE_CATEGORY_GROUP_LABELS.values())
+    for slug in ("2031-07", "2032-T2", "2032"):
+        st = _compute(snap, slug)
+        view = fs.present(st)
+        for cls in al.COST_CLASSES:
+            lines = _class_lines(view, cls)
+            assert sum(v for _l, v, level in lines if level == 1) == (
+                st.sections["resultats"]["cost_totals"][cls])
+            assert all(v != 0 for label, v, _level in lines if label not in headings)
+            for i, (label, value, level) in enumerate(lines):
+                if level == 2:
+                    assert any(lab in headings for lab, _v, lev in lines[:i] if lev == 1)
+                if label in headings:
+                    members = []
+                    for _l, v, lev in lines[i + 1:]:
+                        if lev != 2:
+                            break
+                        members.append(v)
+                    assert members and sum(members) == value
+        income = _rows(view, "resultats")
+        labels = [r["label"] for r in income]
+        assert all(r["level"] <= 1 for r in income[:labels.index("Total des produits")])
+
+
+def test_a_heading_prints_when_a_refund_cancels_another_member():
+    """A lawyer's fees and a notary's refund of the same amount: the heading
+    sums to zero, yet prints over its two members — never floating lines."""
+    rows = [_tx("e1", "dépense", 15000, _d(2031, 5, 2), category="avocat"),
+            _tx("r1", "remboursement_depense", 15000, _d(2031, 5, 3), category="notaire")]
+    view = fs.present(_compute(_snapshot(transactions=rows), "2031-05"))
+    assert _class_lines(view, "fixe") == [
+        ("Honoraires professionnels", 0, 1), ("Notaire", -15000, 2), ("Avocat", 15000, 2)]
+
+
+def test_a_code_outside_the_vocabulary_prints_after_it_and_never_at_zero():
+    """A dépense with no category, or with a code the vocabulary does not
+    know (a later release's after its rollback, an edit outside the model):
+    a line of its own after the vocabulary's, raw — « Sans catégorie » for
+    none —, and none for a pair that nets to zero."""
+    legacy = _tx("e4", "dépense", 500, _d(2031, 5, 5), category="zz_retiree")
+    rows = [_tx("e1", "dépense", 3000, _d(2031, 5, 2), category="loyer"),
+            _tx("e2", "dépense", 1000, _d(2031, 5, 3)),
+            _tx("e3", "dépense", 2000, _d(2031, 5, 4), category="ancienne_categorie"),
+            legacy, _correction("c4", legacy, _d(2031, 5, 6)),
+            _tx("e5", "dépense", 700, _d(2031, 5, 7), category="avocat")]
+    st = _compute(_snapshot(transactions=rows), "2031-05")
+    lines = _class_lines(fs.present(st), "fixe")
+    assert lines == [("Loyer", 3000, 1), ("Honoraires professionnels", 700, 1),
+                     ("Avocat", 700, 2), ("Sans catégorie", 1000, 1),
+                     ("ancienne_categorie", 2000, 1)]
+    assert sum(v for _l, v, lev in lines if lev == 1) == (
+        st.sections["resultats"]["cost_totals"]["fixe"])
+
+
+def test_a_mark_that_cannot_be_read_leaves_the_points_list_incomplete():
+    """Regression — a fee payment whose amount the marks cannot read (a row
+    written outside the model) dropped the point « autres_produits_lies »
+    while the list still read « Aucun point à vérifier. »."""
+    trust_rows = [_fee("t1", 7000.0, _d(2031, 5, 5))]
+    rows = [_tx("r1", "recette_autre", 7000, _d(2031, 5, 6), counterparty="Client fictif")]
+    st = _compute(_snapshot(transactions=rows, trust_rows=trust_rows), "2031-05")
+    assert "resultats" in st.sections and st.sections["resultats"]["other_total"] == 7000
+    labels = [r["label"] for r in fs.present(st)["points"]["rows"]]
+    assert labels[0].startswith("Liste incomplète — Montant illisible (amount)")
+    assert "Aucun point à vérifier." not in labels

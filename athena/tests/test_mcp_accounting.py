@@ -266,6 +266,32 @@ def test_the_hand_copied_vocabularies_are_the_models_own():
         assert key in al.ADMIN_EXPENSE_CATEGORIES
     assert "Usage-billed cloud and AI" in category["description"]
     assert "a flat monthly plan stays abonnements" in category["description"]
+    # The decisions of 2026-11-08 reach it the same way: a court stamp is no
+    # longer taxes_permis; a notary, an expert, a lawyer and a room rented
+    # by the occasion have categories of their own. The phrases that bind
+    # each case to its code are what is pinned — a hint naming every code
+    # the wrong way round would still name them all.
+    for key in ("timbres_judiciaires", "taxes_permis", "notaire", "expert", "avocat",
+                "honoraires_professionnels", "location_salle", "loyer"):
+        assert key in category["enum"], key
+    for phrase in (
+            "court stamps, greffe fees and copies: timbres_judiciaires "
+            "(taxes_permis: permits, other duties)",
+            "a notary, an expert, a lawyer: notaire, expert, avocat "
+            "(any other professional: honoraires_professionnels)",
+            "a room rented for a meeting or hearing: location_salle "
+            "(an office's rent: loyer)"):
+        assert phrase in category["description"], phrase
+    # A filter matches ONE code: the statements' heading is no category, and
+    # the reader is told which codes it gathers — the model's own group.
+    ledger = tools.TOOLS["get_admin_ledger"]["input_schema"]["properties"]["category"]
+    assert ledger["enum"] == tools._ADMIN_CATEGORIES
+    for group, members in al.EXPENSE_CATEGORY_GROUPS.items():
+        assert f"« {al.EXPENSE_CATEGORY_GROUP_LABELS[group]} »" in ledger["description"]
+        for code in members:
+            assert code in ledger["description"], code
+    assert (f"« {al.ADMIN_CATEGORY_LABELS['honoraires_professionnels']} »"
+            in ledger["description"])
     assert tools._REGISTER_STATUSES == list(trust.VALID_TX_STATUSES)
     assert tools._REGISTER_STATUSES == list(al.VALID_TX_STATUSES)
 
