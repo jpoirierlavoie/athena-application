@@ -169,7 +169,8 @@ def test_the_child_applies_the_shared_rules(door, recorded):
 @pytest.mark.parametrize("host, local", [
     ("", True), ("localhost", True), ("127.0.0.1", True), ("127.8.9.10", True),
     ("::1", True), ("0:0:0:0:0:0:0:1", True), ("::ffff:127.0.0.1", True),
-    ("0.0.0.0", True), ("::", True), ("::1%lo", True),
+    ("0.0.0.0", True),  # nosec B104 — a host the guard judges, never bound
+    ("::", True), ("::1%lo", True),
     (socket.gethostname().lower(), True),
     ("example.org", False), ("10.0.0.1", False), ("192.168.1.1", False),
     ("169.254.169.254", False), ("metadata.google.internal", False),
@@ -215,7 +216,7 @@ def test_each_network_event_names_its_host():
     assert audit_host("socket.sendto", (None, ("192.0.2.1", 9))) == "192.0.2.1"
     assert audit_host("socket.sendmsg", (None, ("192.0.2.1", 9))) == "192.0.2.1"
     assert audit_host("socket.sendmsg", (None, None)) is None  # connected
-    assert audit_host("socket.connect", (None, "/tmp/unix.sock")) is None
+    assert audit_host("socket.connect", (None, "/run/unix.sock")) is None
     assert audit_host("open", ("/etc/hosts", "r", 0)) is None
 
 
