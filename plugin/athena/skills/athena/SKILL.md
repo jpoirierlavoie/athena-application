@@ -1,6 +1,6 @@
 ---
 name: athena
-description: "Mode d'emploi du connecteur Athena, le logiciel de gestion du cabinet : la suite d'appels la plus courte pour chaque demande courante, et les règles des écritures qui ne se défont pas. Utiliser dès qu'une demande lit ou écrit dans Athena, même sans le nommer, et avant toute écriture. Amorces — breffage, qu'est-ce qui s'en vient, inscris mes heures, débours, facture, non facturé, ouvre le dossier, fiche client, conflits, note au dossier, théorie de la cause, tâche, échéance, audience, Bookings, protocole, budget, fidéicommis, verse ces documents, gabarit, note d'honoraires, ferme le dossier, reprise de données. Sert les besoins FICHE, PARTIES, THÉORIE, NOTES, INVENTAIRE, TEXTE, ÉCHÉANCES, CALCUL, GREFFE, INSCRIPTION et VOCABULAIRE de pratique-civile-quebecoise. Ne pas utiliser pour trancher une question de droit, rédiger ni qualifier un document."
+description: "Mode d'emploi du connecteur Athena, le logiciel de gestion du cabinet : la suite d'appels la plus courte pour chaque demande courante, et les règles des écritures qui ne se défont pas. Utiliser dès qu'une demande lit ou écrit dans Athena, même sans le nommer, et avant toute écriture. Amorces — breffage, qu'est-ce qui s'en vient, inscris mes heures, débours, facture, non facturé, ouvre le dossier, fiche client, conflits, note au dossier, théorie de la cause, tâche, échéance, audience, Bookings, protocole, budget, fidéicommis, états financiers, verse ces documents, gabarit, note d'honoraires, ferme le dossier, reprise de données. Sert les besoins FICHE, PARTIES, THÉORIE, NOTES, INVENTAIRE, TEXTE, ÉCHÉANCES, CALCUL, GREFFE, INSCRIPTION et VOCABULAIRE de pratique-civile-quebecoise. Ne pas utiliser pour trancher une question de droit, rédiger ni qualifier un document."
 ---
 
 {{GEN:version}}
@@ -52,7 +52,7 @@ description: "Mode d'emploi du connecteur Athena, le logiciel de gestion du cabi
 - Contacts et dossiers : trouver, créer, corriger, statut, conformité, registres → D1–D6, `recettes/dossiers.md`
 - Notes, écrire la théorie → N1–N2 ; documents, gabarits → Doc1–Doc5 : `recettes/notes-documents.md`
 - Tâches, audiences, Bookings, échéances, protocole → A1–A5, `recettes/agenda.md`
-- Reprise de données → `recettes/reprise.md` ; fidéicommis, administration, encaissement → `recettes/comptabilite.md`
+- Reprise de données → `recettes/reprise.md` ; fidéicommis, administration, encaissement, états financiers → `recettes/comptabilite.md`
 - Lectures, sans fichier : INVENTAIRE `list_documents(dossier_id)` ; TEXTE `get_document_text(document_id)` ; NOTES `list_notes(dossier_id)`, ou `scope="cabinet"` ; ÉCHÉANCES `list_protocol_steps(dossier_id)` ; CALCUL `compute_judicial_deadline`.
 
 ### R1 Breffage

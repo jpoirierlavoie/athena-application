@@ -181,7 +181,7 @@ def test_link_header_on_full_page_html():
     app = _make_app()
     resp = app.test_client().get("/")
     link = resp.headers.get("Link", "")
-    assert "</static/vendor/app.ef79792d.css>; rel=preload; as=style" in link
+    assert "</static/vendor/app.4e8f1649.css>; rel=preload; as=style" in link
     # The font preload MUST keep `crossorigin` + its type — losing either
     # makes the browser fetch the woff2 twice (fonts are CORS-mode fetches).
     assert (
@@ -189,7 +189,7 @@ def test_link_header_on_full_page_html():
         ' type="font/woff2"; crossorigin' in link
     )
     assert (
-        'material-symbols-outlined-v371-2ac72714.woff2>; rel=preload; as=font;'
+        'material-symbols-outlined-v383-038db93f.woff2>; rel=preload; as=font;'
         ' type="font/woff2"; crossorigin' in link
     )
     assert "htmx-2.0.4.min.js>; rel=preload; as=script" in link
@@ -223,7 +223,7 @@ def test_login_page_gets_its_own_hint_set():
         ' type="font/woff2"; crossorigin' in link
     )
     assert (
-        'material-symbols-outlined-v371-2ac72714.woff2>; rel=preload; as=font;'
+        'material-symbols-outlined-v383-038db93f.woff2>; rel=preload; as=font;'
         ' type="font/woff2"; crossorigin' in link
     )
     assert "<https://www.gstatic.com>; rel=preconnect" in link

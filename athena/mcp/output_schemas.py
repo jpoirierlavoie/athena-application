@@ -1641,6 +1641,73 @@ def _nmoney(key: str, description: str = "") -> dict[str, Any]:
     }
 
 
+def _statement_period() -> dict:
+    """One period of get_financial_statements — the « États financiers »
+    page's header, KPI cards, sections and points, as
+    models/financial_statements.present labels them."""
+    row = _obj({
+        "key": _str("Stable within its section and from one period to the "
+                    "next: line periods up by it."),
+        "label": _str("French, as on the page."),
+        "level": _int("Indent: 0, 1 or 2."),
+        "style": {"type": "string",
+                  "enum": ["heading", "line", "subtotal", "total", "note"]},
+        "note": _str(),
+        "values_cents": _arr(_nint(), "One per column; null on a heading or "
+                                      "a note."),
+        "values_display": _arr(_nstr()),
+    })
+    section = _obj({
+        "key": {"type": "string", "enum": [
+            "resultats", "flux", "bilan", "avoir", "taxes", "redressements",
+            "fideicommis", "travaux"]},
+        "title": _str("French, as on the page."),
+        "columns": _arr(_str(), "Column headings: every row has one value "
+                                "per column."),
+        "unavailable": _str("'' when computed; else the French reason, and "
+                            "the section has NO rows — never a zero."),
+        "notes": _arr(_str(), "French notes printed under the section."),
+        "rows": _arr(row),
+    })
+    point = _obj({
+        "key": _str("Stable code of the condition."),
+        "label": _str("French, as on the page."),
+        "count": _int("Rows in the condition — `ids` may be capped."),
+        **_nmoney("amount", "What the rows amount to; null when the point "
+                            "measures a gap instead."),
+        **_nmoney("measured_gap", "A defect's measured effect on the net "
+                                  "assets; null otherwise."),
+        "ids": _arr(_str(), "Administration-ledger entry ids, invoice "
+                            "numbers or invoice ids, capped."),
+        "refs": _arr(_str(), "How the lawyer finds each row (a day and a "
+                             "payee, an invoice number), capped."),
+        "truncated": _bool("true = `ids` or `refs` were capped."),
+    })
+    return _obj({
+        "period": _str("The slug asked for."),
+        "kind": {"type": "string", "enum": ["mois", "trimestre", "annee"]},
+        "label": _str("French: « Octobre 2026 », « 3e trimestre 2026 »."),
+        "span": _str("French: « Du 1er octobre 2026 au 31 octobre 2026 »."),
+        "start": _str("YYYY-MM-DD."),
+        "end": _str("YYYY-MM-DD."),
+        "as_of": _str("YYYY-MM-DD — the last day computed: `end`, or today "
+                      "while the period is in progress."),
+        "in_progress": _bool(),
+        "as_of_line": _str("French, as on the page."),
+        "kpis": _arr(_obj({
+            "key": _str(), "label": _str(),
+            **_nmoney("value", "null when its section is unavailable."),
+        })),
+        "sections": _arr(section, "The sections asked for, in the page's "
+                                  "order."),
+        "points": _arr(point, "« Points à vérifier »: the data conditions a "
+                              "figure rests on."),
+        "points_incomplete": _arr(_str(), "French reasons the points could "
+                                          "not all be judged; empty when "
+                                          "they were."),
+    })
+
+
 def _trust_register_row() -> dict:
     """A trust register entry AS STORED after an accounting write."""
     return _obj({
@@ -4399,6 +4466,22 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "The balance carried into date_from, in ledger sign — null "
             "unless ONE account was read without a filter.")),
         "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+    }),
+
+    "get_financial_statements": _obj({
+        "computed_at": _str("ISO 8601, Montréal: when the ONE read every "
+                            "period rests on was made."),
+        "books_start": _str("YYYY-MM-DD — no period starts earlier."),
+        "reconciliations": _arr(_obj({
+            "account_id": _str(),
+            "name": _str(),
+            "reconciled_through": _nstr(
+                "YYYY-MM-DD — the last completed reconciliation; null = "
+                "never reconciled. A period after it may still change."),
+        }), "Each administration account; empty when unavailable."),
+        "reconciliations_unavailable": _str(
+            "'' when read; else the French reason."),
+        "periods": _arr(_statement_period(), "In the order asked for."),
     }),
 
     "record_trust_entry": _obj({

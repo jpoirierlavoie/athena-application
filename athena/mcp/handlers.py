@@ -160,6 +160,7 @@ from models import doc_template as doc_template_model
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
+from models import financial_statements as fs_model
 from models import folder as folder_model
 from models import hearing as hearing_model
 from models import invoice as invoice_model
@@ -175,6 +176,7 @@ from security import TAG_RE, sanitize
 from services import comptabilite as comptabilite_service
 from services import docx_identifiers as identifiers_service
 from services import dossier_dav as dossier_dav_service
+from services import financial_statements as statements_service
 from services import gabarit_champs as gabarit_service
 from services import gabarits as gabarit_writer
 from services import note_honoraires as note_honoraires_service
@@ -184,7 +186,7 @@ from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
     analyse_blocs, budget_math, civilite, deadlines, docx_templatize, kyc,
-    pdf_text, phases, recurrence, storage_identity, taxonomie,
+    pdf_text, periods, phases, recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import _CONTROL_RE, extract_placeholders, validate_template
@@ -241,6 +243,7 @@ from mcp.tools import (
     REGISTER_DESCRIPTION_MAX_CHARS,
     REGISTER_REFERENCE_MAX_CHARS,
     REVERSAL_REASON_MAX_CHARS,
+    STATEMENT_POINT_REFS_MAX,
     TOOLS,
     ToolArgumentError,
     date_str,
@@ -17632,6 +17635,114 @@ def get_admin_ledger(args: dict) -> dict:
     else:
         _register_money(payload, "opening_balance", opening)
     return payload
+
+
+# ── get_financial_statements (READ) ─────────────────────────────────────
+# The « Finances » page's statements for a series of periods, from ONE
+# snapshot (services/financial_statements.build_series). Every figure,
+# label, row and key is models/financial_statements.present's: this handler
+# only shapes it — money as the cents / display pair, a point's ids and
+# refs capped with `truncated`. A section that could not be computed keeps
+# its French « indisponible » reason; only a snapshot that read NOTHING is
+# refused (the service has logged each failed collection).
+
+
+def _statement_values(values: list) -> dict:
+    return {"values_cents": [None if v is None else int(v) for v in values],
+            "values_display": [None if v is None else format_cents(v) for v in values]}
+
+
+def _statement_nmoney(out: dict, key: str, cents: Optional[int]) -> None:
+    if cents is None:
+        out[f"{key}_cents"] = None
+        out[f"{key}_display"] = None
+    else:
+        _money(out, key, cents)
+
+
+def _statement_point(point: dict) -> dict:
+    cap = STATEMENT_POINT_REFS_MAX
+    out = {"key": point["key"], "label": point["label"], "count": point["count"],
+           "ids": list(point["ids"][:cap]), "refs": list(point["refs"][:cap]),
+           "truncated": len(point["ids"]) > cap or len(point["refs"]) > cap}
+    _statement_nmoney(out, "amount", point["amount"])
+    _statement_nmoney(out, "measured_gap", point["contribution"])
+    return out
+
+
+def _statement_period(st, sections: list) -> dict:
+    view = fs_model.present(st)
+    kpis = []
+    for kpi in view["kpis"]:
+        row = {"key": kpi["key"], "label": kpi["label"]}
+        _statement_nmoney(row, "value", kpi["value"])
+        kpis.append(row)
+    return {
+        "period": st.period.slug,
+        "kind": st.period.kind,
+        "label": view["period_label"],
+        "span": view["span"],
+        "start": st.period.start.isoformat(),
+        "end": st.period.end.isoformat(),
+        "as_of": st.as_of.isoformat(),
+        "in_progress": st.in_progress,
+        "as_of_line": view["as_of_line"],
+        "kpis": kpis,
+        "sections": [
+            {"key": s["key"], "title": s["title"], "columns": list(s["columns"]),
+             "unavailable": s["unavailable"], "notes": list(s["notes"]),
+             "rows": [{"key": r["key"], "label": r["label"], "level": r["level"],
+                       "style": r["style"], "note": r["note"],
+                       **_statement_values(r["values"])} for r in s["rows"]]}
+            for s in view["sections"] if s["key"] in sections],
+        "points": [_statement_point(p) for p in st.points],
+        "points_incomplete": list(st.points_unchecked),
+    }
+
+
+def get_financial_statements(args: dict) -> dict:
+    today = deadlines.today_mtl()
+    chosen: list = []
+    for slug in args.get("periods") or []:
+        period, refusal = periods.parse_period(
+            slug, today=today, books_start=fs_model.BOOKS_START)
+        if period is None:
+            raise ToolArgumentError(f"Période « {slug} » : {refusal}")
+        if period in chosen:
+            raise ToolArgumentError(f"La période « {slug} » est demandée deux fois.")
+        chosen.append(period)
+    if not chosen:
+        raise ToolArgumentError("Indiquez au moins une période dans `periods`.")
+    sections = list(args.get("sections") or fs_model.SECTION_TITLES)
+    if len(set(sections)) != len(sections):
+        raise ToolArgumentError("Une section est demandée deux fois dans `sections`.")
+    statements, snapshot = statements_service.build_series(
+        chosen, today=today, now=deadlines.now_utc())
+    if set(fs_model.COLLECTIONS) <= set(snapshot.failures):
+        raise ToolArgumentError(
+            "Les états financiers sont illisibles pour le moment. Réessayez "
+            "dans un instant.")
+    first = statements[0]
+    # The lock floors are the snapshot's: the same for every period.
+    accounts = {a["id"]: a for a in snapshot.admin_accounts or []}
+    reconciliations = []
+    if first.floors is not None:
+        # The page's order: by name, then id.
+        for aid in sorted(first.floors,
+                          key=lambda a: (accounts.get(a, {}).get("name") or "", a)):
+            day = first.floors[aid]
+            reconciliations.append({
+                "account_id": aid,
+                "name": str(accounts.get(aid, {}).get("name") or aid),
+                "reconciled_through": day.isoformat() if day else None})
+    return {
+        "computed_at": iso_mtl(first.now),
+        "books_start": fs_model.BOOKS_START.isoformat(),
+        "reconciliations": reconciliations,
+        "reconciliations_unavailable": (
+            first.floors_error if first.floors is None else ""),
+        "periods": [_statement_period(st, sections) for st in statements],
+    }
 
 
 # ── record_trust_entry (WRITE) ──────────────────────────────────────────

@@ -118,7 +118,7 @@ def create_app() -> Flask:
     from routes.budgets import budgets_bp
     from routes.admin_ledger import admin_bp
     from routes.comptabilite import comptabilite_bp
-    from routes.financial_statements import etats_bp
+    from routes.financial_statements import etats_anciens_bp, etats_bp
     from routes.settings import settings_bp
 
     app.register_blueprint(auth_bp)
@@ -139,7 +139,10 @@ def create_app() -> Flask:
     app.register_blueprint(comptabilite_bp)
     # États financiers (lot B) : GET seulement, en lecture seule, sous
     # @login_required — un blueprint de navigateur, jamais exempté de CSRF.
+    # Au menu « Finances » (/finances/) depuis le 2026-11-10 ; l'ancienne
+    # adresse /comptabilite/etats/ ne fait plus que rediriger.
     app.register_blueprint(etats_bp)
+    app.register_blueprint(etats_anciens_bp)
     # « Paramètres » : profil du cabinet + sécurité du compte. Blueprint
     # à LUI, jamais exempté de CSRF (ses POST viennent du navigateur), et
     # sous aucun préfixe exempté d'App Check — contrairement à /auth/.

@@ -40,7 +40,7 @@
      CSS is PRECOMPILED (static/src/app.input.css → vendor/app.<hash>.css);
      regenerate + re-hash when class names change — see CLAUDE.md. #}
   <!-- Application stylesheet (precompiled Tailwind + hand-written rules) -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.ef79792d.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.4e8f1649.css') }}">
 
   {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
   {# App Check loads reCAPTCHA Enterprise from these origins at runtime —
@@ -148,6 +148,10 @@
           {{ ms('payments', 20) }}
           Comptabilité
         </a>
+        <a href="/finances/" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
+          {{ ms('monitoring', 20) }}
+          Finances
+        </a>
       </div>
 
       {# Settings + Logout at bottom #}
@@ -225,6 +229,7 @@
       <a href="/gabarits" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('assignment', 20, 'text-gray-400') }}Gabarits</a>
       <a href="/notes" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('edit', 20, 'text-gray-400') }}Notes</a>
       <a href="/comptabilite" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('payments', 20, 'text-gray-400') }}Comptabilité</a>
+      <a href="/finances/" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('monitoring', 20, 'text-gray-400') }}Finances</a>
       <hr class="my-1 border-gray-200">
       <a href="/parametres" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('settings', 20, 'text-gray-400') }}Paramètres</a>
       <hr class="my-1 border-gray-200">

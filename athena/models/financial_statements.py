@@ -1161,8 +1161,13 @@ def pdf_refusal(st: Statements) -> str:
 # ── Presentation: the labelled sections the page and the PDF render ─────────
 
 
-def _row(label: str, *values, level: int = 0, style: str = "line", note: str = "") -> dict:
-    return {"label": label, "values": list(values), "level": level,
+def _row(label: str, *values, key: str, level: int = 0, style: str = "line",
+         note: str = "") -> dict:
+    """One labelled row. *key* is its stable identity within its section —
+    the same line carries the same key in every period, so the connector's
+    reader lines periods up by it (``get_financial_statements``); the page
+    and the PDF ignore it."""
+    return {"key": key, "label": label, "values": list(values), "level": level,
             "style": style, "note": note}
 
 
@@ -1174,13 +1179,14 @@ def _account_name(account: dict) -> str:
     return str(account.get("name") or account.get("id") or "?")
 
 
-def _cost_rows(costs: dict) -> list:
+def _cost_rows(cls: str, costs: dict) -> list:
     """The category lines of one cost class: the ledger's order, a code the
     vocabulary no longer knows after it; a group's members beneath its
     heading, which carries their total (``admin_ledger
     .EXPENSE_CATEGORY_GROUPS``). No category line sums to zero (a reversed
     pair); a heading prints whenever one of its members does — even at zero,
-    when a refund cancels another member."""
+    when a refund cancels another member. Keys name the class: a category
+    can fall in two classes (a dossier's cost filed without its dossier)."""
     codes = [c for c in al.ADMIN_EXPENSE_CATEGORIES if costs.get(c)]
     codes += sorted(c for c in set(costs) - set(al.ADMIN_EXPENSE_CATEGORIES)
                     if costs[c])
@@ -1188,62 +1194,73 @@ def _cost_rows(costs: dict) -> list:
     for code in codes:
         group = al.category_group(code)
         if group is None:
-            rows.append(_row(_category_label(code), costs[code], level=1))
+            rows.append(_row(_category_label(code), costs[code],
+                             key=f"categorie:{cls}:{code}", level=1))
             continue
         if group in headed:
             continue
         headed.add(group)
         members = [c for c in al.EXPENSE_CATEGORY_GROUPS[group] if costs.get(c)]
         rows.append(_row(al.EXPENSE_CATEGORY_GROUP_LABELS[group],
-                         sum(costs[c] for c in members), level=1))
-        rows.extend(_row(_category_label(c), costs[c], level=2) for c in members)
+                         sum(costs[c] for c in members),
+                         key=f"groupe:{cls}:{group}", level=1))
+        rows.extend(_row(_category_label(c), costs[c],
+                         key=f"categorie:{cls}:{c}", level=2) for c in members)
     return rows
 
 
 def _present_income(data: dict) -> dict:
     # « Autres produits » print as one total (the lawyer's decision of
     # 2026-11-08); the ones that may be a fee payment's recette are a point.
-    rows = [_row("Produits", None, style="heading"),
-            _row("Honoraires facturés", data["fees"], level=1),
-            _row("Débours refacturés", data["billed_expenses"], level=1),
-            _row("Autres produits", data["other_total"], level=1),
-            _row("Total des produits", data["revenue"], style="subtotal")]
+    rows = [_row("Produits", None, key="produits", style="heading"),
+            _row("Honoraires facturés", data["fees"], key="honoraires", level=1),
+            _row("Débours refacturés", data["billed_expenses"],
+                 key="debours_refactures", level=1),
+            _row("Autres produits", data["other_total"], key="autres_produits", level=1),
+            _row("Total des produits", data["revenue"], key="total_produits",
+                 style="subtotal")]
     for cls in al.COST_CLASSES:
         heading = al.COST_CLASS_LABELS[cls]
         if cls == "direct":
             heading += " (dépenses liées à un dossier)"
-        rows.append(_row(heading, None, style="heading"))
-        rows.extend(_cost_rows(data["costs"][cls]))
+        rows.append(_row(heading, None, key=f"classe:{cls}", style="heading"))
+        rows.extend(_cost_rows(cls, data["costs"][cls]))
         rows.append(_row(f"Total — {al.COST_CLASS_LABELS[cls].lower()}",
-                         data["cost_totals"][cls], style="subtotal"))
+                         data["cost_totals"][cls], key=f"total:{cls}", style="subtotal"))
         if cls == "direct":
-            rows.append(_row("Marge brute", data["gross_margin"], style="subtotal"))
-    rows.append(_row("Bénéfice net", data["net_income"], style="total"))
+            rows.append(_row("Marge brute", data["gross_margin"], key="marge_brute",
+                             style="subtotal"))
+    rows.append(_row("Bénéfice net", data["net_income"], key="benefice_net",
+                     style="total"))
     return {"columns": ["Période"], "rows": rows, "notes": [
         "Base facturée : factures envoyées, en retard ou payées, à la date de "
         "la facture, avant taxes. Coûts nets de TPS/TVQ."]}
 
 
 def _present_cash_flow(data: dict) -> dict:
-    rows = [_row("Encaisse au début", data["opening"])]
+    rows = [_row("Encaisse au début", data["opening"], key="encaisse_debut")]
     moved = False
     for key in CASH_FLOW_LINE_ORDER:
         if data["lines"][key]:
             moved = True
-            rows.append(_row(CASH_FLOW_LINE_LABELS[key], data["lines"][key], level=1))
+            rows.append(_row(CASH_FLOW_LINE_LABELS[key], data["lines"][key], key=key,
+                             level=1))
             if key == "depenses":
                 for cls in al.COST_CLASSES:
                     if data["depenses_by_class"][cls]:
                         rows.append(_row(f"dont {al.COST_CLASS_LABELS[cls].lower()}",
-                                         data["depenses_by_class"][cls], level=2))
+                                         data["depenses_by_class"][cls],
+                                         key=f"depenses:{cls}", level=2))
     if not data["moved"]:
-        rows.append(_row("Aucun mouvement dans la période", None, level=1, style="note"))
+        rows.append(_row("Aucun mouvement dans la période", None, key="aucun_mouvement",
+                         level=1, style="note"))
     elif not moved:
-        rows.append(_row("Des mouvements qui s'annulent dans la période", None, level=1,
-                         style="note"))
+        rows.append(_row("Des mouvements qui s'annulent dans la période", None,
+                         key="mouvements_annules", level=1, style="note"))
     rows.append(_row("Variation de l'encaisse", data["closing"] - data["opening"],
-                     style="subtotal"))
-    rows.append(_row("Encaisse à la fin", data["closing"], style="total"))
+                     key="variation_encaisse", style="subtotal"))
+    rows.append(_row("Encaisse à la fin", data["closing"], key="encaisse_fin",
+                     style="total"))
     return {"columns": ["Période"], "rows": rows, "notes": [
         "Comptes d'opérations seulement : un achat à la carte de crédit sort "
         "de l'encaisse quand la carte est payée."]}
@@ -1252,24 +1269,30 @@ def _present_cash_flow(data: dict) -> dict:
 def _present_balance(st: Statements, data: dict) -> dict:
     opening, closing = data["opening"], data["closing"]
     accounts = st.accounts
-    rows = [_row("Actif", None, None, style="heading")]
+    rows = [_row("Actif", None, None, key="actif", style="heading")]
     for aid in opening.cash:
         rows.append(_row(f"Encaisse — {_account_name(accounts[aid])}",
-                         opening.cash[aid], closing.cash[aid], level=1))
-    rows.append(_row("Comptes clients", opening.receivables, closing.receivables, level=1))
-    rows.append(_row("Total de l'actif", opening.assets, closing.assets, style="subtotal"))
-    rows.append(_row("Passif", None, None, style="heading"))
+                         opening.cash[aid], closing.cash[aid], key=f"encaisse:{aid}",
+                         level=1))
+    rows.append(_row("Comptes clients", opening.receivables, closing.receivables,
+                     key="comptes_clients", level=1))
+    rows.append(_row("Total de l'actif", opening.assets, closing.assets,
+                     key="total_actif", style="subtotal"))
+    rows.append(_row("Passif", None, None, key="passif", style="heading"))
     for aid in opening.card:
         rows.append(_row(f"Carte de crédit — {_account_name(accounts[aid])} (solde dû)",
-                         opening.card[aid], closing.card[aid], level=1))
-    rows.append(_row("TPS/TVQ à remettre", opening.tax_payable, closing.tax_payable, level=1))
+                         opening.card[aid], closing.card[aid], key=f"carte:{aid}",
+                         level=1))
+    rows.append(_row("TPS/TVQ à remettre", opening.tax_payable, closing.tax_payable,
+                     key="tps_tvq_a_remettre", level=1))
     rows.append(_row("Sommes reçues à rattacher", opening.unattached, closing.unattached,
-                     level=1))
+                     key="sommes_a_rattacher", level=1))
     rows.append(_row("Avances de clients à verser au fidéicommis", opening.advances,
-                     closing.advances, level=1))
+                     closing.advances, key="avances_clients", level=1))
     rows.append(_row("Total du passif", opening.liabilities, closing.liabilities,
-                     style="subtotal"))
-    rows.append(_row("Avoir net (actif − passif)", opening.net, closing.net, style="total"))
+                     key="total_passif", style="subtotal"))
+    rows.append(_row("Avoir net (actif − passif)", opening.net, closing.net,
+                     key="avoir_net", style="total"))
     return {"columns": [f"Au {format_date_fr(st.opening_day)}", f"Au {format_date_fr(st.as_of)}"],
             "rows": rows, "notes": [
                 "Un montant négatif au passif est une somme à recevoir (un crédit "
@@ -1278,40 +1301,51 @@ def _present_balance(st: Statements, data: dict) -> dict:
 
 
 def _present_rollforward(data: dict) -> dict:
-    rows = [_row("Avoir net au début", data["opening"]),
-            _row("Bénéfice net", data["net_income"], level=1),
-            _row("Apports de l'avocat", data["apports"], level=1),
-            _row("Prélèvements de l'avocat", -data["prelevements"], level=1),
+    rows = [_row("Avoir net au début", data["opening"], key="avoir_debut"),
+            _row("Bénéfice net", data["net_income"], key="benefice_net", level=1),
+            _row("Apports de l'avocat", data["apports"], key="apports", level=1),
+            _row("Prélèvements de l'avocat", -data["prelevements"], key="prelevements",
+                 level=1),
             _row("Virements internes (nets, hors avances versées au fidéicommis)",
-                 data["virements"], level=1),
+                 data["virements"], key="virements", level=1),
             _row("Virements du fidéicommis non rattachés à une facture",
-                 data["factures_absentes"], level=1),
-            _row("Soldes de factures présumés réglés", -data["settled"], level=1),
-            _row("Provisions appliquées aux factures", -data["provisions_applied"], level=1),
-            _row("Provisions reçues du fidéicommis", data["provisions_received"], level=1),
+                 data["factures_absentes"], key="factures_absentes", level=1),
+            _row("Soldes de factures présumés réglés", -data["settled"],
+                 key="soldes_presumes_regles", level=1),
+            _row("Provisions appliquées aux factures", -data["provisions_applied"],
+                 key="provisions_appliquees", level=1),
+            _row("Provisions reçues du fidéicommis", data["provisions_received"],
+                 key="provisions_recues", level=1),
             _row("Écarts mesurés (voir les points à vérifier)", data["defects_total"],
-                 level=1)]
+                 key="ecarts_mesures", level=1)]
     labels = {"direction": "sens contraire à la nature", "split": "ventilations inexactes",
               "card": "jambes de carte décalées", "invoice": "factures incohérentes"}
     for key, label in labels.items():
         if data["defects"][key]:
-            rows.append(_row(f"dont {label}", data["defects"][key], level=2))
-    rows += [_row("Avoir net attendu", data["expected"], style="subtotal"),
-             _row("Avoir net à la fin", data["closing"]),
-             _row("Écart non expliqué", data["unexplained"], style="total")]
+            rows.append(_row(f"dont {label}", data["defects"][key], key=f"ecart:{key}",
+                             level=2))
+    rows += [_row("Avoir net attendu", data["expected"], key="avoir_attendu",
+                  style="subtotal"),
+             _row("Avoir net à la fin", data["closing"], key="avoir_fin"),
+             _row("Écart non expliqué", data["unexplained"], key="ecart_non_explique",
+                  style="total")]
     return {"columns": ["Période"], "rows": rows, "notes": []}
 
 
 def _present_taxes(data: dict) -> dict:
-    rows = [_row("Solde au début", data["opening"]),
-            _row("TPS perçue (factures de la période)", data["gst_collected"], level=1),
-            _row("TVQ perçue (factures de la période)", data["qst_collected"], level=1),
-            _row("CTI — TPS payée sur les dépenses", -data["cti"], level=1),
-            _row("RTI — TVQ payée sur les dépenses", -data["rti"], level=1),
-            _row("Taxe nette de la période", data["net"], style="subtotal"),
-            _row("Remises versées", -data["remitted"], level=1),
-            _row("Remboursements reçus", data["refunded"], level=1),
-            _row("Solde à la fin (à remettre)", data["closing"], style="total")]
+    rows = [_row("Solde au début", data["opening"], key="solde_debut"),
+            _row("TPS perçue (factures de la période)", data["gst_collected"],
+                 key="tps_percue", level=1),
+            _row("TVQ perçue (factures de la période)", data["qst_collected"],
+                 key="tvq_percue", level=1),
+            _row("CTI — TPS payée sur les dépenses", -data["cti"], key="cti", level=1),
+            _row("RTI — TVQ payée sur les dépenses", -data["rti"], key="rti", level=1),
+            _row("Taxe nette de la période", data["net"], key="taxe_nette",
+                 style="subtotal"),
+            _row("Remises versées", -data["remitted"], key="remises", level=1),
+            _row("Remboursements reçus", data["refunded"], key="remboursements", level=1),
+            _row("Solde à la fin (à remettre)", data["closing"], key="solde_fin",
+                 style="total")]
     return {"columns": ["Période"], "rows": rows, "notes": [
         "Selon l'état actuel des inscriptions : une facture annulée après son "
         "envoi, ou inscrite après coup, peut modifier une période déjà déclarée — "
@@ -1327,11 +1361,13 @@ def _present_adjustments(data: dict) -> dict:
                                 "période, datées avant elle"))
     for key, heading in groups:
         if data[key]:
-            rows.append(_row(heading, None, None, style="heading"))
+            rows.append(_row(heading, None, None, key=f"groupe:{key}", style="heading"))
             for inv in data[key]:
+                # An invoice falls in one group at most (voided, or counted
+                # and created late — imported or not).
                 rows.append(_row(f"{_number(inv)} ({format_date_fr(_inv_day(inv))})",
                                  _cents(inv, "gst_amount"), _cents(inv, "qst_amount"),
-                                 level=1))
+                                 key=f"facture:{inv.get('id')}", level=1))
     notes = []
     if not rows:
         notes.append("Aucun redressement.")
@@ -1350,13 +1386,14 @@ def _present_trust(data: dict) -> dict:
         kind = trust.ACCOUNT_TYPE_LABELS.get(account.get("account_type"),
                                             account.get("account_type") or "")
         rows.append(_row(f"{_account_name(account)} ({kind.lower()})", opening, closing,
-                         level=1))
+                         key=f"compte:{account['id']}", level=1))
         opening_total += opening
         closing_total += closing
     if not rows:
-        rows.append(_row("Aucun compte en fidéicommis", None, None, style="note"))
+        rows.append(_row("Aucun compte en fidéicommis", None, None, key="aucun_compte",
+                         style="note"))
     rows.append(_row("Total des fonds en fidéicommis", opening_total, closing_total,
-                     style="subtotal"))
+                     key="total_fideicommis", style="subtotal"))
     return {"columns": ["Début", "Fin"], "rows": rows, "notes": [
         "Les sommes détenues pour les clients ne sont pas des actifs du cabinet "
         "(solde aux livres)."]}
@@ -1364,16 +1401,19 @@ def _present_trust(data: dict) -> dict:
 
 def _present_wip(data: dict) -> dict:
     o, c = data["opening"], data["closing"]
-    rows = [_row("Heures non facturées", o["time"], c["time"], level=1),
-            _row("Débours non facturés", o["expenses"], c["expenses"], level=1),
+    rows = [_row("Heures non facturées", o["time"], c["time"], key="heures_non_facturees",
+                 level=1),
+            _row("Débours non facturés", o["expenses"], c["expenses"],
+                 key="debours_non_factures", level=1),
             _row("Total des travaux en cours", o["time"] + o["expenses"],
-                 c["time"] + c["expenses"], style="subtotal")]
+                 c["time"] + c["expenses"], key="total_travaux", style="subtotal")]
     if o["voided"] or c["voided"]:
         rows.append(_row("Entrées encore rattachées à une facture annulée (hors total)",
-                         o["voided"], c["voided"], level=1))
+                         o["voided"], c["voided"], key="sur_facture_annulee", level=1))
     if o["frozen"] or c["frozen"]:
         rows.append(_row("Entrées marquées facturées dont la facture est introuvable "
-                         "(hors total)", o["frozen"], c["frozen"], level=1))
+                         "(hors total)", o["frozen"], c["frozen"],
+                         key="facture_introuvable", level=1))
     return {"columns": ["Début", "Fin"], "rows": rows, "notes": [
         "Valeur au taux inscrit sur chaque entrée, selon l'état actuel des "
         "inscriptions. Un dossier à forfait, à contingence, mixte, pro bono ou "
@@ -1386,7 +1426,8 @@ _REFS_SHOWN = 5
 def _present_points(points: list, unchecked: list) -> dict:
     rows = []
     if unchecked:
-        rows.append(_row("Liste incomplète — " + " ".join(unchecked), None, style="note"))
+        rows.append(_row("Liste incomplète — " + " ".join(unchecked), None,
+                         key="liste_incomplete", style="note"))
     for p in points:
         shown = ", ".join(p["refs"][:_REFS_SHOWN])
         more = len(p["refs"]) - _REFS_SHOWN
@@ -1395,9 +1436,9 @@ def _present_points(points: list, unchecked: list) -> dict:
             value, note = p["contribution"], f"{p['count']} inscription(s){refs} — écart mesuré"
         else:
             value, note = p["amount"], f"{p['count']} inscription(s){refs}"
-        rows.append(_row(p["label"], value, note=note))
+        rows.append(_row(p["label"], value, key=p["key"], note=note))
     if not points and not unchecked:
-        rows.append(_row("Aucun point à vérifier.", None, style="note"))
+        rows.append(_row("Aucun point à vérifier.", None, key="aucun_point", style="note"))
     return {"key": "points", "title": "Points à vérifier", "columns": ["Montant"],
             "rows": rows, "notes": [], "unavailable": ""}
 
@@ -1432,11 +1473,13 @@ def present(st: Statements) -> dict:
     kpis = []
     income = st.sections.get("resultats")
     balance = st.sections.get("bilan")
-    kpis.append({"label": "Produits", "value": income["revenue"] if income else None})
-    kpis.append({"label": "Bénéfice net", "value": income["net_income"] if income else None})
-    kpis.append({"label": "Encaisse", "value":
+    kpis.append({"key": "produits", "label": "Produits",
+                 "value": income["revenue"] if income else None})
+    kpis.append({"key": "benefice_net", "label": "Bénéfice net",
+                 "value": income["net_income"] if income else None})
+    kpis.append({"key": "encaisse", "label": "Encaisse", "value":
                  sum(balance["closing"].cash.values()) if balance else None})
-    kpis.append({"label": "Comptes clients", "value":
+    kpis.append({"key": "comptes_clients", "label": "Comptes clients", "value":
                  balance["closing"].receivables if balance else None})
     floors = []
     if st.floors is None:

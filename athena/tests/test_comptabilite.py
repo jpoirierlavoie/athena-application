@@ -36,7 +36,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.comptabilite as rc
     import routes.trust as rt
     import routes.admin_ledger as ra
-    import routes.financial_statements as rfs
 
 from flask import Flask  # noqa: E402
 
@@ -83,10 +82,11 @@ _ADMIN_SNAP = {
 @pytest.fixture()
 def web_rendu(monkeypatch):
     """Rendu réel avec les blueprints que le hub nomme — le gabarit émet des
-    url_for('trust.…'), url_for('admin_ledger.…') et, depuis le lot B
-    (2026-11-07), url_for('etats_financiers.index') inconditionnels ;
+    url_for('trust.…') et url_for('admin_ledger.…') inconditionnels ;
     contraste voulu avec les smoke admin, qui n'enregistrent que admin_bp
-    (leurs liens croisés sont gardés par des {% if %})."""
+    (leurs liens croisés sont gardés par des {% if %}). Les états
+    financiers ont quitté le hub le 2026-11-10 (menu « Finances ») : leur
+    blueprint n'est plus enregistré ici, et le rendu le prouve."""
     from utils.format_fr import format_cents_fr
     from utils.icons import ms as _ms
 
@@ -99,7 +99,6 @@ def web_rendu(monkeypatch):
     app.register_blueprint(rc.comptabilite_bp)
     app.register_blueprint(rt.trust_bp)
     app.register_blueprint(ra.admin_bp)
-    app.register_blueprint(rfs.etats_bp)
     client = app.test_client()
     with client.session_transaction() as s:
         s["user_id"] = "u1"

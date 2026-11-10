@@ -2,8 +2,8 @@
 
 ## Soldes et registres : fidéicommis, administration
 {{GEN:charger}}
-- **Déclencheur** : « combien en fidéicommis », « solde du client », « chèques en circulation », « conciliation en retard », « solde du compte d'opérations ».
-- **Appels** : (1) le cabinet : `get_trust_snapshot()` — les comptes, leur conciliation, les chèques en circulation, `by_dossier` ; (2) un dossier, par client : `get_trust_balance(dossier_id)` ; (3) les mouvements : `list_trust_transactions(dossier_id, client_id)` pour une carte-client, `list_trust_transactions(account_id)` seul pour le journal entier, paginé par `cursor` ; ailleurs, `truncated: true` : resserrer par `date_from` et `date_to`, les plus récents pouvant manquer ; (4) le compte d'opérations et la carte : `get_admin_ledger()` ; le solde courant : un `account_id`, sans `kind`, `status` ni `category`.
+- **Déclencheur** : « combien en fidéicommis », « solde du client », « chèques en circulation », « conciliation en retard », « solde du compte d'opérations », « états financiers », « comparatif ».
+- **Appels** : (1) le cabinet : `get_trust_snapshot()` — les comptes, leur conciliation, les chèques en circulation, `by_dossier` ; (2) un dossier, par client : `get_trust_balance(dossier_id)` ; (3) les mouvements : `list_trust_transactions(dossier_id, client_id)` pour une carte-client, `list_trust_transactions(account_id)` seul pour le journal entier, paginé par `cursor` ; ailleurs, `truncated: true` : resserrer par `date_from` et `date_to`, les plus récents pouvant manquer ; (4) le compte d'opérations et la carte : `get_admin_ledger()` ; le solde courant : un `account_id`, sans `kind`, `status` ni `category` ; (5) états financiers : `get_financial_statements(periods)`, toute la série en un appel, ses `points` avec les chiffres.
 - **Arrêt** : `book_*` est le « Solde aux livres » ; `cleared_*`, le « Disponible (compensé) », ne se présente jamais comme « Solde » ; l'écart est en transit.
 - **À éviter** : un `get_trust_balance` par dossier pour le portrait du cabinet : le `by_dossier` du portrait le donne.
 

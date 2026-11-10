@@ -24,7 +24,7 @@ MATERIAL_ICONS: frozenset = frozenset({
     "draft", "edit", "error", "first_page", "folder_open", "grid_view",
     "group", "image", "info", "inventory_2", "keyboard_double_arrow_left",
     "keyboard_double_arrow_right", "last_page", "list", "lock", "logout",
-    "mail", "more_horiz", "more_vert", "payments", "person",
+    "mail", "monitoring", "more_horiz", "more_vert", "payments", "person",
     "picture_as_pdf", "print", "push_pin", "schedule", "settings",
     "smartphone", "undo", "upload", "warning",
 })

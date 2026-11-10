@@ -368,8 +368,9 @@ def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
     # REWRITTEN deliberately (2026-09-30): 86 -> 88, the two bulk
-    # creators create_time_entries_bulk / create_expenses_bulk.
-    assert len(tools.TOOLS) == 88  # 32 lectures + 56 ecritures
+    # creators create_time_entries_bulk / create_expenses_bulk. 88 -> 89
+    # (2026-11-10, deliberately): the read get_financial_statements.
+    assert len(tools.TOOLS) == 89  # 33 lectures + 56 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False

@@ -128,6 +128,7 @@ def _app():
         to_mtl=to_mtl, jsattr=jsattr,
         cents_fr=lambda c: format_cents_fr(c) if c is not None else "")
     app.register_blueprint(rfs.etats_bp)
+    app.register_blueprint(rfs.etats_anciens_bp)
     app.register_blueprint(auth_routes.auth_bp)
     return app
 
@@ -141,7 +142,7 @@ def client(fake):
     return c
 
 
-def _page(client, path="/comptabilite/etats/", status=200) -> str:
+def _page(client, path="/finances/", status=200) -> str:
     resp = client.get(path)
     assert resp.status_code == status, resp.status_code
     return html.unescape(resp.get_data(as_text=True))
@@ -199,12 +200,12 @@ def test_the_default_is_the_last_complete_month_with_its_figures(client):
 
 
 def test_an_open_period_says_it_is_computed_to_today(client):
-    page = _page(client, "/comptabilite/etats/?periode=2031-T3")
+    page = _page(client, "/finances/?periode=2031-T3")
     assert "Période en cours : calculée au 20 septembre 2031 inclusivement." in page
 
 
 def test_the_selector_offers_every_period_and_marks_the_shown_one(client):
-    page = _page(client, "/comptabilite/etats/?periode=2031-T2")
+    page = _page(client, "/finances/?periode=2031-T2")
     assert '<optgroup label="Mois">' in page and '<optgroup label="Années">' in page
     assert '<option value="2031-T2" selected>2e trimestre 2031</option>' in page
     assert '<option value="2025-01">janvier 2025</option>' in page
@@ -212,10 +213,10 @@ def test_the_selector_offers_every_period_and_marks_the_shown_one(client):
 
 
 def test_previous_and_next_stop_at_the_books_and_at_today(client):
-    page = _page(client, "/comptabilite/etats/?periode=2031-T3")
-    assert 'href="/comptabilite/etats/?periode=2031-T2"' in page
+    page = _page(client, "/finances/?periode=2031-T3")
+    assert 'href="/finances/?periode=2031-T2"' in page
     assert 'aria-label="Période suivante"' not in page
-    first = _page(client, "/comptabilite/etats/?periode=2025-01")
+    first = _page(client, "/finances/?periode=2025-01")
     assert 'aria-label="Période précédente"' not in first
     assert 'aria-label="Période suivante" title="Période suivante"' in first
 
@@ -226,7 +227,7 @@ def test_previous_and_next_stop_at_the_books_and_at_today(client):
     ("2024-12", "Les livres commencent le 1er janvier 2025"),
     ("2031-t3", "La période demandée est invalide"),
 ])
-@pytest.mark.parametrize("path", ["/comptabilite/etats/", "/comptabilite/etats/pdf"])
+@pytest.mark.parametrize("path", ["/finances/", "/finances/pdf"])
 def test_a_refused_period_answers_400_with_no_figure(client, slug, refusal, path):
     page = _page(client, f"{path}?periode={slug}", status=400)
     assert refusal in page
@@ -234,19 +235,20 @@ def test_a_refused_period_answers_400_with_no_figure(client, slug, refusal, path
 
 
 def test_an_anonymous_visitor_is_sent_to_login(fake):
-    resp = _app().test_client().get("/comptabilite/etats/?periode=2031-08")
+    resp = _app().test_client().get("/finances/?periode=2031-08")
     assert resp.status_code == 302
     assert "/auth/login" in resp.headers["Location"]
 
 
-def test_the_routes_are_get_only(client):
-    assert client.post("/comptabilite/etats/").status_code == 405
-    assert client.post("/comptabilite/etats/pdf").status_code == 405
+@pytest.mark.parametrize("path", [
+    "/finances/", "/finances/pdf", "/comptabilite/etats/", "/comptabilite/etats/pdf"])
+def test_the_routes_are_get_only(client, path):
+    assert client.post(path).status_code == 405
 
 
 def test_every_read_is_inside_one_read_only_transaction(client, fake):
     fake.reset_logs()
-    _page(client, "/comptabilite/etats/?periode=2031-08")
+    _page(client, "/finances/?periode=2031-08")
     assert fake.reads_outside_transactions() == []
     assert len({r.transaction for r in fake.reads}) == 1
     assert [op for c in fake.commits for op in c.ops] == []
@@ -260,7 +262,7 @@ def test_every_read_is_inside_one_read_only_transaction(client, fake):
 def test_a_failed_collection_makes_its_sections_unavailable(client, fake, monkeypatch, caplog):
     _fail_queries_on(monkeypatch, fake, "invoices")
     caplog.set_level(logging.ERROR, logger="pallas.unexpected")
-    page = _plain(_page(client, "/comptabilite/etats/?periode=2031-08"))
+    page = _plain(_page(client, "/finances/?periode=2031-08"))
     income = _section(page, "État des résultats")
     assert "Indisponible — Lecture impossible (factures)" in income
     assert "0,00 $" not in income
@@ -275,7 +277,7 @@ def test_a_failed_collection_makes_its_sections_unavailable(client, fake, monkey
 def test_a_truncated_read_is_never_a_figure(client, monkeypatch):
     # Two accounts pass a cap of two; the three entries do not.
     monkeypatch.setattr(full_reads, "FULL_READ_CAP", 2)
-    page = _plain(_page(client, "/comptabilite/etats/?periode=2031-08"))
+    page = _plain(_page(client, "/finances/?periode=2031-08"))
     income = _section(page, "État des résultats")
     assert "Lecture tronquée (registre d'administration)" in income
     assert "0,00 $" not in income
@@ -294,7 +296,7 @@ def _pdf_text(data: bytes) -> str:
 
 def test_the_pdf_renders_the_statements(client, caplog):
     caplog.set_level(logging.INFO, logger="pallas.admin_ledger")
-    resp = client.get("/comptabilite/etats/pdf?periode=2031-08")
+    resp = client.get("/finances/pdf?periode=2031-08")
     assert resp.status_code == 200
     assert resp.mimetype == "application/pdf"
     assert 'filename="etats-financiers_2031-08.pdf"' in resp.headers["Content-Disposition"]
@@ -315,16 +317,16 @@ def test_the_pdf_renders_the_statements(client, caplog):
 
 def test_the_pdf_is_refused_when_a_statement_is_unavailable(client, fake, monkeypatch):
     _fail_queries_on(monkeypatch, fake, "trust_transactions")
-    resp = client.get("/comptabilite/etats/pdf?periode=2031-08")
+    resp = client.get("/finances/pdf?periode=2031-08")
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith(
-        "/comptabilite/etats/?periode=2031-08&erreur=pdf_indisponible")
-    page = _page(client, "/comptabilite/etats/?periode=2031-08&erreur=pdf_indisponible")
+        "/finances/?periode=2031-08&erreur=pdf_indisponible")
+    page = _page(client, "/finances/?periode=2031-08&erreur=pdf_indisponible")
     assert "Le PDF n'a pas été produit" in page
 
 
 def test_an_unknown_error_code_shows_nothing(client):
-    page = _page(client, "/comptabilite/etats/?periode=2031-08&erreur=<b>x</b>")
+    page = _page(client, "/finances/?periode=2031-08&erreur=<b>x</b>")
     assert 'role="alert"' not in page
 
 
@@ -334,15 +336,42 @@ def test_an_unknown_error_code_shows_nothing(client):
 
 
 def test_the_template_runs_no_script_and_no_htmx():
-    src = (_ATHENA / "templates" / "comptabilite" / "etats.html").read_text(encoding="utf-8")
+    src = (_ATHENA / "templates" / "finances" / "etats.html").read_text(encoding="utf-8")
     assert "<script" not in src and "hx-" not in src and "=>" not in src
     assert 'method="get"' in src
     assert re.search(r"\bpl-\d", src) is None and re.search(r"\bms-\d", src) is None
 
 
-def test_the_hub_links_to_the_statements():
-    src = (_ATHENA / "templates" / "comptabilite" / "index.html").read_text(encoding="utf-8")
-    assert "url_for('etats_financiers.index')" in src
+def test_the_statements_have_their_own_menu_entry_and_left_the_hub():
+    """2026-11-10: « Finances », an entry of both menus (the sidebar and
+    the phone's « Plus »), beside Comptabilité — whose page no longer links
+    to the statements."""
+    base = (_ATHENA / "templates" / "base.html").read_text(encoding="utf-8")
+    assert base.count('href="/finances/"') == 2
+    assert base.count("ms('monitoring', 20") == 2
+    assert base.index('href="/comptabilite"') < base.index('href="/finances/"')
+    hub = (_ATHENA / "templates" / "comptabilite" / "index.html").read_text(encoding="utf-8")
+    assert "etats_financiers" not in hub and 'href="/finances' not in hub
+    assert not (_ATHENA / "templates" / "comptabilite" / "etats.html").exists()
+
+
+@pytest.mark.parametrize("old, new", [
+    ("/comptabilite/etats/?periode=2031-T2", "/finances/?periode=2031-T2"),
+    ("/comptabilite/etats/pdf?periode=2031-08", "/finances/pdf?periode=2031-08"),
+    ("/comptabilite/etats/", "/finances/"),
+    ("/comptabilite/etats/?periode=2031-08&erreur=pdf_indisponible&x=1",
+     "/finances/?periode=2031-08"),
+])
+def test_the_first_address_redirects_carrying_periode_alone(client, old, new):
+    resp = client.get(old)
+    assert resp.status_code == 302
+    assert resp.headers["Location"] == new
+
+
+def test_the_first_address_still_asks_for_the_login(fake):
+    resp = _app().test_client().get("/comptabilite/etats/?periode=2031-08")
+    assert resp.status_code == 302
+    assert "/auth/login" in resp.headers["Location"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -394,7 +423,7 @@ def test_the_snapshot_transaction_is_begun_read_only(client, fake, monkeypatch):
         return resp
 
     monkeypatch.setattr(server, "begin_transaction", spy)
-    _page(client, "/comptabilite/etats/?periode=2031-08")
+    _page(client, "/finances/?periode=2031-08")
     assert begun == [True]
 
 
@@ -409,7 +438,7 @@ def test_a_failed_transaction_makes_every_section_unavailable(client, fake, monk
 
     monkeypatch.setattr(fake._fake_server, rpc, boom)
     caplog.set_level(logging.ERROR, logger="pallas.unexpected")
-    page = _plain(_page(client, "/comptabilite/etats/?periode=2031-08"))
+    page = _plain(_page(client, "/finances/?periode=2031-08"))
     for title in fs.SECTION_TITLES.values():
         assert "Indisponible — Lecture impossible" in _section(page, title), title
     assert "0,00 $" not in page.split("Points à vérifier")[0].split("Télécharger le PDF")[1]
@@ -417,15 +446,15 @@ def test_a_failed_transaction_makes_every_section_unavailable(client, fake, monk
                if getattr(r, "json_fields", {}).get("event") == "unexpected"
                and r.getMessage() == "financial statements: read transaction failed"]
     assert line["error_type"] == error.__name__
-    resp = client.get("/comptabilite/etats/pdf?periode=2031-08")
+    resp = client.get("/finances/pdf?periode=2031-08")
     assert resp.status_code == 302 and "erreur=pdf_indisponible" in resp.headers["Location"]
 
 
 def test_unread_reconciliations_are_said_on_the_page_and_in_the_pdf(client, fake, monkeypatch):
     _fail_queries_on(monkeypatch, fake, "admin_reconciliations")
-    page = _page(client, "/comptabilite/etats/?periode=2031-08")
+    page = _page(client, "/finances/?periode=2031-08")
     assert "Conciliations indisponibles — Lecture impossible (conciliations d'administration)" in page
-    resp = client.get("/comptabilite/etats/pdf?periode=2031-08")
+    resp = client.get("/finances/pdf?periode=2031-08")
     text = _pdf_text(resp.data)
     assert fs.FLOORS_HEADING in text
     assert "Conciliations indisponibles" in text
@@ -451,7 +480,7 @@ def test_the_fees_print_under_their_heading_and_other_income_as_one_line(client,
         "id": "a6", "account_id": "ops1", "kind": "recette_autre", "direction": "recette",
         "amount": 1234, "date": _d(2031, 8, 15), "counterparty": "Payeur fictif",
         "net_amount": 0, "gst_amount": 0, "qst_amount": 0, "status": "compensée"})
-    income = _plain(_section(_page(client, "/comptabilite/etats/?periode=2031-08"),
+    income = _plain(_section(_page(client, "/finances/?periode=2031-08"),
                              "État des résultats"))
     nested = '<span class="block ml-3"><span class="block ml-3">'
     assert '<span class="block ml-3">Honoraires professionnels</span>' in income
@@ -461,7 +490,7 @@ def test_the_fees_print_under_their_heading_and_other_income_as_one_line(client,
             < income.index(">Avocat<"))
     assert _money(33000) in income and _money(1234) in income
     assert "Payeur fictif" not in income
-    text = _pdf_text(client.get("/comptabilite/etats/pdf?periode=2031-08").data)
+    text = _pdf_text(client.get("/finances/pdf?periode=2031-08").data)
     for label in ("Honoraires professionnels", "Notaire", "Avocat", "Autres produits"):
         assert label in text, label
     assert "Payeur fictif" not in text

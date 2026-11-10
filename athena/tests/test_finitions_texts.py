@@ -162,14 +162,20 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
     # longer carrying that scope.
     after_d22 = _AFTER_D22
     assert after_d22 <= tools.WRITE_TOOLS
-    visible = set(tools.TOOLS) - _ACCOUNTING_SCOPE_UNTIL_2026_10_05 - after_d22
+    visible = (set(tools.TOOLS) - _ACCOUNTING_SCOPE_UNTIL_2026_10_05 - after_d22
+               - _READS_AFTER_BULK)
     assert len(visible) == 80 and len(visible & tools.WRITE_TOOLS) == 49
-    assert len(set(tools.TOOLS) - after_d22) == 86
+    assert len(set(tools.TOOLS) - after_d22 - _READS_AFTER_BULK) == 86
     assert len(tools.WRITE_TOOLS - after_d22) == 54
 
 
 # The write tools shipped AFTER the D22 release, each under its own train.
 _AFTER_D22 = frozenset({"create_time_entries_bulk", "create_expenses_bulk"})
+
+# The read tools shipped AFTER the bulk creators' release (2026-11-10: the
+# « Finances » statements): a past release's runbook keeps the counts it
+# shipped with, so both trains below count the registry without them.
+_READS_AFTER_BULK = frozenset({"get_financial_statements"})
 
 # The six tools the separate `athena:comptabilite` scope carried from lot 5b
 # until 2026-10-05, when the lawyer removed it: the ACCOUNTING family's five
@@ -193,10 +199,12 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
     # What a write token saw AT THAT RELEASE: the separate accounting scope
     # still held six tools back (removed 2026-10-05 — a write token sees
     # them all since; the runbook of a past release keeps its counts).
-    visible = set(tools.TOOLS) - _ACCOUNTING_SCOPE_UNTIL_2026_10_05
+    assert _READS_AFTER_BULK <= set(tools.TOOLS) - tools.WRITE_TOOLS
+    shipped = set(tools.TOOLS) - _READS_AFTER_BULK
+    visible = shipped - _ACCOUNTING_SCOPE_UNTIL_2026_10_05
     reads = len(visible - tools.WRITE_TOOLS)
     writes = len(visible & tools.WRITE_TOOLS)
-    all_reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
+    all_reads = len(shipped - tools.WRITE_TOOLS)
     ordered = [
         "python -m pytest tests/ -q -p no:cacheprovider",
         "*Revoke and disconnect — BEFORE the push*",
@@ -204,7 +212,7 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
         "*The push*",
         "*Re-add the connector and READ the CREATE paragraph",
         f"**{len(visible)}** tools ({reads} read, {writes} write)",
-        f"**{len(tools.TOOLS)}** ({all_reads} read, "
+        f"**{len(shipped)}** ({all_reads} read, "
         f"{len(tools.WRITE_TOOLS)} write)",
         "*One smoke test, on a TEST dossier only*",
         "`entries[1]`",

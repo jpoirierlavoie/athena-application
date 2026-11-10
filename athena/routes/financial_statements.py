@@ -1,4 +1,6 @@
-"""États financiers — the page and its PDF (lot B, 2026-11-07).
+"""États financiers — the page and its PDF (lot B, 2026-11-07), under the
+« Finances » menu since 2026-11-10 (``/finances/``, its own entry in
+``base.html``, no longer a card of the Comptabilité page).
 
 GET only and read-only, behind ``@login_required``: the firm's income
 statement, cash flow, balance sheet, equity rollforward, TPS/TVQ table and
@@ -19,6 +21,11 @@ is malformed, before the books or not yet started
 page with a closed ``?erreur=`` code — when one of the three statements is
 unavailable: a statement document missing one of them would read as
 complete.
+
+The page's first address, ``/comptabilite/etats/`` (and its ``/pdf``),
+answers a 302 to the new one (``etats_anciens_bp``) carrying ``periode``
+alone, which the page validates as ever: a bookmark keeps working, and no
+other query value is carried anywhere.
 """
 
 from __future__ import annotations
@@ -31,7 +38,11 @@ from services import financial_statements as statements_service
 from utils import deadlines, periods
 from utils.logging_setup import log_admin_ledger_event
 
-etats_bp = Blueprint("etats_financiers", __name__, url_prefix="/comptabilite/etats")
+etats_bp = Blueprint("etats_financiers", __name__, url_prefix="/finances")
+#: The page's first address (2026-11-07 to 2026-11-10): redirects only.
+etats_anciens_bp = Blueprint("etats_financiers_anciens", __name__,
+                             url_prefix="/comptabilite/etats")
+_TEMPLATE = "finances/etats.html"
 
 #: The closed ``?erreur=`` codes the page shows — any other shows nothing.
 _ERRORS = {
@@ -68,13 +79,13 @@ def index():
     options = periods.options(today, fs.BOOKS_START)
     period, refusal = _period_or_refusal(today)
     if period is None:
-        return render_template("comptabilite/etats.html", view=None,
+        return render_template(_TEMPLATE, view=None,
                                refusal=refusal, options=options, nav=None,
                                error=""), 400
     _statements, view, _counts = statements_service.build(
         period, today=today, now=deadlines.now_utc())
     return render_template(
-        "comptabilite/etats.html", view=view, refusal="", options=options,
+        _TEMPLATE, view=view, refusal="", options=options,
         nav=_navigation(period, today),
         error=_ERRORS.get(request.args.get("erreur", ""), ""))
 
@@ -85,7 +96,7 @@ def pdf():
     today = deadlines.today_mtl()
     period, refusal = _period_or_refusal(today)
     if period is None:
-        return render_template("comptabilite/etats.html", view=None,
+        return render_template(_TEMPLATE, view=None,
                                refusal=refusal,
                                options=periods.options(today, fs.BOOKS_START),
                                nav=None, error=""), 400
@@ -113,3 +124,22 @@ def pdf():
         filename=f"etats-financiers_{period.slug}.pdf",
         notices=[view["computed_line"], view["floors_heading"], *view["floors"]],
     )
+
+
+def _moved(endpoint: str):
+    """A 302 to *endpoint*, carrying ``periode`` alone — the page refuses a
+    malformed one at 400, as for any request."""
+    slug = request.args.get("periode", "")
+    return redirect(url_for(endpoint, periode=slug or None))
+
+
+@etats_anciens_bp.route("/")
+@login_required
+def ancien_index():
+    return _moved("etats_financiers.index")
+
+
+@etats_anciens_bp.route("/pdf")
+@login_required
+def ancien_pdf():
+    return _moved("etats_financiers.pdf")

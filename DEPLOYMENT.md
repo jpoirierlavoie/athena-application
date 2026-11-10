@@ -4815,7 +4815,7 @@ Notes:
   written).
 - **Financial statements (2026-11-08).** Lot B of the lawyer's plan of
   2026-11-07: the page `/comptabilite/etats` (a card on the Comptabilité
-  hub) and its PDF give, for a month, a quarter or a calendar year from
+  hub — since 2026-11-10 `/finances/`, its own menu entry, below) and its PDF give, for a month, a quarter or a calendar year from
   2025-01-01, the income statement (billed basis), the cash flow of the
   operations accounts, the balance sheet at the period's start and end, the
   equity rollforward, the TPS/TVQ table, the prior-period adjustments and
@@ -5010,6 +5010,44 @@ Notes:
   refuses to save it, on the web as through update_admin_entry, until an
   older category is picked), and the integrity script names a refund in
   one. Redeliver plugin 1.5.0 with the code.
+- **« Finances » and the statements through the connector (2026-11-10).**
+  The statements page left the Comptabilité hub for its own menu entry,
+  « Finances » (icon `monitoring`), in the sidebar and in the phone's
+  « Plus »: `/finances/` and `/finances/pdf`; the first address,
+  `/comptabilite/etats/` (and `/pdf`), answers a 302 carrying `periode`
+  alone. A new read, `get_financial_statements`, serves the page's own rows
+  — every row of `models/financial_statements.present` now carries a stable
+  `key`, the same line keyed alike in every period — for up to 24 months,
+  quarters or years in one call, all computed from ONE read-only snapshot
+  (`services/financial_statements.build_series`); a section that cannot be
+  computed carries its « indisponible » reason, a snapshot that read
+  nothing is refused. The consent screen's read paragraph names the
+  statements. Change Impact: item 1 touched (a new read, its output schema,
+  plugin 1.7.0, the consent sentence) — without the §11 train: the
+  statements add up records the read grant already covers (invoices, both
+  registers, hours and disbursements), so no new kind of data is read; a
+  token in force sees the tool at deploy. Item 5: a GET-only blueprint
+  under `@login_required` at `/finances`, never CSRF-exempt, under no
+  special-cased prefix, and the redirect blueprint of the old address.
+  Item 6: the icon subset regenerated from `sorted(MATERIAL_ICONS)`
+  (gstatic v383, 46 glyphs, `forum` gone), the stylesheet recompiled — the
+  font's `url()` its only change — and rehashed, `STATIC_CACHE` bumped.
+  Items 2, 3, 4 (no new event: `mcp_tool_call` covers the read) and 7 (no
+  query: the whole-collection reads of lot B) not touched.
+  In order:
+  1. *The push.*
+  2. *On the phone* (375 px, light and dark) and on the desktop:
+     « Finances » under « Comptabilité » in both menus, its icon drawn (not
+     the word « monitoring »), the page as before; no card left on the
+     Comptabilité page; an old `/comptabilite/etats/?periode=…` bookmark
+     lands on `/finances/` for the same period.
+  3. *In claude.ai*, after reloading the connector's tools: ask for a
+     comparative of two quarters, and compare the last complete month's
+     figures with the `/finances/` page.
+  4. *Plugin 1.7.0*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day.
+  A rollback is the code alone: redeliver plugin 1.6.0 with it.
 
 ## 16. Troubleshooting
 

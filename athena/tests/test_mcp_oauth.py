@@ -676,6 +676,13 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
               "leur dernière conciliation et leurs écritures")
     assert ledger in flat
     assert flat.index(ledger) < flat.index("Écritures (facultatif)")
+    # 2026-11-10 — the financial statements (get_financial_statements), read
+    # with the same grant: said beside the registers they add up.
+    statements = ("Il comprend aussi les <strong>états financiers</strong> du "
+                  "cabinet qui en découlent (résultats, flux de trésorerie, "
+                  "bilan, TPS/TVQ), par mois, par trimestre ou par année.")
+    assert statements in flat
+    assert flat.index(ledger) < flat.index(statements) < flat.index("Écritures (facultatif)")
     # The write block and its box render on every consent screen — there is
     # no switch to hide them — and the page speaks of its ONE box.
     assert "Écritures (facultatif)" in flat

@@ -1866,6 +1866,17 @@ COUNTERPARTY_MAX_CHARS = 300
 REGISTER_REFERENCE_MAX_CHARS = 200
 REGISTER_DESCRIPTION_MAX_CHARS = 2000     # both models' _sanitize_data cap
 ADMIN_LEDGER_WINDOW_DAYS = 90
+# get_financial_statements: the periods one call may ask for (two years of
+# months), the sections of the statements — a literal of
+# models/financial_statements.SECTION_TITLES, in its order (pinned by
+# tests/test_mcp_financial_statements.py) — and the ids and refs one « point
+# à vérifier » carries before it says `truncated`.
+STATEMENT_PERIODS_MAX = 24
+_STATEMENT_SECTIONS = [
+    "resultats", "flux", "bilan", "avoir", "taxes", "redressements",
+    "fideicommis", "travaux",
+]
+STATEMENT_POINT_REFS_MAX = 20
 MONEY_MAX_CENTS = 100_000_000_000         # 1 000 000 000 $ — a typo guard
 _ADMIN_ETAG_READERS = ("get_admin_ledger",)
 
@@ -6795,6 +6806,69 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "get_admin_ledger",
+    },
+    # 2026-11-10: the statements of the « Finances » page, for a series of
+    # periods computed from ONE read — the lawyer's comparatives.
+    "get_financial_statements": {
+        "title": "États financiers",
+        "description": (
+            "READ. The firm's financial statements — the figures, French "
+            "labels and order of the application's « États financiers » page "
+            "(menu Finances) and its PDF — for up to 24 periods in ONE call, "
+            "all computed from ONE consistent read of the books: a "
+            "comparative never mixes two states of them. A period is a "
+            "month `2026-10`, a quarter `2026-T3` or a calendar year `2026` "
+            "(the fiscal year is the calendar year); none starts before the "
+            "books (2025-01-01) or after today, and a period holding today "
+            "is computed up to today (`in_progress`, `as_of`). Each section "
+            "gives `columns` and `rows`: a row's `key` is stable — the same "
+            "line carries the same key in every period, so line periods up "
+            "by it — with its `label`, `level`, `style` and one value per "
+            "column in `values_cents` / `values_display` (null on a heading "
+            "or a note). A category or cash-flow row absent from a period "
+            "is zero there. Revenue is billed: invoices envoyée, en_retard "
+            "or payée, at their invoice date, before tax; costs are net of "
+            "TPS/TVQ; the trust funds and the unbilled work are memos, "
+            "outside every total. A section that could not be computed "
+            "carries its French `unavailable` reason and NO rows: never "
+            "read it as zero. ALWAYS report, with the figures, the "
+            "period's `points` (« points à vérifier »: the data conditions "
+            "a figure rests on — `ids` are administration-ledger entry ids, "
+            "invoice numbers or invoice ids) and `points_incomplete`. "
+            "Present the figures as unaudited management statements « selon "
+            "l'état actuel des inscriptions »: a period not yet reconciled "
+            "(`reconciliations`) may still change. On a long series, ask "
+            "only the `sections` you need."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "periods": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": STATEMENT_PERIODS_MAX,
+                    "items": {"type": "string", "maxLength": 7},
+                    "description": (
+                        "The periods, in the order to report them: `YYYY-MM`, "
+                        "`YYYY-TQ` (T1 to T4) or `YYYY`; kinds may be mixed "
+                        "(2025-T3 beside 2026-T3). Each at most once."
+                    ),
+                },
+                "sections": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "string", "enum": _STATEMENT_SECTIONS},
+                    "description": (
+                        "Only these sections (default: all of them), each at "
+                        "most once. The period's header, `kpis`, `points` "
+                        "and `points_incomplete` always come."
+                    ),
+                },
+            },
+            "required": ["periods"],
+            "additionalProperties": False,
+        },
+        "handler": "get_financial_statements",
     },
     "record_trust_entry": {
         "title": "Inscrire une écriture au fidéicommis",

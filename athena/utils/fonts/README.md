@@ -42,12 +42,13 @@ for both families).
 Sous-ensemble variable (axes `opsz 20..48`, `wght 100..700`, `FILL 0..1` —
 GRAD exclu, app exclusivement claire) contenant EXACTEMENT les glyphes de
 `utils/icons.MATERIAL_ICONS`, épinglé par `tests/test_icons.py`. Téléchargé
-2026-09-11 via l'API css2 (User-Agent navigateur obligatoire), version
-gstatic **v371**, **45 glyphes** :
+2026-11-10 via l'API css2 (User-Agent navigateur obligatoire), version
+gstatic **v383**, **46 glyphes** (ajout de `monitoring`, le menu
+« Finances ») — 26 660 octets :
 
 | Fichier | SHA-256 |
 |---|---|
-| `material-symbols-outlined-v371-2ac72714.woff2` | `2ac727148a23a2556a271d4bb5cdb186a8ea55ac2fe4b071a14c56ee09d69e29` |
+| `material-symbols-outlined-v383-038db93f.woff2` | `038db93fb81e01c2ca2848ed8d7723da3da53bc399b1ef796ba6378a8657d0c3` |
 
 URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
 
@@ -71,11 +72,11 @@ table de glyphes, et le fan-out complet coûterait six fichiers plus
 un littéral épinglé pour quelques centaines d'octets. Le retrait
 réel se fait à la prochaine régénération, celle-ci reconstruisant
 l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par construction.
-Surensemble courant : AUCUN — la régénération du 2026-09-11 (ajout de
-`first_page`, `last_page`, `keyboard_double_arrow_left` et
-`keyboard_double_arrow_right` pour la barre de pagination icon-only) a
-reconstruit l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par
-construction.
+Surensemble courant : AUCUN — la régénération du 2026-11-10 (ajout de
+`monitoring`) a reconstruit l'URL depuis `sorted(MATERIAL_ICONS)`, donc à
+jour par construction : la table de ligatures du fichier, lue avec
+fontTools, porte les 46 noms (et leurs alias Google), et `forum` n'y est
+plus.
 
 ⚠ **La TAILLE du woff2 est la vérification du nom, et elle est binaire.**
 L'API css2 n'échoue PAS sur un nom qu'elle ne reconnaît pas : elle abandonne

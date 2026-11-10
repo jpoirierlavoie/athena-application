@@ -1,6 +1,7 @@
 """The financial statements' read — lot B (2026-11-07).
 
-ONE read-only Firestore transaction per request reads every collection the
+ONE read-only Firestore transaction per request — a page, a PDF, or a
+connector series of periods (``build_series``) — reads every collection the
 statements rest on (``models/financial_statements.COLLECTIONS``): one
 consistent snapshot, so a register write landing between two reads can
 never tear the balance sheet. Each collection is read by its model's strict
@@ -101,3 +102,11 @@ def build(period, *, today: date, now: datetime) -> tuple:
     snapshot = read_snapshot()
     statements = fs.compute(snapshot, period, today=today, now=now)
     return statements, fs.present(statements), row_counts(snapshot)
+
+
+def build_series(periods: list, *, today: date, now: datetime) -> tuple:
+    """``(statements of each period, in order; the snapshot)`` — ONE read
+    for the whole series (the connector's ``get_financial_statements``), so
+    every period of a comparative rests on the same consistent data."""
+    snapshot = read_snapshot()
+    return [fs.compute(snapshot, p, today=today, now=now) for p in periods], snapshot
