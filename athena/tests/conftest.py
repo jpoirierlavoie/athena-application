@@ -34,12 +34,23 @@ modules got the real client for the whole session (``test_budget`` then read
 reads, until 2026-11-06). So this file imports ``models`` once, under the
 same patch the test modules use: every selection starts where the full run
 does.
-And as a backstop, every Google gRPC client (Firestore, Secret Manager,
-Cloud Tasks, Cloud Logging) opens its channel through
-``google.api_core.grpc_helpers.create_channel`` on its first RPC: a
-``*.googleapis.com`` target is refused there AND recorded, because the
-readers that hit it fail open — they swallow the error — so only the check
-below fails the test.
+And as a backstop, a gRPC client opens its channel through a factory of
+``tests/_real_app_probe.CHANNEL_FACTORIES`` on its first RPC: a target
+outside this machine is refused there AND recorded, with the line behind
+it, because the readers that hit it fail open — they swallow the error — so
+only the check below fails the test.
+
+Nor does a test reach the network. An audit hook refuses — with a
+``RuntimeError``, which no retry loop waits on — and records, with the line
+behind it, a DNS lookup, a connect or a datagram made in Python to anything
+but this machine (``NETWORK_EVENTS``): what a REST client, a token refresh
+or the metadata server would need. What is this machine is decided once, in
+``tests/_real_app_probe.is_local``, for this process and for the real-app
+children alike, and the session runs without any proxy variable and with
+``NO_PROXY=*``, so that no proxy on this machine forwards a request the
+hook judged local, gRPC's included. gRPC resolves and connects below
+Python: the channel guard covers it. What no event can refuse in time is
+named in tests/_real_app_probe.py.
 
 Nor does a test look up credentials. ``google.auth.default`` reads the
 developer's ADC and, for a user account, runs ``gcloud config get project``
@@ -50,17 +61,17 @@ names, the public one and its private home ``google.auth._default.default``
 — with the ``DefaultCredentialsError`` callers already expect when there is
 none, and recorded with the innermost line of this repository's own code
 behind the call (never a library's, nor a virtualenv's kept inside athena/)
-or, when there is none, with the guard's direct caller; and the same check
-fails the test. A test that needs credentials stubs them — the way
-tests/test_tracing_setup.py stubs ``opentelemetry.gcp_credential_provider``.
-A test's own monkeypatch of ``google.auth.default`` wins for that test, and
-is undone after it.
+— when there is none, the innermost line no library holds, else the guard's
+direct caller; and the same check fails the test. A test that needs
+credentials stubs them — the way tests/test_tracing_setup.py stubs
+``opentelemetry.gcp_credential_provider``. A test's own monkeypatch of
+``google.auth.default`` wins for that test, and is undone after it.
 
-Both guards are live before this file imports ``models``, so that import
+Every guard is live before this file imports ``models``, so that import
 chain meets them too. The check runs once a test's whole teardown is over
 (``pytest_runtest_teardown``): what a class, module or package fixture
-records as it ends counts against the test it ends with. It drains both
-records at once; a record a thread adds meanwhile, or a fixture value's
+records as it ends counts against the test it ends with. It drains every
+record at once; a record a thread adds meanwhile, or a fixture value's
 finalizer as pytest drops it after the check, waits for the next check, and
 so does one an interrupted teardown leaves under ``--pdb``, where pytest
 carries on. Whatever the plugins inside make of that teardown — the xfail
@@ -77,12 +88,13 @@ pytest returned (``_after_the_session``).
 
 A child pytest that runs this suite's files, or loads this file with ``-p``,
 carries these guards. A child that runs the real app carries its own prelude
-instead (tests/_real_app_probe.py), which refuses channels, network and the
-public ``google.auth.default`` — with a ``RuntimeError`` — but not its
-private home. Any other child carries none.
+instead (tests/_real_app_probe.py), which refuses the same doors by the same
+rules — the credential lookup with a ``RuntimeError`` there — and reports at
+exit a door the app rebound. Any other child carries none.
 """
 
 import atexit
+import importlib
 import logging
 import os
 import sys
@@ -92,7 +104,29 @@ import google.auth
 import google.auth._default
 import google.auth.exceptions
 import pytest
-from google.api_core import grpc_helpers
+
+from tests._real_app_probe import (
+    CHANNEL_FACTORIES,
+    NETWORK_EVENTS,
+    NO_PROXY,
+    PROXY_VARIABLES,
+    audit_host,
+    is_local,
+    is_local_target,
+)
+
+
+def _without_proxies() -> None:
+    """No proxy on this machine forwards a request the network guard would
+    have judged by its real host: every client connects directly, gRPC's
+    included."""
+    for name in [name for name in os.environ
+                 if name.lower() in PROXY_VARIABLES]:
+        del os.environ[name]
+    os.environ.update(NO_PROXY)
+
+
+_without_proxies()
 
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ATHENA)
@@ -111,32 +145,39 @@ def _after_the_session() -> None:
 
 
 # Before models and every test module, so that it runs after their atexit
-# handlers (only logging's and certifi's, registered by the imports above,
-# run later: they reach nothing).
+# handlers (only logging's, registered when pytest imported it, runs later:
+# it reaches nothing).
 atexit.register(_after_the_session)
 
-_GOOGLE_API_TARGETS: list[str] = []
-_create_channel = grpc_helpers.create_channel
-
-
-def _is_google_api_host(target) -> bool:
-    """``firestore.googleapis.com:443``, ``dns:///logging.googleapis.com``:
-    the HOST is compared, never a substring of the whole target — a
-    trailing dot (``firestore.googleapis.com.``) included."""
-    host = str(target).rsplit("/", 1)[-1].rsplit(":", 1)[0].lower().rstrip(".")
-    return host == "googleapis.com" or host.endswith(".googleapis.com")
-
-
-def _guarded_create_channel(target, *args, **kwargs):
-    if _is_google_api_host(target):
-        _GOOGLE_API_TARGETS.append(str(target))
-        raise RuntimeError(f"tests never reach Google APIs ({target})")
-    return _create_channel(target, *args, **kwargs)
-
-
-grpc_helpers.create_channel = _guarded_create_channel
-
+_CHANNEL_TARGETS: list[str] = []
+_NETWORK_REACHES: list[str] = []
 _CREDENTIAL_LOOKUPS: list[str] = []
+
+
+def _guarded_channel(real):
+    def guarded(target, *args, **kwargs):
+        if not is_local_target(target):
+            _CHANNEL_TARGETS.append(f"{target} ({_lookup_site()})")
+            raise RuntimeError(f"tests never open a channel out ({target})")
+        return real(target, *args, **kwargs)
+    return guarded
+
+
+def _guard_the_channel_factories() -> None:
+    for home, name in CHANNEL_FACTORIES:
+        owner = importlib.import_module(home)
+        setattr(owner, name, _guarded_channel(getattr(owner, name)))
+
+
+def _guarded_network(event, args) -> None:
+    # An audit hook sees every audited event of the process: this test first.
+    if event not in NETWORK_EVENTS:
+        return
+    host = audit_host(event, args)
+    if host is None or is_local(host):
+        return
+    _NETWORK_REACHES.append(f"{host} ({_lookup_site()})")
+    raise RuntimeError(f"tests never reach the network ({host})")
 
 
 def _within(path: str, root: str) -> bool:
@@ -154,38 +195,54 @@ def _envs_in(root: str, prefixes) -> list[str]:
 _ENVS_IN_ATHENA = _envs_in(_ATHENA, (sys.prefix, sys.exec_prefix))
 
 
-def _short_path(path: str) -> tuple[str, bool]:
-    """A frame's file, relative to athena/ or to site-packages, else its bare
-    name — never a home directory — and whether it is this repository's own
-    code."""
+# Where the interpreter's own files live — the standard library, a
+# virtualenv's launchers — wherever they are.
+_PYTHON_HOMES = sorted({os.path.abspath(home) for home in (
+    os.path.dirname(os.__file__), sys.prefix, sys.exec_prefix,
+    sys.base_prefix, sys.base_exec_prefix)})
+
+
+def _place(path: str) -> tuple[str, str]:
+    """A frame's file, shortened — relative to athena/ or to site-packages,
+    else its bare name, never a home directory — and whose code it is:
+    « ours » (this repository's), « library » (site-packages, the
+    interpreter's own files, a virtualenv kept inside athena/, code with no
+    file at all) or « other » (a test file written outside the
+    repository)."""
     if path.startswith("<"):  # <frozen runpy>, <string>: no file at all
-        return path, False
+        return path, "library"
     path = os.path.abspath(path)
     parts = path.replace("\\", "/").split("/")
-    if "site-packages" in parts:
-        last = len(parts) - 1 - parts[::-1].index("site-packages")
-        return "/".join(parts[last + 1:]), False
+    for packages in ("site-packages", "dist-packages"):
+        if packages in parts:
+            last = len(parts) - 1 - parts[::-1].index(packages)
+            return "/".join(parts[last + 1:]), "library"
     if _within(path, _ATHENA):
-        ours = not any(_within(path, env) for env in _ENVS_IN_ATHENA)
-        return os.path.relpath(path, _ATHENA).replace("\\", "/"), ours
-    return os.path.basename(path), False
+        short = os.path.relpath(path, _ATHENA).replace("\\", "/")
+        in_an_env = any(_within(path, env) for env in _ENVS_IN_ATHENA)
+        return short, "library" if in_an_env else "ours"
+    python = any(_within(path, home) for home in _PYTHON_HOMES)
+    return os.path.basename(path), "library" if python else "other"
 
 
 def _lookup_site() -> str:
-    """Where the lookup came from: the innermost line of this repository's
-    own code (the app or test line behind it), else the guard's direct
-    caller, else « ? » — a thread started on the guard itself has no Python
-    caller at all."""
+    """Where the reach came from: the innermost line of this repository's
+    own code (the app or test line behind it), else the innermost line no
+    library holds (a test written outside the repository), else the guard's
+    direct caller, else « ? » — a thread started on the guard itself has no
+    Python caller at all."""
     frame = sys._getframe(1).f_back  # the guard's caller, or None
-    caller = None
+    caller = other = None
     while frame is not None:
-        short, ours = _short_path(frame.f_code.co_filename)
+        short, kind = _place(frame.f_code.co_filename)
         site = f"{short}:{frame.f_lineno}"
         caller = caller or site
-        if ours and short != "tests/conftest.py":
+        if kind == "ours" and short != "tests/conftest.py":
             return site
+        if kind == "other":
+            other = other or site
         frame = frame.f_back
-    return caller or "?"
+    return other or caller or "?"
 
 
 def _guarded_default(*args, **kwargs):
@@ -193,9 +250,6 @@ def _guarded_default(*args, **kwargs):
     raise google.auth.exceptions.DefaultCredentialsError(
         "tests never look up credentials (tests/conftest.py)")
 
-
-google.auth.default = _guarded_default
-google.auth._default.default = _guarded_default
 
 _COLLECTION_REACHES: list[str] = []
 # The guard's own failure of a test's teardown, by node id, until its report.
@@ -212,14 +266,20 @@ def _drain(records: list[str]) -> list[str]:
 
 
 def _pending_reaches() -> list[str]:
-    """What the guards recorded, one sentence per door, both drained."""
+    """What the guards recorded, one sentence per door, every one drained."""
     problems = []
-    targets = _drain(_GOOGLE_API_TARGETS)
+    targets = _drain(_CHANNEL_TARGETS)
     if targets:
         problems.append(
             f"opened a gRPC channel to {sorted(set(targets))}: stub the read, "
             "or install tests/_fake_firestore — a real client reaches "
-            "production"
+            "production, or the outside"
+        )
+    hosts = _drain(_NETWORK_REACHES)
+    if hosts:
+        problems.append(
+            f"reached the network: {sorted(set(hosts))}: stub the client or "
+            "its transport — a real request leaves this machine"
         )
     sites = _drain(_CREDENTIAL_LOOKUPS)
     if sites:
@@ -232,8 +292,14 @@ def _pending_reaches() -> list[str]:
     return problems
 
 
-# Only now, every guard live and every name the exit check reads defined:
-# the import that builds models.db.
+# Every name the exit check reads is defined: a guarded module that fails to
+# import stops this file with its own error, and nothing else.
+_guard_the_channel_factories()
+sys.addaudithook(_guarded_network)
+google.auth.default = _guarded_default
+google.auth._default.default = _guarded_default
+
+# Only now, every guard live: the import that builds models.db.
 with mock.patch("google.cloud.firestore.Client"):
     import models  # noqa: E402
 
@@ -286,7 +352,7 @@ def pytest_runtest_makereport(item, call):
             report.longrepr = str(failure)
         elif hasattr(report.longrepr, "addsection"):  # shown whatever
             report.longrepr.addsection(  # --show-capture says
-                "Google API guard (tests/conftest.py)", str(failure))
+                "Guard of tests/conftest.py", str(failure))
         else:
             report.longrepr = f"{report.longreprtext}\n\n{failure}"
     report.outcome = "failed"

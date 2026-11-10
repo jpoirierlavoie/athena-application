@@ -17,10 +17,10 @@ The same holds for production Firestore: run alone, or first, a module that
 imported ``models`` unpatched gave the whole session a REAL client, which
 reads production wherever ADC is set (tests/conftest.py, 2026-11-06). And for
 credentials: a tracing test looked up the developer's on every run, through
-``google.auth.default`` (tests/conftest.py, 2026-11-09). The guards' own
-behaviour is pinned here too: in a child pytest for what spans tests,
-modules, the session or the process, in this process for the call site and
-the refusal.
+``google.auth.default`` (tests/conftest.py, 2026-11-09); and for the network
+at large. The guards' own behaviour is pinned here too: in a child pytest
+for what spans tests, modules, the session or the process, in this process
+for each door, the call site and the refusal.
 
 A child pytest loads no plugin by itself (PYTEST_DISABLE_PLUGIN_AUTOLOAD)
 and takes neither the developer's PYTEST_ADDOPTS nor colour, so that its
@@ -29,9 +29,11 @@ output, in file order, is the one these tests read.
 
 import _thread
 import functools
+import importlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -41,8 +43,12 @@ import google.auth
 import google.auth.exceptions
 import pytest
 
+from tests._real_app_probe import CHANNEL_FACTORIES
+
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CREDENTIALS = "looked up credentials (google.auth.default) from"
+_CHANNEL = "opened a gRPC channel to"
+_NETWORK = "reached the network:"
 _AT_THE_END = ("during collection, ", "after the last test's check, ")
 
 
@@ -80,6 +86,15 @@ def _names_site(text: str, opening: str, filename: str, line: int) -> bool:
         + re.escape(f"{filename}:{line}") + r"'\]", text) is not None
 
 
+def _names_reach(text: str, opening: str, reached: str, filename: str,
+                 line: int) -> bool:
+    """A channel or network sentence: what was reached, and the planted
+    file's line behind it."""
+    return re.search(
+        re.escape(f"{opening} ['{reached} (") + r"(?:[^']*/)?"
+        + re.escape(f"{filename}:{line})'") + r"\]", text) is not None
+
+
 def _session_lines(stdout: str) -> list[str]:
     """What the session's end reported, blaming no test."""
     return [line for line in stdout.splitlines()
@@ -111,9 +126,67 @@ def test_a_swallowed_google_api_channel_still_fails_the_test(tmp_path):
         "        pass\n"
     )})
     assert run.returncode != 0, run.stdout
-    assert "opened a gRPC channel to ['firestore.googleapis.com:443']" in (
-        run.stdout
-    ), run.stdout
+    assert _names_reach(run.stdout, _CHANNEL, "firestore.googleapis.com:443",
+                        "test_fail_open.py", 5), run.stdout
+
+
+def test_a_swallowed_network_reach_still_fails_the_test(tmp_path):
+    # A REST client resolves its host, then connects: either step, swallowed
+    # by a fail-open caller, fails the test. This machine stays reachable.
+    run = _run_planted(tmp_path, {"test_network.py": (
+        "import socket\n"
+        "\n"
+        "def test_dns_lookup():\n"
+        "    try:\n"
+        "        socket.getaddrinfo('guard.invalid', 443)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "\n"
+        "def test_connect():\n"
+        "    with socket.socket() as sock:\n"
+        "        sock.settimeout(1)\n"
+        "        try:\n"
+        "            sock.connect(('192.0.2.1', 9))\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "\n"
+        "def test_this_machine():\n"
+        "    socket.getaddrinfo('localhost', 80)\n"
+        "    with socket.create_server(('127.0.0.1', 0)) as server:\n"
+        "        socket.create_connection(server.getsockname(), 5).close()\n"
+    )})
+    assert run.returncode != 0, run.stdout
+    assert "3 passed, 2 errors" in run.stdout, run.stdout
+    assert "ERROR at teardown of test_dns_lookup" in run.stdout, run.stdout
+    assert "ERROR at teardown of test_connect" in run.stdout, run.stdout
+    assert "ERROR at teardown of test_this_machine" not in run.stdout, (
+        run.stdout)
+    assert _names_reach(run.stdout, _NETWORK, "guard.invalid",
+                        "test_network.py", 5), run.stdout
+    assert _names_reach(run.stdout, _NETWORK, "192.0.2.1",
+                        "test_network.py", 13), run.stdout
+
+
+def test_no_proxy_on_this_machine_hides_a_request(tmp_path):
+    # A proxy on this machine — an environment variable, the Windows
+    # registry — would take the request out, the guard seeing only a
+    # connect to 127.0.0.1. The session runs with NO_PROXY=*: the client
+    # connects directly, and the guard judges the real host.
+    run = _run_planted(tmp_path, {"test_proxy.py": (
+        "import requests\n"
+        "\n"
+        "def test_through_a_proxy(monkeypatch):\n"
+        "    monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:9')\n"
+        "    monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9')\n"
+        "    try:\n"
+        "        requests.get('http://guard.invalid/', timeout=2)\n"
+        "    except Exception:\n"
+        "        pass\n"
+    )})
+    assert run.returncode != 0, run.stdout
+    assert "1 passed, 1 error" in run.stdout, run.stdout
+    assert _names_reach(run.stdout, _NETWORK, "guard.invalid", "test_proxy.py",
+                        7), run.stdout
 
 
 def test_a_module_importing_models_unpatched_reaches_no_google_api():
@@ -125,16 +198,6 @@ def test_a_module_importing_models_unpatched_reaches_no_google_api():
     tail = "\n".join((run.stdout or "").splitlines()[-15:])
     assert run.returncode == 0, tail
     assert "opened a gRPC channel" not in run.stdout, tail
-
-
-def test_the_guard_compares_the_host_not_a_substring():
-    from tests.conftest import _is_google_api_host
-
-    assert _is_google_api_host("firestore.googleapis.com:443")
-    assert _is_google_api_host("dns:///logging.googleapis.com")
-    assert _is_google_api_host("firestore.googleapis.com.:443")  # FQDN dot
-    assert not _is_google_api_host("localhost:4317")  # a loopback target
-    assert not _is_google_api_host("googleapis.com.example.org:443")
 
 
 def test_a_swallowed_credential_lookup_still_fails_the_test(tmp_path):
@@ -208,8 +271,8 @@ def test_one_test_reaching_both_doors_fails_alone(tmp_path):
     assert "ERROR at teardown of test_both_doors" in run.stdout, run.stdout
     assert "ERROR at teardown of test_innocent_next" not in run.stdout, (
         run.stdout)
-    assert "opened a gRPC channel to ['firestore.googleapis.com:443']" in (
-        run.stdout), run.stdout
+    assert _names_reach(run.stdout, _CHANNEL, "firestore.googleapis.com:443",
+                        "test_both_doors.py", 6), run.stdout
     assert _CREDENTIALS in run.stdout, run.stdout
     assert not _session_lines(run.stdout), run.stdout
 
@@ -510,12 +573,14 @@ def test_an_exit_asking_for_0_at_the_session_end_keeps_the_failure(tmp_path):
                        "test_exit_at_the_end.py", 8), run.stdout
 
 
-def test_a_failed_import_of_models_leaves_no_error_at_exit():
-    # conftest stops at its import of models; the exit check, registered
+@pytest.mark.parametrize("module", ["models", "grpc.experimental.aio"])
+def test_a_failed_import_leaves_no_error_at_exit(module):
+    # conftest stops at its import of models, or of a guarded factory's
+    # module — a gRPC release that drops it; the exit check, registered
     # earlier, still finds every name it reads.
     script = (
         "import sys\n"
-        "sys.modules['models'] = None\n"
+        f"sys.modules[{module!r}] = None\n"
         "import tests.conftest\n"
     )
     run = subprocess.run(
@@ -523,9 +588,30 @@ def test_a_failed_import_of_models_leaves_no_error_at_exit():
         capture_output=True, text=True, timeout=240, stdin=subprocess.DEVNULL,
     )
     assert run.returncode == 1, run.stdout + run.stderr
-    assert "import of models halted" in run.stderr, run.stderr  # as planted
+    assert f"import of {module} halted" in run.stderr, run.stderr  # planted
     assert "atexit" not in run.stderr, run.stderr
     assert "NameError" not in run.stderr, run.stderr
+
+
+def test_the_session_runs_without_any_proxy_variable():
+    # Whatever the developer's environment holds: gRPC ignores NO_PROXY=*,
+    # so the variables it reads are gone; requests and urllib keep
+    # NO_PROXY=*, against the Windows registry's proxy.
+    script = (
+        "import os\n"
+        "for name in ('grpc_proxy', 'HTTPS_PROXY', 'http_proxy', 'ALL_PROXY'):\n"
+        "    os.environ[name] = 'http://127.0.0.1:9'\n"
+        "import tests.conftest\n"
+        "print('@@PROXIES@@', sorted({k.lower() for k in os.environ\n"
+        "                             if k.lower().endswith('proxy')}),\n"
+        "      os.environ.get('NO_PROXY'))\n"
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", script], cwd=_ATHENA, env=_child_env(),
+        capture_output=True, text=True, timeout=240, stdin=subprocess.DEVNULL,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "@@PROXIES@@ ['no_proxy'] *" in run.stdout, run.stdout
 
 
 def test_a_reach_after_the_session_fails_the_process(tmp_path):
@@ -554,24 +640,33 @@ def test_a_reach_after_the_session_fails_the_process(tmp_path):
 
 
 _DOORS = ("google.auth.default", "google.auth._default.default",
-          "google.api_core.grpc_helpers.create_channel")
+          *(f"{home}.{name}" for home, name in CHANNEL_FACTORIES))
 
 
 def test_the_guards_are_live_before_conftest_imports_models(tmp_path):
     # conftest imports models — the app's own import chain — under the
-    # Firestore patch: a lookup or a channel there must meet the guards. An
-    # audit hook in the child reads every door as that import begins.
+    # Firestore patch: a lookup, a channel or the network there must meet
+    # the guards. An audit hook in the child reads every door as that import
+    # begins, and tries a DNS lookup of a name that resolves nowhere — which
+    # the guard refuses, records, and reports as collection's.
     (tmp_path / "test_nothing.py").write_text(
         "def test_nothing():\n    pass\n", encoding="utf-8")
     script = (
-        "import importlib, json, sys\n"
+        "import importlib, json, socket, sys\n"
         "doors = [name.rsplit('.', 1) for name in json.loads(sys.argv[2])]\n"
         "homes = {home: importlib.import_module(home) for home, _ in doors}\n"
         "seen = []\n"
         "def hook(event, args):\n"
         "    if event == 'import' and args[0] == 'models' and not seen:\n"
+        "        try:\n"
+        "            socket.getaddrinfo('guard.invalid', 443)\n"
+        "            network = 'open'\n"
+        "        except RuntimeError:\n"
+        "            network = 'refused'\n"
+        "        except OSError:\n"
+        "            network = 'open'\n"
         "        seen.append([getattr(homes[home], name).__module__\n"
-        "                     for home, name in doors])\n"
+        "                     for home, name in doors] + [network])\n"
         "sys.addaudithook(hook)\n"
         "import pytest\n"
         "rc = pytest.main(['-q', '-p', 'no:cacheprovider', '--color=no',\n"
@@ -585,12 +680,16 @@ def test_the_guards_are_live_before_conftest_imports_models(tmp_path):
         cwd=_ATHENA, env=_child_env(), capture_output=True, text=True,
         timeout=240, stdin=subprocess.DEVNULL,
     )
-    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.returncode == 1, run.stdout + run.stderr
     seen = [line.split(" ", 1)[1] for line in run.stdout.splitlines()
             if line.startswith("@@AT-MODELS-IMPORT@@ ")]
     assert seen, run.stdout
-    assert json.loads(seen[-1]) == [["tests.conftest"] * len(_DOORS)], (
-        run.stdout)
+    assert json.loads(seen[-1]) == [
+        ["tests.conftest"] * len(_DOORS) + ["refused"]], run.stdout
+    reported = _session_lines(run.stdout)
+    assert len(reported) == 1, run.stdout
+    assert reported[0].startswith(
+        f"{_AT_THE_END[0]}{_NETWORK} ['guard.invalid ("), run.stdout
 
 
 def test_the_running_environment_is_set_apart_only_inside_athena():
@@ -719,3 +818,138 @@ def test_a_record_added_while_a_list_drains_waits_for_the_next_check():
     records = RecordedMeanwhile(["tests/test_x.py:1"])
     assert conftest._drain(records) == ["tests/test_x.py:1"]
     assert records == ["utils/fil.py:9"]
+
+
+def _resolves(host):
+    return socket.getaddrinfo(host, 443)
+
+
+def _connects(address):
+    with socket.socket() as sock:
+        sock.settimeout(1)
+        sock.connect(address)
+
+
+def _opens(factory, target):
+    return factory(target, None)
+
+
+@pytest.mark.parametrize("reach, call, reached", [
+    ("dns", _resolves, "guard.invalid"),
+    ("connect", _connects, "192.0.2.1"),
+])
+def test_a_network_reach_is_refused_with_its_line(reach, call, reached):
+    # A RuntimeError, which no retry loop waits on, before any packet leaves.
+    from tests import conftest
+
+    with pytest.raises(RuntimeError):
+        call("guard.invalid" if reach == "dns" else ("192.0.2.1", 9))
+    line = call.__code__.co_firstlineno + (1 if reach == "dns" else 3)
+    problems = conftest._pending_reaches()
+    assert len(problems) == 1, problems
+    assert _names_reach(problems[0], _NETWORK, reached,
+                        "test_suite_isolation.py", line), problems
+
+
+@pytest.mark.parametrize("home, name", CHANNEL_FACTORIES)
+def test_every_channel_factory_refuses_a_target_out_here_too(home, name):
+    from tests import conftest
+
+    factory = getattr(importlib.import_module(home), name)
+    with pytest.raises(RuntimeError):
+        _opens(factory, "example.invalid:443")
+    line = _opens.__code__.co_firstlineno + 1
+    problems = conftest._pending_reaches()
+    assert len(problems) == 1, problems
+    assert _names_reach(problems[0], _CHANNEL, "example.invalid:443",
+                        "test_suite_isolation.py", line), problems
+
+
+def test_this_machine_stays_reachable_here_too():
+    from tests import conftest
+
+    socket.getaddrinfo("localhost", 80)
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        socket.create_connection(server.getsockname(), 5).close()
+    insecure = getattr(importlib.import_module("grpc"), "insecure_channel")
+    insecure("127.0.0.1:1").close()
+    # Where a cruder rule than tests/_real_app_probe's would refuse.
+    socket.getaddrinfo("::ffff:127.0.0.1", 80)
+    socket.getaddrinfo("0:0:0:0:0:0:0:1", 80)
+    insecure("[::ffff:127.0.0.1]:1").close()
+    assert conftest._pending_reaches() == []
+
+
+def _sends(address):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendto(b"x", address)
+
+
+def _sends_a_message(address):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendmsg([b"x"], [], 0, address)
+
+
+_NO_SENDMSG = pytest.mark.skipif(not hasattr(socket.socket, "sendmsg"),
+                                 reason="no sendmsg on this platform")
+
+
+@pytest.mark.parametrize("call, argument, reached", [
+    # A naive « starts with 127. » rule lets this name out.
+    pytest.param(socket.getaddrinfo, ("127.guard.invalid", 443),
+                 "127.guard.invalid", id="127-name"),
+    pytest.param(socket.getaddrinfo, ("2001:db8::1", 443), "2001:db8::1",
+                 id="ipv6"),
+    pytest.param(socket.gethostbyname, ("guard.invalid",), "guard.invalid",
+                 id="gethostbyname"),
+    pytest.param(socket.gethostbyaddr, ("192.0.2.1",), "192.0.2.1",
+                 id="gethostbyaddr"),
+    pytest.param(socket.getnameinfo, (("192.0.2.1", 80), 0), "192.0.2.1",
+                 id="getnameinfo"),
+    pytest.param(_sends, (("192.0.2.1", 9),), "192.0.2.1", id="sendto"),
+    pytest.param(_sends_a_message, (("192.0.2.1", 9),), "192.0.2.1",
+                 id="sendmsg", marks=_NO_SENDMSG),
+])
+def test_every_network_event_is_refused_here_too(call, argument, reached):
+    from tests import conftest
+
+    with pytest.raises(RuntimeError):
+        call(*argument)
+    problems = conftest._pending_reaches()
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"{_NETWORK} ['{reached} ("), problems
+
+
+def test_a_channel_to_a_127_name_is_refused_here_too():
+    from tests import conftest
+
+    insecure = getattr(importlib.import_module("grpc"), "insecure_channel")
+    with pytest.raises(RuntimeError):
+        _opens(insecure, "127.guard.invalid:443")
+    problems = conftest._pending_reaches()
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"{_CHANNEL} ['127.guard.invalid:443 ("), (
+        problems)
+
+
+def test_whose_code_a_frame_is():
+    # The call site prefers this repository's line, then a line no library
+    # holds; the interpreter's own files — a virtualenv's launcher too — are
+    # a library's, wherever they live.
+    from tests import conftest
+
+    assert conftest._place(os.path.join(_ATHENA, "utils", "x.py")) == (
+        "utils/x.py", "ours")
+    assert conftest._place(os.__file__)[1] == "library"
+    assert conftest._place(os.path.join(
+        sys.prefix, "Scripts", "pytest.exe", "__main__.py"))[1] == "library"
+    assert conftest._place(os.path.join(
+        sys.base_prefix, "bin", "pytest"))[1] == "library"
+    assert conftest._place(os.path.join(
+        os.sep, "usr", "lib", "python3", "dist-packages", "requests",
+        "api.py")) == ("requests/api.py", "library")
+    # Outside athena/ whatever --basetemp says.
+    assert conftest._place(os.path.join(
+        os.path.dirname(_ATHENA), "ailleurs", "test_planted.py")) == (
+        "test_planted.py", "other")
+    assert conftest._place("<frozen runpy>") == ("<frozen runpy>", "library")

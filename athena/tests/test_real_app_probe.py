@@ -16,6 +16,7 @@ import ast
 import os
 import pathlib
 import re
+import socket
 import sys
 import textwrap
 import warnings
@@ -25,8 +26,12 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests._real_app_probe import (  # noqa: E402
+    CHANNEL_FACTORIES,
     GUARD_MARKER,
     PRELUDE,
+    audit_host,
+    is_local,
+    is_local_target,
     run_child,
     run_probe,
 )
@@ -81,13 +86,137 @@ def test_the_guard_refuses_and_records_both_classic_doors():
      "network storage.googleapis.com"),
     ("import socket\nsocket.create_connection(('metadata.google.internal', 80),"
      " timeout=1)", "network metadata.google.internal"),
+    ("import google.auth._default\ngoogle.auth._default.default()",
+     "google.auth.default"),
 ])
 def test_every_outbound_door_is_refused_and_recorded(door, recorded):
     """Beyond the classic doors: an async or raw gRPC channel, a host with a
     trailing dot, a DNS lookup or a socket connect — what a REST client or
-    the metadata server would need."""
+    the metadata server would need — and the credential lookup by its
+    private name."""
     body = "try:\n" + textwrap.indent(door, "    ") + "\nexcept RuntimeError:\n    pass\n"
     assert _reached(body) == [recorded]
+
+
+@pytest.mark.parametrize("home, name", CHANNEL_FACTORIES)
+def test_every_channel_factory_is_guarded_in_the_child(home, name):
+    """The list the child guards is the one tests/conftest.py guards: each
+    factory refuses a target outside this machine, before using any other
+    argument."""
+    body = (
+        "import importlib\n"
+        f"factory = getattr(importlib.import_module({home!r}), {name!r})\n"
+        "try:\n"
+        "    factory('example.invalid:443', None)\n"
+        "except RuntimeError:\n"
+        "    pass\n"
+    )
+    assert _reached(body) == ["example.invalid:443"]
+
+
+def test_the_guarded_factories_are_pinned_by_name():
+    """Dropping a factory from the list would unguard it in both processes
+    and drop its tests with it: the list is pinned here, by name."""
+    assert set(CHANNEL_FACTORIES) == {
+        ("google.api_core.grpc_helpers", "create_channel"),
+        ("google.api_core.grpc_helpers_async", "create_channel"),
+        ("grpc", "secure_channel"),
+        ("grpc", "insecure_channel"),
+        ("grpc.aio", "secure_channel"),
+        ("grpc.aio", "insecure_channel"),
+        ("grpc.experimental.aio", "secure_channel"),
+        ("grpc.experimental.aio", "insecure_channel"),
+    }
+    assert len(CHANNEL_FACTORIES) == len(set(CHANNEL_FACTORIES))
+
+
+@pytest.mark.parametrize("door, recorded", [
+    # A naive « starts with 127. » rule lets this name out.
+    ("import socket\nsocket.getaddrinfo('127.guard.invalid', 443)",
+     ["network 127.guard.invalid"]),
+    ("import grpc\ngrpc.insecure_channel('127.guard.invalid:443')",
+     ["127.guard.invalid:443"]),
+    # ...and keeps these, which are this machine, out.
+    ("import socket\nsocket.getaddrinfo('::ffff:127.0.0.1', 80)", []),
+    ("import socket\nsocket.getaddrinfo('0:0:0:0:0:0:0:1', 80)", []),
+    ("import grpc\ngrpc.insecure_channel('[::ffff:127.0.0.1]:1').close()", []),
+    # An IPv6 literal, a DNS lookup by name, a raw connect, a datagram.
+    ("import socket\nsocket.getaddrinfo('2001:db8::1', 443)",
+     ["network 2001:db8::1"]),
+    ("import socket\nsocket.gethostbyname('guard.invalid')",
+     ["network guard.invalid"]),
+    ("import socket\nwith socket.socket() as s:\n    s.settimeout(1)\n"
+     "    s.connect(('192.0.2.1', 9))", ["network 192.0.2.1"]),
+    ("import socket\nwith socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:\n"
+     "    s.sendto(b'x', ('192.0.2.1', 9))", ["network 192.0.2.1"]),
+    ("import socket\nsocket.gethostbyaddr('192.0.2.1')", ["network 192.0.2.1"]),
+    ("import socket\nsocket.getnameinfo(('192.0.2.1', 80), 0)",
+     ["network 192.0.2.1"]),
+    pytest.param(
+        "import socket\nwith socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:\n"
+        "    s.sendmsg([b'x'], [], 0, ('192.0.2.1', 9))", ["network 192.0.2.1"],
+        marks=pytest.mark.skipif(not hasattr(socket.socket, "sendmsg"),
+                                 reason="no sendmsg on this platform")),
+])
+def test_the_child_applies_the_shared_rules(door, recorded):
+    """The child decides by tests/_real_app_probe's rules — not by a copy
+    of them: on the hosts where a cruder rule decides otherwise, and on
+    every kind of network event."""
+    body = "try:\n" + textwrap.indent(door, "    ") + "\nexcept RuntimeError:\n    pass\n"
+    assert _reached(body) == recorded
+
+
+@pytest.mark.parametrize("host, local", [
+    ("", True), ("localhost", True), ("127.0.0.1", True), ("127.8.9.10", True),
+    ("::1", True), ("0:0:0:0:0:0:0:1", True), ("::ffff:127.0.0.1", True),
+    ("0.0.0.0", True), ("::", True), ("::1%lo", True),
+    (socket.gethostname().lower(), True),
+    ("example.org", False), ("10.0.0.1", False), ("192.168.1.1", False),
+    ("169.254.169.254", False), ("metadata.google.internal", False),
+    ("127.example.org", False), ("localhost.example.org", False),
+    ("fe80::1%eth0", False), ("127.0.0.1%2eguard.invalid", False),
+    ("127.0.0.1.", False), ("localhost.", False),
+    (socket.gethostname().lower() + ".guard.invalid", False),
+])
+def test_this_machine_is_loopback_or_unspecified_only(host, local):
+    """A private address is outside too: the guard keeps tests on this
+    machine, not on its network. A trailing dot or a « % » makes a name
+    the resolver looks up, never an address."""
+    assert is_local(host) is local
+
+
+@pytest.mark.parametrize("target, local", [
+    ("localhost:4317", True), ("LOCALHOST:4317", True), ("127.0.0.1:50051", True),
+    ("[::1]:50051", True), ("dns:///localhost:50051", True),
+    ("unix:/tmp/grpc.sock", True), ("unix-abstract:grpc", True),
+    ("firestore.googleapis.com:443", False),
+    ("dns:///logging.googleapis.com", False),
+    ("firestore.googleapis.com.:443", False),
+    ("googleapis.com.example.org:443", False), ("LOCALHOST.example:1", False),
+    ("dns:///firestore.googleapis.com:443?x=/localhost", False),
+    ("dns:///firestore.googleapis.com:443#/localhost", False),
+    ("127.0.0.1%2eguard.invalid:443", False), ("dns:///[::1%2eX]:443", False),
+])
+def test_a_grpc_target_is_judged_by_its_host(target, local):
+    """The HOST is judged, never a substring of the whole target — not what
+    follows a « ? » or a « # », and never a « % » gRPC would decode."""
+    assert is_local_target(target) is local
+
+
+def test_each_network_event_names_its_host():
+    assert audit_host("socket.getaddrinfo", ("Example.ORG.", 443)) == "example.org."
+    assert audit_host("socket.getaddrinfo", (None, 0)) == ""
+    assert audit_host("socket.getaddrinfo", (b"example.org", 443)) == "example.org"
+    assert audit_host("socket.gethostbyname", ("guard.invalid",)) == "guard.invalid"
+    assert audit_host("socket.gethostbyaddr", ("192.0.2.1",)) == "192.0.2.1"
+    assert audit_host("socket.getnameinfo", (("192.0.2.1", 80),)) == "192.0.2.1"
+    assert audit_host("socket.connect", (None, ("192.0.2.1", 9))) == "192.0.2.1"
+    assert audit_host("socket.connect", (None, ("::1", 9, 0, 0))) == "::1"
+    assert audit_host("socket.sendto", (None, ("192.0.2.1", 9))) == "192.0.2.1"
+    assert audit_host("socket.sendmsg", (None, ("192.0.2.1", 9))) == "192.0.2.1"
+    assert audit_host("socket.sendmsg", (None, None)) is None  # connected
+    assert audit_host("socket.connect", (None, "/tmp/unix.sock")) is None
+    assert audit_host("open", ("/etc/hosts", "r", 0)) is None
 
 
 def test_loopback_stays_open():
@@ -132,6 +261,34 @@ def test_a_real_client_built_once_the_patch_stops_fails_the_probe():
         assert "google.auth.default" in str(raised.value)
 
 
+def test_the_child_runs_with_no_proxy_whatever_it_is_given():
+    """A proxy on this machine would take the child's request out, its
+    guard seeing only a connect to 127.0.0.1: run_child sets NO_PROXY=*
+    itself, so the client connects directly and the guard judges the host."""
+    env = {k: v for k, v in _ENV.items() if k.lower() != "no_proxy"}
+    env.update({"HTTP_PROXY": "http://127.0.0.1:9",
+                "HTTPS_PROXY": "http://127.0.0.1:9"})
+    body = (
+        "import requests\n"
+        "try:\n"
+        "    requests.get('http://guard.invalid/', timeout=2)\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+    _proc, reached = run_child(body, env=env, timeout=120)
+    assert reached == ["network guard.invalid"]
+
+
+def test_the_child_sees_no_proxy_variable_but_no_proxy():
+    """gRPC ignores NO_PROXY=*: the variables it reads never reach the
+    child, whatever its caller passes."""
+    env = {**_ENV, "grpc_proxy": "http://127.0.0.1:9",
+           "HTTPS_PROXY": "http://127.0.0.1:9", "all_proxy": "http://127.0.0.1:9"}
+    body = ("print('@@T@@' + json.dumps(sorted({k.lower() for k in os.environ\n"
+            "                                    if k.lower().endswith('proxy')})))\n")
+    assert run_probe(body, "@@T@@", env=env, timeout=120) == ["no_proxy"]
+
+
 def test_the_child_never_sees_the_emulator_variable():
     body = "print('@@T@@' + json.dumps(os.environ.get('FIRESTORE_EMULATOR_HOST')))\n"
     env = {**_ENV, "FIRESTORE_EMULATOR_HOST": "127.0.0.1:9"}
@@ -160,9 +317,12 @@ def test_a_reach_after_the_body_is_still_reported(late):
 
 
 @pytest.mark.parametrize("rebind, door", [
-    ("import google.auth, google.auth._default\n"
-     "google.auth.default = google.auth._default.default\n",
+    ("import google.auth\n"
+     "google.auth.default = lambda *a, **k: None\n",
      "google.auth.default"),
+    ("import google.auth._default\n"
+     "google.auth._default.default = lambda *a, **k: None\n",
+     "google.auth._default.default"),
     ("from google.api_core import grpc_helpers\n"
      "grpc_helpers.create_channel = lambda *a, **k: None\n",
      "google.api_core.grpc_helpers.create_channel"),
@@ -176,6 +336,18 @@ def test_a_door_the_child_disarms_is_reported(rebind, door):
     with pytest.raises(AssertionError) as raised:
         run_probe(body, "@@T@@", env=_ENV, timeout=120)
     assert "guard disarmed: " + door in str(raised.value)
+
+
+@pytest.mark.parametrize("home, name", CHANNEL_FACTORIES)
+def test_every_channel_factory_the_child_disarms_is_reported(home, name):
+    body = (
+        "import importlib\n"
+        f"setattr(importlib.import_module({home!r}), {name!r}, lambda *a, **k: None)\n"
+        "print('@@T@@' + json.dumps('done'))\n"
+    )
+    with pytest.raises(AssertionError) as raised:
+        run_probe(body, "@@T@@", env=_ENV, timeout=120)
+    assert f"guard disarmed: {home}.{name}" in str(raised.value)
 
 
 def test_the_probe_marker_json_round_trips():
