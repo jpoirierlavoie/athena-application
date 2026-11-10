@@ -869,3 +869,17 @@ def test_le_formulaire_annonce_un_mois_et_tient_les_conditions_du_modele(
     gabarit = (_ATHENA / "templates" / "invoices" / "create.html").read_text(
         encoding="utf-8")
     assert "Payable dans" not in gabarit
+
+
+def test_la_liste_s_appelle_honoraires_et_le_retour_aussi(fake, client):
+    """2026-11-10 : la page des factures s'appelle « Honoraires » — à
+    l'onglet, au titre, au menu (tests/test_navigation.py) — et le lien de
+    retour du formulaire la nomme ainsi. L'adresse reste /factures."""
+    liste = unescape(client.get("/factures/").get_data(as_text=True))
+    assert "<title>Honoraires — Pallas Athena</title>" in liste
+    assert re.search(r"<h1[^>]*>Honoraires</h1>", liste)
+    assert ">Factures<" not in liste
+    formulaire = unescape(
+        client.get("/factures/new?dossier_id=d1").get_data(as_text=True))
+    retour = re.findall(r'<a href="/factures/"[^>]*>(.*?)</a>', formulaire, re.S)[0]
+    assert re.sub(r"<[^>]+>", " ", retour).split()[-1] == "Honoraires"

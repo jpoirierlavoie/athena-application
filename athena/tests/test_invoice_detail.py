@@ -429,3 +429,16 @@ def test_no_reason_block_without_a_reason_or_before_a_void():
         invoice={"status": "annulée", "void_reason": ""}, transitions=())
     assert "Motif de l'annulation" not in _render(
         invoice={"void_reason": "Reste d'un brouillon."})
+
+
+def test_the_back_link_names_the_list_honoraires():
+    """2026-11-10: the invoices page is « Honoraires », and the sheet's back
+    link names it so — « Retour » when the sheet was opened from elsewhere."""
+    import re
+
+    def label(html: str, href: str) -> str:
+        body = re.search(rf'<a href="{re.escape(href)}"[^>]*>(.*?)</a>', html, re.S)
+        return re.sub(r"<[^>]+>", " ", body.group(1)).split()[-1]
+
+    assert label(_render(), "/invoices.invoice_list") == "Honoraires"
+    assert label(_render(return_to="/dossiers/d1"), "/dossiers/d1") == "Retour"

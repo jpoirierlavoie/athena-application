@@ -117,10 +117,6 @@
           {{ ms('group', 20) }}
           Impliqués
         </a>
-        <a href="/factures" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
-          {{ ms('description', 20) }}
-          Factures
-        </a>
         <a href="/taches" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
           {{ ms('check_circle', 20) }}
           Tâches
@@ -143,6 +139,15 @@
         <a href="/notes" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
           {{ ms('edit', 20) }}
           Notes
+        </a>
+      </div>
+
+      {# L'argent du cabinet, ensemble (2026-11-10) : les honoraires (la page
+         des factures, /factures), les registres, les états financiers. #}
+      <div class="mt-6 pt-6 border-t border-gray-200 flex flex-col gap-1">
+        <a href="/factures" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
+          {{ ms('description', 20) }}
+          Honoraires
         </a>
         <a href="/comptabilite" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
           {{ ms('payments', 20) }}
@@ -216,7 +221,6 @@
       {# Icônes identiques à la barre latérale (harmonisation 2026-08-10 —
          le menu était purement textuel). #}
       <a href="/parties" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('group', 20, 'text-gray-400') }}Impliqués</a>
-      <a href="/factures" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('description', 20, 'text-gray-400') }}Factures</a>
       <a href="/taches" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('check_circle', 20, 'text-gray-400') }}Tâches</a>
       <a href="/documents" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('draft', 20, 'text-gray-400') }}Documents</a>
       <a href="/reception" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
@@ -228,6 +232,9 @@
       </a>
       <a href="/gabarits" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('assignment', 20, 'text-gray-400') }}Gabarits</a>
       <a href="/notes" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('edit', 20, 'text-gray-400') }}Notes</a>
+      <hr class="my-1 border-gray-200">
+      {# L'argent du cabinet, ensemble (2026-11-10), comme dans la barre latérale. #}
+      <a href="/factures" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('description', 20, 'text-gray-400') }}Honoraires</a>
       <a href="/comptabilite" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('payments', 20, 'text-gray-400') }}Comptabilité</a>
       <a href="/finances/" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('monitoring', 20, 'text-gray-400') }}Finances</a>
       <hr class="my-1 border-gray-200">
