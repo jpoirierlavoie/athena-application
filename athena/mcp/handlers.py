@@ -180,13 +180,17 @@ from services import financial_statements as statements_service
 from services import gabarit_champs as gabarit_service
 from services import gabarits as gabarit_writer
 from services import note_honoraires as note_honoraires_service
+# The receipt's dossier copy after a connector attach, and the copy status a
+# receipt read reports (2026-11-10: the lawyer opened receipts to Claude).
+from services import pieces_justificatives as pieces_service
 from services import protocoles as protocol_service
 from services import rendez_vous as rendez_vous_service
 from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, budget_math, civilite, deadlines, docx_templatize, kyc,
-    pdf_text, periods, phases, recurrence, storage_identity, taxonomie,
+    analyse_blocs, budget_math, civilite, deadlines, docx_templatize,
+    email_text, kyc, msg_text, pdf_text, periods, phases, receipt_image,
+    recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import _CONTROL_RE, extract_placeholders, validate_template
@@ -234,6 +238,7 @@ from mcp.tools import (
     DOCUMENT_TEXT_MAX_CHARS,
     ENTRY_BULK_MAX,
     FOLDER_TREE_MAX,
+    IMAGE_RESULT_KEY,
     INVOICE_NOTES_MAX_CHARS,
     INVOICE_SOURCES_MAX,
     INVOICE_TERMS_MAX_CHARS,
@@ -245,6 +250,7 @@ from mcp.tools import (
     REVERSAL_REASON_MAX_CHARS,
     STATEMENT_POINT_REFS_MAX,
     TOOLS,
+    ImageAttachment,
     ToolArgumentError,
     date_str,
     format_cents,
@@ -12611,6 +12617,28 @@ def _docx_segments(paragraphs: list[str], cap: int) -> list[str]:
     return segments
 
 
+def _pdf_pages_payload(result) -> dict:
+    """The page window of a READABLE ``pdf_text.PdfTextResult`` — the shape
+    get_document_text returns, shared with get_admin_receipt."""
+    return {
+        "pagination_unit": "page",
+        "page_count": result.page_count,
+        "pages": [
+            {
+                "page": p.page,
+                "text": p.text,
+                "has_text": p.has_text,
+                "page_truncated": p.page_truncated,
+            }
+            for p in result.pages
+        ],
+        "pages_without_text": result.pages_without_text,
+        "truncated": result.truncated,
+        "next_page": result.next_page,
+        "warnings": result.warnings,
+    }
+
+
 def get_document_text(args: dict) -> dict:
     document_id = (args.get("document_id") or "").strip()
     first, last = _parse_page_range(args)
@@ -12645,24 +12673,7 @@ def get_document_text(args: dict) -> dict:
         )
         if not result.readable:
             return _unreadable(doc, result.reason)
-        return {
-            **base,
-            "pagination_unit": "page",
-            "page_count": result.page_count,
-            "pages": [
-                {
-                    "page": p.page,
-                    "text": p.text,
-                    "has_text": p.has_text,
-                    "page_truncated": p.page_truncated,
-                }
-                for p in result.pages
-            ],
-            "pages_without_text": result.pages_without_text,
-            "truncated": result.truncated,
-            "next_page": result.next_page,
-            "warnings": result.warnings,
-        }
+        return {**base, **_pdf_pages_payload(result)}
 
     # .docx — computed segments (each ≤ the per-call cap by construction, so
     # exactly one segment is returned per call past the first small ones).
@@ -14497,10 +14508,22 @@ _UPLOAD_GABARIT_ARGS = frozenset({
 })
 _UPLOAD_CREATE_ARGS = frozenset({"name", "category", "kind", "description"})
 _UPLOAD_REPLACE_ARGS = frozenset({"template_id", "expected_version"})
+# 2026-11-10 — a pièce justificative for an administration entry (the
+# lawyer's request): the entry, and the receipt it replaces, if any.
+_UPLOAD_RECEIPT_ARGS = frozenset({"tx_id", "replaces_receipt_md5"})
+_PURPOSE_RECEIPT = upload_ticket_model.PURPOSE_PIECE_JUSTIFICATIVE
 _UPLOAD_CONDITIONAL_ARGS = (
     _UPLOAD_DOCUMENT_ARGS | _UPLOAD_GABARIT_ARGS | _UPLOAD_CREATE_ARGS
-    | _UPLOAD_REPLACE_ARGS
+    | _UPLOAD_REPLACE_ARGS | _UPLOAD_RECEIPT_ARGS
 )
+# What each purpose may name at begin_upload — the ONE table, so no purpose
+# ever reads another's arguments (or falls into another's branch).
+_UPLOAD_ALLOWED_ARGS = {
+    upload_ticket_model.PURPOSE_DOCUMENT: _UPLOAD_DOCUMENT_ARGS,
+    upload_ticket_model.PURPOSE_GABARIT: (
+        _UPLOAD_GABARIT_ARGS | _UPLOAD_CREATE_ARGS | _UPLOAD_REPLACE_ARGS),
+    _PURPOSE_RECEIPT: _UPLOAD_RECEIPT_ARGS,
+}
 _NOTHING_OPENED = "Rien n'a été ouvert."
 # The echo of a DECLARED absence of source dossier (aucun_dossier_source) —
 # at begin_upload and again at finalize_upload: the caller's word, never a
@@ -14569,6 +14592,20 @@ _UPLOAD_TEMPLATE_UNCERTAIN = (
     "list_templates : si le gabarit — ou sa nouvelle version — y figure, il "
     "est versé — ne refaites rien. Sinon, rappelez finalize_upload avec ce "
     "MÊME ticket_id et une NOUVELLE idempotency_key."
+)
+_UPLOAD_RECEIPT_UNCERTAIN = (
+    "Issue INCERTAINE : la pièce justificative a PEUT-ÊTRE été jointe à "
+    "l'écriture {tx_id}. Le fichier reçu est conservé et ce ticket reste "
+    "réservé à ce versement : n'ouvrez PAS de nouveau ticket. Réessayez "
+    "d'abord avec la MÊME idempotency_key : elle est refusée tant que cet "
+    "appel peut encore écrire, puis dite « interrompue ». Alors seulement, "
+    "relisez get_admin_ledger (le champ `receipt` de l'écriture) : si la "
+    "pièce y est, elle est jointe — ne refaites rien. Sinon, rappelez "
+    "finalize_upload avec ce MÊME ticket_id et une NOUVELLE idempotency_key."
+)
+_RECEIPT_ENTRY_UNREADABLE = (
+    "L'écriture n'a pas pu être lue pour le moment — réessayez dans un "
+    "instant."
 )
 _UPLOAD_DOSSIER_UNREADABLE = (
     "Le dossier lié à ce ticket est introuvable ou illisible pour le moment "
@@ -14680,13 +14717,34 @@ def _clean_upload_filename(raw: Any, purpose: str) -> str:
             "(DOC/DOCX), Excel (XLS/XLSX), JPG, PNG, TIFF, ZIP, courriels "
             f"(EML/MSG). {_NOTHING_OPENED}"
         )
+    if (purpose == _PURPOSE_RECEIPT
+            and f".{ext}" not in comptabilite_service.RECEIPT_EXTENSIONS):
+        raise ToolArgumentError(
+            f"`filename` : {comptabilite_service.RECEIPT_TYPE_REFUSED_FR} "
+            f"{_NOTHING_OPENED}"
+        )
     return name
 
 
+# Each purpose's noun, with its article, in a size refusal.
+_UPLOAD_NOUNS = {
+    upload_ticket_model.PURPOSE_DOCUMENT: "un document",
+    upload_ticket_model.PURPOSE_GABARIT: "un gabarit",
+    _PURPOSE_RECEIPT: "une pièce justificative",
+}
+
+
+def _upload_cap(purpose: str) -> int:
+    if purpose == "gabarit":
+        return doc_template_model.MAX_TEMPLATE_SIZE
+    if purpose == _PURPOSE_RECEIPT:
+        return comptabilite_service.MAX_RECEIPT_SIZE
+    return document_model.MAX_FILE_SIZE
+
+
 def _clean_upload_size(raw: Any, purpose: str) -> int:
-    gabarit = purpose == "gabarit"
-    cap = (doc_template_model.MAX_TEMPLATE_SIZE if gabarit
-           else document_model.MAX_FILE_SIZE)
+    cap = _upload_cap(purpose)
+    noun = _UPLOAD_NOUNS.get(purpose, "un document")
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
         raise ToolArgumentError(
             "`size_bytes` : la taille exacte en octets, un entier positif. "
@@ -14695,8 +14753,7 @@ def _clean_upload_size(raw: Any, purpose: str) -> int:
     if raw > cap:
         raise ToolArgumentError(
             "`size_bytes` : le fichier dépasse la taille maximale "
-            f"({cap // (1024 * 1024)} Mo pour un "
-            f"{'gabarit' if gabarit else 'document'}). {_NOTHING_OPENED}"
+            f"({cap // (1024 * 1024)} Mo pour {noun}). {_NOTHING_OPENED}"
         )
     return raw
 
@@ -15024,6 +15081,88 @@ def _bound_template(args: dict) -> tuple[str, dict, list[str]]:
     return dossier_id, params, warnings
 
 
+def _bound_receipt(args: dict) -> tuple[str, dict, list[str]]:
+    """The entry a pièce-justificative ticket names, read STRICTLY now, and
+    the precondition the ticket binds: the entry's receipt AS READ (path,
+    stored MD5 — both "" when it carries none). The caller states the
+    receipt it replaces, ``replaces_receipt_md5`` — the target state, never
+    a toggle: absent, the entry must carry no receipt; given, it must be the
+    entry's current one (for a receipt attached before ``receipt_md5``
+    existed, its object's own MD5, read now). The attach's transaction
+    re-checks what is bound (models/admin_ledger.attach_uploaded_receipt)."""
+    tx_id = str(args.get("tx_id") or "").strip()
+    if not document_model.is_addressable_id(tx_id):
+        raise ToolArgumentError(
+            "`tx_id` est requis : l'écriture d'administration à laquelle "
+            "joindre la pièce — prenez son identifiant dans get_admin_ledger. "
+            f"{_NOTHING_OPENED}"
+        )
+    try:
+        entry = comptabilite_service.lire_ecriture("admin", tx_id)
+    except Exception:
+        log_unexpected("mcp upload: receipt entry unreadable", exc_info=False)
+        raise ToolArgumentError(f"{_RECEIPT_ENTRY_UNREADABLE} {_NOTHING_OPENED}",
+                                reason="upload_retry")
+    if entry is None:
+        raise ToolArgumentError(
+            f"Aucune écriture d'administration ne porte l'identifiant {tx_id} "
+            f"— prenez-le dans get_admin_ledger. {_NOTHING_OPENED}"
+        )
+    entry.setdefault("id", tx_id)
+    path = str(entry.get("receipt_storage_path") or "")
+    stored_md5 = str(entry.get("receipt_md5") or "")
+    replaces = args.get("replaces_receipt_md5")
+    warnings: list[str] = []
+    if not path:
+        if replaces:
+            raise ToolArgumentError(
+                "Cette écriture ne porte aucune pièce justificative : retirez "
+                f"`replaces_receipt_md5`. {_NOTHING_OPENED}"
+            )
+    else:
+        if not replaces:
+            raise ToolArgumentError(
+                "Cette écriture porte déjà une pièce justificative (« "
+                f"{entry.get('receipt_filename') or 'sans nom'} »). Pour la "
+                "REMPLACER — l'ancienne reste conservée —, passez "
+                "`replaces_receipt_md5` : son `md5_base64` (champ `receipt` "
+                f"de get_admin_ledger). {_NOTHING_OPENED}"
+            )
+        current = stored_md5
+        if not current:
+            try:
+                current = comptabilite_service.md5_piece(entry)
+            except Exception:
+                log_unexpected("mcp upload: receipt object unreadable",
+                               exc_info=False)
+                raise ToolArgumentError(
+                    f"{_RECEIPT_ENTRY_UNREADABLE} {_NOTHING_OPENED}",
+                    reason="upload_retry")
+        if not isinstance(replaces, str) or not current or not hmac.compare_digest(
+                replaces, current):
+            raise ToolArgumentError(
+                "La pièce justificative de cette écriture n'est plus celle que "
+                "nomme `replaces_receipt_md5` : relisez get_admin_ledger, puis "
+                f"recommencez. {_NOTHING_OPENED}",
+                reason="stale_etag",
+            )
+        warnings.append(
+            "La pièce justificative actuelle sera remplacée ; son fichier reste "
+            "conservé — rien n'est effacé."
+        )
+    # A standing dépense of a dossier gets a COPY in « Mandat › Déboursés »,
+    # as the web's finalizer files one (services/pieces_justificatives) —
+    # judged by the service's ONE rule on the entry as it will stand, the
+    # receipt this ticket brings attached.
+    if pieces_service.admissible({**entry, "receipt_storage_path": "à venir"}):
+        warnings.append(
+            "Une copie sera versée au dossier "
+            f"{entry.get('dossier_file_number') or entry.get('dossier_id')}, "
+            "sous « Mandat › Déboursés »."
+        )
+    return tx_id, {"expected_path": path, "expected_md5": stored_md5}, warnings
+
+
 def _begin_upload_payload(ticket: dict, url: str, warnings: list[str]) -> dict:
     size = int(ticket.get("declared_size") or 0)
     return {
@@ -15052,12 +15191,11 @@ def begin_upload(args: dict) -> dict:
 
 def _begin_upload_impl(args: dict) -> dict:
     purpose = args.get("purpose")
-    if purpose not in ("document", "gabarit"):
+    if purpose not in _UPLOAD_ALLOWED_ARGS:
         raise ToolArgumentError(
-            f"`purpose` doit valoir document ou gabarit. {_NOTHING_OPENED}")
-    allowed = (_UPLOAD_DOCUMENT_ARGS if purpose == "document"
-               else _UPLOAD_GABARIT_ARGS | _UPLOAD_CREATE_ARGS
-               | _UPLOAD_REPLACE_ARGS)
+            "`purpose` doit valoir document, gabarit ou piece_justificative. "
+            f"{_NOTHING_OPENED}")
+    allowed = _UPLOAD_ALLOWED_ARGS[purpose]
     stray = sorted(k for k in _UPLOAD_CONDITIONAL_ARGS
                    if k in args and k not in allowed)
     if stray:
@@ -15081,9 +15219,12 @@ def _begin_upload_impl(args: dict) -> dict:
                 "La catégorie sera PRÉSUMÉE jusqu'à ce que le juriste la "
                 "confirme dans l'application."
             )
-    else:
+    elif purpose == "gabarit":
         dossier_id, params, warnings = _bound_template(args)
         data.update({"dossier_id": dossier_id, "template_params": params})
+    else:                       # _PURPOSE_RECEIPT: the table admits no other
+        tx_id, receipt_params, warnings = _bound_receipt(args)
+        data.update({"transaction_id": tx_id, "receipt_params": receipt_params})
     uid = _upload_uid()
     ticket, url, errors = upload_ticket_model.open_ticket(data, user_id=uid)
     if ticket is None or url is None:
@@ -15093,10 +15234,14 @@ def _begin_upload_impl(args: dict) -> dict:
 
     # ── Committed (the ticket): nothing below may refuse. ──────────────
     params = ticket.get("template_params") or {}
+    receipt = ticket.get("receipt_params") or {}
     _log_upload_opened(
         ticket_id=ticket.get("id"), purpose=purpose, size_bytes=size,
         ext=ticket.get("ext") or "", dossier_id=ticket.get("dossier_id"),
         template_mode=params.get("mode"),
+        transaction_id=ticket.get("transaction_id") or None,
+        replaces=(bool(receipt.get("expected_path"))
+                  if purpose == _PURPOSE_RECEIPT else None),
     )
     return _begin_upload_payload(ticket, url, warnings)
 
@@ -15218,6 +15363,9 @@ def _upload_uncertain(holder: _UploadHolder) -> ToolArgumentError:
     if holder.purpose == "document":
         message = _UPLOAD_UNCERTAIN.format(document_id=str(
             holder.ticket.get("reserved_document_id") or ""))
+    elif holder.purpose == _PURPOSE_RECEIPT:
+        message = _UPLOAD_RECEIPT_UNCERTAIN.format(tx_id=str(
+            holder.ticket.get("transaction_id") or ""))
     else:
         message = _UPLOAD_TEMPLATE_UNCERTAIN
     return ToolArgumentError(message, reason="write_outcome_uncertain",
@@ -15310,11 +15458,88 @@ def _uploaded_template_payload(
     }
 
 
+def _receipt_meta(e: dict) -> Optional[dict]:
+    """An entry's pièce justificative as the connector reads it — never its
+    storage path: name, type, size and MD5 (``None`` for a receipt attached
+    before ``receipt_md5`` existed). ``None`` when there is none."""
+    if not e.get("receipt_storage_path"):
+        return None
+    return {
+        "filename": str(e.get("receipt_filename") or ""),
+        "file_type": str(e.get("receipt_file_type") or ""),
+        "size_bytes": int(e.get("receipt_file_size") or 0),
+        "md5_base64": str(e.get("receipt_md5") or "") or None,
+    }
+
+
+def _receipt_ticket_suffix(ticket: dict) -> str:
+    """The tail of the object a receipt ticket attaches —
+    ``/pieces/{ticket_id}{ext}`` (models/admin_ledger.receipt_object_name),
+    read without the uid."""
+    return (f"/{comptabilite_service.RECEIPT_OBJECTS_SEGMENT}/"
+            f"{ticket.get('id', '')}{ticket.get('ext', '')}")
+
+
+def _receipt_landed(entry: dict, ticket: dict) -> bool:
+    """This ticket's object is, or was, the entry's receipt: its current
+    path, or the new path of a revision (a later replacement kept it)."""
+    suffix = _receipt_ticket_suffix(ticket)
+    if str(entry.get("receipt_storage_path") or "").endswith(suffix):
+        return True
+    for revision in entry.get("revisions") or []:
+        change = (revision.get("changes") or {}).get("receipt_storage_path")
+        if (isinstance(change, list) and len(change) == 2
+                and str(change[1] or "").endswith(suffix)):
+            return True
+    return False
+
+
+def _uploaded_receipt_payload(ticket: dict, entry: dict, *, already: bool,
+                              copy: Optional[dict], warnings: list[str]) -> dict:
+    """``file`` is THIS ticket's file (its declared size, its type);
+    ``receipt`` the entry's current one — the same, unless a later
+    replacement followed (a warning then says so)."""
+    params = ticket.get("receipt_params") or {}
+    ext = str(ticket.get("ext") or "")
+    return {
+        "finalized": True,
+        "purpose": _PURPOSE_RECEIPT,
+        "ticket_id": ticket.get("id", ""),
+        "entity_type": "admin_transaction",
+        "entity": _admin_register_row(entry),
+        "mode": "replace" if params.get("expected_path") else "attach",
+        "file": {"size_bytes": int(ticket.get("declared_size") or 0),
+                 "file_type": comptabilite_service.RECEIPT_MIME_TYPES.get(ext, "")},
+        "receipt": _receipt_meta(entry),
+        "dossier_copy": copy,
+        "already_finalized": already,
+        "warnings": warnings,
+    }
+
+
 def _filed_answer(ticket: dict) -> dict:
     """The answer of a ticket ALREADY versé — rebuilt from its stored
     result and the record it names (structural idempotency: a repeat
     without an idempotency_key still gets it, and writes nothing)."""
     result = ticket.get("result") or {}
+    if ticket.get("purpose") == _PURPOSE_RECEIPT:
+        try:
+            entry = comptabilite_service.lire_ecriture(
+                "admin", str(result.get("transaction_id") or ""))
+        except Exception:
+            raise ToolArgumentError(
+                f"{_RECEIPT_ENTRY_UNREADABLE} Rien n'a été joint de nouveau.",
+                reason="upload_retry")
+        if entry is None:
+            raise ToolArgumentError(_UPLOAD_ALREADY_FILED_GONE)
+        warnings: list[str] = []
+        if not str(entry.get("receipt_storage_path") or "").endswith(
+                _receipt_ticket_suffix(ticket)):
+            warnings.append(
+                "La pièce justificative de l'écriture a été remplacée depuis ; "
+                "celle de ce ticket reste conservée.")
+        return _uploaded_receipt_payload(ticket, entry, already=True,
+                                         copy=None, warnings=warnings)
     if ticket.get("purpose") == "document":
         try:
             doc = document_model.get_document_strict(
@@ -15376,6 +15601,12 @@ def _already_filed(holder: _UploadHolder) -> Optional[dict]:
     ticket = holder.ticket
     params = holder.params
     try:
+        if holder.purpose == _PURPOSE_RECEIPT:
+            entry = comptabilite_service.lire_ecriture(
+                "admin", str(ticket.get("transaction_id") or ""))
+            if entry is not None and _receipt_landed(entry, ticket):
+                return {"entry": entry}
+            return None
         if holder.purpose == "document":
             doc = document_model.get_document_strict(
                 str(ticket.get("reserved_document_id") or ""))
@@ -15552,7 +15783,15 @@ def _finalize_upload_impl(args: dict) -> dict:
                                 reason="upload_bytes_mismatch")
     if holder.purpose == "document":
         return _finalize_document_upload(holder, blob)
-    return _finalize_template_upload(holder, blob)
+    if holder.purpose == "gabarit":
+        return _finalize_template_upload(holder, blob)
+    if holder.purpose == _PURPOSE_RECEIPT:
+        return _finalize_receipt_upload(holder, blob)
+    # A purpose no branch knows (a record from a future release): never filed
+    # through another's branch.
+    _release_upload(holder)
+    raise ToolArgumentError(upload_ticket_model.message_for(
+        upload_ticket_model.REASON_CLOSED), reason="upload_ticket_closed")
 
 
 def _complete_filed(holder: _UploadHolder, filed: dict) -> dict:
@@ -15560,6 +15799,17 @@ def _complete_filed(holder: _UploadHolder, filed: dict) -> dict:
     finalization) and answer with it."""
     warnings: list[str] = []
     ticket = holder.ticket
+    if "entry" in filed:
+        entry = filed["entry"]
+        tx_id = str(ticket.get("transaction_id") or "")
+        _complete_upload(holder, {"transaction_id": tx_id}, warnings)
+        copy = _receipt_dossier_copy(entry, holder, warnings)
+        _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                              purpose=_PURPOSE_RECEIPT, transaction_id=tx_id,
+                              already_finalized=True,
+                              dossier_copy=(copy or {}).get("status"))
+        return _uploaded_receipt_payload(ticket, entry, already=True,
+                                         copy=copy, warnings=warnings)
     if "document" in filed:
         doc = filed["document"]
         _complete_upload(holder, {"document_id": doc["id"]}, warnings)
@@ -15730,6 +15980,101 @@ def _scan_source_dossier(holder: _UploadHolder, data: bytes,
             "unused_accept": len(scan.unused_accept),
             "skipped": len(scan.skipped),
             "parts_scanned": len(scan.parts_scanned)}
+
+
+def _receipt_dossier_copy(entry: dict, holder: _UploadHolder,
+                          warnings: list[str]) -> Optional[dict]:
+    """The follow-on of a receipt attach: a COPY in the entry's dossier
+    « Mandat › Déboursés », filed as the web's finalizer files one
+    (services/pieces_justificatives), under the ticket's reserved document
+    id — so a reclaimed finalization files ONE copy. Never raises: the
+    receipt IS attached, and a copy that could not be filed is a warning
+    (the entry page offers « Verser une copie au dossier »). ``None`` when
+    the entry is no standing dépense of a dossier."""
+    if not pieces_service.admissible(entry):
+        return None
+    dossier_id = str(entry.get("dossier_id") or "")
+    try:
+        uid = _upload_uid()
+        versement = pieces_service.verser_recu_au_dossier(
+            str(entry.get("id") or holder.ticket.get("transaction_id") or ""),
+            uid, document_id=str(holder.ticket.get("reserved_document_id") or ""))
+    except Exception:
+        log_unexpected("mcp upload: receipt copy to dossier failed",
+                       exc_info=False, ticket_id=holder.ticket_id)
+        warnings.append(
+            "La pièce est jointe, mais sa copie au dossier n'a pas pu être "
+            "versée : elle se verse depuis la fiche de l'écriture.")
+        return {"status": pieces_service.REFUSEE, "document_id": None,
+                "dossier_id": dossier_id}
+    if versement.code == pieces_service.INCERTAINE:
+        warnings.append(
+            "La copie au dossier a PEUT-ÊTRE été versée : vérifiez « Mandat › "
+            "Déboursés » avant de la verser de nouveau depuis la fiche.")
+    elif versement.document is None:
+        warnings.append(
+            "La pièce est jointe, mais sa copie au dossier n'a pas pu être "
+            "versée : elle se verse depuis la fiche de l'écriture.")
+    return {"status": versement.code,
+            "document_id": (versement.document or {}).get("id"),
+            "dossier_id": dossier_id}
+
+
+def _finalize_receipt_upload(holder: _UploadHolder, blob) -> dict:
+    """File the checked bytes as the pièce justificative of the ticket's
+    entry — through the accounting service to the model's door
+    (models/admin_ledger.attach_uploaded_receipt), which re-checks the bound
+    precondition in its transaction and never deletes. Its codes map onto
+    the upload's own answers: uncertain keeps the claim; a store failure
+    releases it (the bytes wait); a receipt changed since begin settles the
+    ticket and says stale; a gone entry or refused bytes settle it
+    refused."""
+    ticket = holder.ticket
+    try:
+        uid = _upload_uid()
+    except ToolArgumentError:
+        _release_upload(holder)
+        raise
+    tx_id = str(ticket.get("transaction_id") or "")
+    params = ticket.get("receipt_params") or {}
+    outcome = comptabilite_service.joindre_piece_televersee(
+        tx_id, blob, object_id=holder.ticket_id,
+        filename=str(ticket.get("original_filename") or ""), uid=uid,
+        expected_path=str(params.get("expected_path") or ""),
+        expected_md5=str(params.get("expected_md5") or ""),
+    )
+    code = outcome.code
+    if code == comptabilite_service.RECEIPT_UNCERTAIN:
+        raise _upload_uncertain(holder)
+    if code == comptabilite_service.RECEIPT_UNAVAILABLE:
+        _release_upload(holder)
+        raise ToolArgumentError(_UPLOAD_RETRY, reason="upload_retry")
+    if code == comptabilite_service.RECEIPT_CHANGED:
+        _settle_refused(holder, "piece_modifiee")
+        raise ToolArgumentError(
+            f"{' '.join(outcome.errors)} Le fichier téléversé a été effacé ; "
+            "relisez get_admin_ledger, puis — s'il faut toujours la joindre ou "
+            f"la remplacer — {_NEW_TICKET}.", reason="stale_etag")
+    if code not in (comptabilite_service.RECEIPT_ATTACHED,
+                    comptabilite_service.RECEIPT_ALREADY):
+        raise _content_refused(holder, outcome.errors)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    entry = outcome.entry or {}
+    already = code == comptabilite_service.RECEIPT_ALREADY
+    warnings: list[str] = []
+    _complete_upload(holder, {"transaction_id": tx_id}, warnings)
+    if outcome.replaced:
+        warnings.append(
+            "La pièce justificative précédente est remplacée ; son fichier "
+            "reste conservé.")
+    copy = _receipt_dossier_copy(entry, holder, warnings)
+    _log_upload_finalized("success", ticket_id=holder.ticket_id,
+                          purpose=_PURPOSE_RECEIPT, transaction_id=tx_id,
+                          replaced=outcome.replaced, already_finalized=already,
+                          dossier_copy=(copy or {}).get("status"))
+    return _uploaded_receipt_payload(
+        ticket, entry, already=already, copy=copy, warnings=warnings)
 
 
 def _finalize_template_upload(holder: _UploadHolder, blob) -> dict:
@@ -17535,6 +17880,9 @@ def _admin_ledger_row(e: dict, lock_reason: Optional[str],
     row.update(_stamps(e))
     row["locked"] = lock_reason is not None
     row["lock_reason"] = lock_reason
+    # The READ rows only (2026-11-10): the shared register row also feeds
+    # the accounting writes' results, whose shipped shape a replay keeps.
+    row["receipt"] = _receipt_meta(e)
     if balance_after is None:
         row["balance_after_cents"] = None
         row["balance_after_display"] = None
@@ -17635,6 +17983,162 @@ def get_admin_ledger(args: dict) -> dict:
     else:
         _register_money(payload, "opening_balance", opening)
     return payload
+
+
+# ── get_admin_receipt (READ, 2026-11-10) ────────────────────────────────
+# An administration entry's pièce justificative, CONSULTED: a PDF's text
+# (get_document_text's window and paging), an email's text (.eml through
+# utils/email_text, .msg through utils/msg_text — headers, body, the text of
+# its PDF attachments), a JPEG or PNG photo as the IMAGE itself, reduced
+# (utils/receipt_image; an MCP image item beside the JSON, never inside it —
+# mcp/tools.split_image). Never a link, never a storage path. A TIFF, an
+# over-cap photo, an unreadable file: name, type and size, and a French
+# reason. The bytes are read through the model's bounded reader
+# (admin_ledger.get_receipt_bytes: the stored size checked before any byte,
+# the MD5 after). Writes nothing — not even a missing digest.
+
+_RECEIPT_TEXT_TYPES = frozenset({
+    "application/pdf", "message/rfc822", "application/vnd.ms-outlook",
+})
+_RECEIPT_IMAGE_TYPES = frozenset({"image/jpeg", "image/png"})
+_RECEIPT_UNREADABLE_FR = {
+    "unsupported_type": (
+        "Une pièce TIFF ne se transmet pas à Claude : consultez-la dans "
+        "l'application."),
+    "image_unsupported": (
+        "Cette photo n'est pas d'un format transmissible (JPEG de base ou "
+        "progressif, ou PNG) : consultez-la dans l'application."),
+    "image_too_large": (
+        "Cette image est trop grande pour être transmise, même réduite : "
+        "consultez-la dans l'application."),
+    "image_invalid": (
+        "Cette image ne se lit pas : consultez-la dans l'application."),
+    "too_large": (
+        "Cette pièce dépasse le plafond de lecture : consultez-la dans "
+        "l'application."),
+    "encrypted": (
+        "Ce PDF est chiffré (protégé par mot de passe) : consultez-le dans "
+        "l'application."),
+    "invalid_pdf": (
+        "Ce fichier ne se lit pas comme un PDF valide : consultez-le dans "
+        "l'application."),
+    "invalid_email": (
+        "Ce courriel ne se lit pas : consultez-le dans l'application."),
+    "invalid_msg": (
+        "Ce fichier Outlook (.msg) ne se lit pas : consultez-le dans "
+        "l'application."),
+    "download_failed": (
+        "La pièce n'a pas pu être lue depuis le stockage. Réessayez ; si "
+        "l'erreur persiste, consultez-la dans l'application."),
+    "receipt_changed": (
+        "Le fichier stocké n'a pas l'empreinte que l'écriture enregistre : "
+        "consultez la pièce dans l'application."),
+    "no_receipt": "Cette écriture ne porte aucune pièce justificative.",
+}
+
+
+def _receipt_unreadable(base: dict, reason: str) -> dict:
+    return {**base, "content_kind": "none", "reason": reason,
+            "message": _RECEIPT_UNREADABLE_FR.get(
+                reason, _RECEIPT_UNREADABLE_FR["download_failed"])}
+
+
+def _email_payload(mail: "email_text.EmailText") -> dict:
+    return {
+        "headers": dict(mail.headers),
+        "body": mail.body,
+        "attachments": [
+            {"filename": a.filename, "content_type": a.content_type,
+             "size_bytes": a.size_bytes, "text_included": a.text_included}
+            for a in mail.attachments
+        ],
+        "attachment_texts": [
+            {"filename": name, "text": text}
+            for name, text in mail.attachment_texts
+        ],
+        "truncated": mail.truncated,
+        "warnings": list(mail.warnings),
+    }
+
+
+def _receipt_copy_document_id(entry: dict) -> Optional[str]:
+    """The copy of the CURRENT receipt filed in the entry's dossier, if any
+    — display only, failing open to ``None`` (the service's own rule)."""
+    state = pieces_service.etat_des_copies(entry)
+    current = (state or {}).get("courante") or {}
+    return current.get("id") or None
+
+
+def get_admin_receipt(args: dict) -> dict:
+    tx_id = str(args.get("tx_id") or "").strip()
+    first, last = _parse_page_range(args)
+    if not document_model.is_addressable_id(tx_id):
+        return {"found": False, "tx_id": tx_id}
+    try:
+        entry = comptabilite_service.lire_ecriture("admin", tx_id)
+    except Exception:
+        log_unexpected("mcp: receipt entry unreadable", exc_info=False)
+        raise ToolArgumentError(_RECEIPT_ENTRY_UNREADABLE,
+                                reason="accounting_refused")
+    if entry is None:
+        return {"found": False, "tx_id": tx_id}
+    entry.setdefault("id", tx_id)
+    receipt = _receipt_meta(entry)
+    base = {
+        "found": True,
+        "tx_id": tx_id,
+        "entry": _admin_register_row(entry),
+        "has_receipt": receipt is not None,
+        "receipt": receipt,
+    }
+    if receipt is None:
+        return base
+    base["dossier_copy_document_id"] = _receipt_copy_document_id(entry)
+    file_type = receipt["file_type"]
+    if file_type not in _RECEIPT_TEXT_TYPES | _RECEIPT_IMAGE_TYPES:
+        return _receipt_unreadable(base, "unsupported_type")
+    data, reason = comptabilite_service.octets_piece(entry)
+    if data is None:
+        return _receipt_unreadable(base, reason)
+    if receipt["md5_base64"] is None:
+        # A receipt attached before the entry kept its digest: the MD5 of
+        # the bytes just read — its object's own, the one begin_upload's
+        # replaces_receipt_md5 must name to replace it (the ledger's row
+        # shows null). An integrity digest, not a security hash.
+        receipt["md5_base64"] = base64.b64encode(
+            hashlib.md5(data, usedforsecurity=False).digest()).decode("ascii")
+
+    if file_type == "application/pdf":
+        result = pdf_text.extract_pdf_pages(
+            data, first_page=first, last_page=last,
+            char_cap=DOCUMENT_TEXT_MAX_CHARS)
+        if not result.readable:
+            return _receipt_unreadable(base, result.reason)
+        return {**base, "content_kind": "text",
+                "pdf": _pdf_pages_payload(result), "email": None}
+    if file_type in ("message/rfc822", "application/vnd.ms-outlook"):
+        reader = (email_text.extract_eml if file_type == "message/rfc822"
+                  else msg_text.extract_msg)
+        try:
+            mail = reader(data, char_cap=DOCUMENT_TEXT_MAX_CHARS)
+        except pdf_text.DocumentTextError as exc:
+            return _receipt_unreadable(base, exc.reason)
+        return {**base, "content_kind": "text", "pdf": None,
+                "email": _email_payload(mail)}
+    # A JPEG or PNG photo: reduced, handed over as the image itself.
+    try:
+        image = receipt_image.prepare_for_claude(data, file_type)
+    except receipt_image.ImageRefused as exc:
+        return _receipt_unreadable(base, exc.reason)
+    return {
+        **base,
+        "content_kind": "image",
+        "image": {"mime_type": image.mime_type, "width": image.width,
+                  "height": image.height, "source_width": image.source_width,
+                  "source_height": image.source_height,
+                  "size_bytes": len(image.data)},
+        IMAGE_RESULT_KEY: ImageAttachment(image.mime_type, image.data),
+    }
 
 
 # ── get_financial_statements (READ) ─────────────────────────────────────

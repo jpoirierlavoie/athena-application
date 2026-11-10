@@ -1776,6 +1776,12 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   organisation must allow code-execution network egress to
   `storage.googleapis.com` (§15 « Lot 2A », step 7). Without it the tickets
   open, every PUT fails, and they expire unused: nothing is ever filed.
+  Since 2026-11-10 a ticket also brings an administration entry's pièce
+  justificative (purpose `piece_justificative`): it attaches one, or
+  REPLACES the one the entry carries — the replaced file KEPT, never
+  deleted, unlike the web's « Remplacer » — and a dépense of a dossier
+  gets its copy in « Mandat › Déboursés », as on the web (§15 « Pièces
+  justificatives through the connector »).
 - **An invoice the connector issues consumes a REAL number** (lot 3b,
   plan D3): `create_invoice` takes the year's next `YYYY-F###` inside the
   invoice's own transaction — a refusal consumes none, a success one for
@@ -1797,8 +1803,10 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 - **The accounting registers are written under the same box as every
   other write**, « Autoriser aussi les écritures » — the ACCOUNTING family
   (`record_trust_entry`, `record_admin_entry`, `update_admin_entry`,
-  `clear_register_entries`, `reverse_register_entry`); their read,
-  `get_admin_ledger`, is an ordinary read like the trust reads. Until
+  `clear_register_entries`, `reverse_register_entry`); their reads,
+  `get_admin_ledger` and — since 2026-11-10 — `get_admin_receipt` (an
+  entry's pièce justificative: a PDF's or an email's text, a photo as
+  the image itself), are ordinary reads like the trust reads. Until
   2026-10-05 they had a scope of their own, `athena:comptabilite`, a second
   box « Autoriser la comptabilité » and a switch that defaulted to off; the
   lawyer removed all three that day. The
@@ -1810,15 +1818,18 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   an entry (a trust entry is corrected only
   by a reversal, an administration entry while it stays editable, then by
   a reversal), start, complete or abandon a reconciliation, create or
-  modify an account or attach a receipt, transfer funds between dossiers
+  modify an account, transfer funds between dossiers
   (or reverse one leg of such a transfer), withdraw trust funds in cash,
   back a fee payment with a paper invoice, an invoice not yet sent, one
   that imputes a provision, another client's invoice or — in a dossier of
   several clients — one naming none (D21), make a fee payment to anyone but
   you or your firm as « Paramètres » names you (D23), show a bank number.
-  A write token lists them the moment it is granted — **88** tools (32
-  read, 56 write) —, a read-only one the **32** reads, `get_admin_ledger`
-  among them. Before the first real bank movement recorded through the
+  (Attaching a receipt left that list on 2026-11-10: the connector now
+  attaches or replaces one, the replaced file kept.) A write token lists
+  them the moment it is granted — **90** tools (34 read, 56 write) since
+  2026-11-10 —, a read-only one the **34** reads, `get_admin_ledger` and
+  `get_admin_receipt` among them. Before the first real bank movement
+  recorded through the
   connector, §15 « Lot 5 », steps 6 and 7, are the recipe for a supervised
   pilot on a TEST administration account — never the trust register.
 - **Run no MCP write during a deploy window — and none after a rollback
@@ -5053,6 +5064,88 @@ Notes:
      (the old copy removed first), bump the mirror's marketplace.json,
      commit and push it the same day.
   A rollback is the code alone: redeliver plugin 1.6.0 with it.
+
+- **Pièces justificatives through the connector, and the short consent
+  screen (2026-11-10).** Three lots, the lawyer's request of the day. Lot A
+  (`af8ab41`, pushable alone) repairs the entry page's upload: its widget
+  read the CSRF token with `this.$el` from a NESTED `@change`, found none,
+  and every upload since 2026-08-13 answered 400 « The CSRF token is
+  missing. » (shown as « refusé »); the token is now an `x-ref`, and .eml and
+  .msg join PDF, JPG, PNG and TIFF. Lot C (`32ef35a`) cuts the consent
+  screen from about 4 600 words to about 430 — four read lines, one line
+  per write family, one short clause per « never » —, the 13 family
+  partials deleted. Lot B gives the connector the receipts:
+  `begin_upload` with purpose `piece_justificative` (`tx_id`, and
+  `replaces_receipt_md5` to replace — the target state, never a toggle),
+  then `finalize_upload`, which attaches through the model's door
+  (`models/admin_ledger.attach_uploaded_receipt`, reached through
+  `services/comptabilite`): a create-only object under
+  `…/administration/{tx}/pieces/{ticket}{ext}`, the precondition re-checked
+  in the transaction, a revision naming both paths, and NOTHING deleted —
+  a replaced receipt's object stays where it was. A dépense of a dossier
+  gets its copy in « Mandat › Déboursés » under the ticket's reserved id,
+  as the web files one. The web's own « Remplacer » still deletes, and its
+  uploads now land under their staging uuid, so they can never overwrite a
+  kept file. A new read, `get_admin_receipt`, gives a PDF's text layer, an
+  email's text (.eml by the stdlib, .msg by `olefile`, a new pure-Python
+  dependency) or a JPG/PNG photo as the IMAGE itself — reduced by Pillow
+  (long side 1 568 px, JPEG, at most 700 KiB) and sent as an MCP image item
+  after the JSON, never in `structuredContent`, never a link; a TIFF, a
+  photo too large even reduced or an unreadable file answer `content_kind`
+  « none » with a French reason. `get_admin_ledger`'s rows carry `receipt`
+  (name, type, size, MD5 — never a path). The « never » that said the
+  connector attaches no receipt is lifted, by the lawyer's decision.
+  **90** tools (34 read, 56 write). Change Impact: item 1 — a purpose, a
+  read, the image channel, a lifted promise, the screen rewritten, plugin
+  1.8.0: hence the §11 train below; item 4 — no new event: new fields on
+  `mcp_upload_opened`, `mcp_upload_finalized` (and its refusal reason
+  `piece_modifiee`) and `admin_receipt_attached`, and the new messages,
+  all in OBSERVABILITY.md; item 5 — lot A a client-side token fix, no
+  exemption changed; lot B's staging objects under the existing `staging/`
+  rule, the shared sniff, Pillow's JPEG and PNG decoders reachable from
+  `utils/receipt_image.py` alone behind a header check (pixel and side
+  caps), `olefile` on stored, sniffed .msg of at most 10 MB; item 6 —
+  templates with compiled classes only. Items 2 (no DAV-exposed record),
+  3 and 7 (single-field equalities only) not touched. In order:
+  1. *Lot A, whenever it ships*: on an entry's page, attach a PDF, a JPG,
+     an .eml and an .msg — each lands, no « refusé »; the logs show
+     `admin_receipt_attached` (and `admin_receipt_filed` for a dépense of a
+     dossier), and no `csrf_failure`.
+  2. *Before the push of C and B — the §11 train*: in claude.ai, remove
+     the « Athena » connector; then, from `athena/`, `python -m
+     scripts.revoke_mcp_tokens`. The token in force was granted under a
+     screen that said Claude never attaches a receipt.
+  3. *The push.*
+  4. *Re-add the connector* (§11), read the new screen — four read lines,
+     the box, its lines and its « jamais » — and tick « Autoriser aussi
+     les écritures ».
+  5. *Verify `tools/list`*: **90** tools for the write token; a read-only
+     grant lists the **34** reads, `get_admin_ledger` and
+     `get_admin_receipt` among them. The `initialize` text reads « TOOLS:
+     34 tools read; 56 write, in 13 families: ».
+  6. *Reads on real receipts*, in claude.ai: `get_admin_ledger` shows
+     `receipt` on an entry carrying one; `get_admin_receipt` on a PDF (its
+     text), an .eml and an .msg (headers, body, a PDF attachment's text), a
+     2–4 MB phone photo (seen as the image: if Claude says it did not see
+     it, the image item did not reach the model — report it, never let it
+     describe one) and a TIFF (its metadata and the French « none »). The
+     logs: one `mcp_tool_call` each, no `pallas.unexpected` line.
+  7. *The first attach*, on an entry the lawyer chooses: the entry page
+     shows the receipt, the dossier's « Mandat › Déboursés » its copy; the
+     entry carries `updated_via` « mcp » and the revision « Pièce
+     justificative jointe »; the logs show `admin_receipt_attached` and
+     `mcp_upload_finalized` (`transaction_id`, `dossier_copy` « versee »).
+     A replacement, if tried: the previous object still listed under the
+     entry's folder of the bucket, the revision « … remplacée — la
+     précédente est conservée ».
+  8. *Plugin 1.8.0*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day.
+  A rollback past lot B: first let every open receipt ticket expire (one
+  hour after the last `begin_upload` with purpose `piece_justificative`) —
+  an older version knows two purposes and would read a third as a
+  gabarit's. Then the code, with plugin 1.7.0; the receipts attached
+  meanwhile stay, served by the web like any other.
 
 ## 16. Troubleshooting
 

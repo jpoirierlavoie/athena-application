@@ -173,9 +173,10 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
 _AFTER_D22 = frozenset({"create_time_entries_bulk", "create_expenses_bulk"})
 
 # The read tools shipped AFTER the bulk creators' release (2026-11-10: the
-# « Finances » statements): a past release's runbook keeps the counts it
-# shipped with, so both trains below count the registry without them.
-_READS_AFTER_BULK = frozenset({"get_financial_statements"})
+# « Finances » statements, then the pièces justificatives): a past release's
+# runbook keeps the counts it shipped with, so both trains below count the
+# registry without them.
+_READS_AFTER_BULK = frozenset({"get_financial_statements", "get_admin_receipt"})
 
 # The six tools the separate `athena:comptabilite` scope carried from lot 5b
 # until 2026-10-05, when the lawyer removed it: the ACCOUNTING family's five

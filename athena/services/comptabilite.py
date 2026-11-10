@@ -660,3 +660,56 @@ def solde_reporte_administration(account_id: str, date_from) -> tuple[int, bool]
     had_prior_entry)``. Raises when the read truncates: a partial sum is a
     wrong balance."""
     return al.opening_ledger_balance(account_id, date_from)
+
+
+# ── Pièces justificatives — the connector's door (2026-11-10) ──────────────
+#
+# The lawyer let Claude attach, REPLACE (the replaced file kept) and read an
+# administration entry's pièce justificative. The model keeps every rule
+# (``admin_ledger.attach_uploaded_receipt``, ``get_receipt_bytes``); the
+# connector reaches them HERE, as it reaches the rest of the ledger. The web
+# keeps its own finalizer (``routes/admin_ledger.api_recu`` →
+# ``admin_ledger.attach_receipt``), whose « Remplacer » deletes.
+
+#: What a receipt may be, and the refusals' French — the model's own.
+RECEIPT_MIME_TYPES: dict = dict(al.RECEIPT_MIME_TYPES)
+RECEIPT_EXTENSIONS: tuple = tuple(al.RECEIPT_EXTENSIONS)
+MAX_RECEIPT_SIZE: int = al.MAX_RECEIPT_SIZE
+RECEIPT_TYPE_REFUSED_FR: str = al.RECEIPT_TYPE_REFUSED_FR
+#: The path segment every object the connector attaches lands under
+#: (``admin_ledger.receipt_object_name``) — a ticket's own, kept on replace.
+RECEIPT_OBJECTS_SEGMENT: str = al.RECEIPT_OBJECTS_SEGMENT
+#: The outcome codes of :func:`joindre_piece_televersee`.
+RECEIPT_ATTACHED: str = al.RECEIPT_ATTACHED
+RECEIPT_ALREADY: str = al.RECEIPT_ALREADY
+RECEIPT_REFUSED: str = al.RECEIPT_REFUSED
+RECEIPT_CHANGED: str = al.RECEIPT_CHANGED
+RECEIPT_ENTRY_GONE: str = al.RECEIPT_ENTRY_GONE
+RECEIPT_UNAVAILABLE: str = al.RECEIPT_UNAVAILABLE
+RECEIPT_UNCERTAIN: str = al.RECEIPT_UNCERTAIN
+
+
+def md5_piece(entry: dict) -> str:
+    """The MD5 (base64) of *entry*'s receipt OBJECT, reloaded — for a
+    receipt attached before the entry stored its digest. Raises when the
+    object could not be read (``admin_ledger.receipt_object_md5``)."""
+    return al.receipt_object_md5(entry)
+
+
+def octets_piece(entry: dict, *, max_bytes: int = al.MAX_RECEIPT_SIZE):
+    """The bytes of *entry*'s receipt — ``(data, "")`` or ``(None,
+    reason)`` (``admin_ledger.get_receipt_bytes``)."""
+    return al.get_receipt_bytes(entry, max_bytes=max_bytes)
+
+
+def joindre_piece_televersee(
+    tx_id: str, source, *, object_id: str, filename: str, uid: str,
+    expected_path: str, expected_md5: str,
+) -> "al.ReceiptOutcome":
+    """Attach an uploaded, checked object to entry *tx_id* as its pièce
+    justificative, or replace the one it carries — the replaced file KEPT
+    (``admin_ledger.attach_uploaded_receipt``: its outcome, unchanged)."""
+    return al.attach_uploaded_receipt(
+        tx_id, source, object_id=object_id, filename=filename, uid=uid,
+        expected_path=expected_path, expected_md5=expected_md5,
+    )

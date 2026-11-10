@@ -1916,20 +1916,33 @@ def _service_source(name: str) -> str:
 
 
 def test_only_the_accounting_tools_reach_a_register_writer():
-    """No tool but the five accounting writes ever writes to the trust
-    register or the administration ledger. Backed by derivation: the tools
-    whose handler reaches a register WRITER — directly, or through
-    services/comptabilite — are exactly the accounting writes, every one a
-    write tool demanding athena:write (so the write protocol and the
-    live-token revalidation reach each one, and a read-only token none);
-    the accounting READ reaches none. (Until 2026-10-05 this backed the
-    « trust » promise — « never without the separate accounting grant » —,
-    deleted with that grant.)"""
+    """No tool but the five accounting writes — and finalize_upload, for a
+    pièce justificative only — ever writes to the trust register or the
+    administration ledger. Backed by derivation: the tools whose handler
+    reaches a register WRITER — directly, or through services/comptabilite
+    — are exactly those, every one a write tool demanding athena:write (so
+    the write protocol and the live-token revalidation reach each one, and
+    a read-only token none); the accounting READS reach none. (Until
+    2026-10-05 this backed the « trust » promise — « never without the
+    separate accounting grant » —, deleted with that grant.)
+
+    REWRITTEN deliberately (2026-11-10): the lawyer let Claude attach and
+    replace an entry's receipt. finalize_upload reaches the model's own
+    door, attach_uploaded_receipt — which KEEPS a replaced file — and
+    nothing else of the registers; no tool reaches the web's
+    attach_receipt, whose route deletes a replaced receipt (until this lot
+    a « never » of mcp/disclosure swept it)."""
     source = pathlib.Path(handlers.__file__).read_text(encoding="utf-8")
     reached = register_writers_reached(source, _service_source, tools.TOOLS)
     writers = {t for t, found in reached.items() if found}
-    assert writers == set(tools.ACCOUNTING_WRITE_TOOLS), sorted(writers)
-    assert reached["get_admin_ledger"] == set()
+    assert writers == set(tools.ACCOUNTING_WRITE_TOOLS) | {"finalize_upload"}, (
+        sorted(writers))
+    assert reached["finalize_upload"] == {
+        ("admin_ledger", "attach_uploaded_receipt")}
+    for tool, found in reached.items():
+        assert ("admin_ledger", "attach_receipt") not in found, tool
+    for read in ("get_admin_ledger", "get_admin_receipt", "begin_upload"):
+        assert reached[read] == set(), read
     for tool in writers:
         assert tool in tools.WRITE_TOOLS, tool
         assert tools.required_scope(tool) == "athena:write", tool

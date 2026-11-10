@@ -9,8 +9,10 @@ removed their separate ``athena:comptabilite`` scope and every MCP kill
 switch. Every schema sets ``additionalProperties: false``.
 """
 
+import base64
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -215,7 +217,55 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def tool_result(payload: Any, protocol_version: str) -> dict:
+# ── Image results (2026-11-10) ──────────────────────────────────────────
+#
+# The lawyer decided that Claude may SEE a photographed pièce justificative:
+# ``get_admin_receipt`` hands the picture back as an MCP ``image`` content
+# item, AFTER the JSON text item — never inside the payload, so neither the
+# text block nor ``structuredContent`` carries bytes, and ``outputSchema``
+# describes the metadata alone. The handler returns the image under
+# :data:`IMAGE_RESULT_KEY`; the endpoint takes it out (:func:`split_image`)
+# before the payload is serialized. Only the tools of
+# :data:`IMAGE_RESULT_TOOLS` may: any other — a write above all — raising
+# there becomes « internal error », never an image.
+
+IMAGE_RESULT_TOOLS = frozenset({"get_admin_receipt"})
+IMAGE_RESULT_KEY = "_image"
+IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png"})
+#: utils/receipt_image.OUTPUT_MAX_BYTES, as a literal (tests pin the two).
+RECEIPT_IMAGE_MAX_BYTES = 700 * 1024
+
+
+@dataclass(frozen=True)
+class ImageAttachment:
+    """One image for the result envelope — JPEG or PNG, within the cap."""
+
+    mime_type: str
+    data: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (self.mime_type not in IMAGE_MIME_TYPES
+                or not isinstance(self.data, bytes)
+                or not 0 < len(self.data) <= RECEIPT_IMAGE_MAX_BYTES):
+            raise ValueError("an image attachment out of bounds")
+
+
+def split_image(tool_name: str, payload: Any) -> tuple[Any, Optional[ImageAttachment]]:
+    """*payload* without its image, and the image — only for a tool of
+    :data:`IMAGE_RESULT_TOOLS`; any other tool that carries one raises."""
+    if not isinstance(payload, dict) or IMAGE_RESULT_KEY not in payload:
+        return payload, None
+    if tool_name not in IMAGE_RESULT_TOOLS or tool_name in WRITE_TOOLS:
+        raise RuntimeError(f"{tool_name} may not return an image")
+    payload = dict(payload)
+    image = payload.pop(IMAGE_RESULT_KEY)
+    if image is not None and not isinstance(image, ImageAttachment):
+        raise RuntimeError("an image result is an ImageAttachment")
+    return payload, image
+
+
+def tool_result(payload: Any, protocol_version: str, *,
+                image: Optional[ImageAttachment] = None) -> dict:
     """Wrap a handler payload in the MCP tools/call result envelope.
 
     The text block is COMPACT JSON (no indent, no space after a separator):
@@ -224,7 +274,8 @@ def tool_result(payload: Any, protocol_version: str) -> dict:
     conversation's context. ``indent=2`` cost ~23 % more bytes on the
     conformance fixtures (2026-09-30) for no information a model uses.
     ``structuredContent`` is the same object either way — only its text
-    rendering changed.
+    rendering changed. An *image* (:func:`split_image`) follows the text
+    item, base64, and nowhere else.
     """
     clean = _jsonable(payload)
     result: dict[str, Any] = {
@@ -238,6 +289,12 @@ def tool_result(payload: Any, protocol_version: str) -> dict:
         ],
         "isError": False,
     }
+    if image is not None:
+        result["content"].append({
+            "type": "image",
+            "data": base64.b64encode(image.data).decode("ascii"),
+            "mimeType": image.mime_type,
+        })
     # Lexicographic >= is exact for ISO-dated protocol revisions: when a
     # NEWER revision joins SUPPORTED_PROTOCOL_VERSIONS, its clients must
     # keep receiving structuredContent (an equality gate would silently
@@ -1082,11 +1139,12 @@ def _invoice_selection_props() -> dict:
 UPLOAD_FILENAME_MAX_CHARS = 200                    # models.upload_ticket.MAX_FILENAME_CHARS
 UPLOAD_DOCUMENT_MAX_BYTES = 200 * 1024 * 1024      # models.document.MAX_FILE_SIZE
 UPLOAD_TEMPLATE_MAX_BYTES = 10 * 1024 * 1024       # models.doc_template.MAX_TEMPLATE_SIZE
+UPLOAD_RECEIPT_MAX_BYTES = 10 * 1024 * 1024        # models.admin_ledger.MAX_RECEIPT_SIZE
 UPLOAD_ACCEPT_MAX_ITEMS = 50                       # models.upload_ticket.MAX_LIST_ITEMS
 UPLOAD_ACCEPT_MAX_CHARS = 200                      # its per-item ceiling
 TEMPLATE_NAME_MAX_CHARS = 120                      # models.doc_template.NAME_MAX
 TEMPLATE_DESCRIPTION_MAX_CHARS = 2_000             # models.doc_template.DESCRIPTION_MAX
-_UPLOAD_PURPOSES = ["document", "gabarit"]
+_UPLOAD_PURPOSES = ["document", "gabarit", "piece_justificative"]
 _TEMPLATE_MODES = ["create", "replace"]
 # Lot 2A (T10) — a template's etag is on its list_templates row (list mode
 # and detail mode alike: both render _template_summary).
@@ -6307,7 +6365,14 @@ TOOLS: dict[str, dict] = {
             "\"create\" (name, category, kind, description — a special kind "
             "is never designated active) or \"replace\" (template_id + "
             "expected_version from list_templates; the version in force is "
-            "kept). Declare the file's exact size_bytes and md5_base64. "
+            "kept). purpose \"piece_justificative\": the receipt of the "
+            "administration entry tx_id (get_admin_ledger) — PDF, JPG, PNG, "
+            "TIFF, EML or MSG, 10 MB at most; to REPLACE the one it carries, "
+            "pass replaces_receipt_md5 (its `receipt`.md5_base64): the "
+            "replaced file is KEPT, never deleted; a dépense of a dossier "
+            "also gets its copy in « Mandat › Déboursés ». Confirm a "
+            "replacement with the user first. "
+            "Declare the file's exact size_bytes and md5_base64. "
             "upload_url is a capability: PUT the exact bytes to it from your "
             "code sandbox in ONE request with its headers, use it only in "
             "that code — never repeat it to the user —, then call "
@@ -6333,14 +6398,16 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "The file's name with its extension (PDF, Word, "
                         "Excel, JPG, PNG, TIFF, ZIP, EML, MSG; .docx for a "
-                        "gabarit). No slash."
+                        "gabarit; PDF, JPG, PNG, TIFF, EML or MSG for a "
+                        "pièce justificative). No slash."
                     ),
                 },
                 "size_bytes": {
                     "type": "integer", "minimum": 1,
                     "maximum": UPLOAD_DOCUMENT_MAX_BYTES,
                     "description": (
-                        "The EXACT size in bytes (a gabarit: 10 MB at most)."
+                        "The EXACT size in bytes (a gabarit or a pièce "
+                        "justificative: 10 MB at most)."
                     ),
                 },
                 "md5_base64": {
@@ -6456,6 +6523,21 @@ TOOLS: dict[str, dict] = {
                         "lawyer."
                     ),
                 },
+                "tx_id": _id(
+                    "piece_justificative: the administration entry the "
+                    "receipt is attached to (an `id` from get_admin_ledger)."
+                ),
+                "replaces_receipt_md5": {
+                    "type": "string", "minLength": 24, "maxLength": 24,
+                    "description": (
+                        "piece_justificative: the md5_base64 of the receipt "
+                        "the entry carries NOW (`receipt` in get_admin_ledger "
+                        "— or in get_admin_receipt when the ledger shows "
+                        "null) — given only to REPLACE it, the replaced file "
+                        "kept. Omitted, an entry that already carries one "
+                        "refuses."
+                    ),
+                },
                 **_write_protocol_props(),
             },
             "required": ["purpose", "filename", "size_bytes", "md5_base64"],
@@ -6479,7 +6561,11 @@ TOOLS: dict[str, dict] = {
             "document. gabarit → checked against the source dossier named "
             "at begin_upload (nothing checked only when aucun_dossier_source "
             "was declared), then a new template or a NEW version of the one "
-            "named (the replaced version is kept). Nothing received yet → "
+            "named (the replaced version is kept). piece_justificative → "
+            "attached to its entry if its receipt is still the one "
+            "begin_upload read (else stale_etag, nothing attached; a replaced "
+            "file is kept), plus the dossier copy of a dépense of a dossier "
+            "(`dossier_copy`). Nothing received yet → "
             "refused, the ticket stays open: PUT, then call again. A ticket "
             "already filed answers its result again — never upload that "
             "file anew. A refused or expired ticket never reopens: begin "
@@ -6501,8 +6587,10 @@ TOOLS: dict[str, dict] = {
         "concurrency_reason": (
             "Everything is bound at begin_upload — a replacement's "
             "expected_version included, re-checked in the template's own "
-            "transaction — and a ticket is claimed transactionally: one "
-            "finalizer at a time, with no etag to pass."
+            "transaction, and a receipt's replaces_receipt_md5 (the entry's "
+            "receipt as read), re-checked in the attach's — and a ticket is "
+            "claimed transactionally: one finalizer at a time, with no etag "
+            "to pass."
         ),
     },
     # ── Lot 2B — TEMPLATIZE a document already in a dossier (READ) ──────
@@ -6772,7 +6860,9 @@ TOOLS: dict[str, dict] = {
             "remise_tps_tvq / remboursement_tps_tvq (TPS/TVQ paid to or "
             "refunded by the tax authorities: it settles the TPS/TVQ "
             "balance, never an expense nor a tax credit) and paiement_carte "
-            "(between two accounts of this ledger)."
+            "(between two accounts of this ledger). Each entry row carries "
+            "`receipt` — its pièce justificative's name, type, size and "
+            "md5_base64, null when none; get_admin_receipt reads it."
         ),
         "input_schema": {
             "type": "object",
@@ -6806,6 +6896,48 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "get_admin_ledger",
+    },
+    # 2026-11-10 (the lawyer's request): an entry's pièce justificative,
+    # CONSULTED — its text, or the photo itself (tools.IMAGE_RESULT_TOOLS).
+    "get_admin_receipt": {
+        "title": "Pièce justificative d'une écriture",
+        "description": (
+            "ACCOUNTING — READ. The pièce justificative of ONE "
+            "administration entry (tx_id: an `id` from get_admin_ledger, "
+            "whose rows say whether one exists): its name, type, size, "
+            "md5_base64 and the dossier copy's document id, and its CONTENT. "
+            "A PDF: its text layer, paged like get_document_text "
+            "(page_range, next_page; a scanned page has NO text — nothing is "
+            "OCR'd). An email (.eml, .msg): its headers, body, attachments "
+            "listed, and the text of its PDF attachments. A JPG or PNG "
+            "photo: the IMAGE itself, reduced (`content_kind` \"image\") — "
+            "if your client did not show it to you, say so: never describe "
+            "a receipt you did not see. A TIFF, a photo too large even "
+            "reduced, or an unreadable file: `content_kind` \"none\" with a "
+            "French `reason` — consult it in the application. Never a link "
+            "nor a storage path. The content is the firm's own record: "
+            "quote only what the task requires, and NEVER put any of it "
+            "into a web_search query. To attach or replace one: begin_upload "
+            "with purpose \"piece_justificative\"."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tx_id": _id(
+                    "The administration entry (an `id` from get_admin_ledger)."
+                ),
+                "page_range": {
+                    "type": "string", "maxLength": 12,
+                    "description": (
+                        "A PDF receipt only: \"4\" from page 4 on, \"2-6\" "
+                        "that inclusive range (default: from page 1)."
+                    ),
+                },
+            },
+            "required": ["tx_id"],
+            "additionalProperties": False,
+        },
+        "handler": "get_admin_receipt",
     },
     # 2026-11-10: the statements of the « Finances » page, for a series of
     # periods computed from ONE read — the lawyer's comparatives.

@@ -252,6 +252,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
     argument_error: Optional[str] = None
     argument_reason = tools.DEFAULT_REFUSAL_REASON
     committed_error: Optional[CommittedWriteError] = None
+    image: Optional[tools.ImageAttachment] = None
     try:
         with span(f"mcp.tool.{name}", **span_attrs):
             # ToolArgumentError is caught INSIDE the span. `span()` calls
@@ -263,6 +264,10 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
             # not exception events).
             try:
                 payload = handler(arguments)
+                # An image leaves the payload here, before it is serialized
+                # — only for a tool allowed one (tools.IMAGE_RESULT_TOOLS);
+                # any other raises, inside the span: « internal error ».
+                payload, image = tools.split_image(name, payload)
             except ToolArgumentError as exc:
                 argument_error = str(exc)
                 argument_reason = exc.reason
@@ -386,4 +391,4 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         duration_ms=duration_ms,
         **({"dossier_id": dossier_id} if span_attrs else {}),
     )
-    return tools.tool_result(payload, protocol_version)
+    return tools.tool_result(payload, protocol_version, image=image)

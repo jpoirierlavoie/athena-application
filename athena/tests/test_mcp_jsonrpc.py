@@ -652,25 +652,26 @@ def test_initialize_tells_every_token_the_same_instructions(monkeypatch, scope):
 # The numbers the lawyer reads off `tools/list` in the deploy train
 # (DEPLOYMENT.md §15), LITERAL on purpose: every other assertion of this
 # module derives its set from the registry, and a derived check passes
-# whatever the registry holds. 89 = 33 reads + 56 writes (86 → 88 on
+# whatever the registry holds. 90 = 34 reads + 56 writes (86 → 88 on
 # 2026-09-30, deliberately: the two bulk creators create_time_entries_bulk /
 # create_expenses_bulk; 88 → 89 on 2026-11-10: the read
-# get_financial_statements). Since 2026-10-05 — the separate accounting scope
+# get_financial_statements; 89 → 90 the same day: the read
+# get_admin_receipt). Since 2026-10-05 — the separate accounting scope
 # and every MCP kill switch removed — there are two token shapes: a
-# read-only token lists the 33 reads, get_admin_ledger among them; a
-# read + write token lists all 89, the five ACCOUNTING writes among them. A
+# read-only token lists the 34 reads, get_admin_ledger among them; a
+# read + write token lists all 90, the five ACCOUNTING writes among them. A
 # token still carrying the retired accounting string lists no more.
 @pytest.mark.parametrize("scope, expected", [
-    ("athena:read", 33),
-    ("athena:read athena:write", 89),
-    (f"athena:read {_RETIRED_SCOPE}", 33),
-    (f"athena:read athena:write {_RETIRED_SCOPE}", 89),
+    ("athena:read", 34),
+    ("athena:read athena:write", 90),
+    (f"athena:read {_RETIRED_SCOPE}", 34),
+    (f"athena:read athena:write {_RETIRED_SCOPE}", 90),
 ])
 def test_tools_list_counts_per_token_are_the_train_s_checklist(
     monkeypatch, scope, expected
 ):
     bearer.reset_brake_state()
-    assert len(tools.TOOLS) == 89 and len(tools.WRITE_TOOLS) == 56
+    assert len(tools.TOOLS) == 90 and len(tools.WRITE_TOOLS) == 56
     # The five accounting writes, by name — the set the recorder tests above
     # dispatch, every one of them.
     assert tools.ACCOUNTING_WRITE_TOOLS == set(_ACCOUNTING_CALLS) == {
@@ -679,7 +680,7 @@ def test_tools_list_counts_per_token_are_the_train_s_checklist(
     }
     listed = _listed(_client_for(monkeypatch, scope))
     assert len(listed) == expected
-    assert "get_admin_ledger" in listed
+    assert {"get_admin_ledger", "get_admin_receipt"} <= listed
     writes = "athena:write" in scope.split()
     assert (listed >= tools.ACCOUNTING_WRITE_TOOLS) is writes
     if not writes:

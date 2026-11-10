@@ -556,9 +556,11 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     for must in (
         "demande à <strong>lire</strong> Pallas Athéna",
         "facturation et budgets",
-        "le texte des documents, souvent couverts par le <strong>secret "
-        "professionnel</strong>&nbsp;: il <strong>transite par "
-        "claude.ai</strong> quand vous l'y faites lire",
+        # Since 2026-11-10 the pièces justificatives too: a receipt's text
+        # — or a photo, as the image itself — reaches claude.ai.
+        "le contenu des documents et des pièces justificatives, souvent "
+        "couvert par le <strong>secret professionnel</strong>&nbsp;: il "
+        "<strong>transite par claude.ai</strong> quand vous l'y faites lire",
         "le fidéicommis, le registre d'administration et les états "
         "financiers, sans numéro de compte ni de transit",
         "les demandes Bookings en attente, avec le nom et le courriel du "
@@ -581,6 +583,8 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "<strong>transformé en gabarit</strong>",
         "(le contact reste)",
         "(votre téléphone suit)",
+        # 2026-11-10: Claude may replace a receipt — and deletes nothing.
+        "comme pièce justificative (une pièce remplacée reste conservée)",
         "<strong>supprimer</strong> quoi que ce soit",
         "inscrire un <strong>paiement</strong> hors des registres comptables",
         "marquer une facture <strong>payée</strong> sans paiement inscrit",

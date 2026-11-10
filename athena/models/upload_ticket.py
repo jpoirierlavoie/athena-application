@@ -225,11 +225,14 @@ REFUSAL_REASONS = (
     "expire",                   # set by the claim itself, past open_until
     "taille_differente",        # the object's size is not the declared one
     "empreinte_differente",     # its MD5 is not the declared one
-    "contenu_refuse",           # the ingestion or template write refused it
+    "contenu_refuse",           # the ingestion, template write or receipt
+                                # door refused it
     "identifiants_residuels",   # the leak scan found unaccepted residues
     "sans_dossier_source",      # a gabarit naming no source dossier and not
                                 # declaring none (a ticket stored before the
                                 # fixups of lot 2A — never filed unchecked)
+    "piece_modifiee",           # 2026-11-10: the entry's pièce justificative
+                                # changed since begin_upload bound it
 )
 
 # What a claim answered.

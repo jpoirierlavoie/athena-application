@@ -1861,11 +1861,39 @@ def test_the_default_tree_texts_are_true_and_trip_no_false_claim():
         assert _false_claims_in(false), false
 
 
-def test_the_connector_never_reaches_the_receipt_filing_service():
+def test_only_the_receipt_handlers_reach_the_receipt_filing_service():
     """The copy of an Administration receipt into « Mandat › Déboursés »
-    (services/pieces_justificatives.py) is the web's: no connector module
-    imports it, directly or through a service — whether or not the file
-    exists yet."""
-    reached = services_reached(_sources())
+    (services/pieces_justificatives.py) was the web's alone until
+    2026-11-10. REWRITTEN deliberately that day: the lawyer let Claude
+    attach and replace a receipt, so the connector files the copy as the
+    web does — finalize_upload's receipt follow-on —, begin_upload warns
+    that one will be filed, and get_admin_receipt names the current copy.
+    No other connector code calls the service: derived over the handlers'
+    top-level functions, by the attributes each one reads of it."""
+    sources = _sources()
+    reached = services_reached(sources)
     assert "services/protocoles.py" in reached          # non-vacuous
-    assert "services/pieces_justificatives.py" not in reached
+    assert "services/pieces_justificatives.py" in reached
+    importers = sorted(rel for rel, src in sources.items()
+                       if "pieces_justificatives" in _service_names(src))
+    assert importers == ["mcp/handlers.py"]
+    tree = ast.parse(sources["mcp/handlers.py"])
+    aliases = {a.asname or a.name for node in tree.body
+               if isinstance(node, ast.ImportFrom) and node.module == "services"
+               for a in node.names if a.name == "pieces_justificatives"}
+    assert len(aliases) == 1
+    callers: dict[str, set] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            used = {sub.attr for sub in ast.walk(node)
+                    if isinstance(sub, ast.Attribute)
+                    and isinstance(sub.value, ast.Name)
+                    and sub.value.id in aliases}
+            if used:
+                callers[node.name] = used
+    assert callers == {
+        "_bound_receipt": {"admissible"},
+        "_receipt_dossier_copy": {"admissible", "verser_recu_au_dossier",
+                                  "REFUSEE", "INCERTAINE"},
+        "_receipt_copy_document_id": {"etat_des_copies"},
+    }, callers

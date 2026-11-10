@@ -7,6 +7,13 @@
 - **Arrêt** : `book_*` est le « Solde aux livres » ; `cleared_*`, le « Disponible (compensé) », ne se présente jamais comme « Solde » ; l'écart est en transit.
 - **À éviter** : un `get_trust_balance` par dossier pour le portrait du cabinet : le `by_dossier` du portrait le donne.
 
+## Pièces justificatives : consulter, joindre, remplacer
+{{GEN:charger}}
+- **Déclencheur** : « joins le reçu », « pièce justificative », « remplace la facture du fournisseur », « que dit ce reçu ».
+- **Appels** : (1) l'écriture : `get_admin_ledger()`, son `id` et son `receipt` ; (2) consulter : `get_admin_receipt(tx_id)` ; (3) joindre : `begin_upload(purpose="piece_justificative", tx_id, …)`, PUT des octets à `upload_url` depuis le bac à sable, puis `finalize_upload(ticket_id)` ; remplacer : `replaces_receipt_md5` = le `md5_base64` lu, confirmé par l'avocat.
+- **Arrêt** : l'ancienne pièce reste conservée ; une dépense d'un dossier en reçoit la copie sous « Mandat › Déboursés ».
+- **À éviter** : décrire une photo qui n'a pas été vue ; un document du dossier pour un reçu du cabinet.
+
 ## Écrire aux registres : fidéicommis, administration
 {{GEN:outils_comptables}}
 - **Déclencheur** : « inscris le dépôt », « paie la facture depuis le fidéicommis », « le client a payé la facture », « inscris la dépense du cabinet », « crédits Claude ou infonuagique », « je me suis versé », « virement au fidéicommis », « l'avance d'un client est arrivée au compte d'opérations », « un fournisseur m'a remboursé », « remise ou remboursement de TPS/TVQ », « compense ces chèques ».

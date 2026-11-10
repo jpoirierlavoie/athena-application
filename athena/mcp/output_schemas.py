@@ -1780,8 +1780,10 @@ def _admin_register_props() -> dict[str, Any]:
             "A virement_interne_sortant's purpose: 'avances' when it moved to "
             "trust the advances received here (avance_honoraires); '' "
             "otherwise."),
-        "has_receipt": _bool("A supporting document is attached (in the "
-                             "application only)."),
+        "has_receipt": _bool(
+            "A pièce justificative is attached: get_admin_receipt reads it; "
+            "begin_upload (purpose piece_justificative) attaches or replaces "
+            "one."),
         "revisions_count": _int("Corrections kept in its revision trail."),
         "created_via": _str(f"Path that recorded it: {_VIA_VOCABULARY}."),
         "updated_via": _str("Path of its last write."),
@@ -1797,11 +1799,95 @@ def _admin_register_row() -> dict:
                 optional=("etag", "created_via", "updated_via", "transfer_purpose"))
 
 
+def _receipt_meta() -> dict:
+    """An entry's pièce justificative as the connector reads it (2026-11-10)
+    — never a link nor a storage path."""
+    return _nullable(_obj({
+        "filename": _str("The name it was attached under."),
+        "file_type": _str(
+            "Its type, recognised from its bytes: application/pdf, "
+            "image/jpeg, image/png, image/tiff, message/rfc822 (.eml) or "
+            "application/vnd.ms-outlook (.msg)."),
+        "size_bytes": _int(),
+        "md5_base64": _nstr(
+            "Its MD5 (base64): what begin_upload's replaces_receipt_md5 names "
+            "to replace it. null in get_admin_ledger for a receipt attached "
+            "before its digest was kept: get_admin_receipt gives it, from the "
+            "bytes it reads (never for a TIFF, which it does not read)."),
+    }), "The entry's pièce justificative; null when it carries none.")
+
+
+def _receipt_dossier_copy() -> dict:
+    """The COPY of a receipt in its entry's dossier (services/pieces_justificatives)."""
+    return _nullable(_obj({
+        "status": {
+            "type": "string",
+            "enum": ["versee", "deja", "refusee", "incertaine", "inadmissible"],
+            "description": (
+                "versee = filed now; deja = this receipt's copy was already "
+                "there; incertaine = it MAY be filed (check « Mandat › "
+                "Déboursés » before filing again); refusee = not filed (the "
+                "entry page files it: « Verser une copie au dossier »)."),
+        },
+        "document_id": _nstr("The copy's document id; null when none."),
+        "dossier_id": _str(),
+    }), ("The receipt's COPY in the dossier's « Mandat › Déboursés » — null "
+         "when the entry is no standing dépense of a dossier."))
+
+
+def _pdf_window() -> dict:
+    """A PDF's page window — get_document_text's readable shape, pages only."""
+    return _obj({
+        "pagination_unit": {"type": "string", "enum": ["page"]},
+        "page_count": _int("Total pages."),
+        "pages": _arr(_obj({
+            "page": _int("1-based page number."),
+            "text": _str("Extracted text; empty when has_text is false."),
+            "has_text": _bool(
+                "false = NO text layer on this page: a scan — nothing was "
+                "OCR'd — unless a page_extraction_failed:<n> warning names it."),
+            "page_truncated": _bool("true = this page alone was cut."),
+        })),
+        "pages_without_text": _arr(_int(), "Pages of THIS window without text."),
+        "truncated": _bool("true = the window was cut by the per-call ceiling."),
+        "next_page": _nint("Resume here with page_range; null when done."),
+        "warnings": _arr(_str(), "Machine-stable tokens."),
+    })
+
+
+def _email_text() -> dict:
+    """An emailed receipt's text (.eml, .msg): never an attachment's bytes."""
+    return _obj({
+        "headers": _obj({
+            "from": _str(), "to": _str(), "cc": _str(), "date": _str(),
+            "subject": _str(),
+        }, required=[], description=(
+            "The headers present, each cut to 1 000 characters.")),
+        "body": _str("The body as text (an HTML body converted)."),
+        "attachments": _arr(_obj({
+            "filename": _str(),
+            "content_type": _str(),
+            "size_bytes": _int(),
+            "text_included": _bool("Its text is in attachment_texts."),
+        })),
+        "attachment_texts": _arr(_obj({
+            "filename": _str(),
+            "text": _str("The text layer of a PDF attachment."),
+        })),
+        "truncated": _bool("true = the body and texts were cut to the ceiling."),
+        "warnings": _arr(_str(), (
+            "Machine-stable tokens: parts_capped, attachments_capped, "
+            "body_rtf_only (an Outlook body in RTF only, not decoded), "
+            "attachment_unreadable:<reason>.")),
+    })
+
+
 def _admin_ledger_row() -> dict:
     """A get_admin_ledger row: the entry, its lock and its running balance."""
     return _obj({
         **_admin_register_props(),
         **_provenance(),
+        "receipt": _receipt_meta(),
         "created_at": _nstr("ISO-8601 Montréal."),
         "updated_at": _nstr("ISO-8601 Montréal."),
         "locked": _bool(
@@ -4183,11 +4269,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "id": _str("The ticket's id — same as ticket_id."),
             "dossier_id": _str(
                 "The dossier bound to the ticket; \"\" for a gabarit with "
-                "no source dossier."),
+                "no source dossier, and for a pièce justificative."),
         }),
         "ticket_id": _str("Pass it to finalize_upload."),
         "purpose": {
-            "type": "string", "enum": ["document", "gabarit"],
+            "type": "string",
+            "enum": ["document", "gabarit", "piece_justificative"],
             "description": "What the file will become.",
         },
         "upload_url": _str(
@@ -4278,6 +4365,38 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "warnings": _arr(_str(), "French; empty when clean."),
                 **_write_protocol_keys(),
             }, description="purpose gabarit: the template as stored."),
+            # 2026-11-10: a pièce justificative. Every REQUIRED path is one
+            # the tool already shipped (tests/test_mcp_replay_contract.py);
+            # `receipt` and `dossier_copy` are new, hence optional.
+            _obj({
+                "finalized": {"type": "boolean", "enum": [True]},
+                "purpose": {"type": "string", "enum": ["piece_justificative"]},
+                "ticket_id": _str(),
+                "entity_type": {"type": "string", "enum": ["admin_transaction"]},
+                "entity": _obj({**_admin_register_props(), **_written_etag()},
+                               required=["id", "dossier_id"],
+                               description="The entry as written."),
+                "mode": {
+                    "type": "string", "enum": ["attach", "replace"],
+                    "description": (
+                        "replace: the entry carried a receipt, now replaced "
+                        "— its file KEPT, never deleted."),
+                },
+                "file": _obj({
+                    "size_bytes": _int(),
+                    "file_type": _str("The type the ticket's file was filed as."),
+                }),
+                "receipt": _receipt_meta(),
+                "dossier_copy": _receipt_dossier_copy(),
+                "already_finalized": _bool(
+                    "true = this ticket's file had ALREADY been attached — "
+                    "this call attached nothing new."),
+                "warnings": _arr(_str(), "French; empty when clean."),
+                **_write_protocol_keys(),
+            }, description=(
+                "purpose piece_justificative: the entry, its receipt and the "
+                "dossier copy."),
+               optional=("receipt", "dossier_copy")),
         ],
     },
     # Lot 2B — the templatize preview (a READ). Every key is emitted on
@@ -4467,6 +4586,82 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "unless ONE account was read without a filter.")),
         "warnings": _arr(_str(), "French; empty when nothing is amiss."),
     }),
+
+    # 2026-11-10 — an entry's pièce justificative, consulted. Root type
+    # BESIDE the anyOf (the wire-mandated shape, see _found_or_not); five
+    # branches, enum-discriminated: not found, no receipt, its text, its
+    # image (the bytes travel as an MCP image item, never in this object),
+    # nothing transmissible. Never a link nor a storage path.
+    "get_admin_receipt": {
+        "type": "object",
+        "anyOf": [
+            _obj({
+                "found": _found(True),
+                "tx_id": _str(),
+                "entry": _admin_register_row(),
+                "has_receipt": {"type": "boolean", "enum": [False]},
+                "receipt": {"type": "null"},
+            }, description="The entry carries no pièce justificative."),
+            _obj({
+                "found": _found(True),
+                "tx_id": _str(),
+                "entry": _admin_register_row(),
+                "has_receipt": {"type": "boolean", "enum": [True]},
+                "receipt": _receipt_meta(),
+                "dossier_copy_document_id": _nstr(
+                    "The copy of THIS receipt filed in the entry's dossier; "
+                    "null when none."),
+                "content_kind": {"type": "string", "enum": ["text"]},
+                "pdf": _nullable(_pdf_window(), "A PDF's page window; null "
+                                 "for an email."),
+                "email": _nullable(_email_text(), "An email's text; null for "
+                                   "a PDF."),
+            }, description="A PDF's or an email's text."),
+            _obj({
+                "found": _found(True),
+                "tx_id": _str(),
+                "entry": _admin_register_row(),
+                "has_receipt": {"type": "boolean", "enum": [True]},
+                "receipt": _receipt_meta(),
+                "dossier_copy_document_id": _nstr(),
+                "content_kind": {"type": "string", "enum": ["image"]},
+                "image": _obj({
+                    "mime_type": _str("Always image/jpeg (re-encoded)."),
+                    "width": _int(), "height": _int(),
+                    "source_width": _int(), "source_height": _int(),
+                    "size_bytes": _int("The reduced image's bytes."),
+                }, description=(
+                    "The photo, REDUCED, follows as an MCP image item — if "
+                    "your client did not show it, you did not see it.")),
+            }, description="A JPG or PNG photo, as the image itself."),
+            _obj({
+                "found": _found(True),
+                "tx_id": _str(),
+                "entry": _admin_register_row(),
+                "has_receipt": {"type": "boolean", "enum": [True]},
+                "receipt": _receipt_meta(),
+                "dossier_copy_document_id": _nstr(),
+                "content_kind": {"type": "string", "enum": ["none"]},
+                "reason": {
+                    "type": "string",
+                    "enum": [
+                        "unsupported_type", "image_unsupported",
+                        "image_too_large", "image_invalid", "too_large",
+                        "encrypted", "invalid_pdf", "invalid_email",
+                        "invalid_msg", "download_failed", "receipt_changed",
+                        "no_receipt",
+                    ],
+                },
+                "message": _str("French: why, and to consult it in the "
+                                "application."),
+            }, description="The receipt exists; its content is not "
+                           "transmissible — said honestly."),
+            _obj({
+                "found": _found(False),
+                "tx_id": _str(),
+            }, description="No such administration entry."),
+        ],
+    },
 
     "get_financial_statements": _obj({
         "computed_at": _str("ISO 8601, Montréal: when the ONE read every "

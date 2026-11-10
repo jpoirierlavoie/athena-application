@@ -296,13 +296,16 @@ FAMILIES: tuple[Family, ...] = (
         title_fr="Classer",
         consent_fr=(
             "classer les documents, produire des projets Word, verser un "
-            "fichier téléversé"
+            "fichier téléversé ou le joindre à une écriture comme pièce "
+            "justificative (une pièce remplacée reste conservée)"
         ),
         instructions_en=(
             "`update_document`, `move_documents`, `manage_folder` file "
             "documents (a category set here stays PRESUMED); `fill_gabarit`, "
             "`create_document` make NEW Word documents; `begin_upload` then "
-            "`finalize_upload` bring an outside file in."
+            "`finalize_upload` bring an outside file in: a document, a "
+            "gabarit, or an administration entry's receipt (purpose "
+            "piece_justificative; a replaced receipt is KEPT)."
         ),
     ),
     Family(
@@ -404,8 +407,17 @@ TOOL_CODE_MODULES: frozenset[str] = frozenset({
 })
 
 # The register writers NO tool may reach, whatever its scope (lot 5b): the
-# reconciliations, the accounts, the inter-dossier transfer and the receipt
-# stay the lawyer's, in the application. Named here rather than by module:
+# reconciliations, the accounts and the inter-dossier transfer stay the
+# lawyer's, in the application. (Until 2026-11-10 the list also held
+# attach_receipt, and the promise said the connector never attached a
+# receipt; the lawyer then let Claude attach and replace one, through the
+# model's own door attach_uploaded_receipt — finalize_upload, purpose
+# piece_justificative —, which KEEPS a replaced file, so the « delete »
+# promise holds. That only finalize_upload reaches it, and that no tool
+# reaches the web's attach_receipt, is a derived reach test:
+# tests/test_mcp_accounting.py::
+# test_only_the_accounting_tools_reach_a_register_writer.) Named here rather
+# than by module:
 # the connector reads and writes the registers through
 # services/comptabilite, so importing the models is legitimate; calling one
 # of these is not. (Until lot 5b the list also held the entry writers —
@@ -423,7 +435,6 @@ _REGISTER_DELETERS: tuple[str, ...] = (
 _REGISTER_SETUP_WRITERS: tuple[str, ...] = (
     "create_reconciliation", "complete_reconciliation",
     "delete_reconciliation", "create_account", "update_account",
-    "attach_receipt",
 )
 _REGISTER_TRANSFER_WRITERS: tuple[str, ...] = (
     "create_inter_dossier_transfer",
@@ -790,9 +801,9 @@ NEVERS: tuple[Never, ...] = (
         key="register_setup",
         fr="<strong>concilier</strong>, créer ou modifier un compte",
         en=(
-            "It never starts, completes or abandons a reconciliation, creates "
-            "or modifies an account, or attaches a receipt: only the lawyer "
-            "does, in the application."
+            "It never starts, completes or abandons a reconciliation, nor "
+            "creates or modifies an account: only the lawyer does, in the "
+            "application."
         ),
         forbidden=_REGISTER_SETUP_WRITERS,
     ),
@@ -1030,8 +1041,10 @@ _CONVENTIONS_EN = (
 _READ_CONTENT_EN = (
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT LAYER "
     "(a template is not a document); empty never means blank on paper — "
-    "nothing is OCR'd. Document content is privileged: quote only what the "
-    "task requires."
+    "nothing is OCR'd. `get_admin_receipt` reads an administration entry's "
+    "receipt: a PDF's or an email's text, a JPG/PNG photo as the image "
+    "itself. Document and receipt content is privileged: quote only what "
+    "the task requires."
 )
 
 

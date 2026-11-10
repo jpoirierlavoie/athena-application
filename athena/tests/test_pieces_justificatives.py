@@ -612,6 +612,11 @@ def _imports_the_service(tree: ast.AST) -> bool:
 
 
 def test_only_the_administration_routes_import_the_service():
+    """The web's entry page and finalizer — and, since 2026-11-10
+    (deliberately), the connector's handlers: a receipt Claude attaches
+    gets its dossier copy as the web's does, and get_admin_receipt names
+    it. Which handlers call it is pinned in tests/test_mcp_disclosure.py::
+    test_only_the_receipt_handlers_reach_the_receipt_filing_service."""
     importers = []
     for package in ("routes", "services", "mcp", "models", "dav", "utils",
                     "client", "scripts"):
@@ -619,7 +624,7 @@ def test_only_the_administration_routes_import_the_service():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             if _imports_the_service(tree):
                 importers.append(path.relative_to(_ATHENA).as_posix())
-    assert importers == ["routes/admin_ledger.py"]
+    assert importers == ["routes/admin_ledger.py", "mcp/handlers.py"]
 
 
 # ══════════════════════════════════════════════════════════════════════
