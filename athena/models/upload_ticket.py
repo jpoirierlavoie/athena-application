@@ -133,6 +133,12 @@ from google.api_core.exceptions import AlreadyExists, NotFound, PreconditionFail
 from google.cloud import firestore
 
 from models import db, provenance
+from models.admin_ledger import (
+    MAX_RECEIPT_SIZE,
+    RECEIPT_EXTENSIONS,
+    RECEIPT_MIME_TYPES,
+    RECEIPT_TYPE_REFUSED_FR,
+)
 from models.doc_template import DOCX_MIME, MAX_TEMPLATE_SIZE
 from models.document import (
     ALLOWED_EXTENSIONS,
@@ -140,6 +146,7 @@ from models.document import (
     MAX_FILE_SIZE,
     is_canonical_uuid4,
 )
+from models.record_ids import is_addressable_id
 from security import sanitize
 from utils import storage_identity
 from utils.logging_setup import log_unexpected
@@ -183,7 +190,11 @@ COLLECTION = "mcp_upload_tickets"
 
 PURPOSE_DOCUMENT = "document"
 PURPOSE_GABARIT = "gabarit"
-VALID_PURPOSES = (PURPOSE_DOCUMENT, PURPOSE_GABARIT)
+# 2026-11-10 (the lawyer's request): a pièce justificative attached to an
+# administration-ledger entry — or replacing the one it carries, the
+# replaced file KEPT (models/admin_ledger.attach_uploaded_receipt).
+PURPOSE_PIECE_JUSTIFICATIVE = "piece_justificative"
+VALID_PURPOSES = (PURPOSE_DOCUMENT, PURPOSE_GABARIT, PURPOSE_PIECE_JUSTIFICATIVE)
 
 STATUS_OPEN = "en_attente"
 STATUS_CLAIMED = "en_cours"
@@ -337,8 +348,13 @@ class StagedBytesChanged(Exception):
 
 _CREATE_KEYS = frozenset({
     "purpose", "dossier_id", "filename", "declared_size", "declared_md5_b64",
-    "bound_metadata", "template_params",
+    "bound_metadata", "template_params", "transaction_id", "receipt_params",
 })
+# What a receipt ticket binds of the entry as begin_upload READ it: its
+# receipt's path and MD5 (both "" when it carried none) — the precondition
+# the attach transaction re-checks (models/admin_ledger.attach_uploaded_receipt).
+_RECEIPT_KEYS = frozenset({"expected_path", "expected_md5"})
+_RECEIPT_TEXT_MAX = 512
 _METADATA_KEYS = frozenset({
     "folder_id", "category", "display_name", "document_date", "tags",
 })
@@ -347,9 +363,40 @@ _TEMPLATE_KEYS = frozenset({
     "expected_version", "accept_residual", "scrub_properties",
     "aucun_dossier_source",
 })
+@dataclass(frozen=True)
+class _PurposeRule:
+    """What a purpose accepts — ONE table, so no purpose falls into another's
+    branch (2026-11-10: a third purpose joined the « document, else
+    gabarit » splits)."""
+
+    extensions: frozenset
+    max_bytes: int
+    type_refused: str
+    reserves_document: bool     # a document id is minted at creation
+    content_types: dict         # extension → the type the session declares
+
+
+_PURPOSE_RULES: dict[str, _PurposeRule] = {
+    PURPOSE_DOCUMENT: _PurposeRule(
+        frozenset(ALLOWED_EXTENSIONS), MAX_FILE_SIZE,
+        "Ce type de fichier n'est pas accepté.", True,
+        dict(EXTENSION_MIME_TYPES)),
+    PURPOSE_GABARIT: _PurposeRule(
+        frozenset({".docx"}), MAX_TEMPLATE_SIZE,
+        "Un gabarit est un document Word (.docx).", False,
+        {".docx": DOCX_MIME}),
+    # The receipt's dossier copy is filed under the reserved document id, so
+    # a reclaimed finalization lands on ONE copy.
+    PURPOSE_PIECE_JUSTIFICATIVE: _PurposeRule(
+        frozenset(RECEIPT_EXTENSIONS), MAX_RECEIPT_SIZE,
+        RECEIPT_TYPE_REFUSED_FR, True, dict(RECEIPT_MIME_TYPES)),
+}
+
+
 _TEMPLATE_CREATE_ONLY = frozenset({"name", "category", "kind", "description"})
 _TEMPLATE_REPLACE_ONLY = frozenset({"template_id", "expected_version"})
-_RESULT_KEYS = frozenset({"document_id", "template_id", "version"})
+_RESULT_KEYS = frozenset({"document_id", "template_id", "version",
+                          "transaction_id"})
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -518,6 +565,24 @@ def _clean_metadata(value: Any, errors: list[str]) -> dict:
     return out
 
 
+def _clean_receipt_params(value: Any, errors: list[str]) -> dict:
+    """The entry's receipt as ``begin_upload`` read it — exactly
+    ``expected_path`` and ``expected_md5``, each a string ("" when the entry
+    carried no receipt, or a receipt stored before its MD5 was). Bound by the
+    handler from a strict read, never from the caller."""
+    if not isinstance(value, dict) or set(value) != _RECEIPT_KEYS:
+        errors.append("Paramètres de pièce justificative invalides.")
+        return {}
+    out = {}
+    for key in sorted(_RECEIPT_KEYS):
+        item = value[key]
+        if not isinstance(item, str) or len(item) > _RECEIPT_TEXT_MAX:
+            errors.append("Paramètres de pièce justificative invalides.")
+            return {}
+        out[key] = item
+    return out
+
+
 def _clean_template_params(value: Any, errors: list[str]) -> dict:
     if not isinstance(value, dict):
         errors.append("Les paramètres du gabarit doivent être un objet.")
@@ -618,17 +683,17 @@ def create_ticket(
 
     purpose = data.get("purpose")
     if purpose not in VALID_PURPOSES:
-        return None, ["La destination est « document » ou « gabarit »."]
+        return None, ["La destination est "
+                      + ", ".join(f"« {p} »" for p in VALID_PURPOSES[:-1])
+                      + f" ou « {VALID_PURPOSES[-1]} »."]
+    rule = _PURPOSE_RULES[purpose]
 
     filename, ext = _clean_filename(data.get("filename"), errors)
-    if filename:
-        if purpose == PURPOSE_GABARIT and ext != ".docx":
-            errors.append("Un gabarit est un document Word (.docx).")
-        elif purpose == PURPOSE_DOCUMENT and ext not in ALLOWED_EXTENSIONS:
-            errors.append("Ce type de fichier n'est pas accepté.")
+    if filename and ext not in rule.extensions:
+        errors.append(rule.type_refused)
 
     size = data.get("declared_size")
-    cap = MAX_TEMPLATE_SIZE if purpose == PURPOSE_GABARIT else MAX_FILE_SIZE
+    cap = rule.max_bytes
     if isinstance(size, bool) or not isinstance(size, int) or size < 1:
         errors.append("La taille déclarée doit être un entier positif.")
     elif size > cap:
@@ -648,11 +713,29 @@ def create_ticket(
         dossier_id = ""
     elif purpose == PURPOSE_DOCUMENT and not dossier_id.strip():
         errors.append("Un document est versé dans un dossier : il est requis.")
+    elif purpose == PURPOSE_PIECE_JUSTIFICATIVE and dossier_id.strip():
+        errors.append("Une pièce justificative se joint à une écriture, "
+                      "jamais à un dossier.")
     dossier_id = dossier_id.strip()
+
+    transaction_id = data.get("transaction_id") or ""
+    receipt_params: dict = {}
+    if purpose == PURPOSE_PIECE_JUSTIFICATIVE:
+        if not is_addressable_id(transaction_id):
+            errors.append("Identifiant d'écriture invalide.")
+            transaction_id = ""
+        receipt_params = _clean_receipt_params(data.get("receipt_params"), errors)
+    elif transaction_id or data.get("receipt_params"):
+        errors.append("Seule une pièce justificative nomme une écriture.")
+        transaction_id = ""
 
     metadata: dict = {}
     template_params: dict = {}
-    if purpose == PURPOSE_DOCUMENT:
+    if purpose == PURPOSE_PIECE_JUSTIFICATIVE:
+        if data.get("template_params") or data.get("bound_metadata"):
+            errors.append("Une pièce justificative ne porte ni métadonnées de "
+                          "document ni paramètres de gabarit.")
+    elif purpose == PURPOSE_DOCUMENT:
         if data.get("template_params"):
             errors.append("Un document ne porte pas de paramètres de gabarit.")
         metadata = _clean_metadata(data.get("bound_metadata"), errors)
@@ -697,10 +780,12 @@ def create_ticket(
         "declared_md5_b64": md5,
         "staging_object": f"staging/{uid}/mcp/{ticket_id}/upload{ext}",
         "reserved_document_id": (
-            str(uuid.uuid4()) if purpose == PURPOSE_DOCUMENT else ""),
+            str(uuid.uuid4()) if rule.reserves_document else ""),
         "reserved_template_id": str(uuid.uuid4()) if creating_template else "",
         "bound_metadata": metadata,
         "template_params": template_params,
+        "transaction_id": transaction_id,
+        "receipt_params": receipt_params,
         "status": STATUS_OPEN,
         "open_until": open_until,
         "expire_at": open_until + OPEN_RETENTION,
@@ -758,13 +843,16 @@ def open_ticket(
 
 
 def content_type_for(ticket: dict) -> str:
-    """The MIME type the session declares — the extension's own (a
-    template is always a .docx). The ingestion re-sniffs the bytes and
-    stores the SNIFFED type either way; this only labels the upload."""
-    if (ticket or {}).get("purpose") == PURPOSE_GABARIT:
+    """The MIME type the session declares — the extension's own under the
+    ticket's purpose (a template is always a .docx). The filing re-sniffs
+    the bytes and stores the SNIFFED type either way; this only labels the
+    upload."""
+    ticket = ticket or {}
+    rule = _PURPOSE_RULES.get(ticket.get("purpose"), _PURPOSE_RULES[PURPOSE_DOCUMENT])
+    if ticket.get("purpose") == PURPOSE_GABARIT:
         return DOCX_MIME
-    return EXTENSION_MIME_TYPES.get((ticket or {}).get("ext") or "",
-                                    "application/octet-stream")
+    return rule.content_types.get(ticket.get("ext") or "",
+                                  "application/octet-stream")
 
 
 def _staging_name(ticket: dict) -> str:
@@ -1193,6 +1281,11 @@ def _clean_result(result: Any) -> Optional[dict]:
             if not is_canonical_uuid4(result[key]):
                 return None
             out[key] = result[key]
+    # A pièce justificative's result is the entry it was attached to.
+    if "transaction_id" in result:
+        if not is_addressable_id(result["transaction_id"]):
+            return None
+        out["transaction_id"] = result["transaction_id"]
     if not out:
         return None
     if "version" in result:

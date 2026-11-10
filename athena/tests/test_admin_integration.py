@@ -302,7 +302,10 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
         "objet": _STAGING_RECU, "name": "recu.pdf",
     })
     assert reponse.status_code == 200
-    assert attached["path"] == "users/u1/administration/t9/recu.pdf"
+    # Under the staging upload's own uuid (2026-11-10): a web upload never
+    # lands on another receipt's object.
+    assert attached["path"] == (
+        "users/u1/administration/t9/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/recu.pdf")
     assert attached["ct"] == "application/pdf"
     # The receipt's MD5 travels with it, in the same write (2026-09-30).
     assert attached["md5"] == "XUFAKrxLKna5cZ2REBfFkg=="

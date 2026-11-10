@@ -73,16 +73,27 @@ the running-balance computation. It carries the test suite
 from ``models.trust`` — pure, generic bank arithmetic, already tested.
 """
 
+import base64
+import hashlib
+import hmac
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
+from firebase_admin import storage
+from google.api_core.exceptions import PreconditionFailed
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import concurrency, db, full_reads, provenance
+# The receipt door (2026-11-10) sniffs with the documents' rules and judges
+# an occupied object the way their ingestion does. models.document imports
+# nothing from here — no cycle.
+from models import document as document_model
+from models.record_ids import is_addressable_id
 # The invoice payment is STAGED in this module's own transactions (lot 5a):
 # ``payment_updates`` is the one computation of amount_paid / paid_date /
 # the status flip, and PaymentRefused must abort the ledger transaction it
@@ -91,6 +102,7 @@ from models import invoice as invoice_model
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
 from security import sanitize
 from tz import to_mtl
+from utils import storage_identity
 from utils.deadlines import today_mtl
 from utils.format_fr import formats_label
 from utils.logging_setup import (
@@ -2982,6 +2994,311 @@ def attach_receipt(
     merged = {**existing, **updates}
     merged["_previous_receipt_path"] = existing.get("receipt_storage_path")
     return merged, []
+
+
+# ── The receipt door of the CONNECTOR (2026-11-10) ─────────────────────────
+#
+# The lawyer decided (2026-11-10) that Claude may attach a pièce justificative
+# to an entry through the connector — and REPLACE the one it carries, the
+# replaced file KEPT: the connector deletes nothing (mcp/disclosure, the
+# « delete » promise). ``finalize_upload`` reaches this door only; the web's
+# own finalizer (routes/admin_ledger.api_recu) keeps attach_receipt above,
+# whose « Remplacer » deletes the previous object (the lawyer's own gesture),
+# and shares only receipt_content_type with this door — moving the web onto
+# it is a later lot (the house exception to « one door per rule », declared
+# here). What this door adds over attach_receipt:
+#
+# * the object is written create-only to a path of ids only,
+#   ``users/{uid}/administration/{tx_id}/pieces/{object_id}{ext}`` — a
+#   replacement never overwrites, and no web upload (``{tx}/{uuid}/{name}``)
+#   can land on it;
+# * the precondition ``begin_upload`` bound — the entry's receipt (path,
+#   MD5) as it was READ — is re-checked inside the attach's transaction: a
+#   receipt changed meanwhile refuses (« modifiee »), nothing written;
+# * a revision records the change (``via`` « mcp », a motif), so a replaced
+#   object stays findable from the entry; provenance stamps and the commit
+#   note (``note_commit``) are written;
+# * a lost commit answer is settled by a strict re-read: landed, retry, or
+#   uncertain — and the object is never deleted, even unreferenced (its ids
+#   are logged).
+
+RECEIPT_CONTENT_MISMATCH_FR = (
+    "Le contenu du fichier ne correspond pas à son extension."
+)
+RECEIPT_OBJECTS_SEGMENT = "pieces"
+RECEIPT_ATTACHED_MOTIF = "Pièce justificative jointe"
+RECEIPT_REPLACED_MOTIF = (
+    "Pièce justificative remplacée — la précédente est conservée"
+)
+
+# The outcome codes of attach_uploaded_receipt.
+RECEIPT_ATTACHED = "jointe"
+RECEIPT_ALREADY = "deja"
+RECEIPT_REFUSED = "refusee"
+RECEIPT_CHANGED = "modifiee"
+RECEIPT_ENTRY_GONE = "introuvable"
+RECEIPT_UNAVAILABLE = "indisponible"
+RECEIPT_UNCERTAIN = "incertaine"
+
+MSG_RECEIPT_CHANGED = (
+    "La pièce justificative de cette écriture a changé depuis l'ouverture "
+    "du téléversement : rien n'a été joint. Relisez l'écriture, puis "
+    "recommencez."
+)
+MSG_RECEIPT_OCCUPIED = (
+    "Un autre fichier occupe déjà l'emplacement de cette pièce : rien n'a "
+    "été joint."
+)
+MSG_RECEIPT_UNAVAILABLE = "Erreur lors de la sauvegarde. Veuillez réessayer."
+
+
+def receipt_extension(filename: str) -> str:
+    """The lower-cased extension of *filename*, dot included, or ``""``."""
+    name = str(filename or "")
+    return "." + name.rsplit(".", 1)[1].lower() if "." in name else ""
+
+
+def receipt_content_type(
+    filename: str, size: int, header: bytes,
+) -> tuple[Optional[str], str]:
+    """``(type, "")`` when *filename*'s extension is a receipt type, *size*
+    is within 1 byte and :data:`MAX_RECEIPT_SIZE`, and the 512-byte *header*
+    sniffs as that very type (``models/document._sniff_header``) — else
+    ``(None, French refusal)``. The ONE judgement of a receipt's bytes, for
+    the web finalizer and the connector's alike."""
+    ext = receipt_extension(filename)
+    if ext not in RECEIPT_EXTENSIONS:
+        return None, RECEIPT_TYPE_REFUSED_FR
+    if isinstance(size, bool) or not isinstance(size, int) or not (
+            1 <= size <= MAX_RECEIPT_SIZE):
+        return None, RECEIPT_SIZE_REFUSED_FR
+    if document_model._sniff_header(header, ext) != RECEIPT_MIME_TYPES[ext]:
+        return None, RECEIPT_CONTENT_MISMATCH_FR
+    return RECEIPT_MIME_TYPES[ext], ""
+
+
+def receipt_object_name(uid: str, tx_id: str, object_id: str, ext: str) -> str:
+    """``users/{uid}/administration/{tx_id}/pieces/{object_id}{ext}`` — ids
+    only, never a client's file name. The uid through ``require_uid`` (it
+    raises ``StorageIdentityUnavailable``); a bad id or extension raises
+    ``ValueError``."""
+    uid = storage_identity.require_uid(uid)
+    if (not is_addressable_id(tx_id)
+            or not document_model.is_canonical_uuid4(object_id)
+            or ext not in RECEIPT_EXTENSIONS):
+        raise ValueError("receipt object name")
+    return (f"users/{uid}/administration/{tx_id}/{RECEIPT_OBJECTS_SEGMENT}/"
+            f"{object_id}{ext}")
+
+
+def _receipt_state(entry: dict) -> tuple[str, str]:
+    """The entry's receipt as the precondition names it: (path, MD5)."""
+    return (str(entry.get("receipt_storage_path") or ""),
+            str(entry.get("receipt_md5") or ""))
+
+
+def receipt_object_md5(entry: dict) -> str:
+    """The MD5 of the entry's receipt OBJECT, reloaded — for a receipt
+    attached before ``receipt_md5`` existed, whose stored digest is ``""``.
+    Raises when the object cannot be read: « unreadable » is never « no
+    digest »."""
+    blob = storage.bucket().blob(str(entry.get("receipt_storage_path") or ""))
+    blob.reload()
+    return blob.md5_hash if isinstance(blob.md5_hash, str) else ""
+
+
+def get_receipt_bytes(
+    entry: dict, *, max_bytes: int = MAX_RECEIPT_SIZE,
+) -> tuple[Optional[bytes], str]:
+    """The bytes of *entry*'s receipt, bounded like ``document.get_document_bytes``:
+    ``(data, "")``, or ``(None, reason)`` — ``no_receipt``, ``too_large``
+    (decided on the stored size BEFORE any byte moves, then on the bytes),
+    ``download_failed``, ``receipt_changed`` (the bytes are not the MD5 the
+    entry names). Logs the error's class only, never the object's name."""
+    path = str(entry.get("receipt_storage_path") or "")
+    if not path:
+        return None, "no_receipt"
+    try:
+        declared = int(entry.get("receipt_file_size") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > max_bytes:
+        return None, "too_large"
+    try:
+        data = storage.bucket().blob(path).download_as_bytes()
+    except Exception as exc:
+        log_unexpected("admin: receipt read failed", exc_info=False,
+                       transaction_id=entry.get("id"),
+                       error_type=type(exc).__name__)
+        return None, "download_failed"
+    if len(data) > max_bytes:
+        return None, "too_large"
+    stored = str(entry.get("receipt_md5") or "")
+    if stored:
+        actual = base64.b64encode(
+            hashlib.md5(data, usedforsecurity=False).digest()).decode("ascii")
+        if not hmac.compare_digest(actual, stored):
+            return None, "receipt_changed"
+    return data, ""
+
+
+@dataclass
+class ReceiptOutcome:
+    """What :func:`attach_uploaded_receipt` answered: the entry (as written,
+    or as found already carrying this object), the French refusals, a code
+    (``RECEIPT_*``) and whether the attach replaced a receipt."""
+
+    entry: Optional[dict]
+    errors: list[str] = field(default_factory=list)
+    code: str = RECEIPT_REFUSED
+    replaced: bool = False
+
+
+def attach_uploaded_receipt(
+    tx_id: str, source, *, object_id: str, filename: str, uid: str,
+    expected_path: str, expected_md5: str,
+) -> ReceiptOutcome:
+    """Attach the uploaded *source* object (a ticket's checked staging
+    blob) to entry *tx_id* as its pièce justificative — see the section
+    comment above. *expected_path* / *expected_md5* are the entry's receipt
+    as ``begin_upload`` read it (both ``""`` when it carried none). Never
+    deletes an object."""
+    ids = {"transaction_id": tx_id}
+    replaced = bool(expected_path)
+    try:
+        size = int(source.size)
+    except (TypeError, ValueError):
+        size = -1
+    try:
+        header = source.download_as_bytes(
+            start=0, end=document_model._SNIFF_PROBE_BYTES - 1,
+            if_generation_match=source.generation,
+        )
+    except Exception as exc:
+        log_unexpected("admin: staged receipt unreadable", exc_info=False,
+                       error_type=type(exc).__name__, **ids)
+        return ReceiptOutcome(None, [MSG_RECEIPT_UNAVAILABLE], RECEIPT_UNAVAILABLE)
+    mime, refusal = receipt_content_type(filename, size, header)
+    if mime is None:
+        return ReceiptOutcome(None, [refusal], RECEIPT_REFUSED)
+    try:
+        dest_path = receipt_object_name(uid, tx_id, object_id,
+                                        receipt_extension(filename))
+    except (ValueError, storage_identity.StorageIdentityUnavailable):
+        return ReceiptOutcome(None, ["Requête invalide."], RECEIPT_REFUSED)
+
+    # The entry, strict, before any byte is copied.
+    try:
+        entry = get_transaction_strict(tx_id)
+    except Exception:
+        log_unexpected("admin: receipt entry unreadable", exc_info=False, **ids)
+        return ReceiptOutcome(None, [MSG_RECEIPT_UNAVAILABLE], RECEIPT_UNAVAILABLE)
+    if entry is None:
+        return ReceiptOutcome(None, [_ABORT_MESSAGES["écriture_introuvable"]],
+                              RECEIPT_ENTRY_GONE)
+    if entry.get("receipt_storage_path") == dest_path:
+        return ReceiptOutcome(entry, [], RECEIPT_ALREADY, replaced)
+    if _receipt_state(entry) != (expected_path, expected_md5):
+        return ReceiptOutcome(None, [MSG_RECEIPT_CHANGED], RECEIPT_CHANGED)
+
+    # The object: create-only. A 412 is a parallel or earlier attempt of
+    # this very upload (the library retries a rewrite sent with
+    # ifGenerationMatch=0): ADOPTED only when it holds these bytes.
+    dest = storage.bucket().blob(dest_path)
+    try:
+        token, _, _ = dest.rewrite(source, if_generation_match=0)
+        while token is not None:
+            token, _, _ = dest.rewrite(source, token=token, if_generation_match=0)
+    except PreconditionFailed:
+        verdict = document_model._object_verdict(dest, source)
+        if verdict is None:
+            return ReceiptOutcome(None, [MSG_RECEIPT_UNAVAILABLE],
+                                  RECEIPT_UNAVAILABLE)
+        if verdict is False:
+            log_unexpected("admin: receipt object occupied", exc_info=False, **ids)
+            return ReceiptOutcome(None, [MSG_RECEIPT_OCCUPIED], RECEIPT_REFUSED)
+    except Exception as exc:
+        log_unexpected("admin: receipt rewrite failed", exc_info=False,
+                       error_type=type(exc).__name__, **ids)
+        return ReceiptOutcome(None, [MSG_RECEIPT_UNAVAILABLE], RECEIPT_UNAVAILABLE)
+    try:
+        dest.content_type = mime
+        dest.content_disposition = "attachment"
+        dest.patch()
+    except Exception as exc:
+        log_unexpected("admin: receipt patch failed", exc_info=False,
+                       error_type=type(exc).__name__, **ids)
+        return ReceiptOutcome(None, [MSG_RECEIPT_UNAVAILABLE], RECEIPT_UNAVAILABLE)
+
+    md5 = source.md5_hash if isinstance(source.md5_hash, str) else ""
+    now = datetime.now(timezone.utc)
+    ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
+    transaction = db.transaction()
+    result: dict = {}
+
+    @firestore.transactional
+    def _attach(txn) -> None:
+        snap = ref.get(transaction=txn)
+        if not snap.exists:
+            raise _TxnAbort("écriture_introuvable")
+        current = snap.to_dict()
+        if current.get("receipt_storage_path") == dest_path:
+            result.update(entry=current, already=True)
+            return
+        if _receipt_state(current) != (expected_path, expected_md5):
+            raise _TxnAbort("pièce_modifiée")
+        updates = {
+            "receipt_storage_path": dest_path,
+            "receipt_filename": sanitize(filename or "", max_length=300),
+            "receipt_file_type": mime,
+            "receipt_file_size": size,
+            "receipt_md5": md5 if len(md5) <= _RECEIPT_MD5_MAX else "",
+        }
+        changes = {k: [current.get(k), updates[k]]
+                   for k in ("receipt_storage_path", "receipt_filename")
+                   if current.get(k) != updates[k]}
+        revisions = list(current.get("revisions") or [])
+        revisions.append({
+            "at": now, "via": provenance.current_via(),
+            "motif": RECEIPT_REPLACED_MOTIF if replaced else RECEIPT_ATTACHED_MOTIF,
+            "changes": changes,
+        })
+        updates["revisions"] = revisions[-_REVISIONS_CAP:]
+        updates.update(provenance.update_fields(now))
+        txn.update(ref, updates)
+        result["entry"] = {**current, **updates}
+
+    try:
+        _attach(transaction)
+    except _TxnAbort as abort:
+        if abort.reason == "pièce_modifiée":
+            return ReceiptOutcome(None, [MSG_RECEIPT_CHANGED], RECEIPT_CHANGED)
+        return ReceiptOutcome(None, [_ABORT_MESSAGES["écriture_introuvable"]],
+                              RECEIPT_ENTRY_GONE)
+    except Exception:
+        # A commit that RAISED: settled by a strict re-read — the object is
+        # never deleted, whatever the answer.
+        try:
+            after = get_transaction_strict(tx_id)
+        except Exception:
+            log_unexpected("admin: receipt attach uncertain", exc_info=False, **ids)
+            return ReceiptOutcome(None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR],
+                                  RECEIPT_UNCERTAIN, replaced)
+        if after is None or after.get("receipt_storage_path") != dest_path:
+            log_unexpected("admin: receipt object left unreferenced",
+                           exc_info=False, **ids)
+            return ReceiptOutcome(None, [MSG_RECEIPT_UNAVAILABLE],
+                                  RECEIPT_UNAVAILABLE)
+        result["entry"] = after                      # it landed
+    if result.get("already"):
+        return ReceiptOutcome(result["entry"], [], RECEIPT_ALREADY, replaced)
+    provenance.note_commit(TRANSACTIONS_COLLECTION, tx_id)
+    log_admin_ledger_event(
+        "admin_receipt_attached", transaction_id=tx_id,
+        account_id=result["entry"].get("account_id"), size=size,
+        replaced=replaced,
+    )
+    return ReceiptOutcome(result["entry"], [], RECEIPT_ATTACHED, replaced)
 
 
 # ── Queries — read-time balances on (date, sequence) order ─────────────────

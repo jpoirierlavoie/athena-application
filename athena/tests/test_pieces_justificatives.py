@@ -704,7 +704,10 @@ def test_api_recu_attaches_then_files_the_copy_from_the_firm_blob(
     assert response.status_code == 200
     # The entry page, built by the server — with NO banner.
     assert response.get_json() == {"ok": True, "suivant": f"/administration/{TX}"}
-    firm = f"users/{UID}/administration/{TX}/Recu_Staples.pdf"
+    # Under the staging upload's own uuid since 2026-11-10: a web upload
+    # never lands on another receipt's object (models/admin_ledger, the
+    # connector's door keeps a replaced one).
+    firm = f"users/{UID}/administration/{TX}/{DOC_ID}/Recu_Staples.pdf"
     entry = db.peek(f"{al.TRANSACTIONS_COLLECTION}/{TX}")
     assert entry["receipt_storage_path"] == firm
     assert entry["receipt_md5"] == _md5(PDF)

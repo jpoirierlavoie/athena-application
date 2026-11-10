@@ -105,17 +105,27 @@ reportlab==5.1.0
 # PdfParser, plus memory errors in image operations (merge, transform,
 # quantize, rank filters, ImageMorph), font rendering (FreeType, PILfont)
 # and Arrow export.
-# None is reachable: each needs the app to call Pillow itself — to open,
-# save or transform an image, render text or append to a PDF — and nothing
-# does. No Athena module imports PIL, but reportlab does at import
+# Since 2026-11-10 ONE path calls Pillow, on the lawyer's decision:
+# utils/receipt_image.py, the only Athena module that imports PIL — inside
+# its one call, never at import (tests/test_receipt_image.py pins both) —
+# shrinks a receipt photo that the connector's get_admin_receipt hands to
+# Claude. It opens only a JPEG or PNG the stored sniff recognised, whose
+# header utils/image_header.py read FIRST (a baseline or progressive JPEG
+# with 1 or 3 components, or a PNG; side and pixel caps), with
+# formats=("JPEG", "PNG"), so no other plugin is ever tried. An advisory
+# against Pillow's JPEG or PNG decoding, its draft() scaling, EXIF
+# transpose, thumbnail or JPEG encoding is therefore REACHABLE — bump
+# promptly. Every other one stays unreachable, as before: each needs the app
+# to open, save or transform an image of another kind, render text or append
+# to a PDF, and nothing else does. reportlab imports PIL at import
 # (reportlab/lib/utils.py), and so does pypdf (pypdf/_page.py, when Pillow
 # is installed), so PIL.Image loads in a worker that builds a PDF or serves
-# any connector call (mcp/handlers.py imports utils/pdf_text.py) — yet no
-# image plugin ever registers. The builders (utils/*_pdf.py) draw text
+# any connector call (mcp/handlers.py imports utils/pdf_text.py). The builders (utils/*_pdf.py) draw text
 # tables only — no drawImage, ImageReader, Image flowable or logo — and
 # escape() every user string before Paragraph markup, so a typed
 # `<img src=...>` prints as text instead of reaching Image.open; pypdf's
-# extract_text() skips images, and get_document_text refuses image files
+# extract_text() skips images — in a document, a receipt or a PDF attached
+# to an emailed receipt alike —, and get_document_text refuses image files
 # before any download.
 # 13.0.0 is a major release: its removals (Image._show,
 # ImageCmsProfile.product_name/product_info, ...) and the move of
@@ -366,6 +376,17 @@ pyasn1==0.6.5
 # bump; tests/test_pdf_text.py fails if pypdf stops logging the notice under
 # that logger and prefix.
 pypdf==6.21.4
+# olefile reads the text of a pièce justificative filed as an Outlook .msg
+# (2026-11-10, the lawyer's decision): pure Python, BSD-2, no dependency of
+# its own — no system library. Its one consumer is utils/msg_text.py,
+# reached only from the connector's get_admin_receipt, on a stored object
+# the receipt sniff recognised as OLE2 under .msg and at most
+# MAX_RECEIPT_SIZE (10 MB), read through the model's bounded reader. It
+# reads named MAPI streams only, each size-checked before it is read, and
+# never an attachment's data; any olefile error refuses the read
+# (invalid_msg). 0.47 (2023-12-01) is the latest release; OSV lists no
+# advisory against it (checked 2026-11-10).
+olefile==0.47
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its
 # pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the

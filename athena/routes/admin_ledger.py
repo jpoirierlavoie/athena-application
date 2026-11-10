@@ -80,7 +80,6 @@ from models.audit_event import record_deletion
 from services import comptabilite
 from services import pieces_justificatives
 from models.document import (
-    _sniff_header,
     build_attachment_disposition,
     is_canonical_uuid4,
     sign_blob_url,
@@ -901,15 +900,19 @@ def api_recu(tx_id: str):
     except Exception:
         _consume_staging()
         return jsonify({"erreur": "Lecture du fichier impossible. Réessayez."}), 422
-    content_type = _sniff_header(header, ext)
-    if content_type != RECEIPT_MIME_TYPES[ext]:
+    # The one judgement of a receipt's bytes, shared with the connector's
+    # door (models/admin_ledger.receipt_content_type).
+    content_type, refus = al.receipt_content_type(nom, int(blob.size or 0), header)
+    if content_type is None:
         _consume_staging()
-        return jsonify({
-            "erreur": "Le contenu du fichier ne correspond pas à son extension."
-        }), 422
+        return jsonify({"erreur": refus}), 422
 
     safe = secure_filename("".join(ch for ch in nom if ch.isprintable())) or "recu"
-    dest_path = f"users/{user_id}/administration/{tx_id}/{safe}"
+    # Under the staging upload's own uuid (2026-11-10): a web upload never
+    # lands on another receipt's object — not one the connector replaced and
+    # KEPT (models/admin_ledger.attach_uploaded_receipt), not an earlier web
+    # one of the same name.
+    dest_path = f"users/{user_id}/administration/{tx_id}/{segments[2]}/{safe}"
     try:
         dest = bucket.blob(dest_path)
         token, _, _ = dest.rewrite(blob)
