@@ -8,7 +8,8 @@ cent.
 Conventions (Québec / fr-CA):
 - comma decimal separator, non-breaking-space (U+00A0) thousands grouping;
 - currency suffixed with a non-breaking space then ``$`` (``"1 150,00 $"``);
-- long French dates (``"11 décembre 2025"``, ``1er`` for the first).
+- long French dates (``"11 décembre 2025"``, ``1er`` for the first);
+- the list of a file input's accepted formats (« PDF, JPG ou PNG »).
 """
 
 from datetime import date, datetime
@@ -151,3 +152,19 @@ def month_name_fr(month: int) -> str:
     if isinstance(month, bool) or not isinstance(month, int) or not 1 <= month <= 12:
         raise ValueError(f"mois invalide : {month!r}")
     return _FRENCH_MONTHS[month - 1]
+
+
+def formats_label(mime_types: dict[str, str]) -> str:
+    """« PDF, JPG ou PNG » — one name per distinct type, its first extension
+    in the mapping's order, upper case: the hint and the refusal of an upload
+    say which formats it takes from the very mapping that decides it
+    (``models/piece_identite``, ``models/admin_ledger``)."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for ext, mime in mime_types.items():
+        if mime not in seen:
+            seen.add(mime)
+            names.append(ext.lstrip(".").upper())
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} ou {names[-1]}"

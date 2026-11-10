@@ -92,6 +92,7 @@ from models.trust import reconciliation_variance  # pure, generic — import, do
 from security import sanitize
 from tz import to_mtl
 from utils.deadlines import today_mtl
+from utils.format_fr import formats_label
 from utils.logging_setup import (
     log_admin_ledger_event,
     log_unexpected,
@@ -423,10 +424,15 @@ def direction_labels_for(account_type: str) -> dict:
 
 
 # ── Receipt (pièce justificative) constants ────────────────────────────────
-# Deliberately narrower than documents' ALLOWED_EXTENSIONS: a supplier
-# invoice is a PDF or a photo, and these five types carry unambiguous magic
-# bytes (no PK/OLE2 container disambiguation needed).
-RECEIPT_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif")
+# Narrower than documents' ALLOWED_EXTENSIONS: a supplier's invoice or
+# receipt is a PDF, a photo or a scan, or the email that carried it (.eml,
+# .msg — added 2026-11-10 at the lawyer's request). Every type is decided by
+# the SHARED sniff, ``models/document._sniff_header``, on the documents' own
+# rules: magic bytes for PDF, JPEG, PNG and TIFF; the OLE2 container trusted
+# only under ``.msg``; an RFC 822 message recognised by its first header
+# line, only under ``.eml``. A file whose content disagrees with its
+# extension is refused. The extensions, the input's ``accept`` and the French
+# list of formats all derive from this one mapping.
 RECEIPT_MIME_TYPES = {
     ".pdf": "application/pdf",
     ".jpg": "image/jpeg",
@@ -434,8 +440,27 @@ RECEIPT_MIME_TYPES = {
     ".png": "image/png",
     ".tiff": "image/tiff",
     ".tif": "image/tiff",
+    ".eml": "message/rfc822",
+    ".msg": "application/vnd.ms-outlook",
 }
-MAX_RECEIPT_SIZE = 10 * 1024 * 1024  # 10 MB — un reçu est une photo ou un PDF
+RECEIPT_EXTENSIONS = tuple(RECEIPT_MIME_TYPES)
+# The file input's ``accept``: the extensions, then the distinct types (the
+# pièces d'identité rule, ``models/piece_identite.ACCEPT``).
+RECEIPT_ACCEPT = ",".join(
+    RECEIPT_EXTENSIONS + tuple(dict.fromkeys(RECEIPT_MIME_TYPES.values()))
+)
+RECEIPT_FORMATS_FR = formats_label(RECEIPT_MIME_TYPES)
+MAX_RECEIPT_SIZE = 10 * 1024 * 1024  # 10 MB — kept by the lawyer, 2026-11-10
+RECEIPT_MAX_SIZE_FR = f"{MAX_RECEIPT_SIZE // (1024 * 1024)} Mo"
+# What the entry page says beside « Joindre », and the opening's refusals.
+RECEIPT_HINT_FR = f"{RECEIPT_FORMATS_FR}, {RECEIPT_MAX_SIZE_FR} max."
+RECEIPT_TYPE_REFUSED_FR = (
+    f"Type de fichier non autorisé. Formats acceptés : {RECEIPT_FORMATS_FR}."
+)
+RECEIPT_SIZE_REFUSED_FR = (
+    "Une pièce justificative doit faire entre 1 octet et "
+    f"{RECEIPT_MAX_SIZE_FR}."
+)
 
 # Bounded on-document revisions trail (the editable-until-lock audit).
 _REVISIONS_CAP = 25

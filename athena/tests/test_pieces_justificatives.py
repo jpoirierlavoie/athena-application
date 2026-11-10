@@ -1143,6 +1143,71 @@ def test_the_upload_script_follows_the_servers_address():
             "return; }") in source
 
 
+def _widget(html: str) -> str:
+    """The receipt card's whole Alpine component — its ``x-data``, its hidden
+    token and its file input (``_card`` starts below the token)."""
+    start = html.rindex("<div", 0, html.index("occupe: false, erreur: ''"))
+    return html[start:html.index('<div class="mt-4 flex flex-wrap', start)]
+
+
+def test_the_widget_sends_the_token_its_own_input_carries(web_rendu, store):
+    """Until 2026-11-10 the widget read its token with this.$el.querySelector
+    from a method run by the NESTED file input's @change: in Alpine 3, $el is
+    that input, so X-CSRFToken went out EMPTY and production refused every
+    upload (« The CSRF token is missing »). The test apps run without
+    CSRFProtect, so the markup is the proof: the hidden input carries the
+    value AND the ref, and the script sends that very ref."""
+    html = web_rendu.get(f"/administration/{TX}").get_data(as_text=True)
+    widget = _widget(html)
+    assert ('<input type="hidden" name="csrf_token" value="jeton-test" '
+            'x-ref="csrf">') in widget
+    assert "'X-CSRFToken': this.$refs.csrf.value" in widget
+    assert "$el" not in widget
+
+
+def test_with_csrf_on_the_rendered_token_opens_the_upload(store):
+    """The server half of the same proof, with the guard ON: the token the
+    card renders, sent as X-CSRFToken the way the widget sends it, opens the
+    upload — and the empty header the old widget sent is refused, as
+    production refused it."""
+    from flask_wtf.csrf import CSRFProtect
+
+    app = _app(templates=True)
+    CSRFProtect(app)          # its csrf_token() replaces the test stand-in
+    client = _client(app)
+    html = client.get(f"/administration/{TX}").get_data(as_text=True)
+    (jeton,) = re.findall(
+        r'name="csrf_token" value="([^"]+)" x-ref="csrf"', html)
+    corps = {"name": "facture.eml", "size": 2048}
+    vide = client.post("/administration/api/televersement", json=corps,
+                       headers={"X-CSRFToken": ""})
+    assert vide.status_code == 400
+    ouverte = client.post("/administration/api/televersement", json=corps,
+                          headers={"X-CSRFToken": jeton})
+    assert ouverte.status_code == 200, ouverte.get_data(as_text=True)
+    assert ouverte.get_json()["objet"].startswith(f"staging/{UID}/")
+
+
+def test_the_file_input_takes_the_models_formats(web_rendu, store):
+    """One mapping decides the type, the input's accept and the words — the
+    email that carried a supplier's invoice is a pièce justificative too
+    (.eml, .msg: 2026-11-10)."""
+    db, _bucket = store
+    db.seed(f"{al.TRANSACTIONS_COLLECTION}/{TX}",
+            _entry(receipt_storage_path=None, receipt_md5=None,
+                   receipt_filename=""))
+    html = web_rendu.get(f"/administration/{TX}").get_data(as_text=True)
+    (file_input,) = re.findall(r'<input type="file"[^>]*>', _widget(html))
+    assert f'accept="{al.RECEIPT_ACCEPT}"' in file_input
+    assert f"Aucune — {al.RECEIPT_HINT_FR}" in _card(html)
+    assert al.RECEIPT_EXTENSIONS == tuple(al.RECEIPT_MIME_TYPES)
+    assert al.RECEIPT_MIME_TYPES[".eml"] == "message/rfc822"
+    assert al.RECEIPT_MIME_TYPES[".msg"] == "application/vnd.ms-outlook"
+    assert al.RECEIPT_HINT_FR == "PDF, JPG, PNG, TIFF, EML ou MSG, 10 Mo max."
+    assert al.RECEIPT_ACCEPT.startswith(
+        ".pdf,.jpg,.jpeg,.png,.tiff,.tif,.eml,.msg,")
+
+
 def _escape_css(cls: str) -> str:
     b = "\\"
     for raw, esc in ((b, b * 2), (":", b + ":"), (".", b + "."),

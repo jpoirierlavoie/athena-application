@@ -158,13 +158,17 @@
   {% endif %}
 
   {# ── Pièce justificative — téléversement DIRECT-à-GCS (un PUT du corps
-     entier : ≤ 10 Mo, pas de boucle 308). Motif CSRF de documents/upload.html
-     (en-tête X-CSRFToken depuis le champ caché). #}
+     entier : ≤ 10 Mo, pas de boucle 308). Le jeton CSRF : le champ caché
+     porte x-ref="csrf", lu par this.$refs.csrf (motif des pièces
+     d'identité). Jamais this.$el.querySelector : une méthode lancée par le
+     @change de l'input imbriqué y voit l'INPUT, non la racine (Alpine 3),
+     et l'en-tête partait vide — chaque téléversement refusé du 2026-08-13 au
+     2026-11-10, sans qu'aucun test ne le voie (les applications de test
+     tournent sans CSRF). #}
   <div class="mt-4 bg-white rounded-xl border border-gray-200 p-4 text-sm"
        x-data="{
          occupe: false, erreur: '',
-         champ(nom) { var el = this.$el.querySelector('[name=' + JSON.stringify(nom) + ']'); return el ? el.value : ''; },
-         entetes() { return { 'Content-Type': 'application/json', 'X-CSRFToken': this.champ('csrf_token') }; },
+         entetes() { return { 'Content-Type': 'application/json', 'X-CSRFToken': this.$refs.csrf.value }; },
          async televerser(fichier) {
            if (!fichier || this.occupe) { return; }
            this.occupe = true; this.erreur = '';
@@ -195,14 +199,14 @@
            }
          }
        }">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" x-ref="csrf">
     <div class="flex items-center justify-between gap-3">
       <div>
         <p class="text-xs font-medium text-gray-500">Pièce justificative</p>
         {% if entry.receipt_storage_path %}
         <p class="text-gray-900 mt-1">{{ entry.receipt_filename }} <span class="text-gray-400">({{ (entry.receipt_file_size / 1024) | round(0) | int }} Ko)</span></p>
         {% else %}
-        <p class="text-gray-500 mt-1">Aucune — PDF, JPG, PNG ou TIFF, 10 Mo max.</p>
+        <p class="text-gray-500 mt-1">Aucune — {{ receipt_hint }}</p>
         {% endif %}
         <p x-show="erreur" x-cloak class="text-xs text-red-600 mt-1" x-text="erreur"></p>
       </div>
@@ -215,7 +219,7 @@
         <label class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer"
                :class="occupe ? 'opacity-50' : ''">
           <span x-text="occupe ? 'Envoi…' : '{{ 'Remplacer' if entry.receipt_storage_path else 'Joindre' }}'"></span>
-          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif" class="hidden"
+          <input type="file" accept="{{ receipt_accept }}" class="hidden"
                  @change="televerser($event.target.files[0]); $event.target.value = '';">
         </label>
       </div>

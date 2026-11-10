@@ -159,6 +159,7 @@ from models import partie as partie_model
 from models.document import sign_blob_url
 from security import sanitize
 from utils import storage_identity
+from utils.format_fr import formats_label
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -183,19 +184,9 @@ EXTENSIONS: tuple[str, ...] = tuple(MIME_TYPES)
 ACCEPT = ",".join(EXTENSIONS + tuple(dict.fromkeys(MIME_TYPES.values())))
 
 
-def _formats_label(mime_types: dict[str, str]) -> str:
-    """« PDF, JPG ou PNG » — one name per distinct type, its first extension."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for ext, mime in mime_types.items():
-        if mime not in seen:
-            seen.add(mime)
-            names.append(ext.lstrip(".").upper())
-    if len(names) == 1:
-        return names[0]
-    return f"{', '.join(names[:-1])} ou {names[-1]}"
-
-
+# « PDF, JPG ou PNG » — the rule shared with the pièces justificatives
+# (utils/format_fr.formats_label; this name kept for the tests that pin it).
+_formats_label = formats_label
 FORMATS_LABEL = _formats_label(MIME_TYPES)
 
 _MIB = 1024 * 1024

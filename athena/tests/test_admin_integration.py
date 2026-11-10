@@ -313,6 +313,100 @@ def test_recu_heureux_reecrit_attache_et_purge(web, monkeypatch):
     staging.delete.assert_called_once()
 
 
+# ── The email that carried an invoice (.eml, .msg — 2026-11-10) ───────────
+# The shared sniff decides, on the documents' rules: an RFC 822 head only
+# under .eml, the OLE2 container only under .msg, a real magic always first.
+_EML_HEAD = (b"From: Fournisseur <factures@fournisseur.example>\r\n"
+             b"Subject: Facture F-1\r\n\r\nMerci.")
+_OLE2_HEAD = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 100
+
+
+@pytest.mark.parametrize("nom, type_mime", [
+    ("facture.eml", "message/rfc822"),
+    ("Facture Bell.MSG", "application/vnd.ms-outlook"),
+])
+def test_televersement_ouvre_une_session_pour_un_courriel(
+        web, monkeypatch, nom, type_mime):
+    blob = mock.Mock()
+    blob.create_resumable_upload_session.return_value = "https://up.example/s1"
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(ra.storage, "bucket", lambda: bucket)
+
+    reponse = _post(web, "/administration/api/televersement",
+                    {"name": nom, "size": 2048})
+    assert reponse.status_code == 200
+    kwargs = blob.create_resumable_upload_session.call_args.kwargs
+    assert kwargs["content_type"] == type_mime
+
+
+def test_televersement_refuse_en_nommant_les_formats_du_modele(web):
+    reponse = _post(web, "/administration/api/televersement",
+                    {"name": "releve.docx", "size": 100})
+    assert reponse.status_code == 422
+    assert reponse.get_json() == {"erreur": ra.al.RECEIPT_TYPE_REFUSED_FR}
+    assert ra.al.RECEIPT_TYPE_REFUSED_FR == (
+        "Type de fichier non autorisé. Formats acceptés : "
+        "PDF, JPG, PNG, TIFF, EML ou MSG.")
+    trop = _post(web, "/administration/api/televersement",
+                 {"name": "facture.msg", "size": 11 * 1024 * 1024})
+    assert trop.get_json() == {"erreur": ra.al.RECEIPT_SIZE_REFUSED_FR}
+
+
+def _finaliser(web, monkeypatch, nom, tete):
+    """POST the finalization of a staged receipt named *nom* whose first
+    bytes are *tete*; returns (response, attached, staging, dest)."""
+    monkeypatch.setattr(ra.al, "get_transaction", lambda t: {"id": t})
+    attached = {}
+
+    def _attach(tx_id, path, name, ct, size, *, md5=""):
+        attached.update(dict(path=path, name=name, ct=ct))
+        return {"_previous_receipt_path": None}, []
+    monkeypatch.setattr(ra.al, "attach_receipt", _attach)
+    staging = mock.MagicMock()
+    staging.size = 1000
+    staging.md5_hash = "XUFAKrxLKna5cZ2REBfFkg=="
+    staging.download_as_bytes.return_value = tete
+    dest = mock.MagicMock()
+    dest.rewrite.return_value = (None, 1000, 1000)
+    bucket = mock.Mock()
+    bucket.blob.side_effect = lambda p: staging if p.startswith("staging/") else dest
+    monkeypatch.setattr(ra.storage, "bucket", lambda: bucket)
+    objet = f"staging/u1/3f2b8c1e-9d4a-4e6b-8f7a-1c2d3e4f5a6b/{nom}"
+    reponse = _post(web, "/administration/t9/api/recu",
+                    {"objet": objet, "name": nom})
+    return reponse, attached, staging, dest
+
+
+@pytest.mark.parametrize("nom, tete, type_mime", [
+    ("facture.eml", _EML_HEAD, "message/rfc822"),
+    ("facture.msg", _OLE2_HEAD, "application/vnd.ms-outlook"),
+])
+def test_recu_accepte_un_courriel_reconnu_a_son_contenu(
+        web, monkeypatch, nom, tete, type_mime):
+    reponse, attached, staging, dest = _finaliser(web, monkeypatch, nom, tete)
+    assert reponse.status_code == 200, reponse.get_json()
+    assert attached["ct"] == type_mime
+    assert dest.content_type == type_mime
+    assert dest.content_disposition == "attachment"   # never shown inline
+    staging.delete.assert_called_once()
+
+
+@pytest.mark.parametrize("nom, tete", [
+    ("facture.eml", b"%PDF-1.7 " + b"\x00" * 100),   # a PDF renamed .eml
+    ("facture.eml", _OLE2_HEAD),                      # an Outlook file as .eml
+    ("facture.msg", _EML_HEAD),                       # a message as .msg
+    ("facture.msg", b"\x89PNG\r\n\x1a\n" + b"\x00" * 100),
+])
+def test_recu_refuse_un_courriel_que_son_contenu_dement(
+        web, monkeypatch, nom, tete):
+    reponse, attached, staging, _dest = _finaliser(web, monkeypatch, nom, tete)
+    assert reponse.status_code == 422
+    assert "extension" in reponse.get_json()["erreur"]
+    assert attached == {}
+    staging.delete.assert_called_once()   # refused bytes do not linger
+
+
 @pytest.mark.parametrize("panne, ligne", [
     ("relecture", "admin: staging blob reload failed: ServiceUnavailable"),
     ("copie", "admin: receipt rewrite failed: ServiceUnavailable"),

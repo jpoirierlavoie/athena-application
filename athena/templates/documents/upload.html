@@ -259,8 +259,11 @@ function uploadForm() {
       return f.statut + ' · ' + this.formatSize(f.size);
     },
 
+    // $root, never $el: in a method, $el is the element whose expression
+    // called it (Alpine 3) — from a nested input it would find nothing (the
+    // receipt widget's empty CSRF token, 2026-08-13 → 2026-11-10).
     champ(nom) {
-      const el = this.$el.querySelector('[name="' + nom + '"]');
+      const el = this.$root.querySelector('[name="' + nom + '"]');
       return el ? el.value : '';
     },
 

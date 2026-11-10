@@ -62,8 +62,12 @@ from models.admin_ledger import (
     KIND_LABELS,
     MAX_RECEIPT_SIZE,
     METHOD_LABELS,
+    RECEIPT_ACCEPT,
     RECEIPT_EXTENSIONS,
+    RECEIPT_HINT_FR,
     RECEIPT_MIME_TYPES,
+    RECEIPT_SIZE_REFUSED_FR,
+    RECEIPT_TYPE_REFUSED_FR,
     RECONCILIATION_STATUS_LABELS,
     TX_STATUS_LABELS,
     VALID_ACCOUNT_TYPES,
@@ -520,6 +524,8 @@ def entry_detail(tx_id: str):
         copie_admissible=admissible, copies=copies,
         copie_dossier_introuvable=dossier_introuvable,
         copie_document_id=str(uuid.uuid4()),
+        # The upload's formats and cap, from the model's one mapping.
+        receipt_accept=RECEIPT_ACCEPT, receipt_hint=RECEIPT_HINT_FR,
         **_labels(),
     )
 
@@ -793,8 +799,9 @@ def card_payment():
 @login_required
 def api_televersement():
     """Open a resumable GCS session for a receipt — the routes/documents.py
-    twin, on the RECEIPT whitelist (PDF/JPG/PNG/TIFF, ≤ 10 MB: a supplier
-    invoice is a photo or a PDF, and those magics are unambiguous)."""
+    twin, on the RECEIPT whitelist (``models/admin_ledger.RECEIPT_MIME_TYPES``:
+    PDF, JPG, PNG, TIFF, EML or MSG, ≤ ``MAX_RECEIPT_SIZE``). The type is only
+    PROPOSED here, by the name: ``api_recu`` decides it on the bytes."""
     donnees = request.get_json(silent=True) or {}
     nom = str(donnees.get("name") or "")
     try:
@@ -804,13 +811,9 @@ def api_televersement():
 
     ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
     if ext not in RECEIPT_EXTENSIONS:
-        return jsonify({"erreur": (
-            "Type de fichier non autorisé. Formats acceptés : PDF, JPG, PNG, TIFF."
-        )}), 422
+        return jsonify({"erreur": RECEIPT_TYPE_REFUSED_FR}), 422
     if size <= 0 or size > MAX_RECEIPT_SIZE:
-        return jsonify({
-            "erreur": "Une pièce justificative doit faire entre 1 octet et 10 Mo."
-        }), 422
+        return jsonify({"erreur": RECEIPT_SIZE_REFUSED_FR}), 422
 
     try:
         user_id = storage_identity.request_uid()
