@@ -912,11 +912,9 @@ def test_the_texts_say_which_half_of_a_copy_is_presumed(world):
     desc = tools.TOOLS["create_document"]["description"]
     assert ("the source's protection level, PRESUMED, and its category — "
             "PRESUMED unless the lawyer had set it") in desc
-    consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
-                        / "_files.html").read_text(encoding="utf-8").split())
-    assert "de l'original, à confirmer" not in consent
-    assert "à vérifier en qualifiant la copie" in consent
-    assert "sauf si vous l'aviez posée vous-même" in consent
+    # The FILES consent partial said it too until 2026-11-10, when the
+    # lawyer had the screen cut short: the description above is where the
+    # caller reads which half is presumed.
 
 
 def test_a_copy_never_leaves_its_dossier(world):

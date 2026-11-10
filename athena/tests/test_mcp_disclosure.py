@@ -466,18 +466,6 @@ def test_each_family_scope_is_its_members_declared_scope():
             assert tools.TOOLS[name]["scope"] == family.scope, (family.key, name)
 
 
-def test_each_family_names_every_member_and_has_its_partial():
-    for family in disclosure.FAMILIES:
-        for name in family.tools:
-            assert f"`{name}`" in family.instructions_en, (family.key, name)
-        assert family.consent_template.startswith("mcp/families/_")
-        assert (_TEMPLATES / family.consent_template).is_file(), family.consent_template
-        assert family.checkbox_summary_fr.strip(), family.key
-    # No orphan partial: a partial with no family would never render.
-    partials = {f"mcp/families/{p.name}"
-                for p in (_TEMPLATES / "mcp" / "families").glob("*.html")}
-    assert partials == {f.consent_template for f in disclosure.FAMILIES}
-
 
 def test_instructions_name_every_write_tool_and_derive_their_counts():
     """ONE text for every token since 2026-10-05 — the per-token accounting
@@ -500,6 +488,42 @@ def test_instructions_name_every_write_tool_and_derive_their_counts():
     assert positions == sorted(positions)
     assert positions[0] > text.index(header)
     assert "ACCOUNTING: " in text
+
+
+def _screen_words(markup: str) -> int:
+    """The words a reader sees in a consent text (tags and entities out)."""
+    text = re.sub(r"<[^>]+>", " ", markup)
+    text = re.sub(r"&[a-z]+;", " ", text)
+    return len([w for w in text.split() if any(c.isalnum() for c in w)])
+
+
+def test_each_family_names_every_member_and_has_its_short_line():
+    """Every member is named in the family's INSTRUCTIONS line, and the
+    family says itself on the consent screen in ONE short line — a bold
+    title and a gist (2026-11-10: the lawyer had the screen cut short; the
+    per-family partials left, and no template under mcp/families remains to
+    render one)."""
+    for family in disclosure.FAMILIES:
+        for name in family.tools:
+            assert f"`{name}`" in family.instructions_en, (family.key, name)
+        assert family.title_fr == family.title_fr.strip() != "", family.key
+        assert len(family.title_fr.split()) <= 2, family.key
+        line = family.consent_fr
+        assert line == line.strip() and line[-1] not in ".;:", family.key
+        assert _screen_words(line) <= 26, (family.key, _screen_words(line))
+    assert len({f.title_fr for f in disclosure.FAMILIES}) == len(disclosure.FAMILIES)
+    assert not (_TEMPLATES / "mcp" / "families").exists()
+    # The cap bites: a line grown back to a paragraph fails it.
+    assert _screen_words("mot " * 27) > 26
+
+
+def test_every_promise_is_one_short_clause():
+    """Each promise says itself on the screen in a few words; its whole
+    statement is the English ``en`` (INSTRUCTIONS), and the tools'
+    descriptions carry the detail."""
+    for never in disclosure.NEVERS:
+        assert _screen_words(never.fr) <= 12, (never.key, never.fr)
+        assert never.fr == never.fr.strip(), never.key
 
 
 def test_no_count_is_typed_by_hand():
@@ -570,22 +594,22 @@ def test_the_instructions_carry_the_lot_0a_rules():
         tools.TOOLS["import_invoice"]["description"])
 
 
-def test_the_checkbox_summary_names_every_write_family():
-    summary = str(disclosure.write_summary_fr())
-    families = disclosure.families_for(mcp.SCOPE_WRITE)
-    # Every family since 2026-10-05, the ACCOUNTING one included: the write
-    # box is the one grant that reaches the accounting writes, so its
-    # summary says what they write.
-    assert [f.key for f in families] == [f.key for f in disclosure.FAMILIES]
-    for family in families:
-        assert family.checkbox_summary_fr.lower() in summary.lower()
-    assert summary[0].isupper()
-    # Every promise that carries a clause — the register tools' own among
-    # them, told beside the one box that grants those tools (until
-    # 2026-10-05 they were the separate accounting box's to say).
-    for never in disclosure.NEVERS:
-        if never.summary_fr:
-            assert f"jamais {never.summary_fr}" in summary.lower(), never.key
+def test_the_consent_context_is_the_registry_said_once():
+    """REWRITTEN on 2026-11-10: the write box's summary restated the screen
+    and left with the per-family partials. The context is the registry's two
+    lists, in order — every family's line, every promise's clause — each
+    said once, the ACCOUNTING family's among them."""
+    context = disclosure.consent_context()
+    assert set(context) == {"write_families", "nevers"}
+    lines = context["write_families"]
+    assert [line.key for line in lines] == [f.key for f in disclosure.FAMILIES]
+    for line, family in zip(lines, disclosure.FAMILIES):
+        assert line.title_fr == family.title_fr
+        assert str(line.consent_fr) == family.consent_fr
+    assert [str(n) for n in context["nevers"]] == [n.fr for n in disclosure.NEVERS]
+    assert not hasattr(disclosure, "write_summary_fr")
+    assert all(not hasattr(n, "summary_fr") for n in disclosure.NEVERS)
+
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1021,17 +1045,14 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     assert "a template is not one" in tools.TOOLS["get_document_text"]["description"]
     assert "a template is not a document" in text   # READ-CONTENT
     assert "It never hands out a link that reads or downloads a stored file" in text
-    files = (_TEMPLATES / "mcp" / "families" / "_files.html").read_text(
-        encoding="utf-8")
-    flat_files = " ".join(files.split())
-    assert re.search(r"storage\.googleapis\.com", flat_files)
-    assert "<strong>toujours</strong> dans «&nbsp;Projets&nbsp;»" in flat_files
-    templates = (_TEMPLATES / "mcp" / "families" / "_templates.html").read_text(
-        encoding="utf-8")
-    flat_templates = " ".join(templates.split())
-    assert "Gérer vos gabarits" in flat_templates
-    assert "rétablissable" in flat_templates
-    assert "Gérer vos gabarits" not in flat_files
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short at the
+    # lawyer's request): the FILES and TEMPLATES partials that repeated the
+    # egress, « Projets » and the restorable versions left the screen. The
+    # descriptions above keep them; the screen keeps one line per family,
+    # and the operator's egress setting is DEPLOYMENT.md §11's.
+    lines = {f.key: f for f in disclosure.FAMILIES}
+    assert lines["files"].title_fr != lines["templates"].title_fr
+    assert "<strong>transformé en gabarit</strong>" in lines["templates"].consent_fr
 
 
 def test_complete_task_describes_the_refusal_it_now_makes():
@@ -1166,15 +1187,13 @@ def test_the_lot_4b_texts_say_what_the_dossier_tools_do():
     assert "dossier_status" not in keys
     assert ("detaching a party or a mandataire removes a LINK — the contact "
             "stays") in keys["delete"].en
-    assert "le contact reste" in keys["delete"].fr
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short): the
+    # screen says the LINK beside the capability — the DOSSIERS line — and
+    # the refusals (last client, a served party) are the tool's own.
+    assert "le contact reste" in dossiers.consent_fr
     text = endpoint.INSTRUCTIONS
     assert "DOSSIERS: " in text
     assert "can never be changed here" not in text
-    partial = (_TEMPLATES / "mcp" / "families" / "_dossiers.html").read_text(
-        encoding="utf-8")
-    flat = " ".join(partial.split())
-    assert "jamais le contact" in flat
-    assert "pour le dernier client, pour une partie signifiée" in flat
     desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
     assert "set_dossier_status" in desc["update_dossier"]
     assert "update_dossier_party" in desc["update_dossier"]
@@ -1220,15 +1239,16 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
     assert kyc_never.in_core
     assert ("CONFIRM an identity or conflict check, or change one the lawyer "
             "decided or confirmed") == kyc_never.en
-    assert "à confirmer" in kyc_never.fr
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short): the
+    # promise's clause says both halves — never confirm, never change the
+    # lawyer's — and PRESUMED is said beside the capability.
+    assert "<strong>confirmer</strong>" in kyc_never.fr
+    assert "ni changer la vôtre" in kyc_never.fr
+    assert ("<strong>présumées</strong> jusqu'à votre confirmation"
+            in contacts.consent_fr)
     text = endpoint.INSTRUCTIONS
     assert "CONTACTS: " in text
     assert kyc_never.en in disclosure.safety_core_en()
-    partial = (_TEMPLATES / "mcp" / "families" / "_contacts.html").read_text(
-        encoding="utf-8")
-    flat = " ".join(partial.split())
-    assert "<strong>présumée</strong>" in flat
-    assert "<strong>jamais</strong> modifiée par le connecteur" in flat
     desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
     assert "record_kyc_status" in desc["create_partie"]
     assert "update_partie_mandataire" in desc["update_partie"]
@@ -1276,16 +1296,13 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     assert "`*_source` \"mcp\"" in text
     assert "« [AAAA-MM-JJ — inscrit par Claude] »" in text
 
-    flat_dossiers = " ".join((_TEMPLATES / "mcp" / "families" / "_dossiers.html")
-                             .read_text(encoding="utf-8").split())
-    assert "le connecteur le <strong>signale</strong>" in flat_dossiers
-    assert "un nouvel appel au même statut le reprend" in flat_dossiers
-    assert "«&nbsp;Resynchroniser le téléphone&nbsp;»" in flat_dossiers
-    assert ("<strong>en attente</strong> ne change rien au téléphone ni aux "
-            "alertes") in flat_dossiers
-    flat_contacts = " ".join((_TEMPLATES / "mcp" / "families" / "_contacts.html")
-                             .read_text(encoding="utf-8").split())
-    assert "ne compte <strong>pas comme faite</strong>" in flat_contacts
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short): the
+    # DOSSIERS and CONTACTS partials that spelled out the drain's report and
+    # repair left the screen; set_dossier_status's description (above) and
+    # the CONTACTS index line keep them, and the screen says the phone
+    # follows a status change.
+    dossiers = next(f for f in disclosure.FAMILIES if f.key == "dossiers")
+    assert "(votre téléphone suit)" in dossiers.consent_fr
 
     deletions = tools.TOOLS["list_deletions"]["description"]
     assert "each LINK detached" in deletions
@@ -1389,11 +1406,10 @@ def test_the_lot_5_texts_state_the_final_never_set():
     assert "trust" not in keys
 
     payment = keys["payment"]
-    for fragment in ("autrement que par une écriture aux registres comptables",
-                     "un encaissement au compte d'administration",
-                     "un paiement d'honoraires au fidéicommis",
-                     "inscrit lui-même le paiement sur la facture"):
-        assert fragment in payment.fr, fragment
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short): the
+    # screen's clause says where a payment lives; the two entries are named
+    # by the tools that make them (below).
+    assert "hors des registres comptables" in payment.fr
     # REWRITTEN deliberately (contracts-1 part 2): the promise is a clause
     # of the SAFETY CORE now; the two register entries that record a
     # payment are named by the tools that make them.
@@ -1412,31 +1428,32 @@ def test_the_lot_5_texts_state_the_final_never_set():
     assert [k for k in order if k in register] == register
     listed_fr = " ".join(keys[k].fr for k in register)
     listed_en = " ".join(keys[k].en for k in register)
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short): each
+    # promise keeps its whole statement in English (INSTRUCTIONS); the
+    # screen's French clause says its gist — None where the detail is the
+    # English text's alone.
     for fr, en in (
         ("<strong>supprimer</strong> une écriture", "never deletes a register entry"),
-        ("conciliation</strong>", "reconciliation"),
-        ("un <strong>compte</strong>", "creates or modifies an account"),
-        ("<strong>virer des fonds</strong> du fidéicommis d'un dossier à un autre",
+        ("<strong>concilier</strong>", "reconciliation"),
+        ("modifier un compte", "creates or modifies an account"),
+        ("<strong>virer des fonds</strong> du fidéicommis entre dossiers",
          "never transfers trust funds between dossiers"),
-        ("<strong>en espèces</strong> (art. 57", "in cash (art. 57"),
-        ("facture papier", "with a paper invoice"),
-        ("facture <strong>pas encore envoyée</strong>", "with an invoice not yet sent"),
-        ("une <strong>provision</strong>", "an invoice that imputes a provision"),
+        ("<strong>en espèces</strong>", "in cash (art. 57"),
+        (None, "with a paper invoice"),
+        ("facture <strong>non envoyée</strong>", "with an invoice not yet sent"),
+        (None, "an invoice that imputes a provision"),
         # D21 and D23 (2026-09-29).
-        ("la facture d'un <strong>autre client</strong>",
+        ("d'un autre client",
          "another client's invoice than the one whose funds leave trust"),
-        ("ni sur celle qui n'en nomme aucun, dans un dossier qui en compte "
-         "plusieurs", "nor one naming no client, in a dossier of several"),
-        ("à l'ordre de quelqu'un d'autre que <strong>vous ou votre cabinet</strong>",
+        (None, "nor one naming no client, in a dossier of several"),
+        ("à un autre que <strong>vous ou votre cabinet</strong>",
          "to anyone but the lawyer or his firm"),
         ("<strong>numéro de compte</strong>", "a bank transit or account number"),
     ):
-        assert fr in listed_fr, fr
+        assert fr is None or fr in listed_fr, fr
         assert en in listed_en, en
 
     delete = keys["register_delete"]
-    assert "au fidéicommis, une erreur ne se corrige que par une" in delete.fr
-    assert "une écriture se corrige tant qu'elle reste modifiable" in delete.fr
     assert "a trust entry is corrected only by a reversal" in delete.en
     assert "`update_admin_entry` while editable" in delete.en
     # 2026-10-05: never « even under the accounting grant » — no such grant.
@@ -1462,22 +1479,11 @@ def test_the_lot_5_texts_state_the_final_never_set():
     assert keys["fee_payee"].behavioural_test.endswith(
         "test_d23_the_payee_is_the_lawyer_or_his_firm")
 
-    # The write box's summary — the one box that grants the register tools
-    # since 2026-10-05 (until then the accounting box's said this list).
-    summary = " ".join(str(disclosure.write_summary_fr()).split())
-    assert summary.endswith(
-        "Jamais de suppression, jamais de paiement autrement que par une "
-        "écriture aux registres comptables (un encaissement ou un paiement "
-        "d'honoraires), jamais de conciliation ni de compte, jamais "
-        "de virement entre dossiers, jamais de retrait en espèces, jamais de "
-        "paiement d'honoraires sur une facture papier, non envoyée, qui "
-        "impute une provision ou adressée à un autre client, jamais de "
-        "paiement d'honoraires à l'ordre d'un autre que vous ou votre "
-        "cabinet.")
-
+    # The write box's summary that ended on this list left with the screen's
+    # restatements (2026-11-10): the list is said once, under « Jamais ».
     accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
-    assert ("des recettes et des déboursés, et des paiements d'honoraires — "
-            "dont chacun inscrit") in accounting.checkbox_summary_fr
+    assert ("compenser et contre-passer des écritures au fidéicommis et au "
+            "registre d'administration") in accounting.consent_fr
     # The ACCOUNTING paragraph became an index line (contracts-1 part 2):
     # « the ONLY correction » is the tool's own sentence, pinned here.
     assert "`reverse_register_entry`" in accounting.instructions_en
@@ -1561,16 +1567,13 @@ def test_the_2026_10_05_false_claim_entries_bite_on_the_texts_that_stood():
         "distincte).",
     ):
         assert _false_claims_in(false), false
-    import jinja2
-
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(
-        str(_TEMPLATES)), autoescape=True)   # as Flask renders
-    partial = " ".join(env.get_template("mcp/families/_comptabilite.html")
-                       .render(disclosure=disclosure.consent_context()).split())
-    assert "Inscrire au fidéicommis" in partial          # non-vacuous
+    # The screen's accounting text is the ACCOUNTING family's line since
+    # 2026-11-10 (its partial left with the screen's restatements).
+    line = next(f for f in disclosure.FAMILIES if f.key == "accounting").consent_fr
+    assert "fidéicommis" in line                         # non-vacuous
     for true in (
         endpoint.INSTRUCTIONS,
-        partial,
+        line,
         tools.TOOLS["get_admin_ledger"]["description"],
         tools.TOOLS["create_invoice"]["description"],
         tools.TOOLS["update_invoice"]["description"],
@@ -1600,68 +1603,18 @@ def test_the_texts_name_the_natures_outside_the_results():
     counts (DERIVED from the model's allow-list); and the sentence that
     confined a change of kind to dépense and recette_autre bites on the
     text it stood in, while every text that replaced it passes."""
-    import jinja2
-
     with mock.patch("google.cloud.firestore.Client"):
         from models import admin_ledger as al
 
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(
-        str(_TEMPLATES)), autoescape=True)   # as Flask renders
-    partial = " ".join(env.get_template("mcp/families/_comptabilite.html")
-                       .render(disclosure=disclosure.consent_context()).split())
-    for fragment in (
-        "vos <strong>prélèvements</strong> et vos <strong>apports</strong>",
-        "<strong>virements internes</strong> vers ou depuis un compte hors "
-        "de ce registre (le compte en fidéicommis, un compte d'épargne)",
-        "ces trois dernières natures n'entrent dans aucun total de revenus, "
-        "de dépenses ni de TPS/TVQ",
-        "elles ne portent ni catégorie, ni ventilation, ni facture, et un "
-        "prélèvement ou un apport ne se rattache à aucun dossier",
-        # 2026-11-07 — the remittances, in their own sentence.
-        "Inscrire aussi les <strong>remises</strong> et les "
-        "<strong>remboursements de TPS/TVQ</strong> du cabinet auprès de "
-        "l'administration fiscale, pour leur montant total",
-        "ni revenu, ni dépense, ni crédit de taxe, ils règlent le solde de "
-        "TPS/TVQ",
-        "ils ne portent ni catégorie, ni ventilation, ni facture, et ne se "
-        "rattachent à aucun dossier",
-        # 2026-11-08 — a client's advance received here, the mark of the
-        # transfer that moves it to trust, and a supplier's refund.
-        "Inscrire encore les <strong>avances d'honoraires</strong> de "
-        "clients reçues au compte d'opérations plutôt qu'au fidéicommis — "
-        "l'argent du client, jamais un revenu — et marquer le virement "
-        "interne qui les verse au fidéicommis",
-        "les <strong>remboursements de dépense</strong> d'un fournisseur, qui "
-        "réduisent la catégorie de la dépense remboursée et la TPS/TVQ "
-        "qu'elle réclamait — jamais un revenu",
-        # Guidance, qualified to a card OF THIS LEDGER (review fix: an
-        # unqualified « jamais » promised what no code refuses, and was
-        # false for the lawyer's own card, a prélèvement).
-        "Le paiement d'une carte de crédit de ce registre depuis le compte "
-        "d'opérations s'inscrit en paiement de carte, et des honoraires tirés "
-        "du fidéicommis en paiement d'honoraires au fidéicommis — non en "
-        "virement interne",
-        "sans en inverser le sens, sauf d'une dépense à une autre recette "
-        "ou l'inverse",
-        # Kept from the texts before them.
-        "ni contre-passée ni elle-même une contre-passation",
-        "(les 25 dernières conservées)",
-    ):
-        assert fragment in partial, fragment
-
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short at the
+    # lawyer's request): the ACCOUNTING partial and the write box's summary,
+    # which spelled out every nature for the lawyer, left the screen — its
+    # one line says what the box grants on the registers; the natures, what
+    # they refuse and what no total counts are the three ledger tools'
+    # descriptions, pinned below as before.
     accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
-    summary = accounting.checkbox_summary_fr
-    for fragment in (
-        "des paiements de carte, vos prélèvements et vos apports, des "
-        "virements internes vers ou depuis un compte hors de ce registre, "
-        "les remises et remboursements de TPS/TVQ du cabinet, des avances "
-        "d'honoraires de clients reçues au compte d'opérations et des "
-        "remboursements de dépense",
-        "des recettes et des déboursés, et des paiements d'honoraires — "
-        "dont chacun inscrit",
-    ):
-        assert fragment in summary, fragment
-    assert summary.lower() in str(disclosure.write_summary_fr()).lower()
+    line = accounting.consent_fr
+    assert "registre d'administration" in line
 
     record = tools.TOOLS["record_admin_entry"]["description"]
     update = tools.TOOLS["update_admin_entry"]["description"]
@@ -1760,7 +1713,7 @@ def test_the_texts_name_the_natures_outside_the_results():
         "counts only encaissement_facture and recette_autre",
     ):
         assert _false_claims_in(retired), retired
-    for true in (partial, summary, record, update, ledger):
+    for true in (line, record, update, ledger):
         assert not _false_claims_in(true), true[:80]
 
 
@@ -1804,19 +1757,16 @@ def test_every_role_description_names_the_seven_system_roles():
 
 
 def test_the_folder_texts_name_every_system_folder():
-    """DERIVED: manage_folder's description and the FILES consent partial
-    name each of the seven system folders of the tree — by the display name
-    the tree gives it."""
+    """DERIVED: manage_folder's description names each of the seven system
+    folders of the tree — by the display name the tree gives it. (The FILES
+    consent partial named them too until 2026-11-10, when the lawyer had the
+    screen cut short: the inventory is the tool's, where Claude reads it.)"""
     desc = tools.TOOLS["manage_folder"]["description"]
-    flat = " ".join((_TEMPLATES / "mcp" / "families" / "_files.html")
-                    .read_text(encoding="utf-8").split())
     names = folder_model.SYSTEM_FOLDER_NAMES.values()
     assert len(set(names)) == 7
     for name in names:
         assert f"« {name} »" in desc, name
-        assert f"«&nbsp;{name}&nbsp;»" in flat, name
     assert "Seven folders are the application's" in desc
-    assert "jamais les sept dossiers de l'application&nbsp;:" in flat
 
 
 def _filing_leaves_by_parent() -> dict[str, list[str]]:
@@ -1850,17 +1800,12 @@ def test_the_folder_texts_say_the_application_files_into_four_and_locks_three_pa
     by_name = {n: r for r, n in names.items()}
     for parent_name in grouped:
         assert parents[by_name[parent_name]] == "", parent_name
-    flat = " ".join((_TEMPLATES / "mcp" / "families" / "_files.html")
-                    .read_text(encoding="utf-8").split())
+    # The FILES partial's French half left the screen on 2026-11-10 (cut
+    # short at the lawyer's request); the tool's description keeps it all.
     desc = tools.TOOLS["manage_folder"]["description"]
     for parent, leaves in grouped.items():
-        fr = (" et ".join(f"«&nbsp;{n}&nbsp;»" for n in leaves)
-              + f" sous «&nbsp;{parent}&nbsp;»")
         en = (" and ".join(f"« {n} »" for n in leaves) + f" under « {parent} »")
-        assert fr in flat, fr
         assert en in desc, en
-    assert "les quatre où elle classe elle-même" in flat
-    assert "et leurs trois dossiers parents" in flat
     assert "the four it files into itself" in desc
     assert "and those three parents" in desc
     # The retired wording bites — whole, as the partial carried it.
@@ -1875,20 +1820,16 @@ def test_the_folder_texts_say_the_application_files_into_four_and_locks_three_pa
     assert _false_claims_in(
         "Seven folders are the application's: the seven folders the "
         "application files into itself.")
-    assert not _false_claims_in(flat)
     assert not _false_claims_in(desc)
 
 
 def test_the_default_tree_texts_are_true_and_trip_no_false_claim():
     """The sentences that replaced the retired phrasings pass the detector —
-    and the ones that stayed TRUE stay where they were pinned."""
-    flat = " ".join((_TEMPLATES / "mcp" / "families" / "_files.html")
-                    .read_text(encoding="utf-8").split())
-    create = " ".join((_TEMPLATES / "mcp" / "families" / "_create.html")
-                      .read_text(encoding="utf-8").split())
+    and the ones that stayed TRUE stay where they were pinned (the tools'
+    descriptions; the FILES and CREATE partials that repeated them left the
+    consent screen on 2026-11-10)."""
     desc = {n: s["description"] for n, s in tools.TOOLS.items()}
     for true in (
-        flat, create,
         desc["manage_folder"], desc["create_document"], desc["fill_gabarit"],
         desc["create_dossier"],
         "La note d'honoraires déjà générée reste classée au dossier : elle "
@@ -1901,12 +1842,6 @@ def test_the_default_tree_texts_are_true_and_trip_no_false_claim():
         "« projets » | « autres » | « portail »",
     ):
         assert not _false_claims_in(true), true[:80]
-    assert "<strong>toujours</strong> dans «&nbsp;Projets&nbsp;»" in flat
-    assert "(sous «&nbsp;Interne&nbsp;» dans l'arborescence par défaut" in flat
-    assert ("toujours dans «&nbsp;Factures&nbsp;», sous «&nbsp;Mandat&nbsp;» "
-            "— une note identique déjà classée est rendue, là où elle se "
-            "trouve, au lieu d'être refaite") in flat
-    assert "chaque nouveau dossier reçoit l'arborescence de classement" in create
     assert "in its « Projets » folder (under « Interne »" in desc["fill_gabarit"]
     assert ("always into the dossier's « Factures » folder (under « Mandat »)"
             in desc["create_document"])

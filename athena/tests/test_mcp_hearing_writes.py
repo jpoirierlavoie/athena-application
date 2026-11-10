@@ -1366,15 +1366,6 @@ def test_the_only_connector_path_to_pending_requests_is_the_pending_mode():
     assert reached_from == {"handlers.py:_hearing_selection:lister_en_attente"}
 
 
-def test_the_bookings_consent_partial_quotes_the_text_actually_sent():
-    """The consent screen names the text the client receives: it must be
-    REFUS_MOTIF, or the page the lawyer read would not describe the
-    effect."""
-    partial = (_ATHENA / "templates" / "mcp" / "families"
-               / "_bookings.html").read_text(encoding="utf-8")
-    rendered = " ".join(partial.replace("&nbsp;", " ").split())
-    assert rendez_vous.REFUS_MOTIF in rendered
-
 
 def test_series_and_decision_never_quote_notes_in_their_results(fake, graph):
     """A write result is stored verbatim for 24 h (mcp_idempotency): the
@@ -1389,17 +1380,18 @@ def test_series_and_decision_never_quote_notes_in_their_results(fake, graph):
         assert "Privilégié" not in repr(payload)
 
 
-def test_the_agenda_partial_reads_the_series_ceiling_from_the_registry():
-    """The consent screen states the series ceiling from utils/recurrence,
-    never a typed « 60 » that a change of the ceiling would leave false."""
-    import jinja2
-
+def test_the_bookings_consent_line_says_the_client_is_told():
+    """The consent screen names the one effect that reaches a client — a
+    refused request's Outlook cancellation tells the client — beside the
+    capability. REWRITTEN on 2026-11-10, when the lawyer had the screen cut
+    short: the fixed text itself (REFUS_MOTIF) is the decision's own output,
+    pinned by test_a_refusal_sends_only_the_fixed_cancellation_text, and the
+    series ceiling the AGENDA partial stated is the registry's, pinned above
+    (tools._SERIES_MAX)."""
     from mcp import disclosure
 
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(
-        str(_ATHENA / "templates")), autoescape=True)   # as Flask renders
-    context = disclosure.consent_context()
-    rendered = " ".join(env.get_template("mcp/families/_agenda.html").render(
-        disclosure=context).split())
-    assert (f"au plus {recurrence.MAX_SERIE_OCCURRENCES} occurrences"
-            in rendered)
+    (bookings,) = [f for f in disclosure.FAMILIES if f.key == "bookings"]
+    assert "un refus annule la réunion Outlook" in bookings.consent_fr
+    assert "<strong>en avise le client</strong>" in bookings.consent_fr
+
+

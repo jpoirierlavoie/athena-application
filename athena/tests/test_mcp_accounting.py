@@ -1130,10 +1130,12 @@ def test_the_train_s_pilot_moves_the_balance_as_deployment_says_and_locks_both_s
                    "still **−1,00 $**", "the balance reads **0,00 $** AT ONCE",
                    "still **0,00 $**, now with nothing outstanding"):
         assert figure in flat, figure
-    partial = " ".join((_ATHENA / "templates" / "mcp" / "families" /
-                        "_comptabilite.html").read_text(encoding="utf-8").split())
-    assert "ni contre-passée ni elle-même une contre-passation" in partial
-    assert "et jamais contre-passée" not in partial
+    # The lock reads « part of no reversal » — the original AND the
+    # reversal itself: the ACCOUNTING partial said it in French until
+    # 2026-11-10 (the consent screen cut short); the tool says it.
+    desc = tools.TOOLS["update_admin_entry"]["description"]
+    assert "part of no reversal" in desc
+    assert "and never reversed" not in desc
 
 
 def test_nothing_is_dated_in_a_reconciled_period(fake):

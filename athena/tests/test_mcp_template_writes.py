@@ -607,10 +607,8 @@ def test_a_rename_is_checked_against_the_source_dossier_and_the_texts_say_so(
         tools.TOOLS["update_template"]["description"])
     assert "a new name is checked against the dossiers its files came from" in (
         tools.TOOLS["update_template"]["description"])
-    consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
-                        / "_templates.html").read_text(encoding="utf-8").split())
-    assert "n'est contrôlé contre <strong>aucun</strong> dossier" not in consent
-    assert "Le nouveau nom donné à un gabarit existant est contrôlé" in consent
+    # The TEMPLATES consent partial said it too until 2026-11-10 (the
+    # screen cut short at the lawyer's request): the descriptions above.
 
 
 def test_the_model_refuses_a_residue_on_every_path(world):
@@ -1150,11 +1148,15 @@ def test_the_instructions_and_the_consent_name_the_template_tools():
     # REWRITTEN in lot 2A (T11): the template paragraph moved with its tools
     # from the FILES partial to the TEMPLATES family's own.
     assert "TEMPLATES: " in text
-    consent = (_ATHENA / "templates" / "mcp" / "families"
-               / "_templates.html").read_text(encoding="utf-8")
-    flat = " ".join(consent.split())
-    assert "Gérer vos gabarits" in flat
-    assert "document d'origine n'est jamais modifié" in flat
+    # The consent screen's TEMPLATES line (its partial left on
+    # 2026-11-10); the source document is never altered: the « document »
+    # promise's clause.
+    from mcp import disclosure
+
+    templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
+    assert templates.title_fr == "Gabarits"
+    (document,) = [n for n in disclosure.NEVERS if n.key == "document"]
+    assert "modifier le <strong>fichier</strong> d'un document" in document.fr
 
 
 # ══════════════════════════════════════════════════════════════════════

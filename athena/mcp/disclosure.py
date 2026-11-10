@@ -20,10 +20,11 @@ edited » beside the tools that edit it.
 **FAMILIES partition** :data:`mcp.tools.WRITE_TOOLS` — which is DERIVED from
 them (:func:`write_tools`), so a write tool cannot ship without a family, and
 the family is what puts it in the texts. Each family names its scope (checked
-against every member's declared scope), its consent partial under
-``templates/mcp/families/``, its clause of the consent checkbox summary, and
-its ONE-LINE entry in the INSTRUCTIONS index (which must name every member
-literally). The rules of each tool live in its DESCRIPTION, never here
+against every member's declared scope), its ONE line of the consent screen (a
+bold ``title_fr`` and a short ``consent_fr`` — since 2026-11-10, when the
+lawyer had the screen cut short: no per-family partial, no checkbox summary
+restating it), and its ONE-LINE entry in the INSTRUCTIONS index (which must
+name every member literally). The rules of each tool live in its DESCRIPTION, never here
 (finitions, contracts-1): INSTRUCTIONS ride every ``initialize``, and a real
 client cuts them at ~2 048 characters.
 
@@ -49,7 +50,7 @@ registry lazily, when the endpoint module is loaded.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from markupsafe import Markup
 
@@ -69,10 +70,13 @@ class Family:
     scope: str
     #: The member tools, in the order the texts name them.
     tools: tuple[str, ...]
-    #: The consent-screen partial, included inside the scope's block.
-    consent_template: str
-    #: This family's clause of the grant checkbox summary (static markup).
-    checkbox_summary_fr: str
+    #: Its bold French title on the consent screen (« Créer », « Facturer »).
+    title_fr: str
+    #: Its ONE line on the consent screen, after the title: what the box
+    #: grants, in the fewest words (static markup, no trailing punctuation;
+    #: the lawyer, 2026-11-10: « cut to the chase »). The rules of each tool
+    #: are in its DESCRIPTION, which Claude reads.
+    consent_fr: str
     #: The INSTRUCTIONS index line after « LABEL: » — every member named,
     #: and the one rule a caller must know before opening the tools; the
     #: rest is in each tool's description. May carry the fields of
@@ -86,7 +90,9 @@ class Never:
     """One promise, with the mechanism that keeps it true."""
 
     key: str
-    #: The consent-screen bullet (static markup, no trailing punctuation).
+    #: The consent screen's SHORT « jamais » clause (static markup, no
+    #: trailing punctuation) — the promise in a few words; ``en`` and the
+    #: tools' descriptions carry its detail.
     fr: str
     #: The INSTRUCTIONS sentence — or, with ``in_core``, the CLAUSE the
     #: SAFETY CORE's « NEVER, whatever the tool: … » list carries (no
@@ -111,9 +117,6 @@ class Never:
     #: ``path::test_name`` of the behavioural test backing a promise no
     #: sweep can express. The disclosure test checks that it exists.
     behavioural_test: str = ""
-    #: A short « jamais … » clause for the checkbox summary, when this
-    #: promise belongs there.
-    summary_fr: str = ""
     #: Stated in the SAFETY CORE, within the first 2 048 characters of
     #: INSTRUCTIONS (``HEAD_LIMIT``; finitions, contracts-1): the promises
     #: a client that cuts the field must still read.
@@ -123,7 +126,9 @@ class Never:
     # ``athena:comptabilite`` — and carry ``fr_comptabilite`` /
     # ``summary_fr_comptabilite`` variants for the screen that offered that
     # box. The lawyer removed the scope: every promise is now told to every
-    # token, in one list.)
+    # token, in one list. Until 2026-11-10 a promise also carried a
+    # ``summary_fr`` for the checkbox's summary, which restated the screen:
+    # the screen was cut short that day, and its list is said once.)
 
 
 # ── The write families ──────────────────────────────────────────────────
@@ -140,13 +145,10 @@ FAMILIES: tuple[Family, ...] = (
             "create_partie", "create_dossier", "complete_dossier",
             "record_signification", "record_prescription_event",
         ),
-        consent_template="mcp/families/_create.html",
-        checkbox_summary_fr=(
-            "créer des notes, tâches, événements, temps et déboursés (un à "
-            "un, ou par lots écrits en entier ou pas du tout), contacts et "
-            "dossiers (un dossier neuf reçoit l'arborescence de classement "
-            "par défaut), et compléter un dossier (champs encore vides, "
-            "significations, événements de prescription)"
+        title_fr="Créer",
+        consent_fr=(
+            "notes, tâches, événements, temps et déboursés (aussi par lots), "
+            "contacts et dossiers&nbsp;; compléter un dossier"
         ),
         instructions_en=(
             "`create_note`, `append_to_note`, `create_task`, "
@@ -166,11 +168,10 @@ FAMILIES: tuple[Family, ...] = (
             "update_partie", "update_dossier", "update_time_entry",
             "update_expense", "complete_task",
         ),
-        consent_template="mcp/families/_correct.html",
-        checkbox_summary_fr=(
-            "corriger un contact, un dossier, une entrée de temps ou un "
-            "déboursé non facturés — ou les déplacer vers un autre "
-            "dossier&nbsp;; clore une tâche"
+        title_fr="Corriger",
+        consent_fr=(
+            "contacts, dossiers, temps et déboursés non facturés&nbsp;; clore "
+            "une tâche"
         ),
         instructions_en=(
             "`update_partie`, `update_dossier`, `update_time_entry`, "
@@ -188,15 +189,10 @@ FAMILIES: tuple[Family, ...] = (
             "create_protocol", "update_protocol", "add_protocol_step",
             "update_protocol_step", "update_hearing", "create_hearing_series",
         ),
-        consent_template="mcp/families/_agenda.html",
-        checkbox_summary_fr=(
-            "modifier ou déplacer une tâche ou une note, rouvrir une tâche, "
-            "rédiger la théorie de la cause (le texte remplacé d'une note "
-            "est conservé), créer et tenir le protocole de l'instance et "
-            "ses étapes, modifier, reporter, annuler ou déplacer un "
-            "événement du calendrier (d'un rendez-vous Bookings confirmé, "
-            "seulement le dossier et les notes) et créer une série "
-            "d'événements"
+        title_fr="Agenda",
+        consent_fr=(
+            "modifier tâches, notes, événements, protocole et théorie de la "
+            "cause"
         ),
         instructions_en=(
             "`update_task`, `reopen_task`, `update_note`, `edit_analyse` (the "
@@ -211,11 +207,10 @@ FAMILIES: tuple[Family, ...] = (
         label="BOOKINGS",
         scope=SCOPE_WRITE,
         tools=("decide_rendez_vous",),
-        consent_template="mcp/families/_bookings.html",
-        checkbox_summary_fr=(
-            "confirmer ou refuser une demande de rendez-vous Bookings — "
-            "refuser annule la réunion Outlook, ce qui prévient le client "
-            "par un texte fixe"
+        title_fr="Bookings",
+        consent_fr=(
+            "confirmer ou refuser une demande de rendez-vous&nbsp;; un refus "
+            "annule la réunion Outlook et <strong>en avise le client</strong>"
         ),
         instructions_en=(
             "`decide_rendez_vous` confirms or refuses a pending Bookings "
@@ -232,11 +227,8 @@ FAMILIES: tuple[Family, ...] = (
             "set_time_entry_phase", "set_expense_phase",
             "set_time_entry_phase_bulk", "set_expense_phase_bulk",
         ),
-        consent_template="mcp/families/_reclassify.html",
-        checkbox_summary_fr=(
-            "reclasser la phase du litige d'une entrée de temps ou d'un "
-            "déboursé, même facturé (la phase ne paraît sur aucune facture)"
-        ),
+        title_fr="Phase",
+        consent_fr="reclasser la phase du litige, même d'une entrée facturée",
         instructions_en=(
             "`set_time_entry_phase`, `set_expense_phase`, "
             "`set_time_entry_phase_bulk`, `set_expense_phase_bulk` (up to "
@@ -250,11 +242,8 @@ FAMILIES: tuple[Family, ...] = (
         label="IMPORT",
         scope=SCOPE_WRITE,
         tools=("import_invoice",),
-        consent_template="mcp/families/_import.html",
-        checkbox_summary_fr=(
-            "reprendre des factures de votre ancien système (brouillon, "
-            "numéro d'origine)"
-        ),
+        title_fr="Reprise",
+        consent_fr="reprendre les factures de votre ancien système",
         instructions_en=(
             "`import_invoice` recreates a previous system's invoice under ITS "
             "number and date: it NEVER allocates a number and lands in "
@@ -266,14 +255,12 @@ FAMILIES: tuple[Family, ...] = (
         label="BILL",
         scope=SCOPE_WRITE,
         tools=("create_invoice", "update_invoice", "create_budget_version"),
-        consent_template="mcp/families/_billing.html",
-        checkbox_summary_fr=(
-            "émettre une nouvelle facture au brouillon (elle consomme "
-            "définitivement le prochain numéro de l'année), corriger un "
-            "brouillon, marquer une facture envoyée ou en retard — ce qui "
-            "n'envoie rien —, annuler une facture qui ne porte aucun "
-            "paiement, et enregistrer une nouvelle version du budget d'un "
-            "dossier"
+        title_fr="Facturer",
+        consent_fr=(
+            "émettre une facture au brouillon (son numéro est "
+            "<strong>consommé pour toujours</strong>), corriger un brouillon, "
+            "marquer envoyée (rien n'est envoyé) ou annuler une "
+            "facture&nbsp;; versions du budget"
         ),
         instructions_en=(
             "`create_invoice` issues a NEW brouillon (read `preview_invoice` "
@@ -288,11 +275,10 @@ FAMILIES: tuple[Family, ...] = (
         label="ANALYSE",
         scope=SCOPE_WRITE,
         tools=("record_document_analysis",),
-        consent_template="mcp/families/_analyse.html",
-        checkbox_summary_fr=(
-            "analyser un document (nature, privilèges, niveau de protection "
-            "— la catégorie est remplacée, sauf celle que vous avez choisie "
-            "ou confirmée ; le niveau ne descend jamais)"
+        title_fr="Analyser",
+        consent_fr=(
+            "qualifier un document, à titre <strong>présumé</strong> jusqu'à "
+            "votre confirmation"
         ),
         instructions_en=(
             "`record_document_analysis` records a qualification: the CODE "
@@ -307,16 +293,10 @@ FAMILIES: tuple[Family, ...] = (
         tools=("update_document", "move_documents", "manage_folder",
                "fill_gabarit", "create_document",
                "begin_upload", "finalize_upload"),
-        consent_template="mcp/families/_files.html",
-        checkbox_summary_fr=(
-            "classer un document (nom, date, étiquettes, dossier de "
-            "classement, catégorie présumée), organiser les dossiers de "
-            "classement (jamais les dossiers système), produire de "
-            "nouveaux projets Word — depuis un gabarit, depuis un texte "
-            "rédigé par Claude, par copie d'un .docx du même dossier, la "
-            "note d'honoraires d'une facture —, "
-            "téléverser un fichier par un lien de dépôt en écriture seule, "
-            "comme nouveau document ou comme gabarit"
+        title_fr="Classer",
+        consent_fr=(
+            "classer les documents, produire des projets Word, verser un "
+            "fichier téléversé"
         ),
         instructions_en=(
             "`update_document`, `move_documents`, `manage_folder` file "
@@ -330,13 +310,10 @@ FAMILIES: tuple[Family, ...] = (
         label="TEMPLATES",
         scope=SCOPE_WRITE,
         tools=("create_template", "update_template"),
-        consent_template="mcp/families/_templates.html",
-        checkbox_summary_fr=(
-            "enregistrer comme gabarit un .docx déjà versé à un dossier, tel "
-            "quel ou transformé en gabarit (ses textes propres au dossier "
-            "remplacés par des champs), et corriger un gabarit (nom, "
-            "description, catégorie, type, ou nouvelle version de son "
-            "fichier, la précédente conservée)"
+        title_fr="Gabarits",
+        consent_fr=(
+            "enregistrer et corriger des gabarits&nbsp;; relisez tout "
+            "document <strong>transformé en gabarit</strong>"
         ),
         # No brace in an index line: build_instructions runs str.format over
         # it (for {phase_bulk_max}). The {{field}} syntax is create_template's
@@ -354,13 +331,10 @@ FAMILIES: tuple[Family, ...] = (
         label="DOSSIERS",
         scope=SCOPE_WRITE,
         tools=("set_dossier_status", "update_dossier_party"),
-        consent_template="mcp/families/_dossiers.html",
-        checkbox_summary_fr=(
-            "changer le statut d'un dossier — le fermer ou l'archiver retire "
-            "ses tâches, notes et événements du téléphone, le rouvrir les y "
-            "remet —, corriger les rôles ou l'avocat d'une partie au dossier, "
-            "en détacher une (le contact reste) et rafraîchir les noms que le "
-            "dossier garde de ses parties"
+        title_fr="Dossiers",
+        consent_fr=(
+            "changer le statut (votre téléphone suit), détacher une partie "
+            "(le contact reste)"
         ),
         instructions_en=(
             "`set_dossier_status` (fermé / archivé DRAINS its DavX5 "
@@ -373,14 +347,10 @@ FAMILIES: tuple[Family, ...] = (
         label="CONTACTS",
         scope=SCOPE_WRITE,
         tools=("update_partie_mandataire", "record_kyc_status"),
-        consent_template="mcp/families/_contacts.html",
-        checkbox_summary_fr=(
-            "tenir les mandataires d'un contact (en ajouter, corriger, "
-            "détacher — le contact mandataire reste), et inscrire une "
-            "vérification d'identité ou de conflits d'intérêts comme "
-            "PRÉSUMÉE — «&nbsp;à confirmer&nbsp;» sur la fiche jusqu'à votre "
-            "confirmation, jamais par-dessus une vérification que vous avez "
-            "vous-même décidée"
+        title_fr="Contacts",
+        consent_fr=(
+            "mandataires&nbsp;; vérifications d'identité ou de conflits, "
+            "<strong>présumées</strong> jusqu'à votre confirmation"
         ),
         instructions_en=(
             "`update_partie_mandataire` and `record_kyc_status`, which "
@@ -399,32 +369,10 @@ FAMILIES: tuple[Family, ...] = (
             "record_trust_entry", "record_admin_entry", "update_admin_entry",
             "clear_register_entries", "reverse_register_entry",
         ),
-        consent_template="mcp/families/_comptabilite.html",
-        # Lot 5, step 5: « des recettes, des déboursés et des paiements
-        # d'honoraires — chacun inscrit … la recette au compte
-        # d'administration » bound « chacun » to all three, and a trust
-        # recette or déboursé inscribes nothing at administration. Only the
-        # fee payment does. 2026-10-07: the administration ledger's kinds
-        # outside the firm's results (models/admin_ledger.NON_RESULT_KINDS)
-        # — the lawyer's prélèvement and apport, a virement interne either
-        # way — are named beside the others; 2026-11-07: so are the firm's
-        # TPS/TVQ remittances and refunds; 2026-11-08: a client's advance
-        # received here and a supplier's refund of an expense.
-        checkbox_summary_fr=(
-            "inscrire au fidéicommis des recettes et des déboursés, et des "
-            "paiements d'honoraires — dont chacun inscrit, dans la même "
-            "opération, la recette au compte d'administration et le "
-            "paiement sur la facture —, inscrire au compte "
-            "d'administration des dépenses, d'autres recettes, des "
-            "encaissements de facture (qui inscrivent le paiement sur la "
-            "facture), des paiements de carte, vos prélèvements et vos "
-            "apports, des virements internes vers ou depuis un compte hors "
-            "de ce registre, les remises et remboursements de TPS/TVQ du "
-            "cabinet, des avances d'honoraires de clients reçues au compte "
-            "d'opérations et des remboursements de dépense, corriger une "
-            "écriture d'administration tant qu'elle reste modifiable, "
-            "compenser des écritures à la date du relevé bancaire et "
-            "contre-passer une écriture"
+        title_fr="Comptabilité",
+        consent_fr=(
+            "inscrire, corriger, compenser et contre-passer des écritures au "
+            "fidéicommis et au registre d'administration"
         ),
         # The writers' own rule, verbatim (review of E3): the index line once
         # read « what the bank shows », which excludes a cheque just written
@@ -491,13 +439,9 @@ NEVERS: tuple[Never, ...] = (
         # Lot 4b: detaching a party from a dossier erases an array ENTRY —
         # a LINK, never a record: the contact stays, and the model journals
         # the detach in audit_events (dossier_party), which list_deletions
-        # reads. Said beside the promise it narrows.
-        fr=(
-            "<strong>supprimer</strong> quoi que ce soit dans Athéna — "
-            "annuler une tâche ou un événement les conserve, avec leur "
-            "statut&nbsp;; détacher une partie d'un dossier ou un mandataire "
-            "d'un contact retire un lien, le contact reste"
-        ),
+        # reads. The screen says it beside the capability (the DOSSIERS
+        # line: « le contact reste »).
+        fr="<strong>supprimer</strong> quoi que ce soit",
         en=(
             "DELETE anything (a cancelled item is kept; detaching a party or "
             "a mandataire removes a LINK — the contact stays)"
@@ -508,21 +452,16 @@ NEVERS: tuple[Never, ...] = (
         # client, a released idempotency claim) — never a user record. The
         # tool code may not call a bare `.delete()` at all.
         forbidden_in_tool_code=("delete",),
-        summary_fr="de suppression",
     ),
     Never(
         key="payment",
-        # Lot 5, step 5: « sauf par une écriture aux registres » named no
-        # entry. A payment exists as exactly TWO register entries, and the
-        # screen names both — and says who writes it onto the invoice.
-        # 2026-10-05: the accounting tools are write tools like the others
-        # (the separate grant left), so this wording — until then the
-        # variant shown beside the accounting box — is the only one.
+        # A payment exists as exactly TWO register entries — an encaissement
+        # at administration, a fee payment from trust, each writing the
+        # payment onto its invoice: the register tools' descriptions name
+        # them; the screen's clause says where a payment lives (2026-11-10).
         fr=(
-            "inscrire un <strong>paiement</strong> autrement que par une "
-            "écriture aux registres comptables — un encaissement au compte "
-            "d'administration ou un paiement d'honoraires au fidéicommis, "
-            "qui inscrit lui-même le paiement sur la facture"
+            "inscrire un <strong>paiement</strong> hors des registres "
+            "comptables"
         ),
         # A SAFETY CORE clause since contracts-1, part 2: only a register
         # entry records a payment — written by the REGISTER, in the entry's
@@ -543,10 +482,6 @@ NEVERS: tuple[Never, ...] = (
         forbidden=("record_payment", "payment_updates", "projeter_paiement",
                    "reduire_paiement"),
         forbidden_modules=("services.encaissements",),
-        summary_fr=(
-            "de paiement autrement que par une écriture aux registres "
-            "comptables (un encaissement ou un paiement d'honoraires)"
-        ),
     ),
     # Lot 3b (BILL) falsified two promises and DELETED them: « it never
     # changes an invoice's status — voiding included » (update_invoice sets
@@ -555,10 +490,7 @@ NEVERS: tuple[Never, ...] = (
     # is narrower, and each piece is its own promise below.
     Never(
         key="invoice_send",
-        fr=(
-            "<strong>envoyer</strong> une facture à qui que ce soit — la "
-            "marquer «&nbsp;envoyée&nbsp;» n'envoie rien"
-        ),
+        fr="<strong>envoyer</strong> une facture",
         en=(
             "SEND an invoice to anyone (marking one envoyée sends nothing)"
         ),
@@ -571,9 +503,7 @@ NEVERS: tuple[Never, ...] = (
     Never(
         key="invoice_paid",
         fr=(
-            "marquer une facture <strong>payée</strong> par un changement de "
-            "statut — seul un paiement inscrit aux registres comptables le "
-            "fait"
+            "marquer une facture <strong>payée</strong> sans paiement inscrit"
         ),
         en=(
             "mark an invoice payée by a status change"
@@ -589,11 +519,7 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="invoice_sources",
-        fr=(
-            "écarter <strong>en silence</strong> une entrée de temps ou un "
-            "déboursé nommé pour une facture — une seule source inutilisable "
-            "fait refuser la facture entière"
-        ),
+        fr="écarter <strong>en silence</strong> une entrée d'une facture",
         en=(
             "It never drops a named time entry or disbursement from an "
             "invoice silently: one unusable source refuses the whole invoice."
@@ -637,9 +563,7 @@ NEVERS: tuple[Never, ...] = (
         # and no write tool takes the stored compliance fields as input.
         fr=(
             "<strong>confirmer</strong> une vérification d'identité ou de "
-            "conflits d'intérêts, ni modifier une vérification que vous avez "
-            "décidée ou confirmée — ce que Claude inscrit reste "
-            "«&nbsp;à confirmer&nbsp;»"
+            "conflits, ni changer la vôtre"
         ),
         en=(
             "CONFIRM an identity or conflict check, or change one the lawyer "
@@ -666,10 +590,7 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="uncancel",
-        fr=(
-            "<strong>défaire une annulation</strong> en silence — rouvrir "
-            "une tâche annulée exige une demande expresse"
-        ),
+        fr="<strong>défaire une annulation</strong> sans demande expresse",
         en=(
             "It never silently undoes a cancellation: reopening an annulée "
             "task requires reopen_cancelled true."
@@ -686,17 +607,13 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="client_message",
-        # « Tiers », never « extérieur » (review of L8): the AGENDA block
-        # discloses that an event's copy in the lawyer's OWN Outlook
-        # calendar follows a reschedule or a cancellation (the mirror cron)
-        # — an effect outside Athéna that reaches nobody else. What this
-        # promise confines is what reaches ANOTHER person.
-        fr=(
-            "<strong>rédiger un message</strong> destiné à un client ou à "
-            "un tiers — le seul effet qui atteigne un tiers est l'annulation "
-            "Outlook d'une demande de rendez-vous Bookings refusée, dont le "
-            "texte est fixe"
-        ),
+        # « Tiers », never « extérieur » (review of L8): an event's copy in
+        # the lawyer's OWN Outlook calendar follows a reschedule or a
+        # cancellation (the mirror cron) — an effect outside Athéna that
+        # reaches nobody else. What this promise confines is what reaches
+        # ANOTHER person; the one thing that does is the BOOKINGS line's
+        # refusal, whose text is fixed.
+        fr="<strong>écrire</strong> à un client ou à un tiers",
         en=(
             "compose a message to anyone outside the practice"
         ),
@@ -732,12 +649,7 @@ NEVERS: tuple[Never, ...] = (
         # Lot 2B (create_template's `substitutions`) templatizes an
         # in-memory COPY of those bytes into the template object; the
         # source stays byte-identical (tests/test_mcp_templatize.py).
-        fr=(
-            "modifier le <strong>fichier</strong> d'un document existant "
-            "— un projet, une copie ou un fichier téléversé est toujours un "
-            "nouveau document ; la lecture de son contenu relève de l'accès "
-            "en lecture ci-dessus"
-        ),
+        fr="modifier le <strong>fichier</strong> d'un document",
         en=(
             "It never changes an existing document's FILE: a generated "
             "project, a copy or an upload is always a NEW document."
@@ -760,11 +672,7 @@ NEVERS: tuple[Never, ...] = (
         # in force before stays stored and restorable (web « Rétablir »).
         # No connector call can express an overwrite (the GCS byte verbs are
         # the « document » promise's), so the behaviour is pinned instead.
-        fr=(
-            "remplacer le fichier d'un gabarit <strong>sans en garder la "
-            "version précédente</strong> — chaque version reste conservée, "
-            "rétablissable dans l'application"
-        ),
+        fr="perdre une version d'un <strong>gabarit</strong>",
         en=(
             "It never replaces a template's file without keeping the previous "
             "one, restorable in the application."
@@ -784,13 +692,7 @@ NEVERS: tuple[Never, ...] = (
         # scans every real payload's VALUES with that single pair allowed).
         # The signers of the model layer are named so that no connector
         # module or reached service can ever mint a READ link.
-        fr=(
-            "obtenir un <strong>lien de lecture ou de téléchargement</strong> "
-            "d'un fichier d'Athéna — le seul lien qu'il reçoit est celui d'un "
-            "dépôt&nbsp;: "
-            "en écriture seule, pour un seul fichier, versé seulement dans "
-            "l'heure et seulement s'il est bien celui annoncé"
-        ),
+        fr="obtenir un <strong>lien de lecture</strong> d'un fichier",
         en=(
             "It never hands out a link that reads or downloads a stored file, "
             "nor a storage path: its ONE link is `begin_upload`'s "
@@ -813,10 +715,7 @@ NEVERS: tuple[Never, ...] = (
         # « présumée » is the lawyer's own gesture — confirmer_categorie,
         # confirmer_analyse, or his edit of the analysis (update_analyse:
         # « éditer, c'est confirmer »).
-        fr=(
-            "<strong>confirmer</strong> une catégorie ou une analyse "
-            "présumées — vous seul le faites, dans l'application"
-        ),
+        fr="<strong>confirmer</strong> une catégorie ou une analyse présumées",
         en=(
             "confirm a presumed category or analysis"
         ),
@@ -850,11 +749,7 @@ NEVERS: tuple[Never, ...] = (
         # (web « Retirer la désignation », clear_active_template) — forbidden
         # to the connector alike: undesignating the note-d'honoraires
         # template makes every invoice note refuse.
-        fr=(
-            "<strong>désigner le gabarit actif</strong> des notes "
-            "d'honoraires ou de l'impression des notes, ni en retirer la "
-            "désignation — vous seul le faites, dans l'application"
-        ),
+        fr="<strong>désigner un gabarit actif</strong>",
         en=(
             "It never designates, nor withdraws, the ACTIVE note-d'honoraires "
             "or note-print template: only the lawyer does."
@@ -879,14 +774,7 @@ NEVERS: tuple[Never, ...] = (
     # invoice rules) and no word of the UNSENT invoice the model refuses.
     Never(
         key="register_delete",
-        fr=(
-            "<strong>supprimer</strong> une écriture — au fidéicommis, une "
-            "erreur ne se corrige que par une "
-            "<strong>contre-passation</strong>, l'original et sa "
-            "contre-passation restant au registre pour toujours&nbsp;; au "
-            "compte d'administration, une écriture se corrige tant qu'elle "
-            "reste modifiable, puis par une contre-passation"
-        ),
+        fr="<strong>supprimer</strong> une écriture comptable",
         en=(
             "It never deletes a register entry: a trust entry is corrected "
             "only by a reversal (both kept for good), an administration "
@@ -900,27 +788,17 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="register_setup",
-        fr=(
-            "<strong>commencer, compléter ou abandonner une "
-            "conciliation</strong>, ni créer ou modifier un "
-            "<strong>compte</strong>, ni joindre un reçu — vous seul le "
-            "faites, dans l'application"
-        ),
+        fr="<strong>concilier</strong>, créer ou modifier un compte",
         en=(
             "It never starts, completes or abandons a reconciliation, creates "
             "or modifies an account, or attaches a receipt: only the lawyer "
             "does, in the application."
         ),
         forbidden=_REGISTER_SETUP_WRITERS,
-        summary_fr="de conciliation ni de compte",
     ),
     Never(
         key="register_transfer",
-        fr=(
-            "<strong>virer des fonds</strong> du fidéicommis d'un dossier à "
-            "un autre, ni contre-passer un volet d'un tel virement — vous "
-            "seul le faites, dans l'application"
-        ),
+        fr="<strong>virer des fonds</strong> du fidéicommis entre dossiers",
         en=(
             "It never transfers trust funds between dossiers, nor reverses "
             "a leg of such a transfer: only the lawyer does, in the "
@@ -934,15 +812,10 @@ NEVERS: tuple[Never, ...] = (
             "tests/test_mcp_accounting.py::"
             "test_a_transfer_between_dossiers_is_never_reversed_here"
         ),
-        summary_fr="de virement entre dossiers",
     ),
     Never(
         key="trust_withdrawal",
-        fr=(
-            "retirer du fidéicommis <strong>en espèces</strong> (art. 57 — "
-            "le remboursement en espèces de l'art. 72 s'inscrit dans "
-            "l'application)"
-        ),
+        fr="retirer du fidéicommis <strong>en espèces</strong>",
         en=(
             "It never withdraws trust funds in cash (art. 57 — the art. 72 "
             "cash refund is recorded in the application)."
@@ -954,18 +827,12 @@ NEVERS: tuple[Never, ...] = (
             "tests/test_mcp_accounting.py::"
             "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
         ),
-        summary_fr="de retrait en espèces",
     ),
     Never(
         key="fee_invoice",
         fr=(
-            "appuyer un <strong>paiement d'honoraires</strong> sur une "
-            "facture papier, sur une facture <strong>pas encore "
-            "envoyée</strong>, sur une facture qui impute une "
-            "<strong>provision</strong> ou sur la facture d'un "
-            "<strong>autre client</strong> que celui dont les fonds sortent "
-            "(ni sur celle qui n'en nomme aucun, dans un dossier qui en "
-            "compte plusieurs)"
+            "payer des honoraires sur une facture <strong>non envoyée</strong> "
+            "ou d'un autre client"
         ),
         en=(
             "It never backs a fee payment with a paper invoice, with an "
@@ -988,10 +855,6 @@ NEVERS: tuple[Never, ...] = (
             "tests/test_mcp_accounting.py::"
             "test_record_trust_entry_never_withdraws_cash_nor_pays_a_paper_or_provision_invoice"
         ),
-        summary_fr=(
-            "de paiement d'honoraires sur une facture papier, non envoyée, "
-            "qui impute une provision ou adressée à un autre client"
-        ),
     ),
     # Decision D23 (2026-09-29, art. 58 — « chèque tiré à l'ordre de
     # l'avocat »): the payee of a fee payment is the lawyer or his firm, as
@@ -1001,9 +864,8 @@ NEVERS: tuple[Never, ...] = (
     Never(
         key="fee_payee",
         fr=(
-            "faire un <strong>paiement d'honoraires</strong> à l'ordre de "
-            "quelqu'un d'autre que <strong>vous ou votre cabinet</strong>, "
-            "tels que les nomme le profil du cabinet (art.&nbsp;58)"
+            "payer des honoraires à un autre que <strong>vous ou votre "
+            "cabinet</strong>"
         ),
         en=(
             "It never makes a fee payment to anyone but the lawyer or his "
@@ -1013,14 +875,10 @@ NEVERS: tuple[Never, ...] = (
             "tests/test_mcp_accounting.py::"
             "test_d23_the_payee_is_the_lawyer_or_his_firm"
         ),
-        summary_fr="de paiement d'honoraires à l'ordre d'un autre que vous ou votre cabinet",
     ),
     Never(
         key="account_number",
-        fr=(
-            "afficher un <strong>numéro de compte</strong> bancaire ou de "
-            "transit"
-        ),
+        fr="afficher un <strong>numéro de compte</strong>",
         en="It never shows a bank transit or account number.",
         behavioural_test=(
             "tests/test_mcp_accounting.py::"
@@ -1054,44 +912,30 @@ def _never_fr(never: Never) -> Markup:
     return Markup(never.fr)  # nosec B704 — module constant, no user input
 
 
-def _summary(clauses: list[str], nevers: list[str]) -> Markup:
-    body = "&nbsp;; ".join(clauses)
-    body = body[:1].upper() + body[1:] + "."
-    if nevers:
-        body += " Jamais " + ", jamais ".join(nevers) + "."
-    return Markup(body)  # nosec B704 — module constants, no user input
+class ConsentLine(NamedTuple):
+    """A write family's line on the consent screen."""
+
+    key: str
+    title_fr: str
+    consent_fr: Markup
 
 
-def write_summary_fr() -> Markup:
-    """The write checkbox's summary: every write family's clause, then the
-    short « jamais » clauses — derived, so it names exactly what is granted."""
-    nevers = [n.summary_fr for n in NEVERS if n.summary_fr]
-    return _summary([f.checkbox_summary_fr for f in families_for(SCOPE_WRITE)],
-                    nevers)
+def _consent_line(family: Family) -> ConsentLine:
+    # Static constants of this module, never request data: safe to mark.
+    return ConsentLine(family.key, family.title_fr,
+                       Markup(family.consent_fr))  # nosec B704 — module constant
 
 
 def consent_context() -> dict:
-    """What ``templates/mcp/consent.html`` renders from the registry.
-
-    ``write_families`` are included, in order, inside the write block —
-    the ACCOUNTING family's among them since 2026-10-05, when its separate
-    box left; ``nevers`` are the bullets of its « jamais » list (every
-    promise, one list); ``write_summary`` is the grant checkbox's summary.
-    ``phase_bulk_max`` is the reclassifiers' batch ceiling,
-    ``entry_bulk_max`` the bulk creators' and ``series_max`` a series'
-    occurrence ceiling (utils/recurrence), all read from the registry;
-    ``register_clear_max`` is a clearing's batch ceiling.
-    """
-    from mcp import tools as _tools  # lazy: mcp.tools imports this module
-
+    """What ``templates/mcp/consent.html`` renders from the registry:
+    ``write_families`` — one :class:`ConsentLine` each, in order, the
+    ACCOUNTING family's among them since 2026-10-05 —, and ``nevers``, every
+    promise's short clause, in order, in one « jamais » list. Nothing is said
+    twice (2026-11-10: the per-family partials and the checkbox's summary,
+    which restated them, are gone)."""
     return {
-        "phase_bulk_max": _tools.PHASE_BULK_MAX,
-        "entry_bulk_max": _tools.ENTRY_BULK_MAX,
-        "series_max": _tools._SERIES_MAX,
-        "register_clear_max": _tools.REGISTER_CLEAR_MAX,
-        "write_families": families_for(SCOPE_WRITE),
+        "write_families": [_consent_line(f) for f in families_for(SCOPE_WRITE)],
         "nevers": [_never_fr(n) for n in NEVERS],
-        "write_summary": write_summary_fr(),
     }
 
 

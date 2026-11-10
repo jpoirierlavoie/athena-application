@@ -15,83 +15,24 @@
   </a>
   {% else %}
   <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-    <p class="text-sm text-gray-700 mb-4">
-      <strong>{{ params.client_name }}</strong> demande un accès
-      <strong>en lecture</strong> à Pallas Athéna&nbsp;: dossiers,
-      parties, tâches, audiences, notes, documents, gabarits —
-      <strong>y compris le texte intégral des pièces et documents versés
-      aux dossiers</strong> —, facturation, budgets et <strong>soldes en
-      fidéicommis</strong>.
+    {# Short on purpose (the lawyer, 2026-11-10: « cut to the chase »):
+       tests/test_mcp_oauth.py holds the whole screen to a word budget.
+       READ — hand-written (CLAUDE.md, Change Impact 1): a new kind of data
+       read updates this list. #}
+    <p class="text-sm text-gray-700">
+      <strong>{{ params.client_name }}</strong> demande à <strong>lire</strong>
+      Pallas Athéna&nbsp;:
     </p>
-    <p class="text-sm text-gray-500 mb-4">
-      Cet accès permet de <strong>lire le contenu intégral des documents
-      des dossiers</strong> (procédures, pièces, jugements,
-      correspondance — PDF et Word). Ce contenu, souvent couvert par le
-      <strong>secret professionnel</strong>, <strong>transite alors par
-      claude.ai</strong> lorsque vous l'y faites lire.
-    </p>
-    <p class="text-sm text-gray-500 mb-4">
-      Il permet aussi de lire les <strong>demandes de rendez-vous Bookings
-      en attente</strong> de votre décision, avec le <strong>nom et le
-      courriel du demandeur</strong>.
-    </p>
-    <p class="text-sm text-gray-500 mb-4">
-      {# 2026-10-05: the administration ledger joined the read access — its
-         read tool lost the separate accounting scope with the writes.
-         2026-11-10: the financial statements (get_financial_statements),
-         computed from the records this paragraph already names. #}
-      Cet accès inclut les <strong>soldes des fonds détenus en fidéicommis</strong>
-      (comptabilité en fidéicommis)&nbsp;: soldes par client et registre des
-      recettes et déboursés, ainsi que le <strong>registre
-      d'administration</strong>&nbsp;: les comptes d'opérations et les cartes
-      de crédit, leurs soldes, leur dernière conciliation et leurs écritures.
-      Il comprend aussi les <strong>états financiers</strong> du cabinet qui
-      en découlent (résultats, flux de trésorerie, bilan, TPS/TVQ), par mois,
-      par trimestre ou par année.
-      Il n'expose jamais le numéro de compte bancaire ni le transit.
-    </p>
-    <p class="text-sm text-gray-500 mb-6">
-      Sans la case ci-dessous, le connecteur ne peut rien créer ni modifier.
-      Vous pouvez révoquer cet accès en tout temps.
-    </p>
-
-    {# The write block is ASSEMBLED from the disclosure registry
-       (mcp/disclosure.py): one partial per write family, in the registry's
-       order — the ACCOUNTING family's among them since 2026-10-05, when its
-       separate box and scope left —, then the « jamais » list — each bullet
-       a NEVER entry, backed by a sweep of the connector's code
-       (tests/test_mcp_disclosure). A lot that adds a family appends a
-       partial and a registry entry; one that lifts a promise deletes its
-       NEVER, and this page follows. #}
-    <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-      <p class="font-medium">Écritures (facultatif)</p>
-      <p class="mt-1">
-        Si vous cochez la case ci-dessous, ce connecteur pourra&nbsp;:
-      </p>
-      {% for family in disclosure.write_families %}
-      {% include family.consent_template %}
-      {% endfor %}
-      <p class="mt-3 font-medium">Ce que le connecteur ne peut
-        <strong>jamais</strong> faire&nbsp;:</p>
-      <ul class="list-disc list-inside mt-1 space-y-1">
-        {% for never in disclosure.nevers %}
-        <li>{{ never }}{% if loop.last %}.{% else %}&nbsp;;{% endif %}</li>
-        {% endfor %}
-      </ul>
-      <p class="mt-3">
-        <strong>Rien ne peut être supprimé</strong> dans Athéna&nbsp;:
-        détacher une partie d'un dossier ou un mandataire d'un contact
-        retire un lien — le contact reste, et le retrait est inscrit au
-        journal des suppressions. Chaque
-        élément que le connecteur écrit directement est journalisé et marqué
-        comme provenant de Claude, avec l'heure de l'écriture&nbsp;; les
-        notes, tâches et événements qu'il <strong>crée</strong> — et le texte
-        qu'il ajoute à une note ou y remplace — portent en plus une mention
-        datée «&nbsp;… par Claude le …&nbsp;». Les notes, tâches,
-        événements et contacts qu'il écrit se synchronisent vers votre
-        téléphone via DavX5 — sauf ceux d'un dossier fermé ou archivé.
-      </p>
-    </div>
+    <ul class="list-disc list-inside mt-2 mb-6 space-y-1 text-sm text-gray-700">
+      <li>dossiers, contacts, agenda, notes, gabarits, facturation et budgets&nbsp;;</li>
+      <li>le texte des documents, souvent couverts par le <strong>secret
+        professionnel</strong>&nbsp;: il <strong>transite par claude.ai</strong>
+        quand vous l'y faites lire&nbsp;;</li>
+      <li>le fidéicommis, le registre d'administration et les états
+        financiers, sans numéro de compte ni de transit&nbsp;;</li>
+      <li>les demandes Bookings en attente, avec le nom et le courriel du
+        demandeur.</li>
+    </ul>
 
     <form method="post" action="/oauth/authorize" class="space-y-6">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -107,19 +48,45 @@
       {# The ONLY path to a write grant — the accounting tools included.
          Default unchecked; the server treats an absent field as read-only,
          so an early submit fails closed. #}
-      <label class="flex items-start gap-3 p-4 bg-gray-50 rounded-xl cursor-pointer">
-        <input type="checkbox" name="grant_write" value="on"
-               class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-        <span class="text-sm text-gray-700">
-          <span class="font-medium">Autoriser les écritures</span>
-          <span class="block text-gray-500 mt-1">
-            {# Derived: one clause per write family, then the short
-               « jamais » clauses (mcp/disclosure.write_summary_fr). #}
-            {{ disclosure.write_summary }}{% if params.write_requested %} Le
-            client a demandé cet accès.{% endif %}
+      <div class="space-y-3">
+        <label class="flex items-start gap-3 p-4 bg-gray-50 rounded-xl cursor-pointer">
+          <input type="checkbox" name="grant_write" value="on"
+                 class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+          <span class="text-sm text-gray-700">
+            <span class="font-medium">Autoriser aussi les écritures</span>
+            <span class="block text-gray-500 mt-1">Sans cette case, Claude ne
+              peut rien créer ni modifier.{% if params.write_requested %} Le
+              client a demandé cet accès.{% endif %}</span>
           </span>
-        </span>
-      </label>
+        </label>
+
+        {# WRITE — ASSEMBLED from mcp/disclosure.py: one line per write
+           family (title_fr, consent_fr), then one clause per promise
+           (Never.fr), each list in the registry's order. A lot that adds a
+           family adds its line there; one that lifts a promise deletes it
+           there, and this page follows. #}
+        <div class="p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          <p class="font-medium">Avec la case, Claude pourra&nbsp;:</p>
+          <ul class="list-disc list-inside mt-1 space-y-1">
+            {% for family in disclosure.write_families %}
+            <li><strong>{{ family.title_fr }}</strong>&nbsp;: {{ family.consent_fr }}</li>
+            {% endfor %}
+          </ul>
+          <p class="mt-3 font-medium">Jamais&nbsp;:</p>
+          <ul class="list-disc list-inside mt-1 space-y-1">
+            {% for never in disclosure.nevers %}
+            <li>{{ never }}</li>
+            {% endfor %}
+          </ul>
+          <p class="mt-3">
+            Tout ce que Claude écrit est journalisé et marqué comme provenant
+            de Claude&nbsp;; contacts, notes, tâches et événements vont aussi à
+            votre téléphone.
+          </p>
+        </div>
+      </div>
+
+      <p class="text-sm text-gray-500">Vous pouvez révoquer cet accès en tout temps.</p>
 
       <div class="flex gap-3">
         <button type="submit" name="decision" value="allow"

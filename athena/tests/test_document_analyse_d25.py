@@ -798,16 +798,15 @@ def test_the_texts_say_a_new_analysis_is_always_presumed():
     the mark of a kept confirmation that no longer exists.)"""
     from mcp import disclosure
 
-    consent = (_ATHENA / "templates" / "mcp" / "families" / "_analyse.html"
-               ).read_text(encoding="utf-8").replace("&nbsp;", " ")
-    flat = " ".join(consent.split())
-    assert "toujours <strong>présumée</strong>, ses alertes affichées" in flat
-    assert ("votre confirmation d'une analyse précédente couvrait celle-là, "
-            "pas celle-ci") in flat
-    assert "confirmée avant cette analyse" not in flat
-    assert "avec votre confirmation" not in flat
-    assert "celle-là est <strong>conservée</strong>" in flat
     families = {f.key: f for f in disclosure.FAMILIES}
+    # REWRITTEN deliberately (2026-11-10, the consent screen cut short at the
+    # lawyer's request): the ANALYSE partial's detail — a previous
+    # analysis's confirmation, his category kept — is the tool's description
+    # (pinned below); the screen's line says every analysis is PRESUMED.
+    line = families["analyse"].consent_fr
+    assert "à titre <strong>présumé</strong> jusqu'à votre confirmation" in line
+    assert "confirmée avant cette analyse" not in line
+    assert "avec votre confirmation" not in line
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it.
     assert "never over the lawyer's" in families["analyse"].instructions_en
     from mcp import tools as _tools

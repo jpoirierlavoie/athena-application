@@ -1730,12 +1730,16 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 - In claude.ai: **Settings → Connectors → Add custom connector →**
   `https://yourdomain.example/mcp`, then complete Firebase login + MFA on the
   consent screen and click **« Autoriser »**.
-- **Read the consent screen before ticking.** Its write block — one
-  paragraph per write family, the accounting registers' among them, then
-  the list of what the connector can NEVER do, then the box's summary — is
-  assembled from `athena/mcp/disclosure.py`, the same registry INSTRUCTIONS
-  come from, and each « never » is backed by a sweep of the connector's
-  code. ONE box, « Autoriser les écritures », grants every write tool, and
+- **Read the consent screen before ticking.** It is short since 2026-11-10
+  (your request: « cut to the chase »): what is read, in four lines; then
+  the write box, one line per write family — the accounting registers'
+  among them —, and one short clause per thing the connector can NEVER do.
+  The write lines and the « jamais » clauses are assembled from
+  `athena/mcp/disclosure.py`, the same registry INSTRUCTIONS come from, and
+  each « never » is backed by a sweep of the connector's code; the detail
+  of each tool's rules is in its description, which Claude reads.
+  `tests/test_mcp_oauth.py` holds the screen to a word budget. ONE box,
+  « Autoriser aussi les écritures », grants every write tool, and
   it is always offered: no switch hides it any more. The scope is frozen
   when you click « Autoriser »: a later release that changes what a write
   tool can do (a new family, a lifted « never », or a behaviour change such
@@ -1791,18 +1795,19 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   contact's fiche, and it is refused over a check you decided yourself.
   §15 « Lot 4 » verifies both on test data.
 - **The accounting registers are written under the same box as every
-  other write**, « Autoriser les écritures » — the ACCOUNTING family
+  other write**, « Autoriser aussi les écritures » — the ACCOUNTING family
   (`record_trust_entry`, `record_admin_entry`, `update_admin_entry`,
   `clear_register_entries`, `reverse_register_entry`); their read,
   `get_admin_ledger`, is an ordinary read like the trust reads. Until
   2026-10-05 they had a scope of their own, `athena:comptabilite`, a second
   box « Autoriser la comptabilité » and a switch that defaulted to off; the
   lawyer removed all three that day. The
-  write block says what they do — inscribing trust and administration
-  entries (a fee payment, an encaissement: each RECORDS A PAYMENT on the
-  invoice), correcting an editable administration entry, clearing at the
-  statement date, reversing — and the « jamais » list every write shares
-  says what they never do: delete an entry (a trust entry is corrected only
+  write block's ACCOUNTING line names what they do — inscribing,
+  correcting, clearing, reversing —, and the « jamais » list every write
+  shares names, in a few words each (since 2026-11-10), what they never do;
+  in full, as INSTRUCTIONS and the tools' descriptions state it (a fee
+  payment, an encaissement: each RECORDS A PAYMENT on the invoice): delete
+  an entry (a trust entry is corrected only
   by a reversal, an administration entry while it stays editable, then by
   a reversal), start, complete or abandon a reconciliation, create or
   modify an account or attach a receipt, transfer funds between dossiers

@@ -180,8 +180,11 @@ def test_the_instructions_and_the_consent_name_them_with_their_ceiling():
     text = endpoint.INSTRUCTIONS
     assert "`create_time_entries_bulk`" in text and "`create_expenses_bulk`" in text
     assert f"up to {tools.ENTRY_BULK_MAX} rows, ALL OR NOTHING" in text
-    assert disclosure.consent_context()["entry_bulk_max"] == tools.ENTRY_BULK_MAX
-    assert "par lots" in disclosure.write_summary_fr()
+    # The consent screen's CREATE line says the batches (its partial and
+    # the box's summary, with their ceiling, left on 2026-11-10: the
+    # ceiling is the tools' and INSTRUCTIONS').
+    create = next(f for f in disclosure.FAMILIES if f.key == "create")
+    assert "par lots" in create.consent_fr
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -1050,12 +1050,13 @@ def test_the_texts_name_the_workflow():
     assert "each literal becomes its {{field}}" in (
         tools.TOOLS["create_template"]["description"])
     templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
-    assert "transformé en gabarit" in templates.checkbox_summary_fr
-    consent = " ".join((_ATHENA / "templates" / "mcp" / "families"
-                        / "_templates.html").read_text(encoding="utf-8").split())
-    assert "<strong>transformé en gabarit</strong>" in consent
-    assert "relisez un gabarit transformé" in consent
-    assert "{{" not in consent          # Jinja would read it as an expression
+    # The TEMPLATES line of the consent screen (its partial left on
+    # 2026-11-10, the screen cut short): the workflow named, the reading
+    # asked of the lawyer.
+    line = templates.consent_fr
+    assert "<strong>transformé en gabarit</strong>" in line
+    assert "relisez" in line
+    assert "{{" not in line             # Jinja would read it as an expression
     desc = tools.TOOLS["preview_templatize"]["description"]
     assert "CASE-SENSITIVE" in desc and "Writes nothing" in desc
     assert "preview_templatize" in tools.TOOLS["create_template"]["description"]

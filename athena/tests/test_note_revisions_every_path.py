@@ -447,14 +447,14 @@ def test_every_surface_says_the_history_is_kept_whatever_the_path():
     # not claim the revision is the connector's alone.
     instructions = mcp_endpoint.INSTRUCTIONS
     assert "`update_note`" in instructions
-    consent = (_ATHENA / "templates" / "mcp" / "families"
-               / "_agenda.html").read_text(encoding="utf-8")
-    assert "sur votre téléphone ou par un ajout" in consent
+    # The AGENDA consent partial that said it too left the screen on
+    # 2026-11-10 (cut short at the lawyer's request): the two descriptions
+    # below are where a caller reads it.
     append = mcp_tools.TOOLS["append_to_note"]["description"]
     assert "kept in its revision history" in append
     update = mcp_tools.TOOLS["update_note"]["description"]
     assert "in the app or on the phone too" in update
-    for text in (instructions, consent, append, update):
+    for text in (instructions, append, update):
         lowered = text.lower()
         assert "only the connector" not in lowered
         assert "seul le connecteur" not in lowered

@@ -514,7 +514,9 @@ def test_consent_page_shows_client_name(client, fake):
 
 def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fake):
     """The screen is the only human-readable description of what the token
-    can do; nothing else couples it to the tool registry."""
+    can do. Cut short on 2026-11-10 (the lawyer: « far too long and dense —
+    cut to the chase »): what it must still say is pinned here in its new
+    words, and every sentence an earlier screen got WRONG stays absent."""
     client_doc = _register_client(fake)
     _login(client)
     _, challenge = _pkce_pair()
@@ -522,173 +524,77 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "/oauth/authorize", query_string=_authorize_params(client_doc, challenge)
     )
     body = page.data.decode("utf-8")
-    # The old copies were flat misrepresentations once write tools exist:
-    # first « read-only », then « notes only » once WP16/WP17 landed.
-    assert "Aucune modification de vos données n'est possible" not in body
-    assert "demande un accès <strong>en lecture seule</strong>" not in body
-    assert "Autoriser l'écriture des notes" not in body
-    # « création seulement » became false the day complete_task landed:
-    # closing a task IS a modification, and a screen that denied it would
-    # grant one thing while describing another. Whitespace-normalized so a
-    # Jinja line break inside a sentence cannot break the assertion.
     flat = " ".join(body.split())
-    assert "création seulement" not in flat
-    # Lot Q killed the create-only ceiling and the « factures … intouchables »
-    # claim in the same breath: the connector now creates contacts, dossiers
-    # and imported invoices, and CORRECTS four kinds of record. A screen that
-    # still said « et uniquement, créer » would grant one thing and describe
-    # another — the exact failure these assertions exist to catch.
-    assert "et <strong>uniquement</strong>, créer" not in flat
-    assert "une seule modification" not in flat
-    # The grant control, every write family, and the cascade the lawyer is
-    # consenting to.
+    # The old copies' misrepresentations, each false once the write tools
+    # existed (read-only, notes only, create-only, « jamais » bullets the
+    # lots 3b, 4b and 5 rewrote) — absent, whatever the screen's length.
+    for gone in (
+        "Aucune modification de vos données n'est possible",
+        "demande un accès <strong>en lecture seule</strong>",
+        "Autoriser l'écriture des notes",
+        "création seulement",
+        "et <strong>uniquement</strong>, créer",
+        "une seule modification",
+        "écrire au <strong>fidéicommis</strong>",
+        "toucher au <strong>fidéicommis</strong>",
+        "sauf avec la case",
+        "émettre un nouveau numéro de facture",
+        "seul un encaissement inscrit dans l'application",
+        "le budget des deux dossiers en tient compte",
+        "il ne sera jamais réattribué, même si",
+        "faute d'historique",
+        "le numéro se libère",
+        "signée",
+        "Chaque écriture est horodatée",
+        "fermer un dossier doit vider sa collection DavX5",
+        "à la vérification d'identité ou à la vérification des conflits",
+        "aucune des cases",
+    ):
+        assert gone not in flat, gone
+    # READ — the hand-written list: what is read, the privilege it carries
+    # and where it goes, and what is never shown.
+    for must in (
+        "demande à <strong>lire</strong> Pallas Athéna",
+        "facturation et budgets",
+        "le texte des documents, souvent couverts par le <strong>secret "
+        "professionnel</strong>&nbsp;: il <strong>transite par "
+        "claude.ai</strong> quand vous l'y faites lire",
+        "le fidéicommis, le registre d'administration et les états "
+        "financiers, sans numéro de compte ni de transit",
+        "les demandes Bookings en attente, avec le nom et le courriel du "
+        "demandeur",
+    ):
+        assert must in flat, must
+    # WRITE — the box, what it does, and what the lines must still say: the
+    # one effect that reaches a client, the number an invoice consumes for
+    # ever, what stays presumed, what the phone receives, what never happens.
     assert 'name="grant_write"' in body
-    assert "Autoriser les écritures" in flat
-    assert "clore une <strong>tâche</strong>" in flat or "clore une tâche" in flat
-    assert "le protocole entier se referme" in flat
-    assert "des notes dans un dossier" in flat
-    assert "des tâches" in flat
-    assert "des événements au calendrier" in flat
-    assert "des entrées de temps et des déboursés" in flat
-    # 2026-09-30 — the bulk creators: the batch and its all-or-nothing
-    # rule said where the lawyer reads the grant, the ceiling the registry's.
-    assert (f"un à un ou par lots d'au plus {tools.ENTRY_BULK_MAX}"
-            in flat)
-    assert "<strong>en entier ou pas du tout</strong>" in flat
-    assert "remplir des champs encore vides" in flat
-    assert "jamais écraser une valeur existante" in flat
-    assert "significations et des événements de prescription" in flat
-    # The lot Q families, named on the screen the lawyer actually reads.
-    assert "<strong>contacts</strong>" in flat
-    assert "<strong>dossiers</strong>" in flat
-    assert "<strong>factures reprises</strong>" in flat
-    assert "<strong>brouillon</strong>" in flat
-    assert "numéro et leur date d'origine" in flat
-    assert "tant qu'ils ne sont pas facturés" in flat
-    assert "<strong>remplace</strong> la valeur nommée" in flat
-    # And what stays impossible must be said as plainly. Since 2026-10-05
-    # the accounting tools are write tools like the others: the payment
-    # bullet names the TWO register entries a payment can be — true with
-    # the write box ticked or not —, and what the register tools never do
-    # stands in the same « jamais » list; the « écrire au fidéicommis »
-    # bullet left with the separate grant it was about.
-    assert "<strong>Rien ne peut être supprimé</strong>" in flat
-    assert ("inscrire un <strong>paiement</strong> autrement que par une "
-            "écriture aux registres comptables — un encaissement au compte "
-            "d'administration ou un paiement d'honoraires au fidéicommis, qui "
-            "inscrit lui-même le paiement sur la facture") in flat
-    assert "retirer du fidéicommis <strong>en espèces</strong>" in flat
-    assert "<strong>virer des fonds</strong> du fidéicommis" in flat
-    assert "écrire au <strong>fidéicommis</strong>" not in flat
-    assert "toucher au <strong>fidéicommis</strong>" not in flat
-    assert "sauf avec la case" not in flat
-    # Lot 3b rewrote these deliberately: issuing a NEW invoice number left
-    # the « jamais » list for the BILL family — where the screen says the
-    # number is consumed for ever — and the connector voids (update_invoice),
-    # so the repair path is named without « dans l'application » alone.
-    assert "émettre un nouveau numéro de facture" not in flat
-    assert "consomme définitivement le prochain numéro" in flat
-    assert "marquer envoyée n'envoie rien au client" in flat
-    assert ("marquer une facture <strong>payée</strong> par un changement de "
-            "statut — seul un paiement inscrit aux registres comptables le "
-            "fait") in flat
-    # The old bullet ended « seul un encaissement inscrit dans l'application
-    # le fait » — false since the connector records one too (an
-    # encaissement or a trust fee payment, through the write box).
-    assert "seul un encaissement inscrit dans l'application" not in flat
-    assert "<strong>envoyer</strong> une facture à qui que ce soit" in flat
-    # Lot 3b (the text step): what the lawyer must know before ticking —
-    # only a brouillon is corrected, a created invoice freezes its sources
-    # until voided, every budget version is kept as proof, and the READ
-    # grant now covers budgets (get_budget).
-    assert "<strong>seul un brouillon se corrige</strong>" in flat
-    assert "figés — sauf leur phase du litige — jusqu'à son annulation" in flat
-    assert "la preuve de ce qui a été annoncé au client, et quand" in flat
-    assert "facturation, budgets et <strong>soldes en fidéicommis</strong>" in flat
-    # The repair path exists and must be named: voiding releases every
-    # source. The old copy called the freeze permanent, which was false.
-    assert "<strong>annulez la facture</strong> — ici ou dans l'application" in flat
-    # Completeness review of lot 3: a moved entry's budget effect is said
-    # as budget.aggregate_actuals computes it — its share follows it, and a
-    # non-billable time entry counts in NO budget. « le budget des deux
-    # dossiers en tient compte » implied both budgets always move.
-    assert "le temps non facturable ne compte dans aucun budget" in flat
-    assert "le budget des deux dossiers en tient compte" not in flat
-    # Fixups of lot 3 — invoice numbers: the COUNTER never reissues one
-    # (its promise, said with its subject), and an imported invoice's number
-    # can be imported again once the voided invoice is deleted.
-    assert "la numérotation de l'année ne le réattribue jamais" in flat
-    assert "il ne sera jamais réattribué, même si" not in flat
-    assert "ce numéro repris peut être importé de nouveau" in flat
-    # Fixups of lot 3 — D18: a category stored before the marker is the
-    # lawyer's, except « autre »; the lot-2A caveat that said the opposite
-    # (« faute d'historique… ») is gone.
-    assert ("Une catégorie posée <strong>avant</strong> cette mise à jour "
-            "est tenue pour la vôtre et n'est jamais remplacée") in flat
-    assert "faute d'historique" not in flat
-    # Lot 0a (disclosure step) — three sentences of this screen were false.
-    # Voiding does NOT free the number; only the notes, tasks and events the
-    # connector CREATES carry a dated mention (every write is journaled and
-    # stamped, none is « signed »); closing a task never reopens one.
-    assert "le numéro se libère" not in flat
-    assert "son numéro reste attaché à la facture annulée" in flat
-    assert "signée" not in flat
-    assert "Chaque écriture est horodatée" not in flat
-    assert "tâches et événements qu'il <strong>crée</strong>" in flat
-    assert "journalisé et marqué comme provenant de Claude" in flat
-    assert "<strong>sauf leur phase du litige</strong>" in flat
-    # Lot 1b: « rouvrir une tâche » moved from the NEVER list to a
-    # capability (the AGENDA family) — rewritten deliberately, so the phrase
-    # is now pinned where it is TRUE; the narrower promise that replaced
-    # the never (no silent un-cancel) must be on the page too.
-    assert "<strong>rouvrir une tâche</strong> terminée" in flat
-    assert "<strong>défaire une annulation</strong> en silence" in flat
-    assert "le texte remplacé est conservé" in flat
-    # Lot 4b (the text step): the screen the lawyer reads says what a
-    # dossier status change does to his PHONE — and that an incomplete
-    # drain is reported and repaired —, that a detached party or mandataire
-    # is a LINK (the contact stays, the detach journaled), and that a
-    # compliance check Claude inscribes is PRESUMED and counts as not done
-    # until he confirms it. The two « jamais » entries the lot falsified
-    # are gone from the list (the dossier-status bullet, and « … à la
-    # vérification d'identité ou … des conflits » beside the trust one).
-    assert "changer le <strong>statut</strong> d'un dossier" in flat
-    assert ("retire ses tâches, notes et événements de votre téléphone"
-            in flat)
-    assert "le connecteur le <strong>signale</strong>" in flat
-    assert "«&nbsp;Resynchroniser le téléphone&nbsp;»" in flat
-    assert "<strong>détacher</strong> une partie" in flat
-    assert ("retire un lien — le contact reste, et le retrait est inscrit au "
-            "journal des suppressions") in flat
-    assert "inscrit par Claude le … — à confirmer" in flat
-    assert "ne compte <strong>pas comme faite</strong>" in flat
-    assert ("<strong>confirmer</strong> une vérification d'identité ou de "
-            "conflits d'intérêts") in flat
-    assert "fermer un dossier doit vider sa collection DavX5" not in flat
-    assert ("à la vérification d'identité ou à la vérification des conflits"
-            not in flat)
-    # 2026-10-05 — the READ paragraph names the administration ledger: its
-    # read tool, get_admin_ledger, lost the separate accounting scope, so
-    # the read grant covers it — said before the write block, where a
-    # read-only grant reads it.
-    ledger = ("ainsi que le <strong>registre d'administration</strong>&nbsp;: "
-              "les comptes d'opérations et les cartes de crédit, leurs soldes, "
-              "leur dernière conciliation et leurs écritures")
-    assert ledger in flat
-    assert flat.index(ledger) < flat.index("Écritures (facultatif)")
-    # 2026-11-10 — the financial statements (get_financial_statements), read
-    # with the same grant: said beside the registers they add up.
-    statements = ("Il comprend aussi les <strong>états financiers</strong> du "
-                  "cabinet qui en découlent (résultats, flux de trésorerie, "
-                  "bilan, TPS/TVQ), par mois, par trimestre ou par année.")
-    assert statements in flat
-    assert flat.index(ledger) < flat.index(statements) < flat.index("Écritures (facultatif)")
-    # The write block and its box render on every consent screen — there is
-    # no switch to hide them — and the page speaks of its ONE box.
-    assert "Écritures (facultatif)" in flat
-    assert "Sans la case ci-dessous, le connecteur ne peut rien créer ni modifier." in flat
-    assert "aucune des cases" not in flat
-    # Default state is unchecked — least privilege.
+    for must in (
+        "Autoriser aussi les écritures",
+        "Sans cette case, Claude ne peut rien créer ni modifier.",
+        "un refus annule la réunion Outlook et <strong>en avise le "
+        "client</strong>",
+        "<strong>consommé pour toujours</strong>",
+        "marquer envoyée (rien n'est envoyé) ou annuler une facture",
+        "à titre <strong>présumé</strong> jusqu'à votre confirmation",
+        "<strong>présumées</strong> jusqu'à votre confirmation",
+        "<strong>transformé en gabarit</strong>",
+        "(le contact reste)",
+        "(votre téléphone suit)",
+        "<strong>supprimer</strong> quoi que ce soit",
+        "inscrire un <strong>paiement</strong> hors des registres comptables",
+        "marquer une facture <strong>payée</strong> sans paiement inscrit",
+        "<strong>envoyer</strong> une facture",
+        "<strong>confirmer</strong> une vérification d'identité ou de "
+        "conflits",
+        "<strong>virer des fonds</strong> du fidéicommis",
+        "retirer du fidéicommis <strong>en espèces</strong>",
+        "journalisé et marqué comme provenant de Claude",
+        "vont aussi à votre téléphone",
+        "Vous pouvez révoquer cet accès en tout temps.",
+    ):
+        assert must in flat, must
+    # Default state is unchecked — least privilege — and it is the ONE box.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)
     consent_form = body[body.index('<form method="post" action="/oauth/authorize"'):]
@@ -696,64 +602,87 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "grant_write"]
 
 
+def test_the_consent_screen_stays_short(client, fake):
+    """The lawyer, 2026-11-10: the screen was « far too long and dense » —
+    about 4 600 words: a partial per write family, a checkbox summary that
+    restated them, twenty long « jamais » bullets. It now says each thing
+    once, in a few words, and this budget keeps it so: a line that grows
+    back fails here first. Measured with the client asking for write (the
+    longest screen)."""
+    budget = 450
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge,
+                            scope="athena:read athena:write")
+    body = page.data.decode("utf-8")
+    assert "Le client a demandé cet accès." in _flat(body)
+    assert _visible_words(body) <= budget, _visible_words(body)
+    # The budget bites: one family line grown back to a paragraph fails it.
+    grown = body.replace("</li>", " " + "mot " * (budget // 2) + "</li>", 1)
+    assert _visible_words(grown) > budget
+
+
 def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
+def _visible_words(body: str) -> int:
+    """The words a reader sees on the consent card: from its title to the
+    end of ITS form (the page's frame has forms of its own before it),
+    scripts, tags and entities out."""
+    start = body.index("<h1")
+    card = body[start:body.index("</form>", start)]
+    card = re.sub(r"<script\b.*?</script>", " ", card, flags=re.S)
+    card = re.sub(r"<[^>]+>", " ", card)
+    card = re.sub(r"&[a-z]+;", " ", card)
+    return len([w for w in card.split() if any(c.isalnum() for c in w)])
+
+
 def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake):
-    """DERIVED, both ways: every write family's partial and every NEVER
-    bullet reach the page — so a family added to mcp/disclosure is
-    described to the lawyer by construction, and a promise deleted there
-    leaves the screen with it. The checkbox summary is the registry's."""
-    client_doc = _register_client(fake)
-    _, challenge = _pkce_pair()
-    _, page = _consent_form(client, client_doc, challenge)
-    flat = _flat(page.data.decode("utf-8"))
-    context = disclosure.consent_context()
-    # Every family is a write family since 2026-10-05 — ACCOUNTING too, its
-    # separate block gone — and every promise is a bullet of the one list.
-    assert [f.key for f in context["write_families"]] == [
-        f.key for f in disclosure.FAMILIES if f.tools]
-    assert "accounting" in [f.key for f in context["write_families"]]
-    assert len(context["nevers"]) == len(disclosure.NEVERS)
-    app = client.application
-    with app.app_context():
-        for family in context["write_families"]:
-            partial = app.jinja_env.get_template(family.consent_template).render(
-                disclosure=context)
-            assert _flat(partial) in flat, family.key
-    for never in context["nevers"]:
-        assert f"<li>{_flat(str(never))}" in flat, never
-    # Rendered in registry order, the families before the « jamais » list.
-    first = [flat.index(_flat(app.jinja_env.get_template(
-        f.consent_template).render(disclosure=context))[:40])
-        for f in context["write_families"]]
-    assert first == sorted(first)
-    assert first[-1] < flat.index("ne peut <strong>jamais</strong> faire")
-    assert _flat(str(context["write_summary"])) in flat
-    # The known false claims are absent from the rendered screen too — the
-    # list is the one test_mcp_disclosure sweeps the connector's strings
-    # with, shared rather than re-typed here, so a partial cannot bring
-    # back a sentence the registry's texts were purged of.
-    from tests.test_mcp_disclosure import _false_claims_in
-    assert _false_claims_in(flat) == []
-
-
-def test_the_write_block_uses_only_compiled_classes(client, fake):
-    """The family partials are new files: a class absent from the compiled
-    artifact silently does not apply (CLAUDE.md item 6)."""
+    """DERIVED, both ways: every write family's line and every promise's
+    clause reach the page, in the registry's order — so a family added to
+    mcp/disclosure is described to the lawyer by construction, and a promise
+    deleted there leaves the screen with it."""
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     _, page = _consent_form(client, client_doc, challenge)
     body = page.data.decode("utf-8")
-    start = body.index('<p class="font-medium">Écritures (facultatif)</p>')
-    end = body.index("</form>", start)
-    # The span covers every family partial — the ACCOUNTING one included
-    # since its separate block left (2026-10-05) — and the write box.
-    assert "<strong>Inscrire au fidéicommis</strong>" in body[start:end]
-    classes = {c for block in re.findall(r'class="([^"]+)"', body[start:end])
+    context = disclosure.consent_context()
+    assert set(context) == {"write_families", "nevers"}
+    # Every family is a write family since 2026-10-05 — ACCOUNTING too.
+    assert [f.key for f in context["write_families"]] == [
+        f.key for f in disclosure.FAMILIES if f.tools]
+    assert "accounting" in [f.key for f in context["write_families"]]
+    assert len(context["nevers"]) == len(disclosure.NEVERS)
+    block = _flat(_write_block(body))
+    jamais = block.index("Jamais&nbsp;:")
+    lines = [block.index(f"<li><strong>{f.title_fr}</strong>&nbsp;: "
+                         f"{_flat(str(f.consent_fr))}</li>")
+             for f in context["write_families"]]
+    assert lines == sorted(lines) and lines[-1] < jamais
+    clauses = [block.index(f"<li>{_flat(str(n))}</li>", jamais)
+               for n in context["nevers"]]
+    assert clauses == sorted(clauses)
+    # The known false claims are absent from the rendered screen too — the
+    # list test_mcp_disclosure sweeps the connector's strings with.
+    from tests.test_mcp_disclosure import _false_claims_in
+    assert _false_claims_in(_flat(body)) == []
+
+
+def test_the_write_block_uses_only_compiled_classes(client, fake):
+    """A class absent from the compiled artifact silently does not apply
+    (CLAUDE.md item 6): every class of the consent card, its write block
+    included, is in the stylesheet."""
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge)
+    body = page.data.decode("utf-8")
+    start = body.index("<h1")
+    card = body[start:body.index("</form>", start)]
+    assert "<strong>Comptabilité</strong>" in _write_block(body)
+    classes = {c for block in re.findall(r'class="([^"]+)"', card)
                for c in block.split()}
-    assert {"list-disc", "mt-3", "font-medium",
+    assert {"list-disc", "mt-3", "font-medium", "bg-amber-50",
             "text-indigo-600", "focus:ring-indigo-500"} <= classes
     css_path = next(iter(sorted(
         (p for p in os.listdir(os.path.join(ATHENA_DIR, "static", "vendor"))
@@ -886,74 +815,46 @@ def _granted(client, fake, client_doc, challenge, *, scope="athena:read", **tick
 
 
 def _write_block(body: str) -> str:
-    """The write block as rendered: from its title to the consent form —
-    the family partials, the « jamais » list and the closing paragraph."""
-    start = body.index('<p class="font-medium">Écritures (facultatif)</p>')
-    return body[start:body.index('<form method="post" action="/oauth/authorize"', start)]
+    """The write block as rendered: from the write box's label to the
+    revocation line — the box, the family lines, the « jamais » list and
+    the provenance line."""
+    start = body.rindex("<label", 0, body.index('name="grant_write"'))
+    return body[start:body.index("Vous pouvez révoquer", start)]
 
 
 def test_the_write_block_says_what_the_accounting_tools_do_and_never_do(client, fake):
-    """The ACCOUNTING family's partial — the D14 rules beside the capability
-    they bound — sits IN the write block, before its « jamais » list, and
-    the promises the accounting tools keep are bullets of that list: told to
-    everyone who reads « Autoriser les écritures », since that box is what
-    grants them.
+    """The ACCOUNTING family's line sits in the write block, before the
+    « jamais » list, and the promises the accounting tools keep are clauses
+    of that list: told to everyone who reads « Autoriser aussi les
+    écritures », since that box is what grants them.
 
-    REWRITTEN on 2026-10-05 from the lot 5b test of the separate
-    accounting block. Every fragment of the partial is kept; the block's own
-    intro (« réellement survenues à la banque ») and closing paragraph
-    (« Le connecteur n'efface jamais une écriture. ») left with the block —
-    the « register_delete » bullet says the latter —, and so did the list of
-    tool titles under its box: the write box names capabilities, not tools.
-    The known false claims are scanned on this page as ever."""
+    REWRITTEN on 2026-11-10, when the lawyer had the screen cut short: the
+    D14 rules the family's partial spelled out (art. 58, the same-operation
+    fee payment, the clearing ceiling, the reconciled period) live in the
+    register tools' descriptions, which Claude reads, and
+    tests/test_mcp_accounting.py pins their behaviour."""
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     _, page = _consent_form(client, client_doc, challenge)
     body = page.data.decode("utf-8")
     flat = _flat(body)
     block = _flat(_write_block(body))
-    for fragment in (
-        "<strong>Inscrire au fidéicommis</strong>",
-        "réellement survenus à la banque",
-        "art.&nbsp;58",
-        "<strong>dans la même opération</strong>",
-        "fonds <strong>compensés</strong>",
-        "qui n'impute aucune provision",
-        f"Compenser</strong> jusqu'à {tools.REGISTER_CLEAR_MAX}",
-        "date du relevé bancaire",
-        "période déjà <strong>conciliée</strong>",
-        "marquée comme provenant de Claude",
-        "c'est la seule correction d'une écriture du fidéicommis, et d'une "
-        "écriture d'administration qui n'est plus modifiable",
-        # REWRITTEN in the review of lot 5, step 5 (money lens): « et
-        # jamais contre-passée » named only the ORIGINAL of a pair — the
-        # reversal itself is locked too (models/admin_ledger
-        # ._entry_lock_reason, reverses_id).
-        "à aucun paiement d'honoraires ni à aucun paiement de carte, ni "
-        "contre-passée ni elle-même une contre-passation",
-        "(les 25 dernières conservées)",
-    ):
-        assert fragment in block, fragment
-    for gone in ("Une écriture inscrite par erreur ne s'efface pas",
-                 "c'est la seule correction, et l'original",
-                 "chaque correction étant conservée",
-                 "et jamais contre-passée"):
-        assert gone not in block, gone
-    # What the accounting tools never do: the bullets that stood beside the
-    # accounting box until 2026-10-05, now in the write block's one list —
-    # after every family partial, the accounting one included.
-    jamais = block.index("ne peut <strong>jamais</strong> faire")
-    assert block.index("<strong>Inscrire au fidéicommis</strong>") < jamais
+    (accounting,) = [f for f in disclosure.FAMILIES if f.key == "accounting"]
+    jamais = block.index("Jamais&nbsp;:")
+    line = (f"<li><strong>{accounting.title_fr}</strong>&nbsp;: "
+            f"{_flat(accounting.consent_fr)}</li>")
+    assert 0 <= block.index(line) < jamais
+    assert "compenser et contre-passer" in line
     for key in ("register_delete", "register_setup", "register_transfer",
                 "trust_withdrawal", "fee_invoice", "fee_payee",
                 "account_number"):
         (never,) = [n for n in disclosure.NEVERS if n.key == key]
-        assert f"<li>{_flat(never.fr)}" in block[jamais:], key
+        assert f"<li>{_flat(never.fr)}</li>" in block[jamais:], key
     # Nothing of the separate grant survives on the page.
     assert 'name="grant_comptabilite"' not in body
-    assert "Autoriser la comptabilité" not in flat
-    assert "Comptabilité (facultatif)" not in flat
-    assert "autorisation distincte" not in flat
+    for gone in ("Autoriser la comptabilité", "Comptabilité (facultatif)",
+                 "autorisation distincte"):
+        assert gone not in flat, gone
     from tests.test_mcp_disclosure import _false_claims_in
     assert _false_claims_in(flat) == []
 
