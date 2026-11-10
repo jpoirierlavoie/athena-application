@@ -32,29 +32,88 @@ first depended on the selection: the full run's first importer patched it
 modules got the real client for the whole session (``test_budget`` then read
 ``settings/cabinet``, and eleven ``test_mcp_output_schemas`` tests ran their
 reads, until 2026-11-06). So this file imports ``models`` once, under the
-same patch 179 modules use: every selection starts where the full run does.
+same patch the test modules use: every selection starts where the full run
+does.
 And as a backstop, every Google gRPC client (Firestore, Secret Manager,
 Cloud Tasks, Cloud Logging) opens its channel through
 ``google.api_core.grpc_helpers.create_channel`` on its first RPC: a
 ``*.googleapis.com`` target is refused there AND recorded, because the
-readers that hit it fail open — they swallow the error — so only the
-teardown check below fails the test.
+readers that hit it fail open — they swallow the error — so only the check
+below fails the test.
+
+Nor does a test look up credentials. ``google.auth.default`` reads the
+developer's ADC and, for a user account, runs ``gcloud config get project``
+— on Cloud Build, it takes the build's own account — before any client
+exists; until 2026-11-09 a tracing test did it on every run without a single
+RPC, so the channel guard never saw it. It is refused — under both of its
+names, the public one and its private home ``google.auth._default.default``
+— with the ``DefaultCredentialsError`` callers already expect when there is
+none, and recorded with the innermost line of this repository's own code
+behind the call (never a library's, nor a virtualenv's kept inside athena/)
+or, when there is none, with the guard's direct caller; and the same check
+fails the test. A test that needs credentials stubs them — the way
+tests/test_tracing_setup.py stubs ``opentelemetry.gcp_credential_provider``.
+A test's own monkeypatch of ``google.auth.default`` wins for that test, and
+is undone after it.
+
+Both guards are live before this file imports ``models``, so that import
+chain meets them too. The check runs once a test's whole teardown is over
+(``pytest_runtest_teardown``): what a class, module or package fixture
+records as it ends counts against the test it ends with. It drains both
+records at once; a record a thread adds meanwhile, or a fixture value's
+finalizer as pytest drops it after the check, waits for the next check, and
+so does one an interrupted teardown leaves under ``--pdb``, where pytest
+carries on. Whatever the plugins inside make of that teardown — the xfail
+plugin turns any exception into an expected failure, the unittest plugin can
+put a TestCase's leftover outcome in its place — the guard's failure is
+reported as a failure, with its message (``pytest_runtest_makereport``).
+What no test owns — collection, where the test modules' top-level code and
+this file's own import of ``models`` run, and what an interrupted run tears
+down after its last test — fails the session at its end and blames no test
+(``pytest_sessionfinish``). Last, at exit — after the interpreter has joined
+the tests' non-daemon threads and run the atexit handlers of ``models`` and
+of the tests — a reach that late fails the process, with status 1 whatever
+pytest returned (``_after_the_session``).
+
+A child pytest that runs this suite's files, or loads this file with ``-p``,
+carries these guards. A child that runs the real app carries its own prelude
+instead (tests/_real_app_probe.py), which refuses channels, network and the
+public ``google.auth.default`` — with a ``RuntimeError`` — but not its
+private home. Any other child carries none.
 """
 
+import atexit
 import logging
 import os
 import sys
 from unittest import mock
 
+import google.auth
+import google.auth._default
+import google.auth.exceptions
 import pytest
 from google.api_core import grpc_helpers
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ATHENA)
 
-with mock.patch("google.cloud.firestore.Client"):
-    import models  # noqa: E402
 
-assert isinstance(models.db, mock.MagicMock), type(models.db)
+def _after_the_session() -> None:
+    """At exit: what nothing else can report any more fails the process."""
+    problems = [f"during collection, {problem}"
+                for problem in _drain(_COLLECTION_REACHES)]
+    problems += [f"at exit, {problem}" for problem in _pending_reaches()]
+    if problems:
+        sys.stdout.flush()
+        sys.stderr.write("".join(f"{problem}\n" for problem in problems))
+        sys.stderr.flush()
+        os._exit(1)
+
+
+# Before models and every test module, so that it runs after their atexit
+# handlers (only logging's and certifi's, registered by the imports above,
+# run later: they reach nothing).
+atexit.register(_after_the_session)
 
 _GOOGLE_API_TARGETS: list[str] = []
 _create_channel = grpc_helpers.create_channel
@@ -62,8 +121,9 @@ _create_channel = grpc_helpers.create_channel
 
 def _is_google_api_host(target) -> bool:
     """``firestore.googleapis.com:443``, ``dns:///logging.googleapis.com``:
-    the HOST is compared, never a substring of the whole target."""
-    host = str(target).rsplit("/", 1)[-1].rsplit(":", 1)[0].lower()
+    the HOST is compared, never a substring of the whole target — a
+    trailing dot (``firestore.googleapis.com.``) included."""
+    host = str(target).rsplit("/", 1)[-1].rsplit(":", 1)[0].lower().rstrip(".")
     return host == "googleapis.com" or host.endswith(".googleapis.com")
 
 
@@ -76,17 +136,199 @@ def _guarded_create_channel(target, *args, **kwargs):
 
 grpc_helpers.create_channel = _guarded_create_channel
 
+_CREDENTIAL_LOOKUPS: list[str] = []
 
-@pytest.fixture(autouse=True)
-def _no_test_reaches_a_google_api():
-    yield
-    if _GOOGLE_API_TARGETS:
-        targets = sorted(set(_GOOGLE_API_TARGETS))
-        _GOOGLE_API_TARGETS.clear()
-        pytest.fail(
-            f"opened a gRPC channel to {targets}: stub the read, or install "
-            "tests/_fake_firestore — a real client reaches production"
+
+def _within(path: str, root: str) -> bool:
+    return os.path.normcase(path).startswith(os.path.normcase(root) + os.sep)
+
+
+def _envs_in(root: str, prefixes) -> list[str]:
+    """The environments among ``prefixes`` kept inside ``root``."""
+    return sorted({os.path.abspath(prefix) for prefix in prefixes
+                   if _within(os.path.abspath(prefix), root)})
+
+
+# The running virtualenv when it is kept inside athena/ (a developer's
+# .venv): its launcher and its libraries are not this repository's code.
+_ENVS_IN_ATHENA = _envs_in(_ATHENA, (sys.prefix, sys.exec_prefix))
+
+
+def _short_path(path: str) -> tuple[str, bool]:
+    """A frame's file, relative to athena/ or to site-packages, else its bare
+    name — never a home directory — and whether it is this repository's own
+    code."""
+    if path.startswith("<"):  # <frozen runpy>, <string>: no file at all
+        return path, False
+    path = os.path.abspath(path)
+    parts = path.replace("\\", "/").split("/")
+    if "site-packages" in parts:
+        last = len(parts) - 1 - parts[::-1].index("site-packages")
+        return "/".join(parts[last + 1:]), False
+    if _within(path, _ATHENA):
+        ours = not any(_within(path, env) for env in _ENVS_IN_ATHENA)
+        return os.path.relpath(path, _ATHENA).replace("\\", "/"), ours
+    return os.path.basename(path), False
+
+
+def _lookup_site() -> str:
+    """Where the lookup came from: the innermost line of this repository's
+    own code (the app or test line behind it), else the guard's direct
+    caller, else « ? » — a thread started on the guard itself has no Python
+    caller at all."""
+    frame = sys._getframe(1).f_back  # the guard's caller, or None
+    caller = None
+    while frame is not None:
+        short, ours = _short_path(frame.f_code.co_filename)
+        site = f"{short}:{frame.f_lineno}"
+        caller = caller or site
+        if ours and short != "tests/conftest.py":
+            return site
+        frame = frame.f_back
+    return caller or "?"
+
+
+def _guarded_default(*args, **kwargs):
+    _CREDENTIAL_LOOKUPS.append(_lookup_site())
+    raise google.auth.exceptions.DefaultCredentialsError(
+        "tests never look up credentials (tests/conftest.py)")
+
+
+google.auth.default = _guarded_default
+google.auth._default.default = _guarded_default
+
+_COLLECTION_REACHES: list[str] = []
+# The guard's own failure of a test's teardown, by node id, until its report.
+_FAILED_BY_THE_GUARD: dict[str, BaseException] = {}
+
+
+def _drain(records: list[str]) -> list[str]:
+    """What the list holds, taken out of it: a record a thread adds
+    meanwhile stays for the next check (a copy, then a deletion of exactly
+    what was copied)."""
+    taken = records[:]
+    del records[:len(taken)]
+    return taken
+
+
+def _pending_reaches() -> list[str]:
+    """What the guards recorded, one sentence per door, both drained."""
+    problems = []
+    targets = _drain(_GOOGLE_API_TARGETS)
+    if targets:
+        problems.append(
+            f"opened a gRPC channel to {sorted(set(targets))}: stub the read, "
+            "or install tests/_fake_firestore — a real client reaches "
+            "production"
         )
+    sites = _drain(_CREDENTIAL_LOOKUPS)
+    if sites:
+        problems.append(
+            "looked up credentials (google.auth.default) from "
+            f"{sorted(set(sites))}: stub the client or its credentials — on "
+            "a workstation that reads the developer's ADC and runs gcloud, "
+            "on Cloud Build the build's own account"
+        )
+    return problems
+
+
+# Only now, every guard live and every name the exit check reads defined:
+# the import that builds models.db.
+with mock.patch("google.cloud.firestore.Client"):
+    import models  # noqa: E402
+
+assert isinstance(models.db, mock.MagicMock), type(models.db)
+
+
+def _fail_on_reaches(item) -> None:
+    problems = _pending_reaches()
+    if problems:
+        failure = pytest.fail.Exception("; ".join(problems))
+        _FAILED_BY_THE_GUARD[item.nodeid] = failure
+        raise failure
+
+
+def pytest_collection_finish(session):
+    # The test modules' top-level code ran during collection, and this
+    # file's own import of models before it: no test owns what they recorded.
+    _COLLECTION_REACHES.extend(_pending_reaches())
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    # Once the whole teardown is over: the test's own fixtures, and those of
+    # a class, module or package that ends with it.
+    try:
+        result = yield
+    except (KeyboardInterrupt, pytest.exit.Exception):
+        raise  # the run stops: pytest_sessionfinish reports what remains
+    except BaseException:
+        _fail_on_reaches(item)  # chained to the teardown's own error
+        raise
+    _fail_on_reaches(item)
+    return result
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    # Outermost: whatever the plugins inside made of this teardown, the
+    # guard's failure is reported as a failure, with its message.
+    report = yield
+    failure = (_FAILED_BY_THE_GUARD.pop(item.nodeid, None)
+               if call.when == "teardown" else None)
+    if failure is None:
+        return report
+    if hasattr(report, "wasxfail"):  # the xfail plugin's expected failure
+        del report.wasxfail
+    if call.excinfo is None or call.excinfo.value is not failure:
+        # The unittest plugin put a TestCase's leftover outcome in its place.
+        if report.outcome != "failed":
+            report.longrepr = str(failure)
+        elif hasattr(report.longrepr, "addsection"):  # shown whatever
+            report.longrepr.addsection(  # --show-capture says
+                "Google API guard (tests/conftest.py)", str(failure))
+        else:
+            report.longrepr = f"{report.longreprtext}\n\n{failure}"
+    report.outcome = "failed"
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionfinish(session):
+    # Around pytest's own, which tears down what an interrupted run left
+    # standing — and may raise while doing it, even pytest.exit asking for 0.
+    try:
+        result = yield
+    except pytest.exit.Exception as stop:
+        if _report_what_no_test_owns(session) and not stop.returncode:
+            stop.returncode = pytest.ExitCode.TESTS_FAILED
+        raise
+    except BaseException:
+        _report_what_no_test_owns(session)
+        raise
+    _report_what_no_test_owns(session)
+    return result
+
+
+def _report_what_no_test_owns(session) -> bool:
+    problems = [f"during collection, {problem}"
+                for problem in _drain(_COLLECTION_REACHES)]
+    problems += [f"after the last test's check, {problem}"
+                 for problem in _pending_reaches()]
+    if not problems:
+        return False
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line("")  # under -q the progress line is still open
+        for problem in problems:
+            reporter.write_line(problem, red=True)
+    else:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+    if session.exitstatus in (pytest.ExitCode.OK,
+                              pytest.ExitCode.NO_TESTS_COLLECTED):
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    return True
 
 
 def _is_production_handler(handler: logging.Handler) -> bool:

@@ -139,16 +139,16 @@ def test_the_child_never_sees_the_emulator_variable():
 
 
 @pytest.mark.parametrize("late", [
-    "import atexit, google.auth\n"
-    "atexit.register(lambda: google.auth.default())\n",
-    "import threading, time, google.auth\n"
-    "def later():\n"
-    "    time.sleep(0.3)\n"
-    "    try:\n"
-    "        google.auth.default()\n"
-    "    except RuntimeError:\n"
-    "        pass\n"
-    "threading.Thread(target=later).start()\n",
+    ("import atexit, google.auth\n"
+     "atexit.register(lambda: google.auth.default())\n"),
+    ("import threading, time, google.auth\n"
+     "def later():\n"
+     "    time.sleep(0.3)\n"
+     "    try:\n"
+     "        google.auth.default()\n"
+     "    except RuntimeError:\n"
+     "        pass\n"
+     "threading.Thread(target=later).start()\n"),
 ])
 def test_a_reach_after_the_body_is_still_reported(late):
     """An atexit handler or a non-daemon thread of the probe reaches after

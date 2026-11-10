@@ -977,6 +977,15 @@ def test_production_exporter_failure_is_non_fatal(
         "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
         fake_exp,
     )
+    # The credentials= argument is evaluated BEFORE the exporter is called:
+    # unstubbed, it ran the real google.auth.default — the developer's ADC
+    # and `gcloud config get project` — on every run (tests/conftest.py now
+    # refuses it). Stubbed as in the test above.
+    fake_creds = types.ModuleType("opentelemetry.gcp_credential_provider")
+    fake_creds.create_google_grpc_credentials = lambda: "CHANNEL-CREDS"
+    monkeypatch.setitem(
+        sys.modules, "opentelemetry.gcp_credential_provider", fake_creds
+    )
 
     app = Flask(__name__)
     app.config["ENV"] = "production"
