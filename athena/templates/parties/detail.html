@@ -267,6 +267,24 @@
       </dl>
     </div>
     {% endif %}
+
+    {# ── The supplier record (2026-11-11) — a supplier or a professional;
+       the route composes the rows (labels, numbers with their spaces). #}
+    {% if fiche_fournisseur %}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Informations de fournisseur</h2>
+      <dl class="space-y-2 text-sm">
+        {% for label, value in fiche_fournisseur %}
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">{{ label }}</dt>
+          {# « — » when empty, the house convention: « Non inscrit » would
+             read as « not a TPS/TVQ registrant ». #}
+          <dd class="col-span-2 min-w-0 {{ 'text-gray-900' if value else 'text-gray-400' }}">{{ value or '—' }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    {% endif %}
   </div>
 
   {# ── Mandataires ─────────────────────────────────────────────── #}

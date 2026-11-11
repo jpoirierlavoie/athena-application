@@ -25,7 +25,7 @@ from models import piece_identite
 from models.audit_event import record_deletion
 from models.document import format_file_size, get_file_icon
 from tz import to_mtl
-from utils import civilite, kyc, occupations, storage_identity
+from utils import civilite, contact_roles, kyc, occupations, storage_identity
 from utils.format_fr import format_date_fr
 from utils.logging_setup import (
     log_partie_event,
@@ -42,10 +42,12 @@ from pagination import (
     total_pages_of,
 )
 from security import sanitize
+from models.admin_ledger import ADMIN_CATEGORY_LABELS, ADMIN_EXPENSE_CATEGORIES
 from models.partie import (
     MANDATAIRE_KIND_LABELS,
     PARTIE_NOT_FOUND,
     ROLE_LABELS,
+    SUPPLIER_RECORD_FIELDS,
     VALID_CONTACT_ROLES,
     count_parties_page,
     confirm_kyc_status,
@@ -53,6 +55,7 @@ from models.partie import (
     delete_partie,
     display_name,
     fold_job_role,
+    format_tax_number,
     formal_name,
     get_partie,
     list_parties,
@@ -143,6 +146,12 @@ def _form_data() -> dict:
     # the model's default, « client ».
     if "contact_role" in f:
         data["contact_role"] = f["contact_role"]
+    # The supplier record (2026-11-11): only the fields posted — the form
+    # disables them on a role that holds no record, so such a save leaves a
+    # record kept from a former role dormant, never erased.
+    for key in SUPPLIER_RECORD_FIELDS:
+        if key in f:
+            data[key] = f[key].strip()
     return data
 
 
@@ -183,6 +192,15 @@ def _form_context(partie: Optional[dict]) -> dict[str, Any]:
             if value not in kyc.STATUSES[f]
         },
         "kyc_todo": kyc.NON_VERIFIE,
+        # The supplier record's section: the roles that hold one, and the
+        # expense categories its usual category is chosen among.
+        "payee_roles": list(contact_roles.PAYEE_ROLES),
+        # Shown as read (« 123456789 RT 0001 »); the model drops the spaces.
+        "tax_numbers": {
+            f: format_tax_number((partie or {}).get(f, "") or "")
+            for f in ("numero_tps", "numero_tvq")},
+        "expense_categories": [
+            (c, ADMIN_CATEGORY_LABELS[c]) for c in ADMIN_EXPENSE_CATEGORIES],
     }
 
 
@@ -563,9 +581,23 @@ def partie_detail(partie_id: str) -> str:
     # filter is checked against its vocabulary), and only where the block
     # shows at all.
     preuves["ouvert"] = preuves["visible"] and request.args.get("gerer") == "1"
+    # The supplier record of a supplier or a professional, as read (the
+    # template owns no vocabulary); none for another role, even a dormant one.
+    fiche_fournisseur = None
+    if partie.get("contact_role") in contact_roles.PAYEE_ROLES:
+        categorie = partie.get("categorie_depense_defaut") or ""
+        fiche_fournisseur = [
+            ("N° de TPS", format_tax_number(partie.get("numero_tps", ""))),
+            ("N° de TVQ", format_tax_number(partie.get("numero_tvq", ""))),
+            ("Catégorie de dépense habituelle",
+             ADMIN_CATEGORY_LABELS.get(categorie, categorie)),
+            ("N° de compte du cabinet",
+             partie.get("numero_compte_fournisseur", "")),
+        ]
     return render_template(
         "parties/detail.html",
         partie=partie,
+        fiche_fournisseur=fiche_fournisseur,
         conformite_kyc=conformite_kyc,
         preuves=preuves,
         preuves_config=_id_proofs_config(partie_id, preuves["ouvert"]),
@@ -695,6 +727,12 @@ def partie_update(partie_id: str) -> str:
             # Not posted, so not changed: the page shows the stored role —
             # never « client », which a resubmission would then save.
             data["contact_role"] = (stored or {}).get("contact_role", "")
+        for key in SUPPLIER_RECORD_FIELDS:
+            # Not posted (its fieldset was disabled): shown as stored —
+            # never blank, which a switch back to a payee role would then
+            # post, erasing the record.
+            if key not in data:
+                data[key] = (stored or {}).get(key, "")
         return render_template(
             "parties/form.html",
             partie=data,

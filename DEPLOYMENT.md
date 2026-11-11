@@ -5522,6 +5522,37 @@ Notes:
   plugin 1.9.0, and after the roll-forward check the role of every supplier
   and stenographer.
 
+- **The supplier record (2026-11-11).** A supplier's or a professional's
+  contact (`utils/contact_roles.PAYEE_ROLES`) holds, under « Informations de
+  fournisseur », its TPS and TVQ numbers (stored without spaces, shown
+  « 123456789 RT 0001 », any other shape refused — ASCII digits only), its
+  usual expense
+  category (a key of `admin_ledger.ADMIN_EXPENSE_CATEGORIES`) and the firm's
+  account number there (at most 100 characters, refused — never trimmed —
+  past that or when the sanitizer would alter it); the address its invoices
+  print is the contact's business block, and an empty row reads « — »
+  (never « Non inscrit », which would mean « not a registrant »). Another
+  role refuses a filled field the write CHANGES, and the form disables the
+  section for it — on the server too — so a record kept from a former role
+  stays dormant and never locks the contact; a refused save redisplays it
+  as stored, so a switch back to a payee keeps it
+  (`models/partie._supplier_record_errors` judges only the fields a write
+  carries). Never on the vCard (a professional's phone edit keeps it, merge
+  by presence) nor in the connector (the lawyer's decision). Change Impact:
+  item 1 touched in name only (the contact model its tools reach: no tool
+  sends the fields — the `_PARTIE_TEXT_FIELDS` whitelist — and `get_partie`
+  builds its card key by key; tested); item 2 lightly (never serialized; a
+  PUT keeps it — tested); item 6 (compiled classes only); items 3, 4, 5 and
+  7 not touched.
+  In order:
+  1. *The push.*
+  2. *On the web*: a supplier's fiche — « Modifier », fill its TPS and TVQ
+     numbers with or without spaces, its usual category and the account
+     number; the fiche shows them spaced. A client's form shows no such
+     section.
+  A rollback is the code alone: the older code keeps the four fields through
+  its merge, without showing them.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

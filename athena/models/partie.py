@@ -30,6 +30,7 @@ Three declared exceptions to « the model validates a whitelist »:
 """
 
 import logging
+import re
 import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -182,6 +183,12 @@ def _default_doc() -> dict:
         "mandataires": [],
         # Notes
         "notes": "",
+        # The supplier record (2026-11-11) — only on a supplier or a
+        # professional (utils/contact_roles.PAYEE_ROLES); never on the vCard.
+        "numero_tps": "",                  # « 123456789RT0001 », no spaces
+        "numero_tvq": "",                  # « 1234567890TQ0001 »
+        "categorie_depense_defaut": "",    # an admin_ledger expense category
+        "numero_compte_fournisseur": "",   # the firm's account n° there
         # Metadata (set by create/update)
         # Identifiant de l'enregistrement dans le système d'origine,
         # posé par la reprise historique (août 2026) ; « » partout
@@ -369,6 +376,11 @@ def _normalize(data: dict) -> dict:
     # as received and judged by _vocabulary_errors.
     if "prefix" in data:
         data["prefix"] = civilite.canonical_prefix(data["prefix"])
+    # The supplier record's tax numbers: spaces dropped, letters upper-cased
+    # — only a number the caller sent; _supplier_record_errors judges it.
+    for field in ("numero_tps", "numero_tvq"):
+        if isinstance(data.get(field), str):
+            data[field] = re.sub(r"\s+", "", data[field]).upper()
 
     # Apply address defaults
     for prefix in ("address", "work_address"):
@@ -455,6 +467,79 @@ def _normalize(data: dict) -> dict:
 # tell them apart; neither echoes the value.
 PREFIX_INVALID = "Titre invalide : choisissez un titre de la liste."
 OCCUPATION_INVALID = "Occupation invalide : choisissez une occupation de la liste."
+
+# The supplier record (2026-11-11): what a supplier or a professional
+# (contact_roles.PAYEE_ROLES) holds beside its coordinates — the address and
+# coordinates its invoices print are the contact's business block. Never
+# serialized (suppliers stay off the phone, and a professional's phone edit
+# keeps them by merge by presence) nor served to the connector (get_partie
+# builds its card key by key).
+SUPPLIER_RECORD_FIELDS = (
+    "numero_tps", "numero_tvq", "categorie_depense_defaut",
+    "numero_compte_fournisseur",
+)
+SUPPLIER_ACCOUNT_MAX = 100
+# ASCII digits only: Python's \d also matches full-width and other scripts' digits.
+_TPS_SHAPE = re.compile(r"[0-9]{9}RT[0-9]{4}")
+_TVQ_SHAPE = re.compile(r"[0-9]{10}TQ[0-9]{4}")
+TPS_INVALID = ("Numéro de TPS invalide : 9 chiffres, RT, puis 4 chiffres "
+               "(123456789 RT 0001).")
+TVQ_INVALID = ("Numéro de TVQ invalide : 10 chiffres, TQ, puis 4 chiffres "
+               "(1234567890 TQ 0001).")
+CATEGORY_INVALID = ("Catégorie de dépense habituelle invalide : choisissez-en "
+                    "une de la liste.")
+ACCOUNT_INVALID = (f"Numéro de compte invalide : au plus {SUPPLIER_ACCOUNT_MAX} "
+                   "caractères, sans balise.")
+SUPPLIER_RECORD_ROLE = ("Ces informations ne s'inscrivent que sur un "
+                        "fournisseur ou un professionnel.")
+SUPPLIER_RECORD_INVALID = "Informations de fournisseur invalides."
+
+
+def _supplier_record_errors(
+    data: dict, merged: dict, existing: Optional[dict]
+) -> list[str]:
+    """The supplier record, judged only when the write CARRIES a field (a
+    new rule never locks a legacy record), on the value as sent: a value
+    the sanitizer would alter or a number too long is refused, never
+    trimmed. A role that holds no record refuses a filled field the write
+    CHANGES — an empty one (a client's save), or the stored value re-posted
+    unchanged (a page where Alpine never ran), is fine: a record left by a
+    former role stays dormant until the role comes back."""
+    sent = {f: data[f] for f in SUPPLIER_RECORD_FIELDS if f in data}
+    if not sent:
+        return []
+    if any(not isinstance(v, str) for v in sent.values()):
+        return [SUPPLIER_RECORD_INVALID]
+    if merged.get("contact_role") not in contact_roles.PAYEE_ROLES:
+        stored = existing or {}
+        if any(v.strip() and v != stored.get(f, "") for f, v in sent.items()):
+            return [SUPPLIER_RECORD_ROLE]
+        return []
+    errors = []
+    if sent.get("numero_tps") and not _TPS_SHAPE.fullmatch(sent["numero_tps"]):
+        errors.append(TPS_INVALID)
+    if sent.get("numero_tvq") and not _TVQ_SHAPE.fullmatch(sent["numero_tvq"]):
+        errors.append(TVQ_INVALID)
+    category = sent.get("categorie_depense_defaut")
+    if category:
+        # Function-level: the contact model stays free of the accounting
+        # modules at import (admin_ledger pulls invoice, trust, documents).
+        from models import admin_ledger
+
+        if category not in admin_ledger.ADMIN_EXPENSE_CATEGORIES:
+            errors.append(CATEGORY_INVALID)
+    account = sent.get("numero_compte_fournisseur")
+    if account and (len(account) > SUPPLIER_ACCOUNT_MAX
+                    or sanitize(account, max_length=2000) != account):
+        errors.append(ACCOUNT_INVALID)
+    return errors
+
+
+def format_tax_number(value: str) -> str:
+    """A stored TPS or TVQ number as read: « 123456789RT0001 » →
+    « 123456789 RT 0001 »; anything else unchanged."""
+    match = re.fullmatch(r"([0-9]{9,10})(RT|TQ)([0-9]{4})", value or "")
+    return " ".join(match.groups()) if match else (value or "")
 
 
 def _vocabulary_errors(
@@ -617,7 +702,8 @@ def create_partie(
     data = _normalize(data)
     merged = {**_default_doc(), **_sanitize_data(data)}
     _retire_job_role(merged)
-    errors = _validate(merged) + _vocabulary_errors(data, merged, None)
+    errors = (_validate(merged) + _vocabulary_errors(data, merged, None)
+              + _supplier_record_errors(data, merged, None))
     if errors:
         return None, errors
 
@@ -997,7 +1083,8 @@ def _update_partie(
     data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}
     _retire_job_role(merged)
-    errors = _validate(merged) + _vocabulary_errors(data, merged, existing)
+    errors = (_validate(merged) + _vocabulary_errors(data, merged, existing)
+              + _supplier_record_errors(data, merged, existing))
     if errors:
         return None, errors, 0
     errors = _mandataire_fitness_errors(partie_id, existing, merged)

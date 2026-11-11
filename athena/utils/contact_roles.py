@@ -54,6 +54,12 @@ PROFESSIONAL_ROLES: tuple[str, ...] = (
 )
 SUPPLIER_ROLES: tuple[str, ...] = ("fournisseur",)
 
+# The payees: the roles whose contact holds a supplier record — TPS and TVQ
+# numbers, a usual expense category, the firm's account number there
+# (models/partie.SUPPLIER_RECORD_FIELDS). A bailiff or an expert bills the
+# firm with TPS/TVQ like any supplier.
+PAYEE_ROLES: tuple[str, ...] = SUPPLIER_ROLES + PROFESSIONAL_ROLES
+
 # The roles whose WORK address a generated document prefers when the
 # contact has one (utils/template_fields.selected_address; the rule the
 # gabarits guide, athena/GABARITS_PLACEHOLDERS.md, describes).
