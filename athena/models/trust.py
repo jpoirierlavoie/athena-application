@@ -34,6 +34,9 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import aggregation_values, concurrency, db, full_reads, provenance
+# ``balance_of`` — the one balance a fee payment is capped on. models.invoice
+# imports neither register (it names their collections as literals): no cycle.
+from models import invoice as invoice_model
 from models import releve_conciliation
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
@@ -1354,13 +1357,14 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
             # D14, 2026-09-25: refused outright, web and connector alike.
             if int(invoice.get("retainer_applied") or 0) > 0:
                 raise _TxnAbort("facture_avec_provision")
-            # The LIVE balance (amount_due − amount_paid), not the frozen
-            # amount_due: since Lot P recorded payments exist, a transfer
-            # capped on the frozen figure could take MORE of the client's
-            # trust money than the invoice still owes (2026-08-13 review
-            # — amount_paid is absent/0 on pre-Lot-P invoices, so this is
-            # the historical check unchanged there).
-            if amount > int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0)):
+            # The LIVE balance (invoice.balance_of, its one authority — never
+            # a copy of its subtraction), not the frozen amount_due: since
+            # Lot P recorded payments exist, a transfer capped on the frozen
+            # figure could take MORE of the client's trust money than the
+            # invoice still owes (2026-08-13 review — amount_paid is
+            # absent/0 on pre-Lot-P invoices, so this is the historical
+            # check unchanged there).
+            if amount > invoice_model.balance_of(invoice):
                 raise _TxnAbort("virement_excède_facture")
         elif not invoice_external_ref:
             raise _TxnAbort("facture_requise")

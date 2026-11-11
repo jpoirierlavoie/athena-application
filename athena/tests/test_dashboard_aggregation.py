@@ -50,6 +50,8 @@ import types
 from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
+import pytest
+
 # Ensure athena/ is on the path when running from the project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -339,6 +341,57 @@ def test_outstanding_total_failure_returns_zero(monkeypatch):
     assert invoice_model.get_outstanding_total() == 0
 
 
+def test_outstanding_totals_sum_the_live_balance_per_issued_status(monkeypatch):
+    """Lot 0: the per-status sums the dashboard tile shows beside each of its
+    two links — Σ balance_of per issued status, in _ISSUED_STATUSES' order."""
+    by_status = {
+        "envoyée": [{"amount_due": 114975, "amount_paid": 0},
+                    {"amount_due": 80000, "amount_paid": 30000}],
+        "en_retard": [{"amount_due": 57490, "amount_paid": 7490}],
+        "payée": [{"amount_due": 20000, "amount_paid": 0}],   # never asked
+    }
+    monkeypatch.setattr(invoice_model, "list_invoices",
+                        lambda status_filter=None, **kw: by_status.get(status_filter, []))
+    totals = invoice_model.get_outstanding_totals()
+    assert totals == {"envoyée": 164975, "en_retard": 50000}
+    assert list(totals) == list(invoice_model._ISSUED_STATUSES)
+    assert all(type(v) is int for v in totals.values())
+
+
+def test_outstanding_total_is_the_sum_of_the_per_status_totals(monkeypatch):
+    """One authority: the connector's figure (get_agenda) is the sum of
+    get_outstanding_totals — never a read or a rule of its own."""
+    def _no_read(**_kw):
+        raise AssertionError("get_outstanding_total read the store itself")
+
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals",
+                        lambda: {"envoyée": 1234, "en_retard": 5678})
+    monkeypatch.setattr(invoice_model, "list_invoices", _no_read)
+    assert invoice_model.get_outstanding_total() == 6912
+
+
+@pytest.mark.parametrize("rows", [
+    pytest.param(None, id="the-read-raises"),
+    pytest.param([{"amount_due": "1 234,56", "amount_paid": 0}], id="a-corrupt-amount"),
+])
+def test_outstanding_totals_fail_open_to_zero(monkeypatch, caplog, rows):
+    """Fail-open, display only — the tile's original posture: every status
+    at 0, and the total with them. The warning names the exception's type,
+    never its text, which can quote a stored value."""
+    def _list(status_filter=None, **_kw):
+        if rows is None:
+            raise ValueError("invalid literal for int(): '1 234,56'")
+        return rows if status_filter == "en_retard" else [{"amount_due": 500, "amount_paid": 0}]
+
+    monkeypatch.setattr(invoice_model, "list_invoices", _list)
+    with caplog.at_level("WARNING", logger=invoice_model.logger.name):
+        assert invoice_model.get_outstanding_totals() == {"envoyée": 0, "en_retard": 0}
+        assert invoice_model.get_outstanding_total() == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert "get_outstanding_totals: failed: ValueError" in messages
+    assert not any("1 234,56" in m for m in messages)
+
+
 # ── task.list_urgent_tasks / hearing.list_hearings_in_range ──────────────
 
 
@@ -550,7 +603,11 @@ def test_quick_stats_shape_and_passthrough(monkeypatch):
         time_entry_model, "get_unbilled_totals",
         lambda: {"hours": 12.3, "amount": 45678},
     )
-    monkeypatch.setattr(invoice_model, "get_outstanding_total", lambda: 250075)
+    # Lot 0: ONE call of the per-status sums feeds the tile — its total and
+    # its two links (rewritten deliberately: the route no longer calls
+    # get_outstanding_total, it sums the same figures).
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals",
+                        lambda: {"envoyée": 200000, "en_retard": 50075})
     monkeypatch.setattr(
         trust_model, "get_firm_trust_snapshot",
         lambda: {"total_held_cents": 333, "reconciliation_overdue": True},
@@ -562,6 +619,10 @@ def test_quick_stats_shape_and_passthrough(monkeypatch):
         "unbilled_hours": 12.3,
         "unbilled_amount": 45678,
         "outstanding_invoices": 250075,
+        "outstanding_links": [
+            {"status": "envoyée", "label": "Envoyées", "amount": 200000},
+            {"status": "en_retard", "label": "En retard", "amount": 50075},
+        ],
         "trust_total": 333,
         "trust_reconciliation_overdue": True,
     }
@@ -576,7 +637,8 @@ def test_quick_stats_degrades_per_stat(monkeypatch):
         time_entry_model, "get_unbilled_totals",
         lambda: {"hours": 1.5, "amount": 100},
     )
-    monkeypatch.setattr(invoice_model, "get_outstanding_total", lambda: 200)
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals",
+                        lambda: {"envoyée": 150, "en_retard": 50})
 
     stats = dashboard._get_quick_stats()
     # The failed stat keeps its safe default; the others still populate.
@@ -584,6 +646,22 @@ def test_quick_stats_degrades_per_stat(monkeypatch):
     assert stats["unbilled_hours"] == 1.5
     assert stats["unbilled_amount"] == 100
     assert stats["outstanding_invoices"] == 200
+    assert [link["amount"] for link in stats["outstanding_links"]] == [150, 50]
+
+
+def test_quick_stats_keep_the_invoice_links_when_the_sums_fail(monkeypatch):
+    """The tile's links are the way to the lists: they stand at 0 when its
+    sums raised, beside the total's 0 default."""
+    def _boom() -> dict:
+        raise RuntimeError("sums failed")
+
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals", _boom)
+    stats = dashboard._get_quick_stats()
+    assert stats["outstanding_invoices"] == 0
+    assert stats["outstanding_links"] == [
+        {"status": "envoyée", "label": "Envoyées", "amount": 0},
+        {"status": "en_retard", "label": "En retard", "amount": 0},
+    ]
 
 
 # ── routes.dashboard._get_urgent_tasks ────────────────────────────────────

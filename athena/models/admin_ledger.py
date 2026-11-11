@@ -98,7 +98,8 @@ from models.record_ids import is_addressable_id
 # The invoice payment is STAGED in this module's own transactions (lot 5a):
 # ``payment_updates`` is the one computation of amount_paid / paid_date /
 # the status flip, and PaymentRefused must abort the ledger transaction it
-# is raised in. models.invoice imports nothing from here — no cycle.
+# is raised in; ``balance_of`` is the one balance an encaissement is capped
+# on. models.invoice imports nothing from here — no cycle.
 from models import invoice as invoice_model
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
 from security import sanitize
@@ -1707,8 +1708,9 @@ def _stage_create(
             raise _TxnAbort("encaissement_carte_interdit")
         if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
             raise _TxnAbort("facture_non_émise")
-        balance = int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
-        if amount > balance:
+        # The live balance, from its one authority — never a copy of its
+        # subtraction (tests/test_invoice_balance_authority.py).
+        if amount > invoice_model.balance_of(invoice):
             raise _TxnAbort("encaissement_excède_solde")
 
     # 3. COMPUTE — the entry's snapshots. On an encaissement the invoice
@@ -1816,9 +1818,9 @@ def create_transaction(
     refused in the future. There is no backdating guard and no overdraft
     control — deliberate divergences from trust (module docstring). An
     ``encaissement_facture`` additionally reads its invoice inside the
-    transaction: issued status, and ``amount <= amount_due - amount_paid``
-    (the LIVE balance — stricter than trust's frozen amount_due check), on
-    an ``opérations`` account only. Returns ``(entry, [])`` or
+    transaction: issued status, and ``amount <= invoice.balance_of`` (the
+    LIVE balance — the cap of trust's fee payment too), on an
+    ``opérations`` account only. Returns ``(entry, [])`` or
     ``(None, [french_errors])``.
 
     **The payment is written in the SAME commit as the entry (lot 5a, D2).**

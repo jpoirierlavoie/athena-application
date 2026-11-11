@@ -2874,38 +2874,51 @@ def delete_invoice(invoice_id: str) -> tuple[bool, str]:
 _aggregation_values = aggregation_values
 
 
-def get_outstanding_total() -> int:
-    """Le SOLDE total (cents) encore dû sur les factures émises.
+def get_outstanding_totals() -> dict[str, int]:
+    """The live balance (cents) still owed on the issued invoices, PER issued
+    status: ``{status: Σ balance_of}`` for each status of
+    ``_ISSUED_STATUSES``, in that order — the one authority of the firm's
+    outstanding total. :func:`get_outstanding_total` is its sum (the
+    connector's ``get_agenda``); the dashboard's « Factures impayées » tile
+    shows that sum, and each status' own figure on its link to that status'
+    list.
 
-    Σ ``balance_of`` — ``amount_due − amount_paid`` — sur les statuts
-    « envoyée » et « en retard ». Somme PYTHON sur une lecture bornée, jamais
-    une agrégation Firestore, et le choix est délibéré :
+    A PYTHON sum over a bounded read, never a Firestore aggregation, by
+    design:
 
-    * ``amount_due`` est FIGÉ à l'émission et reste à pleine valeur sur une
-      facture réglée ; le sommer surestimait les créances de tout ce qui avait
-      été encaissé — invisible tant qu'aucun paiement n'était inscrit ;
-    * une agrégation ne sait pas soustraire deux champs. Il en faudrait deux,
-      donc un index ``(status, amount_due, amount_paid)`` qui n'existe pas, et
-      dont l'absence échoue en SILENCE : la fonction avale l'exception et rend
-      0, indiscernable de « rien n'est dû » (l'incident de juin 2026).
+    * ``amount_due`` is FROZEN at issuance and stays whole on a settled
+      invoice: summing it overstated the receivables by everything already
+      received — invisible as long as no payment was recorded;
+    * an aggregation cannot subtract two fields. It would take two, hence an
+      index ``(status, amount_due, amount_paid)`` that does not exist, and
+      whose absence fails SILENTLY: the exception swallowed, 0 answered,
+      which reads as « nothing is owed » (the incident of June 2026).
 
-    Le dépôt vote déjà pour la somme Python sur cette collection —
+    The repository already sums in Python on this collection —
     ``routes/admin_ledger._factures_impayees``,
-    ``routes/trust._factures_emises``, ``routes/invoices._journal_rows`` — et
-    ``models/trust`` en a fait sa doctrine. Le volume se compte en dizaines.
+    ``routes/trust._factures_emises``, ``routes/invoices._journal_rows`` —
+    and ``models/trust`` made it its doctrine. The volume counts in dozens.
 
-    Rend 0 en cas d'échec (dégradation gracieuse de la tuile du tableau de
-    bord), la posture d'origine.
+    Fails OPEN — every status at 0, the failure logged — the tile's graceful
+    degradation and its original posture: display only, never a decision.
     """
     try:
-        total = 0
-        for statut in _ISSUED_STATUSES:
-            for inv in list_invoices(status_filter=statut):
-                total += balance_of(inv)
-        return total
+        return {
+            status: sum(balance_of(inv) for inv in list_invoices(status_filter=status))
+            for status in _ISSUED_STATUSES
+        }
     except Exception as exc:
-        logger.warning("get_outstanding_total: failed: %s", exc)
-        return 0
+        # The exception's type only: its text may quote a stored value.
+        logger.warning("get_outstanding_totals: failed: %s", type(exc).__name__)
+        return dict.fromkeys(_ISSUED_STATUSES, 0)
+
+
+def get_outstanding_total() -> int:
+    """The live balance (cents) still owed on the issued invoices: the sum of
+    :func:`get_outstanding_totals`, its one authority — the figure of the
+    connector's ``get_agenda``, and the dashboard tile's total. Fails open
+    with it, to 0."""
+    return sum(get_outstanding_totals().values())
 
 
 def get_invoice_summary(dossier_id: str) -> dict:

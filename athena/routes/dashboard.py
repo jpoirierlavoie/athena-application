@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
+# The « Factures impayées » tile's links: one per issued status — the pair
+# invoice.get_outstanding_totals sums (its _ISSUED_STATUSES, pinned equal by
+# tests/test_dashboard_invoice_tile.py), in that order — each to that
+# status' own list. Plural, under the tile's « Factures impayées ».
+_OUTSTANDING_LINK_LABELS = {"envoyée": "Envoyées", "en_retard": "En retard"}
+
 
 @dashboard_bp.route("/")
 @login_required
@@ -211,9 +217,12 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
 def _get_quick_stats() -> dict:
     """Return counts and amounts for the dashboard stats cards.
 
-    Each stat is a single server-side aggregation query (COUNT/SUM) —
-    O(1) payload instead of full-collection scans. Each stat degrades
+    The counts and the unbilled time are server-side aggregations (COUNT/
+    SUM); the outstanding invoices are a Python sum of their live balances
+    (``invoice.get_outstanding_totals``, which says why). Each stat degrades
     independently: a failure leaves its safe default in place.
+    ``outstanding_links`` — one ``{status, label, amount}`` per issued
+    status — always holds the tile's links, at 0 when the sums failed.
     """
     stats: dict = {
         "open_dossiers": 0,
@@ -237,11 +246,22 @@ def _get_quick_stats() -> dict:
     except Exception as exc:
         logger.warning("dashboard: unbilled time stat failed: %s", exc)
 
+    by_status: dict = {}
     try:
-        from models.invoice import get_outstanding_total
-        stats["outstanding_invoices"] = get_outstanding_total()
+        from models.invoice import get_outstanding_totals
+        # ONE call for the whole tile: its total and each link's own figure
+        # are the same sums, so they never disagree — and the total is what
+        # get_outstanding_total gives the connector.
+        by_status = get_outstanding_totals()
+        stats["outstanding_invoices"] = sum(by_status.values())
     except Exception as exc:
         logger.warning("dashboard: outstanding invoices stat failed: %s", exc)
+    # The links stand even when the sums failed: the way to the lists, at
+    # the tile's 0,00 $ default.
+    stats["outstanding_links"] = [
+        {"status": status, "label": label, "amount": by_status.get(status, 0)}
+        for status, label in _OUTSTANDING_LINK_LABELS.items()
+    ]
 
     try:
         from models import trust
