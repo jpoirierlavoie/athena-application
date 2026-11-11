@@ -227,8 +227,7 @@ OBJECT_MISSING = "Le fichier de ce relevé est introuvable."
 CONSULT_FAILED = "Consultation impossible pour le moment — réessayez."
 #: The completion's refusals, both registers (their ``_ABORT_MESSAGES``).
 REQUIRED_TO_COMPLETE = (
-    "Joignez le relevé bancaire de la période avant de compléter la "
-    "conciliation."
+    "Joignez le relevé de la période avant de compléter la conciliation."
 )
 OBJECT_MISSING_TO_COMPLETE = (
     "Le fichier du relevé joint est introuvable : remplacez le relevé, puis "
@@ -945,8 +944,11 @@ def _file(staging, register: str, rec_id: str, uid: str, statement_id: str,
     except _Exists as exists:
         return Outcome(exists.current, [], CODE_REJOUE)
     except Exception as exc:
-        # A replaced draft statement is named too: when the outcome stays
-        # unknown, its object waits for an operator under these ids.
+        # A statement this write would replace is named too. When the
+        # outcome stays unknown, the operator reads the record first: if it
+        # names THIS statement, the previous one's object is the orphan; if
+        # not, the previous statement is still live (never erased) and this
+        # upload's copy is the orphan.
         previous_ids = ({"previous_statement_id": sanitize_log_value(
             staged["previous"].get("statement_id"))}
             if staged.get("previous") else {})

@@ -640,7 +640,7 @@ def test_the_list_counts_and_filters_the_missing_statements(web, db, bucket, reg
     joindre(model, "c")
     _seed(db, register, "d")
     page = web.get(f"{REGISTERS[register][0]}/conciliations/").get_data(as_text=True)
-    assert "2 conciliations complétées sans relevé bancaire" in page
+    assert "2 conciliations complétées sans relevé —" in page
     assert page.count("Relevé manquant") == 2
     filtered = web.get(f"{REGISTERS[register][0]}/conciliations/?releve=manquant"
                        ).get_data(as_text=True)
@@ -898,6 +898,54 @@ def test_an_uncertain_replacement_names_the_statement_it_replaced(db, bucket, re
     # The page's one re-post settles it.
     assert rc.file_staged_statement(register, "rec1", second["objet"], UID).code == (
         rc.CODE_REJOUE)
+
+
+@both
+def test_an_uncertain_replacement_that_did_not_land_keeps_the_live_statement(
+        db, bucket, register, monkeypatch, caplog):
+    """The fifth review of the rebase: the replacement's commit is NOT
+    applied and its re-read fails. Both objects are kept, the line names the
+    previous statement — which is still the LIVE one: the record names it,
+    and the draft completes on it. The orphan is this upload's own copy
+    (OBSERVABILITY.md: read the record before erasing anything)."""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register)
+    first = _open_and_put(bucket, register)
+    a = rc.file_staged_statement(register, "rec1", first["objet"], UID)
+    assert a.code == rc.CODE_JOINT
+    second = _open_and_put(bucket, register, data=PNG, name="s.png")
+    caplog.set_level(logging.DEBUG)
+    state = _break_commit(monkeypatch, db, register, apply=False, reads_fail=True,
+                          kind="update")
+    b = rc.file_staged_statement(register, "rec1", second["objet"], UID)
+    assert b.code == rc.CODE_INCERTAIN
+    state["down"] = False
+    (uncertain,) = [r for r in caplog.records
+                    if r.getMessage() == "reconciliation statement: attachment uncertain"]
+    assert uncertain.json_fields["previous_statement_id"] == a.doc["statement_id"]
+    stored = _stored(db, register)
+    assert stored["statement_id"] == a.doc["statement_id"]      # still the live one
+    assert not stored.get(rc.RETIRED_FIELD)
+    b_path = rc.storage_path(UID, register, "rec1", uncertain.json_fields["statement_id"],
+                             ".png")
+    assert a.doc["statement_storage_path"] in bucket.objects and b_path in bucket.objects
+    done, errors = model.complete_reconciliation("rec1", [])
+    assert errors == [] and done["statement_id"] == a.doc["statement_id"]
+
+
+def test_a_card_worksheet_names_the_card_statement(web, db, bucket):
+    """A credit card's worksheet says « Relevé de la carte », as the page
+    already does (the fifth review of the rebase); a trust worksheet keeps
+    « Relevé bancaire »."""
+    _seed(db, rc.ADMIN)
+    db.seed(f"{al.ACCOUNTS_COLLECTION}/acc1", {
+        **db.peek_collection(al.ACCOUNTS_COLLECTION)["acc1"],
+        "account_type": "carte_crédit"})
+    card = web.get(_url(rc.ADMIN)).get_data(as_text=True)
+    assert "Relevé de la carte" in card and "Relevé bancaire" not in card
+    _seed(db, rc.TRUST)
+    bank = web.get(_url(rc.TRUST)).get_data(as_text=True)
+    assert "Relevé bancaire" in bank and "Relevé de la carte" not in bank
 
 
 @both

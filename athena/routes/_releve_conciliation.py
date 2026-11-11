@@ -8,7 +8,8 @@ serves the same four URLs under its own prefix, each a one-line call here:
 * ``POST …/conciliations/<id>/releve`` — attach the uploaded object
   (JSON ``{objet}``): 200 ``{ok, suivant}``, else the refusal;
 * ``POST …/conciliations/<id>/releve/retirer`` — a brouillon's « Retirer »
-  (a form): back to the worksheet, its outcome a closed ``?releve=`` code;
+  (a form): back to the worksheet, its outcome a closed code — a notice in
+  ``?releve=`` (``retire``, ``aucun``), an error in ``?releve_erreur=``;
 * ``GET …/conciliations/<id>/releve`` — « Consulter »: a 302 to a
   15-minute signed URL, minted on the click, never embedded in a page.
 

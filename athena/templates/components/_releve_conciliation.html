@@ -15,7 +15,9 @@
    « Consulter » a GET that redirects to a 15-minute signed URL. #}
 <section id="releve" class="bg-white rounded-xl border border-gray-200 p-4 mb-4 text-sm">
   <div class="flex items-center justify-between gap-3">
-    <h2 class="text-sm font-semibold text-gray-900">Relevé bancaire</h2>
+    {# « carte » : la variable de la feuille d'administration (une carte de
+       crédit) ; la feuille du fidéicommis n'en a pas — relevé bancaire. #}
+    <h2 class="text-sm font-semibold text-gray-900">Relevé{% if carte %} de la carte{% else %} bancaire{% endif %}</h2>
     {% if releve.fige %}
     <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Figé</span>
     {% elif releve.manquant %}
@@ -124,7 +126,8 @@ function releveConciliation() {
     occupe: false,
     focusAjout: false,
     // {file, name, size, statut, pct, motif} — statut: 'en attente',
-    // 'en cours', 'joint', 'rejeté' or 'incertain'.
+    // 'à confirmer' (the catch-up holds the file until « Joindre et
+    // figer »), 'en cours', 'joint', 'rejeté' or 'incertain'.
     fichier: null,
     // Set for the page's lifetime once an outcome was « incertain »: the
     // record may hold either statement, so « Compléter » stays blocked and

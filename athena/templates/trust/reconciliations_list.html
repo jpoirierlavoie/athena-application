@@ -24,7 +24,7 @@
      Compté sur la liste entière (releve_conciliation.statement_missing). #}
   {% if releves_manquants %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-    {{ releves_manquants }} conciliation{{ 's' if releves_manquants > 1 }} complétée{{ 's' if releves_manquants > 1 }} sans relevé bancaire —
+    {{ releves_manquants }} conciliation{{ 's' if releves_manquants > 1 }} complétée{{ 's' if releves_manquants > 1 }} sans relevé —
     {% if releve_filtre == 'manquant' %}<a href="{{ url_for('trust.reconciliations_list') }}" class="font-medium underline">tout afficher</a>{% else %}<a href="{{ url_for('trust.reconciliations_list', releve='manquant') }}" class="font-medium underline">afficher les relevés manquants</a>{% endif %}
   </div>
   {% elif releve_filtre == 'manquant' %}
