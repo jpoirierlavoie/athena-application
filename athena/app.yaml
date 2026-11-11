@@ -98,6 +98,15 @@ env_variables:
   # par propriété étendue + catégorie « Pallas Athéna » (utils/graph_miroir).
   # "false" gèle les miroirs en place (aucun nettoyage automatique).
   MIROIR_OUTLOOK_ACTIF: "true"
+  # Factures échues (2026-11-11) — chaque nuit à 00 h 20 (cron.yaml), le
+  # balayage routes/taches_factures marque « en retard » chaque facture
+  # envoyée dont l'échéance, reportée au jour ouvrable suivant sur le
+  # calendrier civil, est passée. LIVRÉ ÉTEINT : il ne passe à "true" que par
+  # un commit d'une ligne, une fois l'aperçu en lecture seule
+  # (python -m scripts.apercu_factures_echues) revu par l'avocat
+  # (DEPLOYMENT.md §15). "false" : le cron répond {"actif": false}, sans rien
+  # lire ni écrire.
+  FACTURES_RETARD_ACTIF: "false"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"

@@ -4,6 +4,12 @@ The creation form pre-fills the invoice date with the UTC day
 (``utils.deadlines.today_utc``) — the day the model's future-date guard
 measures against: the exception to Architecture Rule 5 declared in
 ``models/invoice.py``.
+
+Lateness (2026-11-11) is computed HERE, on ``utils.deadlines.today_mtl``,
+through the model's one authority (``invoice.is_overdue`` and its
+``days_overdue`` / ``first_overdue_day``): the list's « Échue · N j » and
+the sheet's « Retard » line read the flags these routes annotate, and no
+template compares a date (Architecture Rule 5).
 """
 
 from datetime import datetime, timezone
@@ -31,7 +37,7 @@ from pagination import (
 from security import safe_internal_redirect, sanitize
 from utils import storage_identity
 from utils.cabinet import cabinet_dict
-from utils.deadlines import today_utc
+from utils.deadlines import today_mtl, today_utc
 from utils.format_fr import format_rate_fr
 from models.invoice import (
     DRAFT_FIELDS,
@@ -43,9 +49,11 @@ from models.invoice import (
     billing_address_from,
     count_invoices_page,
     create_invoice,
+    days_overdue,
     delete_invoice,
     draft_edit_refusal,
     expense_split,
+    first_overdue_day,
     get_invoice,
     get_invoice_with_items,
     list_invoices,
@@ -178,8 +186,12 @@ def invoice_list() -> str:
     # une facture héritée peut n'avoir NI `amount_due` NI `amount_paid`, et une
     # soustraction en Jinja lèverait là où `balance_of` tolère l'absence.
     # (Le patron est celui de routes/admin_ledger._balance.)
+    # Le retard de même (2026-11-11) : « Échue · N j », dérivé par le modèle
+    # sur le jour de Montréal — le gabarit ne compare aucune date (règle 5).
+    today = today_mtl()
     for inv in invoices:
         inv["_balance"] = balance_of(inv)
+        inv["_days_overdue"] = days_overdue(inv, today=today)
 
     ctx = _template_context()
     ctx.update(
@@ -452,7 +464,11 @@ def invoice_detail(invoice_id: str) -> str:
     # bouton qui s'afficherait pour être refusé serait un défaut de
     # conception. Les écritures déjà lues lui sont remises : une écriture
     # debout sous un amount_paid à 0 (la dérive) ferme aussi « Annuler ».
-    transitions = available_transitions(invoice, receipts=paiements)
+    # Le jour de Montréal aussi (2026-11-11) : « Marquer en retard » tant que
+    # la facture est en retard, « Retirer le retard » tant qu'elle ne l'est
+    # pas — le même jour que la ligne « Retard » ci-dessous.
+    today = today_mtl()
+    transitions = available_transitions(invoice, today=today, receipts=paiements)
     if "annulée" in transitions:
         # Le dernier cas : un paiement d'honoraires du fidéicommis debout
         # dont la recette d'administration automatique a échoué (fail-open)
@@ -461,9 +477,14 @@ def invoice_detail(invoice_id: str) -> str:
         # serait autrement offert : une requête de plus, jamais sur une
         # facture déjà fermée à l'annulation.
         transitions = available_transitions(
-            invoice, receipts=paiements,
+            invoice, today=today, receipts=paiements,
             trust_payments=list_invoice_fee_payments(invoice_id),
         )
+    # La ligne « Retard » de la fiche : le nombre de jours et le premier jour
+    # de retard, dérivés par le modèle — rien quand la facture n'est pas en
+    # retard (jours à 0).
+    retard_jours = days_overdue(invoice, today=today)
+    retard_depuis = first_overdue_day(invoice) if retard_jours else None
 
     ctx = _template_context()
     ctx.update(
@@ -471,6 +492,8 @@ def invoice_detail(invoice_id: str) -> str:
         fee_items=fee_items,
         expense_items=expense_items,
         transitions=transitions,
+        retard_jours=retard_jours,
+        retard_depuis=retard_depuis,
         # amount_due is frozen at issuance; the live balance is derived.
         balance=balance_of(invoice),
         # Rates as STORED on this invoice (GST ×100, QST ×1000) rather than

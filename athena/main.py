@@ -203,6 +203,14 @@ def create_app() -> Flask:
     app.register_blueprint(taches_outlook_bp)
     csrf.exempt(taches_outlook_bp)
 
+    # ── Factures échues (2026-11-11): the nightly lateness sweep, GET
+    # /taches/factures/retards, guarded by X-Appengine-Cron and switched by
+    # FACTURES_RETARD_ACTIF. Same machine-blueprint discipline: its OWN
+    # blueprint, never a browser one widened.
+    from routes.taches_factures import taches_factures_bp
+    app.register_blueprint(taches_factures_bp)
+    csrf.exempt(taches_factures_bp)
+
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
     from mcp import mcp_bp, register_mcp
     register_mcp(app)

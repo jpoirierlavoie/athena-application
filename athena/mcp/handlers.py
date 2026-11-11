@@ -614,7 +614,7 @@ def _dossier_row(d: dict) -> dict:
     }
 
 
-def _invoice_row(inv: dict) -> dict:
+def _invoice_row(inv: dict, *, today: date) -> dict:
     """One invoice line. SHARED with get_billing_snapshot.outstanding_invoices
     — one row shape must not drift between the register and the snapshot, so
     every key added here appears in both.
@@ -622,6 +622,10 @@ def _invoice_row(inv: dict) -> dict:
     The dossier/client labels are the SNAPSHOT taken at issuance, deliberately
     not freshened: an invoice is an accounting artifact, and it must read as
     what was actually sent to the client, not as the file's current title.
+
+    ``is_overdue`` / ``days_overdue`` (2026-11-11) are the MODEL's lateness
+    (``invoice.is_overdue``) on *today*, the caller's one Montréal day
+    (``deadlines.today_mtl``) — never a comparison of the raw due date here.
     """
     row = {
         "id": inv.get("id", ""),
@@ -642,6 +646,8 @@ def _invoice_row(inv: dict) -> dict:
         # it means « nothing was RECORDED » — the distinction the payment
         # field was added to make sayable.
         "payment_basis": "recorded" if int(inv.get("amount_paid", 0)) else "none",
+        "is_overdue": invoice_model.is_overdue(inv, today=today),
+        "days_overdue": invoice_model.days_overdue(inv, today=today),
     }
     _money(row, "total", inv.get("total", 0))
     _money(row, "amount_due", inv.get("amount_due", 0))
@@ -2577,8 +2583,10 @@ def get_billing_snapshot(args: dict) -> dict:
         by_dossier, by_dossier_truncated = _unbilled_by_dossier()
         payload["by_dossier"] = by_dossier
         payload["by_dossier_truncated"] = by_dossier_truncated
+        today = deadlines.today_mtl()
         payload["outstanding_invoices"] = [
-            _invoice_row(inv) for inv in outstanding_rows[:_UNBILLED_ROW_CAP]
+            _invoice_row(inv, today=today)
+            for inv in outstanding_rows[:_UNBILLED_ROW_CAP]
         ]
         payload["outstanding_invoices_truncated"] = (
             len(outstanding_rows) > _UNBILLED_ROW_CAP
@@ -2965,7 +2973,9 @@ def list_invoices(args: dict) -> dict:
     truncated = len(rows) > limit or window_full
     next_cursor = _invoice_cursor(page[-1]) if (truncated and page) else None
 
-    payload = _list_payload([_invoice_row(inv) for inv in page], truncated)
+    today = deadlines.today_mtl()
+    payload = _list_payload([_invoice_row(inv, today=today) for inv in page],
+                            truncated)
     payload["next_cursor"] = next_cursor
     return payload
 
@@ -3007,7 +3017,9 @@ def get_invoice(args: dict) -> dict:
     if invoice is None:
         return {"found": False, "invoice_id": invoice_id}
 
-    record = _invoice_row(invoice)
+    # ONE Montréal day for the row's lateness and the transitions offered.
+    today = deadlines.today_mtl()
+    record = _invoice_row(invoice, today=today)
     record.update({
         "dossier_title": invoice.get("dossier_title", ""),
         "client_id": invoice.get("client_id", ""),
@@ -3044,7 +3056,7 @@ def get_invoice(args: dict) -> dict:
     record["warnings"] = warnings
     # Lot 3b: what update_invoice needs, from the read that fed it.
     record["etag"] = concurrency.etag_of(invoice)
-    record["connector_transitions"] = _connector_transitions(invoice)
+    record["connector_transitions"] = _connector_transitions(invoice, today=today)
     record["void_reason"] = (
         str(invoice.get("void_reason") or "")
         if invoice.get("status") == "annulée" else None
@@ -6677,26 +6689,19 @@ _CREATE_OUTCOME_UNCERTAIN = (
 )
 
 
-def _invoice_past_due(invoice: dict) -> bool:
-    """True once the invoice's due date is strictly before today in
-    Montréal — the only moment « en retard » is a true statement."""
-    due = _as_utc(invoice.get("due_date"))
-    return due is not None and due.date() < _today_mtl()
-
-
-def _connector_transitions(invoice: dict) -> list[str]:
+def _connector_transitions(invoice: dict, *, today: date) -> list[str]:
     """The statuses update_invoice can set on *invoice* NOW — the model's
-    own authority (``available_transitions``), narrowed to the promotions
-    this connector makes, « en_retard » only past the due date. Judged on
-    the invoice alone: a payment standing in the registers is re-read by
-    the void's own transaction."""
+    own authority (``available_transitions``) on *today*, the caller's one
+    Montréal day (``deadlines.today_mtl``), narrowed to the promotions this
+    connector makes. Lateness is the model's alone (2026-11-11): « en_retard »
+    only while ``invoice.is_overdue``, back to « envoyée » only while not —
+    the handler keeps no clock or due-date test of its own. Judged on the
+    invoice alone: a payment standing in the registers is re-read by the
+    void's own transaction."""
     current = invoice.get("status", "")
     out: list[str] = []
-    for target in invoice_model.available_transitions(invoice):
-        if target == "annulée":
-            out.append(target)
-        elif (current, target) in _CONNECTOR_STATUS_MOVES and (
-                target != "en_retard" or _invoice_past_due(invoice)):
+    for target in invoice_model.available_transitions(invoice, today=today):
+        if target == "annulée" or (current, target) in _CONNECTOR_STATUS_MOVES:
             out.append(target)
     return out
 
@@ -7116,7 +7121,8 @@ def _invoice_edit_payload(
         "released_expense_ids": list(report.get("released_expense_ids") or []),
         "foreign_source_ids": list(report.get("foreign_source_ids") or []),
         "missing_source_ids": list(report.get("missing_source_ids") or []),
-        "connector_transitions": _connector_transitions(invoice),
+        "connector_transitions": _connector_transitions(
+            invoice, today=deadlines.today_mtl()),
         "warnings": list(warnings or []),
     }
 
@@ -7153,15 +7159,9 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
                 "permise ici."
             )
         raise ToolArgumentError(message, reason="invoice_refused")
-    if target == "en_retard":
-        if invoice.get("due_date") is None:
-            raise ToolArgumentError(
-                "Cette facture n'a pas de date d'échéance : elle ne peut pas "
-                "être « en retard ».", reason="invoice_refused")
-        if not _invoice_past_due(invoice):
-            raise ToolArgumentError(
-                "L'échéance de cette facture n'est pas passée : elle n'est "
-                "pas « en retard ».", reason="invoice_refused")
+    # Lateness — « en_retard » only while overdue, « envoyée » again only
+    # while not — is judged by the MODEL, inside its transaction, on its own
+    # Montréal day; its refusal names the day lateness begins.
     wanted = _stale_invoice(args, invoice)
     written, errors = invoice_model.update_status_report(
         invoice_id, target, expected_etag=wanted)

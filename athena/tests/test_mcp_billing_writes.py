@@ -71,6 +71,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from tests._fake_firestore import install  # noqa: E402
 from tests._fake_gcs import FakeBucket  # noqa: E402
+from tests._frozen_clock import freeze_deadlines  # noqa: E402
 from tests.test_mcp_jsonrpc import _make_app, _rpc, _token_doc  # noqa: E402
 from tests.test_mcp_output_schemas import _conforms  # noqa: E402
 from utils import phases, storage_identity  # noqa: E402
@@ -133,15 +134,11 @@ def _dossier(did: str, **over) -> dict:
 
 def _freeze_deadlines(monkeypatch, instant: datetime) -> None:
     """Freeze the clock at its one seam, utils.deadlines: today_mtl and
-    today_utc (an invoice's date, lot D) both read it."""
-    from utils import deadlines
-
-    class _Clock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return instant if tz is None else instant.astimezone(tz)
-
-    monkeypatch.setattr(deadlines, "datetime", _Clock)
+    today_utc (an invoice's date, lot D) both read it. Through
+    tests/_frozen_clock since 2026-11-11: a bare datetime subclass made the
+    module's own isinstance test miss a stored due date, which lateness now
+    reads."""
+    freeze_deadlines(monkeypatch, instant)
 
 
 @pytest.fixture
@@ -608,23 +605,136 @@ def test_a_stale_etag_is_refused_and_nothing_is_written(world):
     assert world.peek(f"invoices/{iid}") == before and world.commits == []
 
 
-def test_en_retard_only_once_the_due_date_has_passed(world):
+def _move_to(monkeypatch, day: date) -> None:
+    """Every clock of this file to noon UTC on *day* — the model's (its
+    bound today_mtl), the handler's own and utils.deadlines'."""
+    _freeze_deadlines(monkeypatch, datetime(day.year, day.month, day.day, 12,
+                                            tzinfo=UTC))
+    monkeypatch.setattr(invoice_model, "today_mtl", lambda: day)
+    monkeypatch.setattr(handlers, "_today_mtl", lambda: day)
+
+
+def test_en_retard_only_once_the_due_date_has_passed(world, monkeypatch):
+    """REWRITTEN deliberately on 2026-11-11 (lot 2: lateness follows the due
+    date, prorogued on the CIVIL calendar, and the model alone judges it).
+    The invoice falls due on SUNDAY 2026-09-27: payable until Monday the
+    28th — this file's TODAY, when the old handler check already called it
+    late — so it is late only on Tuesday the 29th. Once late, lateness is a
+    fact: « envoyée » is no longer offered back."""
     invoice = _issued(world)
     iid = invoice["id"]
     sent = handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
                                     "expected_etag": invoice["etag"]})
     etag = sent["entity"]["etag"]
+    assert "en_retard" not in sent["connector_transitions"]
     with pytest.raises(tools.ToolArgumentError, match="pas passée"):
         handlers.update_invoice({"invoice_id": iid, "status": "en_retard",
                                  "expected_etag": etag})
+    sunday = datetime(2026, 9, 27, tzinfo=UTC)
+    assert sunday.weekday() == 6
     world.external_write(f"invoices/{iid}", {
-        **world.peek(f"invoices/{iid}"),
-        "due_date": datetime(2026, 9, 27, tzinfo=UTC)})
+        **world.peek(f"invoices/{iid}"), "due_date": sunday})
+    before = world.peek(f"invoices/{iid}")
+    world.reset_logs()
+    with pytest.raises(tools.ToolArgumentError,
+                       match="en retard à compter du 2026-09-29") as refused:
+        handlers.update_invoice({"invoice_id": iid, "status": "en_retard",
+                                 "expected_etag": _etag_of(world, iid)})
+    assert refused.value.reason == "invoice_refused"
+    assert world.peek(f"invoices/{iid}") == before and world.commits == []
+
+    _move_to(monkeypatch, date(2026, 9, 29))
     late = handlers.update_invoice({"invoice_id": iid, "status": "en_retard",
                                     "expected_etag": _etag_of(world, iid)})
+    _conforms("update_invoice", late)
     assert late["outcome"] == "applied"
     assert world.peek(f"invoices/{iid}")["status"] == "en_retard"
-    assert "envoyée" in late["connector_transitions"]
+    assert late["connector_transitions"] == ["annulée"]
+
+
+def test_a_refused_lateness_names_the_day_it_begins(world):
+    """The refusal comes from the MODEL (no handler clock left) and names the
+    first late day: the default due date — the invoice date plus one month,
+    2026-10-28 — makes the invoice late on the 29th."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    sent = handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
+                                    "expected_etag": invoice["etag"]})
+    assert world.peek(f"invoices/{iid}")["due_date"].date() == date(2026, 10, 28)
+    with pytest.raises(tools.ToolArgumentError) as refused:
+        handlers.update_invoice({"invoice_id": iid, "status": "en_retard",
+                                 "expected_etag": sent["entity"]["etag"]})
+    assert "à compter du 2026-10-29" in str(refused.value)
+    assert refused.value.reason == "invoice_refused"
+    assert not hasattr(handlers, "_invoice_past_due")
+
+
+def test_lateness_is_a_fact_retirer_le_retard_only_corrects_an_early_mark(
+        world, monkeypatch):
+    """« Retirer le retard » (en_retard → envoyée) corrects a mark made BEFORE
+    the due date and nothing else: once the invoice is overdue the model
+    refuses it, naming the day lateness began, and connector_transitions no
+    longer offers it."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
+                             "expected_etag": invoice["etag"]})
+    # A mark made before the due date (2026-10-28): set behind the model.
+    world.external_write(f"invoices/{iid}", {
+        **world.peek(f"invoices/{iid}"), "status": "en_retard"})
+    got = handlers.get_invoice({"invoice_id": iid})["invoice"]
+    assert got["connector_transitions"] == ["envoyée", "annulée"]
+    assert got["is_overdue"] is False and got["days_overdue"] == 0
+    back = handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
+                                    "expected_etag": got["etag"]})
+    assert back["outcome"] == "applied"
+    assert world.peek(f"invoices/{iid}")["status"] == "envoyée"
+
+    # Overdue now: marked, and the way back is closed.
+    _move_to(monkeypatch, date(2026, 11, 2))
+    late = handlers.update_invoice({"invoice_id": iid, "status": "en_retard",
+                                    "expected_etag": _etag_of(world, iid)})
+    assert late["connector_transitions"] == ["annulée"]
+    before = world.peek(f"invoices/{iid}")
+    world.reset_logs()
+    with pytest.raises(tools.ToolArgumentError,
+                       match="en retard depuis le 2026-10-29") as refused:
+        handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
+                                 "expected_etag": late["entity"]["etag"]})
+    assert refused.value.reason == "invoice_refused"
+    assert world.peek(f"invoices/{iid}") == before and world.commits == []
+
+
+def test_every_invoice_row_carries_the_models_lateness_and_conforms(
+        world, monkeypatch):
+    """is_overdue / days_overdue on the three reads that share the row —
+    get_invoice, list_invoices, get_billing_snapshot — are the MODEL's on the
+    one Montréal day, independent of the stored status: an envoyée invoice
+    past its due date is overdue before anything marks it."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
+                             "expected_etag": invoice["etag"]})
+    on_time = handlers.get_invoice({"invoice_id": iid})
+    assert (on_time["invoice"]["is_overdue"], on_time["invoice"]["days_overdue"]) == (
+        False, 0)
+    _conforms("get_invoice", on_time)
+
+    _move_to(monkeypatch, date(2026, 11, 2))   # due 2026-10-28, late from the 29th
+    got = handlers.get_invoice({"invoice_id": iid})
+    listed = handlers.list_invoices({"dossier_id": "d1"})
+    snapshot = handlers.get_billing_snapshot({})
+    for tool, payload, row in (
+        ("get_invoice", got, got["invoice"]),
+        ("list_invoices", listed, listed["items"][0]),
+        ("get_billing_snapshot", snapshot, snapshot["outstanding_invoices"][0]),
+    ):
+        _conforms(tool, payload)
+        assert row["status"] == "envoyée", tool
+        assert (row["is_overdue"], row["days_overdue"]) == (True, 5), tool
+    for tool in ("get_invoice", "list_invoices", "get_billing_snapshot"):
+        schema = json.dumps(OUTPUT_SCHEMAS[tool])
+        assert '"is_overdue"' in schema and '"days_overdue"' in schema, tool
 
 
 def test_a_draft_goes_to_envoyee_first(world):

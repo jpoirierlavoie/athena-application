@@ -1488,7 +1488,7 @@ def test_section_1_names_BOTH_app_engine_services():
 
 def test_section_7_does_not_tell_you_to_lock_out_your_own_cron():
     """§7 disait « Cloudflare ranges ONLY ». Suivi à la lettre, cela coupe
-    les trois tâches cron ET la file Cloud Tasks : App Engine les expédie
+    toutes les tâches cron ET la file Cloud Tasks : App Engine les expédie
     depuis l'adresse interne `0.1.0.2`, qui n'est pas une plage Cloudflare.
     Relu sur le déploiement vivant le 2026-09-12 : la règle est bien là, en
     priorité 10, au-dessus des 22 plages Cloudflare."""

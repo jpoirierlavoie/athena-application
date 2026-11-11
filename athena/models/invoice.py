@@ -39,12 +39,27 @@ the next period's date (its number still follows the Montréal year, and
 ``preview_invoice`` keep their own stricter Montréal-day check, by the same
 decision (``mcp/handlers._invoice_date``). The default due date is the
 invoice date plus one calendar month (:func:`default_due_date`).
+
+LATENESS is a fact, derived (lot 2 of « Factures : retard, radiation,
+intérêts », the lawyer's decisions of 2026-11-11). :func:`is_overdue` is its
+one authority: an issued invoice (envoyée or en_retard) with a balance owing
+(:func:`balance_of`) whose due date, prorogued on the CIVIL calendar
+(:data:`LATENESS_REGIME` — a due date on a Saturday, a Sunday or a public
+holiday is payable until the next business day), fell before today in
+Montréal (``utils.deadlines.is_past_due``). The stored « en_retard » follows
+it: the nightly sweep (``routes/taches_factures``, behind
+``Config.FACTURES_RETARD_ACTIF``) marks an overdue « envoyée » through
+:func:`update_status_report`, and :func:`available_transitions` offers
+« Marquer en retard » only while the invoice is overdue and « Retirer le
+retard » only while it is not — the correction of a mark made before the
+due date, never a waiver. Every caller names its « today »; the status
+write judges with ``today_mtl`` inside its own transaction.
 """
 
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
@@ -53,6 +68,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, concurrency, db, full_reads, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils import deadlines
 from utils.deadlines import today_mtl, today_utc
 from utils.format_fr import format_cents_fr
 from utils.logging_setup import log_invoice_event, log_unexpected, sanitize_log_value
@@ -222,10 +238,13 @@ STATUS_LABELS = {
 # facturées pour toujours : void refusait ensuite « déjà annulée » et
 # delete_invoice refusait les références restées accrochées).
 #
-# « en_retard » gagne « envoyée » pour une raison propre : rien n'écrit ce
-# statut automatiquement, donc il se pose à la main, et sans autre sortie
-# qu'« annulée » une facture marquée en retard par erreur ne se corrigerait
-# que destructivement.
+# « en_retard » ↔ « envoyée » suit l'échéance depuis le 2026-11-11 (lot 2 du
+# plan « Factures : retard, radiation, intérêts ») : le retard est un FAIT,
+# dérivé par is_overdue, et le balayage nocturne le pose de lui-même. La
+# table garde les deux arêtes ; available_transitions n'offre « en_retard »
+# que tant que la facture est en retard, et le retour à « envoyée » — « Retirer
+# le retard » — que tant qu'elle ne l'est PAS : la correction d'une marque
+# posée avant l'échéance, jamais une dispense (décision de l'avocat).
 STATUS_TRANSITIONS = {
     "brouillon": ("envoyée", "annulée"),
     "envoyée": ("en_retard", "annulée"),
@@ -262,9 +281,77 @@ def _standing_trust_fee_payment(row: dict) -> bool:
     )
 
 
+#: The calendar an invoice's due date is prorogued on before lateness is
+#: judged (the lawyer's decision of 2026-11-11): the CIVIL one of
+#: ``utils.deadlines`` — Saturdays, Sundays and the public holidays of art.
+#: 61(23) L.i., never the 26 December and 2 January that art. 82 C.p.c.
+#: adds for civil procedure alone. A due date on a non-business day is
+#: payable until the next business day; the invoice is late the day after.
+LATENESS_REGIME = deadlines.CIVIL
+
+
+def _montreal_day(today: object) -> date:
+    """*today* when it is a calendar date — the caller's Montréal « today »
+    (``utils.deadlines.today_mtl``), named on every call. Anything else is
+    refused: ``None`` would let ``deadlines.is_past_due`` read the clock
+    itself, behind the caller's back, and a ``datetime`` is an instant, never
+    a day (it does not even compare with one)."""
+    if not isinstance(today, date) or isinstance(today, datetime):
+        raise TypeError(
+            "today : un jour de calendrier de Montréal "
+            "(utils.deadlines.today_mtl()), jamais None ni un instant"
+        )
+    return today
+
+
+def is_overdue(invoice: dict, *, today: date) -> bool:
+    """True when *invoice* is LATE on *today* — the one authority of
+    lateness (module docstring). PURE; three conditions, all required:
+
+    * its status is an issued one (``_ISSUED_STATUSES``: envoyée or
+      en_retard) — a brouillon owes nothing yet, a payée or an annulée
+      nothing any more;
+    * a balance is owing (:func:`balance_of` > 0);
+    * its due date, prorogued on :data:`LATENESS_REGIME`, fell strictly
+      before *today* (``utils.deadlines.is_past_due``) — due on a Saturday,
+      payable until Monday, late on Tuesday. No due date, never late.
+
+    *today* is the caller's Montréal day (``utils.deadlines.today_mtl``),
+    required: the rule never reads a clock of its own. A stored amount
+    :func:`balance_of` cannot read raises, as everywhere it is read."""
+    _montreal_day(today)
+    if invoice.get("status", "") not in _ISSUED_STATUSES:
+        return False
+    if balance_of(invoice) <= 0:
+        return False
+    return deadlines.is_past_due(
+        invoice.get("due_date"), today=today, regime=LATENESS_REGIME)
+
+
+def first_overdue_day(invoice: dict) -> Optional[date]:
+    """The first Montréal day *invoice* counts as late — the day after its
+    due date prorogued on :data:`LATENESS_REGIME` — or ``None`` when it has
+    no readable due date. PURE, and blind to the status and the balance: it
+    dates lateness, :func:`is_overdue` decides it. The day the refusals of
+    :func:`update_status_report` name."""
+    due = deadlines.effective_due(invoice.get("due_date"), regime=LATENESS_REGIME)
+    return None if due is None else due + timedelta(days=1)
+
+
+def days_overdue(invoice: dict, *, today: date) -> int:
+    """How many days *invoice* has been late on *today*: ``0`` unless
+    :func:`is_overdue`, else 1 on its :func:`first_overdue_day` and one more
+    each day after — counted from the PROROGUED due date, never the stored
+    one. PURE."""
+    if not is_overdue(invoice, today=today):
+        return 0
+    return (today - first_overdue_day(invoice)).days + 1
+
+
 def available_transitions(
     invoice: dict,
     *,
+    today: date,
     receipts: Optional[list[dict]] = None,
     trust_payments: Optional[list[dict]] = None,
 ) -> tuple[str, ...]:
@@ -301,9 +388,23 @@ def available_transitions(
 
     UNE seule autorité, consommée par ``update_status`` ET par la fiche : un
     bouton qui s'affiche pour être refusé est un défaut de conception.
+
+    Le retard suit l'échéance (lot 2, 2026-11-11) : « en_retard » n'est
+    offert à une facture envoyée que tant que :func:`is_overdue` la dit en
+    retard ; le retour à « envoyée » — « Retirer le retard » — ne l'est à une
+    facture en retard que tant qu'elle ne l'est PAS (une marque posée avant
+    l'échéance). *today*, le jour de Montréal de l'appelant, est REQUIS : une
+    fonction pure ne lit aucune horloge.
     """
+    _montreal_day(today)
     current = invoice.get("status", "")
     allowed = STATUS_TRANSITIONS.get(current, ())
+    if current in _ISSUED_STATUSES:
+        overdue = is_overdue(invoice, today=today)
+        if current == "envoyée" and not overdue:
+            allowed = tuple(s for s in allowed if s != "en_retard")
+        if current == "en_retard" and overdue:
+            allowed = tuple(s for s in allowed if s != "envoyée")
     paid = int(invoice.get("amount_paid", 0) or 0) > 0
     if current == "payée" and paid:
         allowed = tuple(s for s in allowed if s != "envoyée")
@@ -1726,6 +1827,56 @@ def list_invoices_strict(transaction) -> list[dict]:
     return full_reads.stream_all(db.collection(COLLECTION), transaction=transaction)
 
 
+def list_sent_invoices_strict() -> list[dict]:
+    """Every « envoyée » invoice — STRICT and capped (``models/full_reads``),
+    one plain query outside any transaction: the read of the nightly
+    lateness sweep (``routes/taches_factures``) and of its preview
+    (``scripts/apercu_factures_echues``), where a failed or truncated read
+    must never pass for « nothing is late ». One equality on ``status`` and
+    no order: the automatic single-field index serves it, no composite
+    (``firestore.indexes.json`` declares no override on ``invoices.status``).
+    The document id is authoritative for ``id``."""
+    return full_reads.stream_all(
+        db.collection(COLLECTION).where(
+            filter=FieldFilter("status", "==", "envoyée")),
+        transaction=None,
+    )
+
+
+#: The most invoices one run of the nightly sweep marks « en_retard »: each
+#: mark is its own transaction, and the cron targets the default service
+#: (gunicorn --timeout 60). The rest waits for the next night, counted
+#: (``remaining``), never dropped — the ``_PLAFOND_MUTATIONS`` precedent of
+#: ``routes/taches_outlook``. The preview names it too.
+OVERDUE_SWEEP_CAP = 100
+
+
+def overdue_among(
+    invoices: list[dict], *, today: date,
+) -> tuple[list[dict], list[str]]:
+    """The invoices of *invoices* that are late on *today*
+    (:func:`is_overdue`), the longest-late first (:func:`first_overdue_day`,
+    then the id) — the order the nightly sweep marks them in and its preview
+    lists them in, so the two can never disagree — and the ids of those whose
+    lateness could not be judged (a stored amount :func:`balance_of` cannot
+    read), each logged. PURE but for that log."""
+    _montreal_day(today)
+    late: list[dict] = []
+    unjudged: list[str] = []
+    for invoice in invoices:
+        try:
+            overdue = is_overdue(invoice, today=today)
+        except Exception:
+            log_unexpected("invoice lateness unreadable",
+                           invoice_id=str(invoice.get("id") or ""))
+            unjudged.append(str(invoice.get("id") or ""))
+            continue
+        if overdue:
+            late.append(invoice)
+    late.sort(key=lambda inv: (first_overdue_day(inv), str(inv.get("id") or "")))
+    return late, unjudged
+
+
 def normalize_reference(reference: str) -> str:
     """The matching key of an invoice number cited from outside Athéna — a
     trust fee payment's ``invoice_external_ref``, an invoice's number or its
@@ -2131,7 +2282,8 @@ def update_status(
     """Transition an invoice to a new status. Returns (success, error).
 
     :func:`update_status_report` for a caller that needs only the verdict —
-    the historical signature, kept for the web route and the scripts.
+    the historical signature, kept for the web route and the scripts. Always
+    a change made by hand (cause ``manuel``).
     """
     _doc, errors = update_status_report(
         invoice_id, new_status, expected_etag=expected_etag)
@@ -2140,11 +2292,54 @@ def update_status(
     return True, ""
 
 
+#: What caused a status change, as ``invoice_status_changed`` records it:
+#: ``manuel`` — someone asked for it (the sheet, the connector, a script);
+#: ``echeance`` — the due date, through the nightly lateness sweep
+#: (``routes/taches_factures``), the only caller that names it.
+STATUS_CAUSES = ("manuel", "echeance")
+
+#: :func:`update_status_report`'s answer when its transaction RAISED — the
+#: one error that is not a refusal of the change itself (the nightly sweep
+#: counts it apart). Nothing is known to be written: a commit whose answer
+#: was lost may have landed, which a re-read settles.
+STATUS_UPDATE_FAILED = "Erreur. Veuillez réessayer."
+
+
+def _lateness_refusal(invoice: dict, new_status: str) -> Optional[_StatusRefused]:
+    """The refusal of a move between « envoyée » and « en_retard » that
+    lateness forbids — naming the day lateness begins — or ``None`` when
+    lateness is not why *new_status* is refused. Reached only once
+    :func:`available_transitions` has refused the move."""
+    current = invoice.get("status", "")
+    first = first_overdue_day(invoice)
+    if current == "envoyée" and new_status == "en_retard":
+        if first is None:
+            return _StatusRefused(
+                "Cette facture n'a pas de date d'échéance : elle ne peut pas "
+                "être « en retard ».", "pas_en_retard")
+        if balance_of(invoice) <= 0:
+            return _StatusRefused(
+                "Cette facture n'a plus de solde dû : elle ne peut pas être "
+                "« en retard ».", "pas_en_retard")
+        return _StatusRefused(
+            "L'échéance de cette facture n'est pas passée : elle sera en "
+            f"retard à compter du {first.isoformat()} (une échéance qui tombe "
+            "un samedi, un dimanche ou un jour férié est reportée au jour "
+            "ouvrable suivant).", "pas_en_retard")
+    if current == "en_retard" and new_status == "envoyée" and first is not None:
+        return _StatusRefused(
+            f"Cette facture est en retard depuis le {first.isoformat()} : le "
+            "retard suit l'échéance et ne se retire pas. « Retirer le retard » "
+            "ne corrige qu'un retard marqué avant l'échéance.", "retard_avere")
+    return None
+
+
 def update_status_report(
     invoice_id: str,
     new_status: str,
     *,
     expected_etag: Optional[str] = None,
+    cause: str = "manuel",
 ) -> tuple[Optional[dict], list[str]]:
     """Transition an invoice to a new status — ``(invoice, errors)``.
 
@@ -2165,7 +2360,21 @@ def update_status_report(
     rendered from — is compared INSIDE that transaction
     (``models.concurrency``); ``None`` asserts nothing (a page rendered
     before its form carried one, a script).
+
+    Lateness is judged there too, on ``today_mtl()`` read inside the
+    transaction (lot 2, 2026-11-11): « en_retard » only while the invoice is
+    overdue, back to « envoyée » only while it is not
+    (:func:`available_transitions`), each refusal naming the day lateness
+    begins (:func:`first_overdue_day`). *cause* — ``manuel`` or, from the
+    nightly sweep alone, ``echeance`` (:data:`STATUS_CAUSES`) — is what the
+    ``invoice_status_changed`` line records beside the writer's path; a
+    cause outside it, or ``echeance`` for any status but « en_retard », is a
+    caller's bug and raises before anything is read.
     """
+    if cause not in STATUS_CAUSES:
+        raise ValueError(f"cause inconnue : {cause!r}")
+    if cause == "echeance" and new_status != "en_retard":
+        raise ValueError("l'échéance ne cause que le passage à « en_retard »")
     if new_status == "annulée":
         log_invoice_event("invoice_refused", invoice_id, outcome="refused",
                           operation="status", reason="annulation_par_statut")
@@ -2183,7 +2392,7 @@ def update_status_report(
             raise concurrency.StaleWrite()
 
         current = invoice.get("status", "")
-        if new_status not in available_transitions(invoice):
+        if new_status not in available_transitions(invoice, today=today_mtl()):
             # Nommer la voie plutôt que de refuser sèchement : la seule raison
             # qu'une facture payée ait de rester fermée est qu'un encaissement
             # l'adosse, et cet encaissement a son propre chemin de correction.
@@ -2198,6 +2407,9 @@ def update_status_report(
                     "Une facture se marque payée par un encaissement inscrit au "
                     "registre d'administration, jamais à la main."
                 )
+            lateness = _lateness_refusal(invoice, new_status)
+            if lateness is not None:
+                raise lateness
             raise _StatusRefused(
                 f"Transition de « {STATUS_LABELS.get(current, current)} » vers "
                 f"« {STATUS_LABELS.get(new_status, new_status)} » non permise."
@@ -2222,10 +2434,11 @@ def update_status_report(
         return None, [str(refusal)]
     except Exception:
         log_unexpected("invoice status update failed")
-        return None, ["Erreur. Veuillez réessayer."]
+        return None, [STATUS_UPDATE_FAILED]
     provenance.note_commit(COLLECTION, invoice_id)
     log_invoice_event("invoice_status_changed", invoice_id,
-                      from_status=previous, to_status=new_status)
+                      from_status=previous, to_status=new_status,
+                      cause=cause, via=written.get("updated_via", ""))
     return written, []
 
 

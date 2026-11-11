@@ -830,14 +830,19 @@ AdminLedgerOutcome = Literal["success", "refused", "failure"]
 # reasons only: never an invoice number, an amount, a client name.
 # Lot 3a (2026-09-28) adds the creation and the draft correction — the two
 # writes that decide what an invoice says before it leaves.
+# 2026-11-11 (lot 2 of « Factures : retard, radiation, intérêts »): the
+# nightly lateness sweep's one counter line, emitted by its own helper,
+# log_invoice_overdue_sweep — a run has no invoice of its own.
 InvoiceEvent = Literal[
     "invoice_created",
     "invoice_status_changed",
     "invoice_voided",
     "invoice_draft_updated",
     "invoice_refused",
+    "invoice_overdue_sweep",
 ]
 InvoiceOutcome = Literal["success", "refused"]
+InvoiceSweepOutcome = Literal["success", "failure"]
 # Protocol steps and their linked-task cascade (lot 0b, 2026-09-26). A step
 # status change rewrites a DAV-exposed task behind the caller's back; before
 # this family neither the change nor a cascade that deliberately left the
@@ -1310,6 +1315,34 @@ def log_invoice_event(
         fields["reason"] = reason
     level = logging.INFO if outcome == "success" else logging.WARNING
     _emit(_PALLAS_INVOICE, level, event, fields)
+
+
+def log_invoice_overdue_sweep(
+    outcome: InvoiceSweepOutcome = "success",
+    *,
+    reason: Optional[str] = None,
+    **counts: Any,
+) -> None:
+    """Emit the nightly lateness sweep's ONE line — logger ``pallas.invoice``,
+    event ``invoice_overdue_sweep`` (``routes/taches_factures``, 2026-11-11).
+
+    ``success`` emits at INFO with the run's counts (``seen``, ``overdue``,
+    ``marked``, ``refused``, ``errors``, ``remaining``) in **counts;
+    ``failure`` at ERROR — the strict read of the sent invoices failed or was
+    truncated, and nothing was written — with ``reason`` and the exception's
+    class (``error_type``), never its text. Counts and machine codes only:
+    never an invoice number, an amount or a client name. Each invoice the run
+    marks leaves its own ``invoice_status_changed`` line (cause
+    ``echeance``)."""
+    fields: dict[str, Any] = {
+        "event": "invoice_overdue_sweep",
+        "outcome": outcome,
+        **counts,
+    }
+    if reason is not None:
+        fields["reason"] = reason
+    level = logging.INFO if outcome == "success" else logging.ERROR
+    _emit(_PALLAS_INVOICE, level, "invoice_overdue_sweep", fields)
 
 
 def log_protocol_event(

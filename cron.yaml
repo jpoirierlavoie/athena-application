@@ -3,12 +3,16 @@
 # ⚠️ PIÈGE : `gcloud app deploy cron.yaml` REMPLACE L'ENSEMBLE des tâches
 # cron de l'application. Toute entrée future FUSIONNE dans CE fichier et
 # redéploie le fichier COMPLET — le remplacer par une entrée unique
-# arrêterait silencieusement les autres tâches. La table compte TROIS
-# entrées : réconciliation portail, synchro Bookings, miroir Outlook.
-# (Une quatrième, le répartiteur des tâches planifiées du clavardage,
-# est partie avec le clavardage le 2026-09-02.)
+# arrêterait silencieusement les autres tâches. La table ci-dessous est la
+# seule liste des tâches : aucun autre texte ne les compte ni ne les nomme
+# toutes. (Le répartiteur des tâches planifiées du clavardage est parti
+# avec le clavardage le 2026-09-02.)
 #
-# Le gestionnaire vérifie X-Appengine-Cron: true (retiré de tout trafic
+# Coût : Cloud Scheduler facture environ 0,10 $ US par mois chaque tâche
+# au-delà de son palier gratuit (trois tâches par compte de facturation) :
+# comptez les entrées ci-dessous.
+#
+# Chaque gestionnaire vérifie X-Appengine-Cron: true (retiré de tout trafic
 # externe par App Engine) ; le pare-feu doit autoriser 0.1.0.2/32.
 cron:
 - description: portail — réconciliation des soumissions (spec L1 §8.4)
@@ -22,4 +26,11 @@ cron:
 - description: outlook — miroir des audiences vers le calendrier du juriste
   url: /taches/outlook/sync
   schedule: every 10 minutes
+  target: default
+# Livrée avec FACTURES_RETARD_ACTIF à "false" (app.yaml) : tant qu'il l'est,
+# la tâche répond {"actif": false} sans rien lire ni écrire.
+- description: factures — balayage des factures échues (« en retard » suit l'échéance)
+  url: /taches/factures/retards
+  schedule: every day 00:20
+  timezone: America/Montreal
   target: default

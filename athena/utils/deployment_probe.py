@@ -494,7 +494,7 @@ def _v_pare_feu(run: Run, ctx: dict) -> tuple:
     """L'ORDRE est le fond du sujet, pas la présence.
 
     Une règle ALLOW sur l'adresse interne qui se trouve SOUS le refus par
-    défaut ne sert à rien ; et sans elle, les trois tâches cron et toute la
+    défaut ne sert à rien ; et sans elle, toutes les tâches cron et toute la
     file sont coupées à la couche 1, en silence.
     """
     lignes = [colonnes(l) for l in run.stdout.splitlines() if l.strip()]
@@ -516,7 +516,7 @@ def _v_pare_feu(run: Run, ctx: dict) -> tuple:
             refus_par_defaut = priorite
     if interne is None:
         return DRIFT, (
-            "%s n'est pas autorisé — les trois tâches cron et la file Cloud "
+            "%s n'est pas autorisé — toutes les tâches cron et la file Cloud "
             "Tasks sont coupées à la couche 1, EN SILENCE. App Engine les "
             "expédie depuis cette adresse interne, qui n'est pas une plage "
             "Cloudflare." % APPENGINE_INTERNAL_CIDR

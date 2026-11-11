@@ -68,7 +68,8 @@ Firestore     Firestore      Firebase Storage  Firebase Auth  Secret Manager
 ```
 
 **There are TWO App Engine services, not one**, plus a `dispatch.yaml` that
-routes the portal host to the second and a `cron.yaml` carrying three jobs.
+routes the portal host to the second and a `cron.yaml` carrying the scheduled
+jobs (that file is their one list).
 This diagram showed one until 2026-09-12, which is how an adopter learns the
 `portail` service exists only when their first CI build fails deploying it.
 Its infrastructure — the least-privilege service account, the quarantine
@@ -110,7 +111,7 @@ grants — is §6.9.
 | App Engine F2, `min_instances: 1` | ~US$40–50/mo (one always-on instance, no cold starts) |
 | App Engine F1 — the **`portail` service** | a few $/mo (also `min_instances: 0`; it only moves JSON, never file bytes) |
 | Firestore (native) — **two databases** | cents–low $/mo at single-user volume |
-| Cloud Tasks + Cloud Scheduler | free tier covers one queue and three cron jobs |
+| Cloud Tasks + Cloud Scheduler | the free tier covers the queue and three Cloud Scheduler jobs per billing account; each `cron.yaml` job beyond them costs about US$0.10/mo — count its entries |
 | Quarantine bucket (client uploads) | pennies/mo + egress; lifecycle purges at 90 / 365 days |
 | Firebase Storage | pennies/mo + egress |
 | Secret Manager | negligible |
@@ -214,6 +215,12 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 it in `BOOKINGS_SUBJECT_KEYWORDS` **without** adding it to that map falls back
 to « consultation » — logged, but only in the logs. Editing `config.py` is the
 only way to change it today.
+
+#### Invoices — the nightly lateness sweep
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `FACTURES_RETARD_ACTIF` | ○ | `true` | Kill switch for the nightly sweep that marks an overdue « envoyée » invoice « en_retard » (`routes/taches_factures`, `cron.yaml`, 2026-11-11). ⚠ The default is `true` (the `MIROIR_OUTLOOK_ACTIF` precedent), but `app.yaml` ships `"false"` until the lawyer has reviewed `python -m scripts.apercu_factures_echues` (§15 « Invoices: lateness follows the due date »). `false`: the cron answers `{"actif": false}` and reads and writes nothing |
 
 #### The `portail` service — set in `portail.yaml`
 
@@ -1594,7 +1601,7 @@ rejects direct access. Set up, in order:
 3. **App Engine firewall:** allow **Cloudflare's published IP ranges**, and
    **`0.1.0.2/32` at a higher priority**, then set the `default` rule to DENY —
    in that order. ⚠ This step said « Cloudflare ranges **only** » until
-   2026-09-12, and following it literally **kills all three cron jobs and the
+   2026-09-12, and following it literally **kills every cron job and the
    Cloud Tasks queue**: App Engine dispatches them from the internal address
    `0.1.0.2`, which is not a Cloudflare range. The live deployment carries 24
    rules — `0.1.0.2/32` at priority 10, 22 Cloudflare ranges at 100–360, and
@@ -5442,6 +5449,102 @@ Notes:
   missing key as empty — `get_invoice` answers `""`, the sheet shows no
   « Conditions » row, and a brouillon's correction form shows an empty box
   whose unchanged value saves.
+
+- **Invoices: lateness follows the due date (2026-11-11).** Lot 2 of the
+  lawyer's plan « Factures : retard, radiation, intérêts ». Lateness is a
+  FACT, with no manual waiver (his decision). `invoice.is_overdue` is its
+  one authority: an issued invoice (envoyée or en_retard) with a balance
+  owing whose due date, prorogued on the CIVIL calendar
+  (`invoice.LATENESS_REGIME` — a Saturday, a Sunday or a public holiday
+  rolls to the next business day; art. 82 C.p.c.'s 26 December and
+  2 January are business days here), fell before today in Montréal;
+  `days_overdue` counts it and `first_overdue_day` dates it. « Marquer en
+  retard » is offered only while the invoice is overdue, and « Retirer le
+  retard » (en_retard → envoyée) only while it is not — the correction of
+  a mark made before the due date. `update_status_report` judges both with
+  `today_mtl` inside its transaction, and its refusal names the first late
+  day. A nightly sweep marks the overdue « envoyée » invoices:
+  `GET /taches/factures/retards` (`routes/taches_factures`), its own
+  machine blueprint, CSRF-exempt, 403 without `X-Appengine-Cron`, stamped
+  `cron`, behind the kill switch `FACTURES_RETARD_ACTIF` (§4.1 — read from
+  the environment, default true, as `MIROIR_OUTLOOK_ACTIF`; `app.yaml`
+  ships it `"false"`). It reads the « envoyée » invoices STRICTLY
+  (`invoice.list_sent_invoices_strict`: a failed or truncated read writes
+  nothing and says so), marks each overdue one through
+  `update_status_report` against the etag it read (an invoice paid or
+  edited since is refused, never overwritten), at most
+  `invoice.OVERDUE_SWEEP_CAP` (100) a run, the longest-late first, counts
+  the rest, always answers 200 JSON and logs ONE line,
+  `invoice_overdue_sweep`. `cron.yaml` gains its job: `every day 00:20`,
+  `America/Montreal`, target `default`; with it the table passes Cloud
+  Scheduler's free tier (three free jobs a billing account) — about
+  US$0.10 a month more. Every text that counted the jobs (`cron.yaml`'s header, §1,
+  §3, §7, the deployment inventory and probe) now names none:
+  `cron.yaml` is their one list. The first run marks the whole backlog,
+  the invoices imported from the previous system included — hence the
+  switch shipped off and the read-only preview,
+  `python -m scripts.apercu_factures_echues` (the same strict read, the
+  same rule, the same order). Display: the invoice list shows
+  « Échue · N j » under the balance of an overdue invoice — an envoyée one
+  too, before the sweep marks it —, the sheet a « Retard » line (« N jours
+  (depuis le AAAA-MM-JJ) »), and an early mark's button reads « Retirer le
+  retard »; the routes compute both on `today_mtl`, no template compares a
+  date (Rule 5). Through the connector, `_invoice_past_due` and
+  `update_invoice`'s own due-date check are gone (the handler's clock and
+  the raw due date broke Rule 5): the model judges, and its refusal reaches
+  the caller. `update_invoice`'s description says lateness is automatic;
+  the rows of `get_invoice`, `list_invoices` and
+  `get_billing_snapshot.outstanding_invoices` gain `is_overdue` and
+  `days_overdue`. Change Impact: item 1 — touched: a write narrowed in
+  place, never widened (« en_retard » now waits for the prorogued due date,
+  and « envoyée » back is closed once overdue); two keys REQUIRED in three
+  READ outputs, none in a write's; no tool, input schema, disclosure
+  promise or consent text moved; the registry fingerprint is unchanged
+  (`45319ee6ddf9`) and the plugin's build with it — no new version (1.9.1
+  still waits for its « go », lot 1). Item 2 — not touched (invoices are
+  not DAV-exposed). Item 3 — not touched. Item 4 — one new event,
+  `invoice_overdue_sweep` (its own helper, `log_invoice_overdue_sweep`);
+  `invoice_status_changed` gains `cause` (`manuel` | `echeance`) and
+  `via`; `invoice_refused` gains `pas_en_retard` and `retard_avere`; two
+  `unexpected` messages — all in OBSERVABILITY.md. Item 5 — a new machine
+  route under `/taches/` on its own CSRF-exempt blueprint (two literal
+  segments: no `/taches/<task_id>` rule can match it), guarded by its
+  header, and a new setting; no header, CSP, rate limit or prefix change,
+  and the dispatch comes from `0.1.0.2` like the other jobs (§7). Item 6 —
+  two invoice templates, compiled classes only (no recompile), no new
+  target. Item 7 — no index: one single-field equality (`status ==
+  envoyée`, no order) on the automatic index; `firestore.indexes.json`
+  overrides nothing on it. In order:
+  1. *The push, with the switch OFF* — `app.yaml` ships
+     `FACTURES_RETARD_ACTIF: "false"`; no index, no consent train. Cloud
+     Build deploys `cron.yaml` with the new job.
+  2. *Cloud Scheduler lists the new job*: the console's Cloud Scheduler
+     page, tab « App Engine Cron jobs », shows `/taches/factures/retards`,
+     `every day 00:20`, America/Montreal, beside the others (a Cloud Build
+     whose cron step failed leaves the old table in place). The next
+     morning, its first run answered 200 `{"actif": false}` and logged
+     nothing in `pallas.invoice`:
+     `gcloud logging read 'resource.type="gae_app" AND protoPayload.resource="/taches/factures/retards"' --project=$PROJECT --freshness=1d --format="value(timestamp,protoPayload.status)"`.
+     On the phone (375 px) and the desktop: the invoice list shows
+     « Échue · N j » under each overdue balance, an overdue invoice's sheet
+     its « Retard » line.
+  3. *The preview*, from `athena/`: `python -m scripts.apercu_factures_echues`
+     — READ-ONLY, it reads production through ADC and writes nothing. The
+     lawyer reviews its list: number, due date, prorogued due date, days
+     late, balance, imported flag — what the first night would mark (at
+     most 100, the rest the following nights).
+  4. *The switch on*: a one-line commit sets `FACTURES_RETARD_ACTIF: "true"`
+     in `athena/app.yaml`, pushed on his « push ».
+  5. *The next morning*, the `invoice_overdue_sweep` line:
+     `gcloud logging read 'jsonPayload.event="invoice_overdue_sweep"' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.outcome,jsonPayload.marked,jsonPayload.refused,jsonPayload.errors,jsonPayload.remaining)"`
+     — `success`, `marked` the preview's count (capped at 100,
+     `remaining` the rest), `refused` and `errors` 0. A `failure`
+     (`reason` `lecture`) wrote nothing; the next night retries.
+  A rollback is the switch: a one-line commit sets it back to `"false"`,
+  and the job answers `{"actif": false}` from the next night. The marks
+  already made stay, as facts; « Retirer le retard » only corrects a mark
+  made before the due date. A rollback of the code takes `cron.yaml`'s job
+  with it.
 
 ## 16. Troubleshooting
 

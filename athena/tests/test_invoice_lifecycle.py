@@ -25,7 +25,7 @@ import os
 import pathlib
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
@@ -270,27 +270,42 @@ def test_un_etag_malforme_est_un_400_et_rien_n_est_ecrit(fake, client):
 # ══════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.parametrize("status,expected", [
-    ("envoyée", ("en_retard",)),
-    ("en_retard", ("envoyée",)),
-    ("payée", ()),
+# Réécrits délibérément le 2026-11-11 (lot 2, le retard suit l'échéance) :
+# available_transitions exige le jour de Montréal, et n'offre « en_retard »
+# qu'à une facture EN RETARD, « envoyée » qu'à une facture en retard qui ne
+# l'est PAS. Chaque cas porte donc une échéance et un solde qui le placent du
+# bon côté — l'objet de ces tests, l'annulation fermée par un paiement, est
+# inchangé. tests/test_invoice_lateness.py épingle le retard lui-même.
+_JOUR = date(2031, 3, 4)
+_ECHUE = datetime(2031, 2, 3, tzinfo=UTC)       # en retard le _JOUR
+_A_VENIR = datetime(2031, 4, 3, tzinfo=UTC)     # pas encore échue
+
+
+@pytest.mark.parametrize("status,due,expected", [
+    ("envoyée", _ECHUE, ("en_retard",)),
+    # Une marque posée avant l'échéance : « Retirer le retard ».
+    ("en_retard", _A_VENIR, ("envoyée",)),
+    ("payée", _ECHUE, ()),
 ])
-def test_un_paiement_inscrit_retire_annuler(status, expected):
-    inv = {"status": status, "amount_paid": 100}
-    assert invoice_model.available_transitions(inv) == expected
+def test_un_paiement_inscrit_retire_annuler(status, due, expected):
+    inv = {"status": status, "amount_due": 40241, "amount_paid": 100,
+           "due_date": due}
+    assert invoice_model.available_transitions(inv, today=_JOUR) == expected
 
 
 def test_une_ecriture_debout_retire_annuler_meme_a_zero():
     """La dérive : une écriture tient encore alors qu'amount_paid vaut 0.
     La fiche remet les écritures qu'elle lit déjà."""
-    inv = {"status": "envoyée", "amount_paid": 0}
+    inv = {"status": "envoyée", "amount_due": 40241, "amount_paid": 0,
+           "due_date": _ECHUE}
     debout = {"kind": "encaissement_facture", "status": "compensée"}
     contre_passee = dict(debout, reversed_by_id="r1")
-    assert invoice_model.available_transitions(inv, receipts=[debout]) == (
-        "en_retard",)
     assert invoice_model.available_transitions(
-        inv, receipts=[contre_passee]) == ("en_retard", "annulée")
-    assert invoice_model.available_transitions(inv) == ("en_retard", "annulée")
+        inv, today=_JOUR, receipts=[debout]) == ("en_retard",)
+    assert invoice_model.available_transitions(
+        inv, today=_JOUR, receipts=[contre_passee]) == ("en_retard", "annulée")
+    assert invoice_model.available_transitions(inv, today=_JOUR) == (
+        "en_retard", "annulée")
 
 
 def test_la_fiche_n_affiche_pas_annuler_sur_une_facture_payee_en_partie(
@@ -305,15 +320,16 @@ def test_la_fiche_n_affiche_pas_annuler_sur_une_facture_payee_en_partie(
 def test_un_paiement_d_honoraires_debout_retire_annuler():
     """Le cas que ni amount_paid ni les écritures d'administration ne voient :
     la recette automatique d'un paiement d'honoraires a échoué (fail-open)."""
-    inv = {"status": "envoyée", "amount_paid": 0}
+    inv = {"status": "envoyée", "amount_due": 40241, "amount_paid": 0,
+           "due_date": _ECHUE}
     debout = {"purpose": "virement_honoraires", "status": "compensée"}
-    assert invoice_model.available_transitions(inv, trust_payments=[debout]) == (
-        "en_retard",)
+    assert invoice_model.available_transitions(
+        inv, today=_JOUR, trust_payments=[debout]) == ("en_retard",)
     for inerte in (dict(debout, reversed_by_id="r1"),
                    dict(debout, status="annulée"),
                    {"purpose": "correction", "status": "en_circulation"}):
         assert invoice_model.available_transitions(
-            inv, trust_payments=[inerte]) == ("en_retard", "annulée")
+            inv, today=_JOUR, trust_payments=[inerte]) == ("en_retard", "annulée")
 
 
 def test_la_fiche_n_affiche_pas_annuler_sous_un_paiement_d_honoraires_seul(

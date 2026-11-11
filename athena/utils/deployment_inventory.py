@@ -909,7 +909,7 @@ PORTAIL_DB_NAME = "portail"
 # L'adresse interne d'où App Engine expédie cron et Cloud Tasks. Elle n'est
 # PAS une plage Cloudflare, et §7 de DEPLOYMENT.md a dit « les plages
 # Cloudflare seulement » jusqu'au 2026-09-12 — suivi à la lettre, cela coupe
-# les trois tâches cron et la file.
+# toutes les tâches cron (cron.yaml, leur seule liste) et la file.
 APPENGINE_INTERNAL_CIDR = "0.1.0.2/32"
 
 # Le cycle de vie du seau de quarantaine, EN DONNÉES. Relevé sur le
@@ -1453,7 +1453,7 @@ RESOURCES: tuple[Resource, ...] = (
             "Cloudflare, et le DENY par défaut en dernier"
         ),
         symptom=(
-            "les trois tâches cron et toute la file Cloud Tasks sont bloquées "
+            "toutes les tâches cron et toute la file Cloud Tasks sont bloquées "
             "à la couche 1, en silence — App Engine les expédie depuis cette "
             "adresse interne, qui n'est pas une plage Cloudflare"
         ),

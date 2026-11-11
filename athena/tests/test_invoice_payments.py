@@ -23,7 +23,7 @@ Firestore est bouchonné : la transaction est simulée par un faux document.
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest import mock
 
 import pytest
@@ -356,23 +356,37 @@ def test_une_payee_adossee_au_grand_livre_ne_se_rouvre_pas(store):
     assert not store.get("applied"), "un refus a écrit"
 
 
+# Le jour de Montréal que les tests du retard nomment (2026-11-11 : le retard
+# suit l'échéance, et available_transitions l'exige) — une année fictive.
+_JOUR = date(2031, 3, 4)
+_ECHUE = datetime(2031, 2, 3, tzinfo=UTC)       # en retard le _JOUR
+_A_VENIR = datetime(2031, 4, 3, tzinfo=UTC)     # pas encore échue
+
+
 def test_available_transitions_est_la_seule_autorite():
     """La fiche et update_status lisent la MÊME fonction : un bouton qui
-    s'afficherait pour être refusé serait un défaut de conception."""
+    s'afficherait pour être refusé serait un défaut de conception.
+    (Réécrit le 2026-11-11 : elle exige le jour, et n'offre « en_retard »
+    qu'à une facture échue — d'où l'échéance passée de la facture envoyée.)"""
     posee_a_la_main = _invoice(status="payée", amount_paid=0)
     adossee = _invoice(status="payée", amount_paid=287437)
-    assert imod.available_transitions(posee_a_la_main) == ("envoyée",)
-    assert imod.available_transitions(adossee) == ()
+    assert imod.available_transitions(posee_a_la_main, today=_JOUR) == ("envoyée",)
+    assert imod.available_transitions(adossee, today=_JOUR) == ()
     # Et elle n'invente rien pour les autres statuts.
-    assert imod.available_transitions(_invoice(status="envoyée")) == (
+    assert imod.available_transitions(
+        _invoice(status="envoyée", due_date=_ECHUE), today=_JOUR) == (
         "en_retard", "annulée")
 
 
-def test_en_retard_garde_une_sortie_non_destructive(store):
-    """Rien n'écrit « en retard » automatiquement : ce statut se pose à la
-    main, donc une erreur doit se corriger autrement qu'en annulant la
-    facture (ce qui libérerait toutes ses heures)."""
-    store["doc"] = _invoice(status="en_retard")
+def test_en_retard_garde_une_sortie_avant_l_echeance(store, monkeypatch):
+    """« Retirer le retard » (réécrit le 2026-11-11). Le retard est
+    désormais un FAIT que le balayage nocturne pose de lui-même ; mais une
+    marque posée à la main AVANT l'échéance doit encore se corriger
+    autrement qu'en annulant la facture (ce qui libérerait toutes ses
+    heures). Le refus du retard avéré est épinglé par
+    tests/test_invoice_lateness.py."""
+    monkeypatch.setattr(imod, "today_mtl", lambda: _JOUR)
+    store["doc"] = _invoice(status="en_retard", due_date=_A_VENIR)
     ok, err = imod.update_status("inv1", "envoyée")
     assert ok is True and err == ""
 
@@ -385,7 +399,7 @@ def test_le_chemin_payee_envoyee_annulee_reste_ferme_sur_une_facture_encaissee(s
     libérait ses heures, le paiement restant sur la facture annulée. Il
     regarde désormais l'argent ; tests/test_invoice_lifecycle.py l'épingle.)"""
     store["doc"] = _invoice(status="payée", amount_paid=287437)
-    assert "envoyée" not in imod.available_transitions(store["doc"])
+    assert "envoyée" not in imod.available_transitions(store["doc"], today=_JOUR)
     ok, _ = imod.void_invoice("inv1")
     assert ok is False        # void refuse « payée » — la porte de derrière
 

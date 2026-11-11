@@ -212,6 +212,18 @@ class Config:
         os.environ.get("MIROIR_OUTLOOK_LOOKBACK_DAYS", "30")
     )
 
+    # The nightly lateness sweep (2026-11-11, lot 2 of « Factures : retard,
+    # radiation, intérêts »): every night at 00:20, Montréal time (cron.yaml),
+    # routes/taches_factures marks « en_retard » each « envoyée » invoice
+    # models/invoice.is_overdue says is late. The MIROIR_OUTLOOK_ACTIF
+    # precedent, to the letter: read from the environment, default true —
+    # and app.yaml ships it "false" until the lawyer has reviewed the
+    # read-only preview (scripts/apercu_factures_echues, DEPLOYMENT.md §15).
+    # Off, the cron answers {"actif": false} and reads and writes nothing.
+    FACTURES_RETARD_ACTIF: bool = (
+        os.environ.get("FACTURES_RETARD_ACTIF", "true").lower() == "true"
+    )
+
     # Intake trigger (phase L3). False in L2: the confirmation screen shows the
     # « envoyer le formulaire d'ouverture » checkbox DISABLED with a tooltip,
     # and the confirm route never emits an intake invitation.

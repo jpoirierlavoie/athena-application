@@ -678,6 +678,19 @@ def _invoice_row(extra: Optional[dict[str, Any]] = None,
                 "nothing was paid. Status alone may still say « payée »."
             ),
         },
+        # 2026-11-11: required — these three READ outputs (never a write's,
+        # which a same-key retry replays) always carry them.
+        "is_overdue": _bool(
+            "The server's lateness, today in Montréal: status envoyée or "
+            "en_retard, a balance owing, and the due date — prorogued to the "
+            "next business day when it falls on a Saturday, a Sunday or a "
+            "public holiday (civil calendar) — past. Independent of the "
+            "stored status: an envoyée invoice is overdue from that day on, "
+            "before the nightly job marks it en_retard. Never recompute it "
+            "from due_date."),
+        "days_overdue": _int(
+            "Days late, counted from the prorogued due date (1 on the first "
+            "late day); 0 unless is_overdue."),
         **_money("total"),
         **_money("amount_due",
                  "The balance AT ISSUANCE (total − retainer applied). Frozen: "

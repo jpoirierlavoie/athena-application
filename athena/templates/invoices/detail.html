@@ -85,7 +85,16 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           {{ etag_field(invoice) }}
           <input type="hidden" name="status" value="{{ status }}">
-          {% if status == 'envoyée' %}
+          {% if status == 'envoyée' and invoice.status == 'en_retard' %}
+          {# « Retirer le retard » (2026-11-11) : available_transitions ne
+             l'offre que tant que la facture n'est PAS en retard — la
+             correction d'une marque posée avant l'échéance, jamais une
+             dispense. #}
+          <button type="submit"
+                  class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
+            Retirer le retard
+          </button>
+          {% elif status == 'envoyée' %}
           <button type="submit"
                   class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
             Marquer comme envoyée
@@ -168,6 +177,16 @@
           <dt class="text-gray-500 flex-shrink-0">Échéance</dt>
           <dd class="text-gray-900 text-right">{{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date and invoice.due_date.strftime is defined else '—' }}</dd>
         </div>
+        {# Le retard (2026-11-11), dérivé côté route — invoice.days_overdue et
+           first_overdue_day, sur l'échéance reportée au jour ouvrable suivant
+           (calendrier civil) : ce gabarit ne compare aucune date (règle 5).
+           Rien tant que la facture n'est pas en retard. #}
+        {% if retard_jours %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Retard</dt>
+          <dd class="text-red-700 text-right font-medium">{{ retard_jours }} jour{% if retard_jours > 1 %}s{% endif %} (depuis le {{ retard_depuis.strftime('%Y-%m-%d') }})</dd>
+        </div>
+        {% endif %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Dossier</dt>
           <dd class="text-gray-900 text-right">
