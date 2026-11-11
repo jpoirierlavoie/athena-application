@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
-from utils import civilite, taxonomie
+from utils import civilite, contact_roles, taxonomie
 from utils.format_fr import format_cents_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
@@ -95,8 +95,9 @@ _FEE_TYPE_LABEL = {
     "aide_juridique": "Aide juridique",
 }
 
-# Professional roles whose work address is preferred when present (§6.4).
-_WORK_PREFERRED_ROLES = {"avocat_adverse", "expert", "huissier", "notaire"}
+# Professional and supplier roles whose work address is preferred when
+# present (§6.4) — one list, utils/contact_roles.py.
+_WORK_PREFERRED_ROLES = contact_roles.WORK_PREFERRED_ROLES
 
 _FRENCH_MONTHS = (
     "janvier", "février", "mars", "avril", "mai", "juin", "juillet",
@@ -339,8 +340,9 @@ def uses_work_block(partie: dict) -> bool:
     decision of 2026-10-30: once the work block holds an employer's
     coordinates, a client's letters and invoices must not go to the
     workplace), unless the person acts in a professional role
-    (``_WORK_PREFERRED_ROLES``: a lawyer, an expert, a bailiff, a notary is
-    written to at the office); the other block is the fallback.
+    (``_WORK_PREFERRED_ROLES``: a lawyer, an expert, a bailiff, a notary,
+    a stenographer or a supplier is written to at the office); the other
+    block is the fallback.
     """
     return _selected_address(partie)[1]
 

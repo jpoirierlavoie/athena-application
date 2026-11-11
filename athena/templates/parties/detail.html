@@ -2,6 +2,7 @@
 {% block title %}{{ partie._display_name }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{% from "parties/_role_badge.html" import role_badge_class %}
 <div class="max-w-4xl mx-auto px-4 py-6">
 
   {# Bandeau d'arrivée depuis Réception (versement d'une ouverture du
@@ -85,17 +86,12 @@
       </div>
       <div class="flex-1 min-w-0">
         <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ partie._nom_entete }}</h1>
-        {% set badge_colors = {
-          'client': 'bg-indigo-100 text-indigo-700',
-          'avocat_adverse': 'bg-amber-100 text-amber-700',
-          'partie_adverse': 'bg-red-100 text-red-700'
-        } %}
         {% set lang_labels = {'fr': 'Francophone', 'en': 'Anglophone', 'es': 'Hispanophone'} %}
         {% set gender_labels = {'M': 'Homme', 'F': 'Femme', 'O': 'Autre', 'N': 'Ne s\'applique pas', 'U': 'Non précisé'} %}
         {# Role badge + profile chips (language, gender, pronouns) share one
            wrapping row so they stay on a single line when they fit. #}
         <div class="flex flex-wrap items-center gap-1.5">
-          <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full {{ badge_colors.get(partie.contact_role, 'bg-gray-100 text-gray-600') }}">
+          <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full {{ role_badge_class(partie.contact_role) }}">
             {{ role_labels.get(partie.contact_role, 'Autre') }}
           </span>
           {% if partie.language %}

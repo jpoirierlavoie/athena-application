@@ -74,6 +74,7 @@ from routes import edit_conflict
 from security import sanitize
 from services import portail_emission as emission
 from services import rendez_vous
+from services.carnet import apres_ecriture_contact
 from utils import cron_schedule, occupations, rapprochement, storage_identity
 from utils.logging_setup import log_bookings_event, log_portail_event
 
@@ -1454,10 +1455,11 @@ def ouverture_creer(inv_id: str, batch: str):
 
     crees = _creer_adverses_coches(enveloppe.get("parties_adverses") or [],
                                    inv_id)
-    # ⚠️ Le bump du CTag vit dans la ROUTE, jamais dans le modèle : une
-    # création de partie qui l'oublie n'atteint JAMAIS le carnet DavX5, en
-    # silence. Un seul bump couvre la fiche cliente et les parties adverses.
-    bump_ctag("parties")
+    # ⚠️ Le carnet DavX5 suit la ROUTE, jamais le modèle : une création de
+    # partie qui l'oublie n'atteint JAMAIS le téléphone, en silence. Une
+    # seule porte (services/carnet.py) couvre la fiche cliente et les
+    # parties adverses, toutes au carnet.
+    apres_ecriture_contact(partie)
     _cloturer(invitation, batch, "traitée")
     log_portail_event("intake_partie_creee", invitation_id=inv_id, batch=batch,
                       adverses_crees=crees)
@@ -1495,7 +1497,7 @@ def ouverture_appliquer(inv_id: str, batch: str):
     crees = _creer_adverses_coches(enveloppe.get("parties_adverses") or [],
                                    inv_id)
     if valeurs or crees:
-        bump_ctag("parties")
+        apres_ecriture_contact(_maj if valeurs else None)
     _cloturer(invitation, batch, "traitée")
     log_portail_event("intake_partie_mise_a_jour", invitation_id=inv_id,
                       batch=batch, champs=len(valeurs), adverses_crees=crees)

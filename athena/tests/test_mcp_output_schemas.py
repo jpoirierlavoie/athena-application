@@ -1200,10 +1200,12 @@ def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
     so the warning actually reaches the caller."""
     import models
 
-    def _boom(name):
+    def _boom(*_args):
         raise RuntimeError("firestore down")
 
-    monkeypatch.setattr(handlers, "bump_ctag", _boom)
+    # A contact write signals the address book through its one door
+    # (services/carnet.py): that is what fails here.
+    monkeypatch.setattr(handlers.carnet, "apres_ecriture_contact", _boom)
     monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
     monkeypatch.setattr(handlers.partie_model, "create_partie",
                         lambda data: ({**data, "id": "p-new"}, []))

@@ -277,6 +277,29 @@ def remove_tombstones_in_batch(
         batch.delete(tombstones.document(rid))
 
 
+def update_membership(
+    collection_name: str, *, present: list[str], absent: list[str]
+) -> str:
+    """Bump *collection_name*'s CTag and, in the SAME commit, drop the
+    tombstones of *present* (resources the collection lists, or lists
+    again) and record those of *absent* (resources it no longer lists),
+    stamped with the new token. Returns that token.
+
+    For a few resources at a time — one contact write
+    (``services/carnet.py``); more than one batch can hold is refused,
+    never split, so the bump never covers half a change. A failed commit
+    raises and changes nothing.
+    """
+    if len(present) + len(absent) > _BATCH_CHUNK - 1:
+        raise ValueError("update_membership: too many resources for one batch")
+    batch = db.batch()
+    token = bump_ctag_in_batch(batch, collection_name)
+    remove_tombstones_in_batch(batch, collection_name, list(present))
+    record_tombstones_in_batch(batch, collection_name, list(absent), token)
+    batch.commit()
+    return token
+
+
 def _commit_chunks_with_bump(collection_name: str, resource_ids, stage) -> str:
     """Stage *resource_ids* chunk by chunk, the CTag bump in the FINAL chunk,
     then commit the chunks IN ORDER. Returns the new token.

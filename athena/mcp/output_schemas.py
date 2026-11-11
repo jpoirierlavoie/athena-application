@@ -326,7 +326,9 @@ def _partie_write_result(
             "such warning means nothing was written (a no-op)."
         ),
         "dav_synced": _bool(
-            "The contact will reach the phone; false on a no-op."),
+            "ctag_bumped AND the contact is in the phone's address book: "
+            "false for a « fournisseur » (the address book never carries "
+            "one) and on a no-op."),
         "warnings": _arr(_str("French; empty when nothing is amiss.")),
         **_write_protocol_keys(),
         **(extra or {}),

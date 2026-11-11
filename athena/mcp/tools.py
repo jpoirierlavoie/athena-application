@@ -26,6 +26,7 @@ from utils import analyse_taxonomies as _tax
 from utils import cron_schedule as _cron
 from utils import docx_templatize as _templatize
 from utils import civilite as _civilite
+from utils import contact_roles as _contact_roles
 from utils import kyc as _kyc
 from utils import occupations as _occupations
 from utils import phases
@@ -1158,10 +1159,9 @@ TEMPLATIZE_LITERAL_MAX_CHARS = _templatize.MAX_LITERAL_CHARS
 # A name, or the same name written {{name}}.
 TEMPLATIZE_PLACEHOLDER_MAX_CHARS = _templatize.MAX_PLACEHOLDER_CHARS + 4
 TEMPLATIZE_EXPECTED_MAX = _templatize.MAX_EXPECTED_OCCURRENCES
-_CONTACT_ROLES = [
-    "client", "partie_adverse", "avocat_adverse", "témoin",
-    "expert", "huissier", "notaire", "autre",
-]
+# The contact roles — the one vocabulary of utils/contact_roles.py, which
+# models/partie.py reads too (tests/test_contact_roles.py pins them).
+_CONTACT_ROLES = list(_contact_roles.ROLES)
 _PARTIE_TYPES = ["individual", "organization"]
 
 # Lot Q. Language, gender and pronouns are declared in models/partie.py and
@@ -5479,7 +5479,8 @@ TOOLS: dict[str, dict] = {
         "title": "Créer un contact",
         "description": (
             "WRITE. Create a contact (partie): a client, an opposing party, "
-            "opposing counsel, an expert, a bailiff… Built for transcribing "
+            "opposing counsel, an expert, a bailiff, a stenographer, a "
+            "supplier the firm pays (« fournisseur »)… Built for transcribing "
             "a historical file, so pass `legacy_ref` and check "
             "find_imported first — this connector can never delete a "
             "duplicate. "
@@ -5503,7 +5504,10 @@ TOOLS: dict[str, dict] = {
                 },
                 "contact_role": {
                     "type": "string", "enum": _CONTACT_ROLES,
-                    "description": "The contact's role. Defaults to « client ».",
+                    "description": (
+                        "The contact's role. Defaults to « client ». A "
+                        "« fournisseur » never syncs to the lawyer's phone."
+                    ),
                 },
                 **_partie_identity_props(),
                 **_legacy_ref_prop(),
@@ -5539,7 +5543,11 @@ TOOLS: dict[str, dict] = {
                 "partie_id": _id("The contact to correct (UUIDv4). Required."),
                 "contact_role": {
                     "type": "string", "enum": _CONTACT_ROLES,
-                    "description": "Change the contact's role.",
+                    "description": (
+                        "Change the contact's role. A contact made "
+                        "« fournisseur » leaves the lawyer's phone; made "
+                        "anything else, it returns there."
+                    ),
                 },
                 **_partie_identity_props(),
                 **_legacy_ref_prop(),

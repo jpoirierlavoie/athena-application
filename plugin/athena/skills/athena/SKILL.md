@@ -22,7 +22,7 @@ description: "Mode d'emploi du connecteur Athena, le logiciel de gestion du cabi
 
 - Le dossier est le pivot ; « Général » reçoit notes, tâches et événements sans dossier ; une théorie de la cause par dossier.
 - Les contacts sont au cabinet ; le dossier fige leurs noms, que citent les procédures.
-- Téléphone : les contacts ; tâches, notes, événements d'un dossier actif ou en_attente, Général compris ; jamais argent, documents, protocoles, sauf la tâche d'une étape.
+- Téléphone : les contacts sauf les fournisseurs ; tâches, notes, événements d'un dossier actif ou en_attente, Général compris ; jamais argent, documents, protocoles, sauf la tâche d'une étape.
 - Le droit relève de pratique-civile-quebecoise ; la correspondance, du connecteur Microsoft 365, où rien ne s'envoie sans demande expresse.
 
 ## Économie d'appels

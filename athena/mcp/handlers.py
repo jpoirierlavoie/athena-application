@@ -99,9 +99,11 @@ records.)
 the addressbook's.** ``models/note.py`` and ``models/partie.py`` never bump
 — bumping lives in the caller (``routes/notes.py``, ``routes/parties.py``,
 ``dav/dossier_collections.py``). A tool path that writes and skips
-``bump_ctag(f"dossier:{dossier_id}")`` or ``bump_ctag("parties")`` leaves
-the record visible in the web UI while DavX5 silently never re-syncs it:
-nothing errors, and only the phone is wrong.
+``bump_ctag(f"dossier:{dossier_id}")`` — or, for a contact, the address
+book's one door ``services/carnet.apres_ecriture_contact`` (it also keeps a
+supplier off the phone) — leaves the record visible in the web UI while
+DavX5 silently never re-syncs it: nothing errors, and only the phone is
+wrong.
 
 **A dossier write must resolve every party id BEFORE the model sees it.**
 ``dossier._rebuild_party_mirrors`` subscripts ``c["id"]`` raw, so an entry
@@ -174,6 +176,7 @@ from models import time_entry as time_entry_model
 from models import trust as trust_model
 from models import upload_ticket as upload_ticket_model
 from security import TAG_RE, sanitize
+from services import carnet
 from services import comptabilite as comptabilite_service
 from services import docx_identifiers as identifiers_service
 from services import dossier_dav as dossier_dav_service
@@ -189,7 +192,7 @@ from services import rendez_vous as rendez_vous_service
 from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
-    analyse_blocs, budget_math, civilite, cron_schedule, deadlines,
+    analyse_blocs, budget_math, civilite, contact_roles, cron_schedule, deadlines,
     docx_templatize, email_text, kyc, msg_text, pdf_text, periods, phases,
     receipt_image, recurrence, storage_identity, taxonomie,
 )
@@ -4600,14 +4603,16 @@ def _require_address_bloc(args: dict, prefix: str) -> dict:
     return {k: _clean_partie_text(args.get(k, ""), k) for k in keys}
 
 
-def _bump_parties_ctag() -> bool:
-    """Bump le CTag du carnet d'adresses ; rend son succès.
+def _bump_parties_ctag(doc: dict) -> bool:
+    """Le carnet d'adresses après l'écriture du contact *doc* ; rend son
+    succès.
 
-    Les parties sont exposées en CardDAV et ``models/partie.py`` ne bumpe
-    JAMAIS — le bump vit dans la route (trois sites), donc le connecteur doit
-    le refaire. Sans lui, le contact est en base, visible dans
-    l'application, et DavX5 ne le voit jamais : rien n'échoue, seul le
-    téléphone est faux.
+    Les parties sont exposées en CardDAV et ``models/partie.py`` ne touche
+    JAMAIS le carnet — l'appelant passe par ``services/carnet.py``, la porte
+    unique, qui bumpe le CTag ET retire du téléphone un contact qu'il ne
+    porte pas (un fournisseur), ou l'y remet. Sans elle, le contact est en
+    base, visible dans l'application, et le téléphone est faux : rien
+    n'échoue.
 
     Avale sa propre panne, pour la raison de ``_bump_note_ctag`` : le contact
     est DÉJÀ écrit, et laisser l'exception filer jusqu'au ``except Exception``
@@ -4615,7 +4620,7 @@ def _bump_parties_ctag() -> bool:
     échec — le modèle réessaierait et créerait un doublon.
     """
     try:
-        bump_ctag("parties")
+        carnet.apres_ecriture_contact(doc)
         return True
     except Exception:
         from utils.logging_setup import log_unexpected
@@ -5336,14 +5341,17 @@ def _partie_write_result(doc: dict, *, verb: str, wrote: bool = True) -> dict:
         payload["ctag_bumped"] = False
         payload["dav_synced"] = False
         return payload
-    bumped = _bump_parties_ctag()
+    bumped = _bump_parties_ctag(doc)
     payload["ctag_bumped"] = bumped
-    payload["dav_synced"] = bumped
+    # Visibility, never the bump alone (the closed-dossier rule of
+    # _entity_write_result): a « fournisseur » is never in DavX5's address
+    # book (services/carnet.py), so the phone never sees it.
+    payload["dav_synced"] = bumped and contact_roles.in_address_book(doc)
     if not bumped:
         payload["warnings"].append(
             "Le contact est enregistré, mais la synchronisation CardDAV n'a "
-            "pas pu être déclenchée. Il apparaîtra sur l'appareil au prochain "
-            "changement du carnet d'adresses. Ne pas réessayer."
+            "pas pu être déclenchée : le téléphone peut ne pas le refléter "
+            "avant la prochaine modification de ce contact. Ne pas réessayer."
         )
     return payload
 

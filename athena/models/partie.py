@@ -43,7 +43,7 @@ from models import aggregation_values, concurrency, dav_ids, db, provenance
 from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
-from utils import civilite, kyc, occupations
+from utils import civilite, contact_roles, kyc, occupations
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.validators import (
     apply_address_defaults,
@@ -62,18 +62,10 @@ COLLECTION = "parties"
 
 # Valid values for enum fields
 VALID_TYPES = ("individual", "organization")
-VALID_CONTACT_ROLES = (
-    "client",
-    "partie_adverse",
-    "avocat_adverse",
-    "témoin",
-    "expert",
-    "huissier",
-    "notaire",
-    "autre",
-)
 # Derived from the pure vocabularies (the connector's enums and the forms
-# read the same tuples; tests pin every copy).
+# read the same tuples; tests pin every copy). The contact roles and their
+# labels live in utils/contact_roles.py (2026-11-11).
+VALID_CONTACT_ROLES = contact_roles.ROLES
 VALID_PREFIXES = civilite.PREFIXES + ("",)
 VALID_OCCUPATIONS = occupations.OCCUPATIONS + ("",)
 VALID_LANGUAGES = ("fr", "en", "es", "")
@@ -92,17 +84,9 @@ VALID_PRONOUNS = (
 VALID_IDENTITY_STATUSES = kyc.IDENTITY_STATUSES
 VALID_CONFLICT_STATUSES = kyc.CONFLICT_STATUSES
 
-# Contact-role display labels (French)
-ROLE_LABELS = {
-    "client": "Client",
-    "partie_adverse": "Partie",
-    "avocat_adverse": "Avocat(e)",
-    "témoin": "Témoin",
-    "expert": "Expert(e)",
-    "huissier": "Huissier(ère)",
-    "notaire": "Notaire",
-    "autre": "Autre",
-}
+# Contact-role display labels (French) — also the vCard CATEGORIES wire
+# format (utils/contact_roles.py).
+ROLE_LABELS = contact_roles.ROLE_LABELS
 
 # The length of one representation's notes — the cap every other string of
 # this model gets from _sanitize_data, which never reached into the list.
@@ -2057,14 +2041,11 @@ def vcard_to_partie(vcard_str: str) -> dict:
             label = cat_val[0]
         else:
             label = str(cat_val)
-        # Reverse-lookup from label to key. Include the pre-rename labels
-        # ("Partie adverse" → "Partie", "Avocat(e) adverse" → "Avocat(e)")
-        # as aliases so vCards synced before the rename round-trip back to
-        # their original role instead of silently degrading to "autre".
-        reverse_map = {v: k for k, v in ROLE_LABELS.items()}
-        reverse_map.setdefault("Partie adverse", "partie_adverse")
-        reverse_map.setdefault("Avocat(e) adverse", "avocat_adverse")
-        data["contact_role"] = reverse_map.get(label, "autre")
+        # Reverse-lookup from label to key, the pre-rename labels included
+        # (« Partie adverse », « Avocat(e) adverse »), so vCards synced
+        # before the rename round-trip back to their role instead of
+        # silently degrading to « autre » (utils/contact_roles.py).
+        data["contact_role"] = contact_roles.role_for_vcard_label(label)
 
     # UID
     if hasattr(card, "uid"):

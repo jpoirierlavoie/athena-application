@@ -19,7 +19,7 @@ from flask import (
 from auth import login_required
 from config import Config
 from utils.cabinet import cabinet_dict
-from dav.sync import bump_ctag, record_tombstone
+from services.carnet import apres_ecriture_contact, apres_suppression_contact
 from models import concurrency
 from models import piece_identite
 from models.audit_event import record_deletion
@@ -78,9 +78,8 @@ _is_htmx = is_htmx
 def _form_data() -> dict:
     """Extract partie fields from the submitted form."""
     f = request.form
-    return {
+    data = {
         "type": f.get("type", "individual"),
-        "contact_role": f.get("contact_role", "client"),
         # Individual
         "prefix": f.get("prefix", ""),
         "first_name": f.get("first_name", "").strip(),
@@ -137,6 +136,14 @@ def _form_data() -> dict:
         # Notes
         "notes": f.get("notes", "").strip(),
     }
+    # The role travels only when posted (merge by presence): an edit posted
+    # without it keeps the stored role. Defaulting it to « client » turned
+    # any contact saved from a page whose role menu did not post — a
+    # supplier included — into a client. A create without it still gets
+    # the model's default, « client ».
+    if "contact_role" in f:
+        data["contact_role"] = f["contact_role"]
+    return data
 
 
 def _form_context(partie: Optional[dict]) -> dict[str, Any]:
@@ -243,12 +250,25 @@ def _hydrate_mandataires(entries: Optional[list]) -> list[dict[str, Any]]:
 
 # ── List ──────────────────────────────────────────────────────────────────
 
+# The list's « every role » value of ?role=.
+ALL_ROLES = "tous"
+
+
+def _role_filter() -> str:
+    """The ``?role=`` filter, checked against its vocabulary (Security
+    Rules): a role, « tous », or « client » — the default view — for
+    anything else. Unchecked, an unknown role reached the model, which
+    reads it as NO filter: every contact listed under a menu reading
+    « Client »."""
+    role = request.args.get("role", "client")
+    return role if role == ALL_ROLES or role in VALID_CONTACT_ROLES else "client"
+
 
 @parties_bp.route("/")
 @login_required
 def partie_list() -> str:
     """Render the partie list with optional filters."""
-    role_filter = request.args.get("role", "client")
+    role_filter = _role_filter()
     search = request.args.get("q", "").strip()
 
     if search:
@@ -258,7 +278,7 @@ def partie_list() -> str:
         # default browse path below costs ~PAGE_SIZE reads per page.
         page = request.args.get("page", 1, type=int)
         parties = list_parties(
-            role_filter=role_filter if role_filter != "tous" else None,
+            role_filter=role_filter if role_filter != ALL_ROLES else None,
             search=search,
         )
         parties, pagination = paginate(parties, page)
@@ -267,7 +287,7 @@ def partie_list() -> str:
     else:
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
-        effective_role = role_filter if role_filter != "tous" else None
+        effective_role = role_filter if role_filter != ALL_ROLES else None
         # The count is issued on the CURSOR branch only. It rides the same
         # query builder as the page read, so the same index serves both,
         # and it fails to None (never 0) — which HIDES the leap controls
@@ -617,7 +637,9 @@ def partie_create() -> str:
             **_form_context(data),
         )
 
-    bump_ctag("parties")
+    # The phone's address book: the card, or its tombstone for a role it
+    # never carries (services/carnet.py, Change Impact item 2).
+    apres_ecriture_contact(partie)
 
     return redirect_after_post(
         url_for("parties.partie_detail", partie_id=partie["id"]))
@@ -668,6 +690,11 @@ def partie_update(partie_id: str) -> str:
             compare_url=url_for("parties.partie_detail", partie_id=partie_id),
         )
         data["id"] = partie_id
+        stored = get_partie(partie_id)
+        if "contact_role" not in data:
+            # Not posted, so not changed: the page shows the stored role —
+            # never « client », which a resubmission would then save.
+            data["contact_role"] = (stored or {}).get("contact_role", "")
         return render_template(
             "parties/form.html",
             partie=data,
@@ -676,12 +703,14 @@ def partie_update(partie_id: str) -> str:
             role_labels=ROLE_LABELS,
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
-            kyc_presumed=_kyc_presumed(get_partie(partie_id)),
+            kyc_presumed=_kyc_presumed(stored),
             is_dossier_client=_is_dossier_client(partie_id),
             **_form_context(data),
         )
 
-    bump_ctag("parties")
+    # A role change in or out of the phone's address book moves the card
+    # (services/carnet.py, Change Impact item 2).
+    apres_ecriture_contact(partie)
 
     return redirect_after_post(
         url_for("parties.partie_detail", partie_id=partie_id))
@@ -720,7 +749,7 @@ def kyc_confirm(partie_id: str, check: str) -> Response:
         target = url_for("parties.partie_detail", partie_id=partie_id,
                          erreur=erreur)
     else:
-        bump_ctag("parties")
+        apres_ecriture_contact(_doc)
         log_partie_event("kyc_confirmed", partie_id, field=field)
         target = url_for("parties.partie_detail", partie_id=partie_id,
                          message="Vérification confirmée.")
@@ -738,8 +767,7 @@ def partie_delete(partie_id: str) -> str:
     success, error = delete_partie(partie_id)
 
     if success:
-        record_tombstone("parties", partie_id)
-        bump_ctag("parties")
+        apres_suppression_contact(partie_id)
         # Append-only deletion trail (PA-G06).
         record_deletion(
             "partie", partie_id,
@@ -792,11 +820,11 @@ _EXPORT_COLUMNS_PDF = [
 
 def _get_export_parties() -> list[dict]:
     """Fetch and pre-process parties for export, respecting current filters."""
-    role_filter = request.args.get("role", "client")
+    role_filter = _role_filter()
     search = request.args.get("q", "").strip()
 
     parties = list_parties(
-        role_filter=role_filter if role_filter != "tous" else None,
+        role_filter=role_filter if role_filter != ALL_ROLES else None,
         search=search or None,
     )
     for p in parties:

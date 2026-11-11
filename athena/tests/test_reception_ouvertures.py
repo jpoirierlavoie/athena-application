@@ -102,6 +102,10 @@ def scene(monkeypatch):
     monkeypatch.setattr(rc, "_archiver_enveloppe",
                         lambda i, b: journal["archives"].append((i, b)))
     monkeypatch.setattr(rc, "bump_ctag", lambda n: journal["bumps"].append(n))
+    # A contact write signals the address book through its one door
+    # (services/carnet.py), which bumps « parties ».
+    monkeypatch.setattr(rc, "apres_ecriture_contact",
+                        lambda *parties: journal["bumps"].append("parties"))
 
     def _create(data):
         journal["crees"].append(data)

@@ -2,6 +2,10 @@
 {% block title %}{{ 'Modifier le contact' if partie and partie.id else 'Nouveau contact' }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{# The contact's role, as stored or as posted — « client » only for a new
+   contact. The menu marks it `selected` on the server too: a save from a
+   page where Alpine never ran must post THIS role, never the first option. #}
+{% set current_role = partie.contact_role if partie and partie.contact_role else 'client' %}
 <div class="max-w-2xl mx-auto px-4 py-6"
      data-self-id="{{ partie.id if partie and partie.id else '' }}"
      data-mandataires-init='{{ mandataires|tojson }}'
@@ -12,7 +16,7 @@
         mandataires field then posted an empty list. #}
      x-data="{
        partieType: {{ (partie.type if partie else 'individual')|jsattr }},
-       contactRole: {{ (partie.contact_role if partie else 'client')|jsattr }},
+       contactRole: {{ current_role|jsattr }},
        prefix: {{ prefix_value|jsattr }},
        occupation: {{ (partie.occupation if partie and partie.occupation else '')|jsattr }},
        identityVerified: {{ kyc_selected.identity_verified|jsattr }},
@@ -105,7 +109,7 @@
       <select name="contact_role" x-model="contactRole"
               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
         {% for role_key, role_label in role_labels.items() %}
-        <option value="{{ role_key }}">{{ role_label }}</option>
+        <option value="{{ role_key }}"{% if role_key == current_role %} selected{% endif %}>{{ role_label }}</option>
         {% endfor %}
       </select>
     </div>

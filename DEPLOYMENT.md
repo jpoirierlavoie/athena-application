@@ -5459,6 +5459,69 @@ Notes:
      against 4.2 s.
   A rollback is the code alone; the index can stay.
 
+- **Suppliers and stenographers among the contacts, suppliers kept off the
+  phone (2026-11-11).** Two contact roles join « Impliqués »: « Fournisseur »
+  (a supplier the firm pays) and « Sténographe ». The roles have one source,
+  `utils/contact_roles.py`; the contact model, the connector's three enums
+  (`list_parties`, `create_partie`, `update_partie`), the generated
+  documents' work-address rule (both new roles are written to at their work
+  address) and the vCard CATEGORIES label — the role's wire format to DavX5
+  — read it, and tests pin each copy. DavX5's address book carries every
+  contact EXCEPT the suppliers (the lawyer's decision). Every contact write
+  passes through one door, `services/carnet.apres_ecriture_contact`, which
+  bumps the « parties » CTag in the same commit as the contact's tombstone
+  (a supplier: the next sync deletes it from the phone) or as its removal
+  (a contact that returns); a delete goes through `apres_suppression_contact`,
+  and a sweep refuses any address-book signal outside the door. The CardDAV
+  handlers never list or serve a supplier (404, the tombstone's answer; a
+  phone DELETE of a stale copy never reaches it), report every supplier as
+  deleted at each full sync — from the same read, so a supplier leaves the
+  phone even if its tombstone never landed or was pruned — and refuse a
+  phone card naming « Fournisseur » (422 « Un fournisseur s'inscrit dans
+  Athena, jamais depuis le téléphone. ») or a stale copy of one (412). Also: the
+  contact list's `?role=` is checked against the vocabulary (an unknown
+  value listed every contact under « Client »), the role menu marks the
+  stored role `selected` on the server, and an edit posted without a role
+  keeps it (it became « client »). Change Impact: item 1 touched (three
+  enums grow, opt-in, so no existing call matches or defaults differently;
+  two descriptions; the outputs keep their keys, but `dav_synced` reads
+  false after a supplier write — the contact is not in the address book —
+  and its description says so; plugin 1.9.1 — the registry changed, and its
+  skill now says the phone carries every contact but the suppliers) —
+  without the §11 train: no new kind of data, no consent text;
+  item 2 (the exclusion, the tombstones, the one door — curl below, then
+  the phone); item 3 lightly (the work-address rule names the two roles and
+  the gabarits guide says so; no contact holds them yet); item 5 lightly
+  (the role filter checked); item 6 (one badge colour, teal, already
+  compiled with its dark value); items 4 and 7 not touched.
+  In order:
+  1. *The push.*
+  2. *On the web*: switch one contact that really is a supplier (an
+     « Autre » one, say) to « Fournisseur » — its badge turns teal, it gets
+     no « Conformité » card.
+  3. *curl* (§15-16, with the DAV credentials): `PROPFIND
+     /dav/addressbook/` Depth 1 no longer lists that contact's href, `GET`
+     of it answers 404, and a `sync-collection` REPORT with an empty token
+     reports it with a 404 status.
+  4. *On the phone*: at DavX5's next sync the contact leaves the address
+     book; the other contacts are untouched. Switch it back to « Autre »
+     once to see it return, then to « Fournisseur » again.
+  5. *Plugin 1.9.1*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day.
+  6. *In claude.ai*, after reloading the connector's tools: `list_parties`
+     with `contact_role="fournisseur"` lists the suppliers.
+  Never roll back below this release once a supplier or a stenographer
+  exists. The older code knows neither role: its web form shows such a
+  contact as « Client » and a save silently stores « client » (with the
+  identity-check dot); its phone sync serves them labelled « Autre » —
+  suppliers back on the phone — and a phone edit stores « autre »; its
+  connector and mandataire writes refuse them (« Rôle de contact
+  invalide »), and its compliance tool refuses a non-client. If a rollback
+  is forced, edit no such contact anywhere until the roll-forward, redeliver
+  plugin 1.9.0, and after the roll-forward check the role of every supplier
+  and stenographer.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

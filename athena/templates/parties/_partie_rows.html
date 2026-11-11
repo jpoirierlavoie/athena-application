@@ -1,4 +1,5 @@
 {# Partial: partie list rows (rendered standalone for HTMX updates) #}
+{% from "parties/_role_badge.html" import role_badge_class %}
 {% if parties %}
 <div class="flex flex-col gap-2">
   {% for c in parties %}
@@ -27,13 +28,8 @@
         {% endif %}
       </div>
       <div class="flex items-center gap-2">
-        {# Role badge #}
-        {% set badge_colors = {
-          'client': 'bg-indigo-100 text-indigo-700',
-          'avocat_adverse': 'bg-amber-100 text-amber-700',
-          'partie_adverse': 'bg-red-100 text-red-700'
-        } %}
-        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ badge_colors.get(c.contact_role, 'bg-gray-100 text-gray-600') }}">
+        {# Role badge (colours: parties/_role_badge.html) #}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ role_badge_class(c.contact_role) }}">
           {{ role_labels.get(c.contact_role, 'Autre') }}
         </span>
       </div>
