@@ -13,6 +13,11 @@ two-step HTMX generation popup:
 * ``POST /gabarits/generer`` — fill and either save into the dossier's
   documents (HTMX partial response) or stream the .docx download.
 
+The guide (2026-11-11): ``GET /gabarits/aide`` shows the French guide to
+the fields, ``athena/GABARITS_PLACEHOLDERS.md`` — the one reference
+``tests/test_gabarits_placeholders_doc.py`` pins against the code —, rendered
+by the app's one Markdown pipeline; the Gabarits list opens it.
+
 Bibliothèque (2026-11-11): ``modeles_bp`` lists, at ``/modeles/``, the
 templates of kind « modele » — contract models the lawyer downloads and
 adapts by hand. Only that list lives under ``/modeles/``: a modèle is a
@@ -24,7 +29,10 @@ Never log field values (client PII) — placeholder names, counts and IDs
 only (§11 of the Phase H spec).
 """
 
+import functools
 import io
+import pathlib
+import re
 
 from flask import (
     Blueprint,
@@ -75,6 +83,7 @@ from services import gabarits
 from utils import storage_identity
 from utils.deadlines import today_mtl
 from utils.logging_setup import log_template_event
+from utils.markdown_docx import markdown_to_safe_html
 from utils.template_fields import classify_placeholders
 from utils.tracing_setup import add_attributes
 from routes import edit_conflict
@@ -191,6 +200,40 @@ def template_list() -> str:
     if _is_htmx():
         return render_template("gabarits/_template_rows.html", **ctx)
     return render_template("gabarits/list.html", **ctx)
+
+
+# The guide ships with the service (athena/ is the deploy root); read and
+# rendered once per process — it only changes with a deploy.
+GUIDE_PATH = pathlib.Path(__file__).resolve().parent.parent / "GABARITS_PLACEHOLDERS.md"
+
+
+# A field name breaks after its dots and underscores, never mid-word, and a
+# table too wide for a phone scrolls sideways in its own box: applied to the
+# SANITIZED html, on markup this module writes (``<code>`` holds escaped
+# text only, so the pattern stays linear).
+_GUIDE_CODE = re.compile(r"<code>([^<]*)</code>")
+_GUIDE_BREAK = re.compile(r"([._])")
+
+
+def _guide_presentation(html: str) -> str:
+    html = _GUIDE_CODE.sub(
+        lambda m: "<code>" + _GUIDE_BREAK.sub(r"\1<wbr>", m.group(1)) + "</code>",
+        html)
+    return (html.replace("<table>", '<div class="overflow-x-auto"><table>')
+                .replace("</table>", "</table></div>"))
+
+
+@functools.lru_cache(maxsize=1)
+def _guide_html() -> str:
+    return _guide_presentation(
+        markdown_to_safe_html(GUIDE_PATH.read_text(encoding="utf-8")))
+
+
+@doc_templates_bp.route("/aide")
+@login_required
+def template_guide() -> str:
+    """The guide to the gabarit fields, opened from the Gabarits list."""
+    return render_template("gabarits/aide.html", guide_html=_guide_html())
 
 
 @modeles_bp.route("/")

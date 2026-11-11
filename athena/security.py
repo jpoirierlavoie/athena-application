@@ -251,7 +251,10 @@ _DAV_MAX_BODY = 5 * 1024 * 1024  # vCard/iCal payloads are KBs; 5 MB is generous
 # carry a .docx (≤ 10 MB, also enforced model-side). The generation POST
 # (/gabarits/generer) and the sub-routes stay under the 1 MB default.
 _TEMPLATE_UPLOAD_MAX = 10 * 1024 * 1024
-_TEMPLATE_RESERVED_SEGMENTS = {"new", "generer", "dossier-search", "partie-search"}
+# Every one-segment LITERAL route under /gabarits/ (pinned against the
+# blueprint by tests/test_gabarits_guide.py): anything else is a template id.
+_TEMPLATE_RESERVED_SEGMENTS = {
+    "new", "generer", "dossier-search", "partie-search", "aide"}
 _DEFAULT_MAX_BODY = 1 * 1024 * 1024  # 1 MB: every other route
 
 

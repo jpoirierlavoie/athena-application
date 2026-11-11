@@ -1,4 +1,7 @@
-"""GABARITS_PLACEHOLDERS.md is a CONTRACT — pin it against the code.
+"""athena/GABARITS_PLACEHOLDERS.md is a CONTRACT — pin it against the code.
+
+Since 2026-11-11 it is also the French guide the Gabarits page opens
+(``/gabarits/aide``): what it tells the lawyer is held to the code here.
 
 The document calls itself « a human-readable index of what the fill engine
 actually supports » and instructs every author to update it alongside the
@@ -36,7 +39,7 @@ from utils.template_fields import (
 )
 
 _DOC_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "GABARITS_PLACEHOLDERS.md",
 )
 

@@ -15,9 +15,19 @@
   {# ── Header ─────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Bibliothèque</h1>
-    <div class="hidden md:flex items-center gap-2">
+    <div class="flex items-center gap-2">
+      {% if not modeles %}
+      {#- The guide to the fields: on the phone too (the « Nouveau » button
+          is the FAB there). #}
+      <a href="{{ url_for('doc_templates.template_guide') }}"
+         title="Guide des champs des gabarits"
+         aria-label="Guide des champs des gabarits"
+         class="inline-flex items-center justify-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('info', 20) }}
+      </a>
+      {% endif %}
       <a href="{{ new_url }}"
-         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+         class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
         {{ ms('add', 16) }}
         {{ new_label }}
       </a>
