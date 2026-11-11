@@ -34,6 +34,12 @@ them::
     "statement_md5": str,            # the staged object's base64 MD5, or ""
     "statement_attached_at": datetime,  # an instant (UTC)
 
+and, once a draft's statement has been removed or replaced, the ids those
+writes RETIRED — never attached again (:data:`RETIRED_FIELD`; kept when
+the six fields go)::
+
+    "statement_retired_ids": list[str],  # in the order they were retired
+
 No file name is stored, and none reaches an object name (data
 minimisation, as for the proofs of identity): « Consulter » serves
 ``releve-AAAA-MM{ext}``, from the period's end.
@@ -73,15 +79,17 @@ Declared exceptions to the house rules:
   removal, a draft's replacement, an abandoned draft
   (:func:`erase_statement_object`): the reverse of ``piece_identite``'s
   deletion. A COMPLETED reconciliation must never point at an erased
-  object: a completion re-reads the statement inside its transaction and
-  refuses one written since its pre-pass checked the object (the
-  reconciliation's etag). Only a completion that runs WHOLE between a
-  draft statement's removal or replacement and the erase that follows —
-  an earlier upload of that statement re-posted in between — can still
-  freeze on the erased path; the erase's re-read then raises
-  « erased object referenced » with ``status`` « complétée », for a restore
-  from the bucket's soft delete. An erase that fails leaves an object no
-  screen reaches, logged by ids for an operator.
+  object, and only a draft's statement ever goes. A removal or a
+  replacement RETIRES that statement's id in its own transaction
+  (:data:`RETIRED_FIELD`), and no finalization attaches a retired id again
+  — not even a re-post of that very upload (the third review of the
+  rebase, 2026-11-11) —, so no record can come back to the object erased
+  after it. A completion re-reads the statement inside its transaction
+  and refuses one changed since its pre-pass checked the object (its id,
+  then the reconciliation's etag). A record found pointing at an erased
+  path is therefore a defect, raised as « erased object referenced ». An
+  erase that fails leaves an object no screen reaches, logged by ids for
+  an operator.
 * **No etag on these writes.** The transaction re-reads the
   reconciliation's status and statement — the only state these rules
   judge — and regenerates its etag with the provenance stamps.
@@ -131,6 +139,9 @@ FIELDS: tuple[str, ...] = (
     "statement_id", "statement_storage_path", "statement_file_type",
     "statement_file_size", "statement_md5", "statement_attached_at",
 )
+#: The statement ids a removal or a replacement retired — never attached
+#: again. Not among :data:`FIELDS`: it stays when they go.
+RETIRED_FIELD = "statement_retired_ids"
 
 STATUS_DRAFT = "brouillon"
 STATUS_COMPLETED = "complétée"
@@ -187,6 +198,10 @@ NOT_ACCEPTED = "Cette conciliation ne peut pas recevoir de relevé."
 NOTHING_TO_REMOVE = "Aucun relevé n'est joint à cette conciliation."
 REQUEST_INVALID = "Requête invalide."
 STAGED_MISSING = "Fichier téléversé introuvable. Réessayez."
+RETIRED = (
+    "Ce relevé a été retiré ou remplacé depuis son téléversement : il ne se "
+    "joint plus. Rechargez la page."
+)
 STAGED_READ_FAILED = "Lecture du fichier téléversé impossible. Réessayez."
 CONTENT_MISMATCH = "Le contenu du fichier ne correspond pas à son extension."
 SESSION_FAILED = "Erreur lors de l'ouverture du téléversement. Réessayez."
@@ -538,7 +553,10 @@ def erase_statement_object(register: str, rec: dict) -> None:
         # no record the regulation keeps).
         blob.delete(if_generation_match=blob.generation)
     except NotFound:
-        return
+        # Gone already — or a retried delete whose first answer was lost
+        # (the library retries a conditional delete): the record is
+        # checked all the same.
+        pass
     except Exception as exc:
         log_unexpected("reconciliation statement: object erase failed",
                        exc_info=False, error_type=_error_type(exc), **ids)
@@ -548,13 +566,12 @@ def erase_statement_object(register: str, rec: dict) -> None:
 
 def _check_after_erase(register: str, rec: dict, path: str, ids: dict) -> None:
     """After an erase, read the reconciliation again: a record pointing at
-    the erased path (a re-posted finalization of the same upload landing
-    between the record's change and the erase) is a statement whose bytes
-    survive only in the bucket's 7-day soft delete — an ERROR an operator
-    acts on, by these ids, within the week. It names the record's
-    ``status``: a « complétée » one is FROZEN on the erased path (a
-    completion ran whole in between) — nothing in the application repairs
-    or lists it, only the restore does. Never raises."""
+    the erased path is a statement whose bytes survive only in the bucket's
+    7-day soft delete. A retired statement is never attached again, so it
+    is a DEFECT — an ERROR an operator acts on, by these ids, within the
+    week, whatever the record's ``status`` (read here: it may lag a
+    completion in flight; a « complétée » one, frozen, is repaired by
+    nothing but the restore). Never raises."""
     rec_id = (rec or {}).get("id")
     if not rec_id:
         return
@@ -698,6 +715,25 @@ def _is_this_statement(rec: dict, statement_id: str, path: str) -> bool:
             and rec.get("statement_storage_path") == path)
 
 
+def _retired(rec: dict) -> list[str]:
+    """The statement ids a removal or a replacement retired from *rec* —
+    never attached again. A legacy record lacks the key."""
+    value = rec.get(RETIRED_FIELD)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _retiring(rec: dict) -> list[str]:
+    """*rec*'s retired ids, plus the statement it holds now — the value a
+    removal or a replacement of that statement writes."""
+    retired = _retired(rec)
+    current = rec.get("statement_id")
+    if isinstance(current, str) and current and current not in retired:
+        retired.append(current)
+    return retired
+
+
 def _previous(rec: dict) -> Optional[dict]:
     """What :func:`erase_statement_object` needs of the statement *rec*
     holds now — ``None`` when it holds none."""
@@ -783,6 +819,9 @@ def _file(staging, register: str, rec_id: str, uid: str, statement_id: str,
     path = storage_path(uid, register, rec_id, statement_id, ext)
     if _is_this_statement(rec, statement_id, path):
         return Outcome(rec, [], CODE_REJOUE)
+    # Retired: refused before any copy (the transaction re-checks it).
+    if statement_id in _retired(rec):
+        return Outcome(None, [RETIRED], CODE_REFUS)
     if not accepts_statement(rec):
         return Outcome(None, _not_accepted(rec), CODE_REFUS)
 
@@ -879,11 +918,20 @@ def _file(staging, register: str, rec_id: str, uid: str, statement_id: str,
         current = {**(snap.to_dict() or {}), "id": snap.id}
         if _is_this_statement(current, statement_id, path):
             raise _Exists(current)
+        # A statement a removal or a replacement retired never comes back —
+        # not even through a re-post of its own upload, which would point
+        # the record at the object its retirement erases.
+        if statement_id in _retired(current):
+            raise _Refused([RETIRED])
         if not accepts_statement(current):
             raise _Refused(_not_accepted(current))
         staged["previous"] = _previous(current)
         staged["catch_up"] = current.get("status") == STATUS_COMPLETED
-        transaction.update(ref, {**fields, **provenance.update_fields(now)})
+        update = {**fields, **provenance.update_fields(now)}
+        if staged["previous"]:
+            # Replaced: the outgoing statement is retired in this write.
+            update[RETIRED_FIELD] = _retiring(current)
+        transaction.update(ref, update)
         staged["written"] = True
 
     try:
@@ -962,6 +1010,8 @@ def _replayed(register: str, rec_id: str, uid: str, statement_id: str,
     if _is_this_statement(rec, statement_id,
                           storage_path(uid, register, rec_id, statement_id, ext)):
         return Outcome(rec, [], CODE_REJOUE)
+    if statement_id in _retired(rec):
+        return Outcome(None, [RETIRED], CODE_REFUS)
     return Outcome(None, [STAGED_MISSING], CODE_REFUS)
 
 
@@ -993,6 +1043,8 @@ def remove_statement(register: str, rec_id: str) -> Outcome:
         staged["removed"] = _previous(current)
         transaction.update(ref, {
             **{name: firestore.DELETE_FIELD for name in FIELDS},
+            # Retired in this write: never attached again.
+            RETIRED_FIELD: _retiring(current),
             **provenance.update_fields(now),
         })
         staged["written"] = True

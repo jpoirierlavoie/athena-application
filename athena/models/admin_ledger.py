@@ -3872,11 +3872,10 @@ def complete_reconciliation(
         # statement whose bytes were checked.
         if rec_now.get("statement_id") != rec.get("statement_id"):
             raise _TxnAbort("conciliation_relevé_modifié")
-        # Any statement write since the pre-pass regenerated the etag — a
-        # removal, then a re-post of the same upload re-attaching that very
-        # statement_id over an object the removal then erased (the second
-        # review of the rebase, 2026-11-11): refuse, and the next attempt's
-        # pre-pass checks the object again.
+        # Any statement write since the pre-pass checked the object
+        # regenerated the etag: refuse, and the next attempt's pre-pass
+        # checks it again — a second guard beside the retired ids, which
+        # are never attached again (models/releve_conciliation).
         if rec_now.get("etag") != rec.get("etag"):
             raise _TxnAbort("conciliation_relevé_modifié")
         acc_snap = account_ref.get(transaction=txn)

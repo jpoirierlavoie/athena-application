@@ -221,6 +221,7 @@ _RECONCILIATION_KEYS = frozenset((
     "outstanding_total", "in_transit_total", "variance", "status", "completed_date",
     "cleared_transaction_ids", "notes", "created_at", "created_via", "updated_at",
     "updated_via", "etag", "mcp_updated_at", *releve_conciliation.FIELDS,
+    releve_conciliation.RETIRED_FIELD,
 ))
 #: The collections an untouchable document may live in (the run reads them whole).
 _READ_COLLECTIONS = (TX, ACCOUNTS, RECS, INVOICES, TRUST_TX)

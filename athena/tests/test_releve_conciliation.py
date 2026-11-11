@@ -218,6 +218,17 @@ def test_the_formats_label_is_the_shared_rule_over_the_module_s_mapping():
     assert not hasattr(rc, "_formats_label")
 
 
+def test_the_repair_scripts_know_every_statement_key():
+    """A reconciliation carrying a key the repair scripts do not whitelist
+    makes them refuse every entry it cites: the six fields and the retired
+    ids are all known (scripts/reclassify_as_invoice_receipt, read by
+    rectify_admin_entries and rectify_pre_registration_taxes). The retired
+    ids stay when the six fields go, so they are not among them."""
+    from scripts import reclassify_as_invoice_receipt as rx
+    assert set(rc.FIELDS) | {rc.RETIRED_FIELD} <= rx._RECONCILIATION_KEYS
+    assert rc.RETIRED_FIELD not in rc.FIELDS
+
+
 @both
 def test_completing_requires_the_statement(db, bucket, register):
     _prefix, model, _account = REGISTERS[register]
@@ -907,13 +918,15 @@ def test_an_uncertain_removal_keeps_the_object_and_names_it(db, bucket, register
 
 
 @both
-def test_an_erase_the_record_points_at_again_raises_the_alarm(db, bucket, register,
-                                                             monkeypatch, caplog):
-    """A removal's erase vs the page's re-post of an « incertain »
-    finalization of the SAME statement, landing between the removal's commit
-    and its erase: the record points at the erased path again — an ERROR an
-    operator acts on within the soft delete's 7 days; and the draft cannot
-    complete on it (its object is gone), so it can still be replaced."""
+def test_an_incertain_upload_re_posted_after_its_removal_is_refused(db, bucket, register,
+                                                                    monkeypatch, caplog):
+    """The page's re-post of an « incertain » finalization (its staging object
+    kept) lands between « Retirer »'s commit and its erase. Until the third
+    review of the rebase it re-attached the SAME statement and the erase left
+    the record pointing at nothing (the ERROR « erased object referenced »);
+    now the removal RETIRED it: the re-post is refused, the record stays
+    without a statement, no alarm, and the draft completes only once a
+    statement is attached again."""
     _prefix, model, _account = REGISTERS[register]
     _seed(db, register)
     doc = _open_and_put(bucket, register)
@@ -926,16 +939,17 @@ def test_an_erase_the_record_points_at_again_raises_the_alarm(db, bucket, regist
     seen = {}
 
     def _erase(register_, rec):
-        seen["repost"] = rc.file_staged_statement(register, "rec1", doc["objet"], UID).code
+        seen["repost"] = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
         return real_erase(register_, rec)
 
     monkeypatch.setattr(rc, "erase_statement_object", _erase)
     caplog.set_level(logging.DEBUG)
     assert rc.remove_statement(register, "rec1").code == rc.CODE_RETIRE
-    assert seen["repost"] == rc.CODE_JOINT
-    assert "erased object referenced" in _logged(caplog)
+    assert (seen["repost"].code, seen["repost"].errors) == (rc.CODE_REFUS, [rc.RETIRED])
+    assert "erased object referenced" not in _logged(caplog)
+    assert not rc.has_statement(_stored(db, register))
     assert model.complete_reconciliation("rec1", []) == (
-        None, [rc.OBJECT_MISSING_TO_COMPLETE])
+        None, [rc.REQUIRED_TO_COMPLETE])
 
 
 @both
@@ -1071,29 +1085,29 @@ def test_an_occupant_with_other_bytes_is_refused_and_left(db, bucket, register,
 
 
 @both
-def test_a_removal_and_a_re_attach_after_the_pre_pass_stop_the_completion(
+def test_a_removal_and_a_re_post_after_the_pre_pass_stop_the_completion(
         db, bucket, register, monkeypatch, caplog):
-    """The second review of the rebase: the completion's pre-pass checks the
-    object; then « Retirer » commits, a re-post of the same upload re-attaches
-    that very statement_id, and the removal's erase deletes its object. The
-    statement_id is unchanged — but the etag is not: the completion refuses,
-    never freezing on erased bytes, and the next attempt's pre-pass sees the
-    object gone."""
+    """The race of the second and third reviews of the rebase: the
+    completion's pre-pass checks the object; « Retirer » commits; a re-post
+    of the same upload arrives before the removal's erase. The removal
+    RETIRED that statement: the re-post is refused, the record holds none,
+    no record ever points at the erased object (no alarm), and the
+    completion refuses — never freezing on erased bytes."""
     _prefix, model, _account = REGISTERS[register]
     _seed(db, register)
     doc = _open_and_put(bucket, register)
     first = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
     assert first.code == rc.CODE_JOINT
     path = first.doc["statement_storage_path"]
-    # The second post of the same upload still finds its staging object (a
-    # double tap, or a cleanup that failed).
+    # The second post of the same upload still finds its staging object (an
+    # « incertain » first answer keeps it; a double tap; a failed cleanup).
     bucket.put(doc["objet"], PDF, content_type="application/pdf")
     real_refusal, real_erase = rc.completion_refusal, rc.erase_statement_object
     seen = {}
 
     def _erase_after_a_repost(reg, rec):
         if "repost" not in seen:
-            seen["repost"] = rc.file_staged_statement(reg, "rec1", doc["objet"], UID).code
+            seen["repost"] = rc.file_staged_statement(reg, "rec1", doc["objet"], UID)
         return real_erase(reg, rec)
 
     def _prepass_then_removal(reg, rec):
@@ -1106,18 +1120,127 @@ def test_a_removal_and_a_re_attach_after_the_pre_pass_stop_the_completion(
     monkeypatch.setattr(rc, "completion_refusal", _prepass_then_removal)
     caplog.set_level(logging.WARNING)
     done, errors = model.complete_reconciliation("rec1", [])
-    assert seen == {"removal": rc.CODE_RETIRE, "repost": rc.CODE_JOINT}
-    assert done is None and errors == [rc.STATEMENT_CHANGED]
+    assert seen["removal"] == rc.CODE_RETIRE
+    assert (seen["repost"].code, seen["repost"].errors) == (rc.CODE_REFUS, [rc.RETIRED])
+    assert done is None and errors == [rc.REQUIRED_TO_COMPLETE]
     stored = _stored(db, register)
-    assert stored["status"] == "brouillon" and stored["statement_storage_path"] == path
+    assert stored["status"] == "brouillon" and not rc.has_statement(stored)
+    assert stored[rc.RETIRED_FIELD] == [first.doc["statement_id"]]
+    assert path not in bucket.objects
+    logged = _logged(caplog)
+    assert "erased object referenced" not in logged
+    # Refused at the early read, before any copy: nothing adopted, nothing left.
+    assert "adopted object left" not in logged
+
+
+@both
+def test_the_transaction_refuses_a_statement_retired_after_the_early_read(
+        db, bucket, register, monkeypatch):
+    """The early read can precede the retirement (a re-post racing the first
+    finalization and « Retirer »): the transaction's own read refuses the
+    retired id — never re-attaching it — and the copy this call made is
+    rolled back."""
+    _seed(db, register)
+    doc = _open_and_put(bucket, register)
+    first = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert rc.remove_statement(register, "rec1").code == rc.CODE_RETIRE
+    bucket.put(doc["objet"], PDF, content_type="application/pdf")
+    real_retired = rc._retired
+    calls = {"n": 0}
+
+    def _early_read_before_the_retirement(rec):
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else real_retired(rec)
+
+    monkeypatch.setattr(rc, "_retired", _early_read_before_the_retirement)
+    late = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert (late.code, late.errors) == (rc.CODE_REFUS, [rc.RETIRED])
+    assert calls["n"] >= 2                       # the transaction read it too
+    assert not rc.has_statement(_stored(db, register))
+    assert first.doc["statement_storage_path"] not in bucket.objects
+
+
+@both
+def test_a_removed_statement_is_never_attached_again(db, bucket, register):
+    """« Retirer », then a late re-post of the removed statement's own upload
+    (its staging object kept by an « incertain » answer): refused — the
+    statement the lawyer removed never comes back by itself — and again
+    once its staging object is gone (the replay path)."""
+    _seed(db, register)
+    doc = _open_and_put(bucket, register)
+    first = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert first.code == rc.CODE_JOINT
+    assert rc.remove_statement(register, "rec1").code == rc.CODE_RETIRE
+    bucket.put(doc["objet"], PDF, content_type="application/pdf")
+    late = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert (late.code, late.errors) == (rc.CODE_REFUS, [rc.RETIRED])
+    stored = _stored(db, register)
+    assert not rc.has_statement(stored)
+    assert stored[rc.RETIRED_FIELD] == [first.doc["statement_id"]]
+    assert first.doc["statement_storage_path"] not in bucket.objects
+    replay = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert (replay.code, replay.errors) == (rc.CODE_REFUS, [rc.RETIRED])
+
+
+@both
+def test_a_replaced_statement_is_never_attached_again(db, bucket, register):
+    """A replaced, B chosen; then a late re-post of A's own upload: refused —
+    it would put A back and erase B, the statement the lawyer chose."""
+    _seed(db, register)
+    doc_a = _open_and_put(bucket, register)
+    a = rc.file_staged_statement(register, "rec1", doc_a["objet"], UID)
+    doc_b = _open_and_put(bucket, register, data=PDF + b" B")
+    b = rc.file_staged_statement(register, "rec1", doc_b["objet"], UID)
+    assert (a.code, b.code) == (rc.CODE_JOINT, rc.CODE_JOINT)
+    bucket.put(doc_a["objet"], PDF, content_type="application/pdf")
+    late = rc.file_staged_statement(register, "rec1", doc_a["objet"], UID)
+    assert (late.code, late.errors) == (rc.CODE_REFUS, [rc.RETIRED])
+    stored = _stored(db, register)
+    assert stored["statement_id"] == b.doc["statement_id"]
+    assert stored[rc.RETIRED_FIELD] == [a.doc["statement_id"]]
+    assert b.doc["statement_storage_path"] in bucket.objects
+    assert a.doc["statement_storage_path"] not in bucket.objects
+
+
+@both
+def test_a_statement_written_since_the_pre_pass_stops_the_completion(db, bucket, register,
+                                                                    monkeypatch):
+    """The second guard: any statement write since the pre-pass checked the
+    object regenerated the reconciliation's etag — the completion refuses,
+    even on the same statement_id."""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register)
+    joindre(model, "rec1", bucket=bucket)
+    stale = {**model.get_reconciliation("rec1"), "etag": "e-avant"}
+    monkeypatch.setattr(model, "get_reconciliation", lambda rec_id: dict(stale))
+    done, errors = model.complete_reconciliation("rec1", [])
+    assert done is None and errors == [rc.STATEMENT_CHANGED]
+    assert _stored(db, register)["status"] == "brouillon"
+
+
+@both
+def test_a_retried_delete_still_checks_the_record(db, bucket, register, monkeypatch,
+                                                 caplog):
+    """A conditional delete whose first answer was lost is retried by the
+    library and answers « not found »: the object IS erased, and the record
+    is checked all the same — one pointing at it raises the alarm."""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register)
+    fields = joindre(model, "rec1", bucket=bucket)
+    path = fields["statement_storage_path"]
+    real_delete = FakeBlob.delete
+
+    def _lost_answer(self, *args, **kwargs):
+        real_delete(self, *args, **kwargs)        # it landed …
+        raise gexc.NotFound("retried")            # … the retry found nothing
+
+    monkeypatch.setattr(FakeBlob, "delete", _lost_answer)
+    caplog.set_level(logging.ERROR)
+    rc.erase_statement_object(register, _stored(db, register))
     assert path not in bucket.objects
     (alarm,) = [r for r in caplog.records
                 if r.getMessage().endswith("erased object referenced")]
     assert alarm.json_fields["status"] == "brouillon"
-    # The next attempt: its pre-pass sees the object gone.
-    monkeypatch.setattr(rc, "completion_refusal", real_refusal)
-    assert model.complete_reconciliation("rec1", []) == (
-        None, [rc.OBJECT_MISSING_TO_COMPLETE])
 
 
 @both
