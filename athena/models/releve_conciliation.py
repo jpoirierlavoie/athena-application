@@ -944,11 +944,11 @@ def _file(staging, register: str, rec_id: str, uid: str, statement_id: str,
     except _Exists as exists:
         return Outcome(exists.current, [], CODE_REJOUE)
     except Exception as exc:
-        # A statement this write would replace is named too. When the
-        # outcome stays unknown, the operator reads the record first: if it
-        # names THIS statement, the previous one's object is the orphan; if
-        # not, the previous statement is still live (never erased) and this
-        # upload's copy is the orphan.
+        # A statement this write would replace is named too: when the
+        # outcome stays unknown, an operator later erases each of the two
+        # objects the record then does NOT name (OBSERVABILITY.md) — a
+        # re-post answering « rejoue » settles the answer, never the
+        # replaced statement's object.
         previous_ids = ({"previous_statement_id": sanitize_log_value(
             staged["previous"].get("statement_id"))}
             if staged.get("previous") else {})

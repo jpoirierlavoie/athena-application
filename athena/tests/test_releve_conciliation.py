@@ -895,7 +895,9 @@ def test_an_uncertain_replacement_names_the_statement_it_replaced(db, bucket, re
     (uncertain,) = [r for r in caplog.records
                     if r.getMessage() == "reconciliation statement: attachment uncertain"]
     assert uncertain.json_fields["previous_statement_id"] == old_sid
-    # The page's one re-post settles it.
+    # The page's one re-post settles the ANSWER — not the replaced
+    # statement's object, which no record names (OBSERVABILITY.md: an
+    # operator erases it).
     assert rc.file_staged_statement(register, "rec1", second["objet"], UID).code == (
         rc.CODE_REJOUE)
 
