@@ -76,8 +76,9 @@ Declared exceptions to the house rules:
   object: a completion re-reads the statement inside its transaction and
   refuses one written since its pre-pass checked the object (the
   reconciliation's etag). Only a completion that runs WHOLE between a
-  removal's commit and its erase — the same upload re-posted in between —
-  can still freeze on the erased path; the erase's re-read then raises
+  draft statement's removal or replacement and the erase that follows —
+  an earlier upload of that statement re-posted in between — can still
+  freeze on the erased path; the erase's re-read then raises
   « erased object referenced » with ``status`` « complétée », for a restore
   from the bucket's soft delete. An erase that fails leaves an object no
   screen reaches, logged by ids for an operator.
