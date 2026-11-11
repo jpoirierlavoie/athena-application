@@ -179,6 +179,23 @@ def test_the_new_modele_form_preselects_the_type_and_autre(store, web):
     assert 'href="/modeles/"' in page                  # back and cancel
 
 
+def test_a_new_modele_is_named_after_a_contract(store, web):
+    page = _html(web, "/gabarits/new?kind=modele")
+    assert 'placeholder="ex. : Convention de services professionnels"' in page
+    page = _html(web, "/gabarits/new")
+    assert 'placeholder="ex. : Correspondance avec avocat"' in page
+
+
+def test_the_gabarits_search_box_shrinks_beside_its_select(store, web):
+    """At 375 px the search box overflowed the screen: a flex item keeps
+    its intrinsic width unless it may shrink (`min-w-0`), as on the
+    Documents list."""
+    page = _html(web, "/gabarits/")
+    box = re.search(r'<input type="search" name="q".*?class="([^"]*)"', page,
+                    re.S)
+    assert box and "min-w-0" in box.group(1).split(), box
+
+
 def test_an_unknown_kind_falls_back_to_a_new_gabarit(store, web):
     page = _html(web, "/gabarits/new?kind=n_importe_quoi")
     assert re.search(r'value="gabarit"\s+checked', page)
