@@ -5303,12 +5303,12 @@ Notes:
      « Modèle » in « Modifier ».
   4. *Plugin 1.9.0*: rebuild it, unpack it into the mirror `athena-plugin`
      (the old copy removed first), bump the mirror's marketplace.json,
-     commit and push it the same day. It follows 1.8.0: a 1.8.1 still
-     pending on another branch ships before it, or moves above 1.9.0.
+     commit and push it the same day. It follows 1.8.1, delivered with
+     the reconciliations' bank statements.
   5. *In claude.ai*, after reloading the connector's tools, the lawyer
      asks for his contract models: `list_templates` with `kind="modele"`
      lists the modèle; asking Claude to fill it is refused.
-  A rollback is the code alone, with plugin 1.8.0: on the old code a
+  A rollback is the code alone, with plugin 1.8.1: on the old code a
   modèle shows among the gabarits (its kind unknown there, `fill_gabarit`
   still refuses it, but the web popup offers and generates it like a
   gabarit); saving its form there turns it into a gabarit, and its other
