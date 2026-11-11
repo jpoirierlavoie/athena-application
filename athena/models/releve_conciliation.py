@@ -755,13 +755,15 @@ def file_staged_statement(
     the staging name's exact shape under the request's uid (else ``forme``,
     nothing touched — from here on a ``finally`` CONSUMES the staging
     object); its reload (``NotFound``: a replay, answered from the
-    reconciliation); its REAL size; the reconciliation (strict read —
-    already this statement is ``rejoue``; one that accepts no statement is
-    refused); a 512-byte sniff; a GCS-side, create-only copy (a 412 on
+    reconciliation — ``rejoue``, or refused when retired); its REAL size;
+    the reconciliation (strict read — already this statement is
+    ``rejoue``; a RETIRED one is refused before any copy; one that accepts
+    no statement is refused); a 512-byte sniff; a GCS-side, create-only copy (a 412 on
     identical bytes ADOPTS the object, which this call then never erases; on
     an occupant it cannot reload, ``indisponible``);
     the object's content type; then a transaction that re-reads the
-    reconciliation and sets the six fields. A draft's earlier statement is
+    reconciliation, refuses a retired id again, and sets the six fields —
+    retiring, on a replacement, the outgoing statement's id. A draft's earlier statement is
     erased AFTER that commit. Codes: :data:`FILING_CODES`."""
     _register(register)
     uid, refused = _uid_refusal(user_id)
@@ -1016,9 +1018,10 @@ def _replayed(register: str, rec_id: str, uid: str, statement_id: str,
 
 
 def remove_statement(register: str, rec_id: str) -> Outcome:
-    """Remove a BROUILLON's statement: the six fields go in a transaction
-    that re-reads the reconciliation (a completed one refuses — frozen),
-    THEN the object is erased (:func:`erase_statement_object` — a follow-on
+    """Remove a BROUILLON's statement: the six fields go, and the
+    statement's id is RETIRED (:data:`RETIRED_FIELD` — never attached
+    again), in a transaction that re-reads the reconciliation (a completed
+    one refuses — frozen), THEN the object is erased (:func:`erase_statement_object` — a follow-on
     that never raises). A commit whose answer was lost is settled by a
     re-read. Codes: :data:`REMOVAL_CODES`."""
     _register(register)

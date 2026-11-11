@@ -5214,9 +5214,12 @@ Notes:
   A rollback is the code and plugin 1.8.0: the older code completes without
   a statement, offers no upload and shows the fields nowhere — but its
   repair scripts (`rectify_admin_entries`, `rectify_pre_registration_taxes`,
-  whose `_RECONCILIATION_KEYS` lacks the six fields) then refuse, as
-  « conciliation_instantané », every entry a reconciliation completed with
-  a statement cites — run them from this release's code; and its abandon
+  whose `_RECONCILIATION_KEYS` lacks the six fields and
+  `statement_retired_ids`) then refuse, as « conciliation_instantané »,
+  every entry cited by a reconciliation completed with a statement or
+  carrying retired ids — a draft whose statement was removed keeps those
+  ids, and the older code completes it without a statement — run them
+  from this release's code; and its abandon
   deletes a draft without erasing the statement attached to it, leaving
   the object under `users/{uid}/{fideicommis|administration}/conciliations/`
   with no record and no log line — before rolling back, list the drafts

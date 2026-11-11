@@ -950,6 +950,14 @@ def test_an_incertain_upload_re_posted_after_its_removal_is_refused(db, bucket, 
     assert not rc.has_statement(_stored(db, register))
     assert model.complete_reconciliation("rec1", []) == (
         None, [rc.REQUIRED_TO_COMPLETE])
+    # Only the retired id is refused: a fresh upload attaches, and the draft
+    # then completes (the fourth review of the rebase).
+    monkeypatch.setattr(rc, "erase_statement_object", real_erase)
+    fresh = _open_and_put(bucket, register, data=PDF + b" C")
+    assert rc.file_staged_statement(register, "rec1", fresh["objet"],
+                                    UID).code == rc.CODE_JOINT
+    done, errors = model.complete_reconciliation("rec1", [])
+    assert errors == [] and done["status"] == "complétée"
 
 
 @both
@@ -1203,6 +1211,31 @@ def test_a_replaced_statement_is_never_attached_again(db, bucket, register):
 
 
 @both
+def test_a_new_statement_attaches_after_a_removal_and_a_replacement(db, bucket, register):
+    """Retirement blocks ONLY the retired ids (the fourth review of the
+    rebase): after « Retirer », a fresh upload attaches; a third one then
+    replaces it; both outgoing ids are retired, in order, only the last
+    object remains, and the draft completes on it."""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register)
+    doc_a = _open_and_put(bucket, register)
+    a = rc.file_staged_statement(register, "rec1", doc_a["objet"], UID)
+    assert rc.remove_statement(register, "rec1").code == rc.CODE_RETIRE
+    doc_b = _open_and_put(bucket, register, data=PDF + b" B")
+    b = rc.file_staged_statement(register, "rec1", doc_b["objet"], UID)
+    assert (b.code, b.errors) == (rc.CODE_JOINT, [])
+    doc_c = _open_and_put(bucket, register, data=PDF + b" C")
+    c = rc.file_staged_statement(register, "rec1", doc_c["objet"], UID)
+    assert (c.code, c.errors) == (rc.CODE_JOINT, [])
+    stored = _stored(db, register)
+    assert stored["statement_id"] == c.doc["statement_id"]
+    assert stored[rc.RETIRED_FIELD] == [a.doc["statement_id"], b.doc["statement_id"]]
+    assert _object_names(bucket) == [c.doc["statement_storage_path"]]
+    done, errors = model.complete_reconciliation("rec1", [])
+    assert errors == [] and done["status"] == "complétée"
+
+
+@both
 def test_a_statement_written_since_the_pre_pass_stops_the_completion(db, bucket, register,
                                                                     monkeypatch):
     """The second guard: any statement write since the pre-pass checked the
@@ -1245,10 +1278,12 @@ def test_a_retried_delete_still_checks_the_record(db, bucket, register, monkeypa
 
 @both
 def test_the_erase_alarm_names_a_frozen_record(db, register, caplog):
-    """A completion that ran WHOLE between a removal's commit and its erase
-    leaves the record « complétée » on the erased path — nothing in the
-    application repairs or lists it: the alarm says so by the record's
-    status, the restore its only remedy."""
+    """The alarm names the record's status, read at the re-check. A removal
+    or a replacement retires its statement for good, so no race brings a
+    record back to the erased path: one found there is a DEFECT. A
+    « complétée » one is frozen — nothing in the application repairs or
+    lists it: the alarm says so by its status, the restore its only
+    remedy."""
     _prefix, model, _account = REGISTERS[register]
     _seed(db, register, status="complétée")
     fields = joindre(model, "rec1")

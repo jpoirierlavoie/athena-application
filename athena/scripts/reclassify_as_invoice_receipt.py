@@ -213,9 +213,9 @@ _ENTRY_FACTS = ("amount", "direction", "date", "cleared_date", "status", "sequen
 _INVOICE_AMOUNTS = ("subtotal_fees", "subtotal_expenses", "subtotal", "gst_amount",
                     "qst_amount", "total", "retainer_applied", "amount_due")
 #: The keys a reconciliation holds (``admin_ledger.create_reconciliation``, the
-#: stamps, and since 2026-11-10 its bank statement's six fields —
-#: ``releve_conciliation.FIELDS``: ids, a type, a size, a hash, an instant):
-#: none of them names an entry's kind or counterparty.
+#: stamps, and since 2026-11-10 its bank statement's — ``releve_conciliation``'s
+#: ``FIELDS`` and ``RETIRED_FIELD``, the ids its removals and replacements
+#: retired): none of them names an entry's kind or counterparty.
 _RECONCILIATION_KEYS = frozenset((
     "id", "account_id", "period_end", "statement_balance", "book_balance",
     "outstanding_total", "in_transit_total", "variance", "status", "completed_date",
