@@ -22,7 +22,9 @@ from markupsafe import escape
 from auth import login_required
 from models.dossier import get_dossier
 from models import trust
+from models import releve_conciliation as rc
 from services import comptabilite
+from routes import _releve_conciliation as releve_routes
 from routes import edit_conflict
 from models.trust import (
     ACCOUNT_STATUS_LABELS,
@@ -762,7 +764,8 @@ def account_detail(account_id: str):
         return render_template("errors/404.html"), 404
     return render_template(
         "trust/account_detail.html", account=account, header=_account_header(account),
-        reconciliations=trust.list_reconciliations(account_id), **_labels(),
+        reconciliations=trust.list_reconciliations(account_id),
+        releve_manquant=rc.statement_missing, **_labels(),
     )
 
 
@@ -800,12 +803,20 @@ def _account_form_data() -> dict:
 @trust_bp.route("/conciliations/")
 @login_required
 def reconciliations_list():
+    # « Relevés manquants » (2026-11-10): the catch-up of the statements a
+    # completed reconciliation lacks — counted and filtered over the WHOLE
+    # list this page reads (no cap), by the model's one predicate.
+    recs = trust.list_reconciliations()
+    releve = releve_routes.list_filter()
     return render_template(
         "trust/reconciliations_list.html",
-        reconciliations=trust.list_reconciliations(),
+        reconciliations=([r for r in recs if rc.statement_missing(r)]
+                         if releve == "manquant" else recs),
         accounts={a["id"]: a for a in trust.list_accounts()}, **_labels(),
         # A closed code: reconciliation_abandon's.
         avertissement=request.args.get("avertissement", ""),
+        releve_filtre=releve, releves_manquants=releve_routes.missing_count(recs),
+        releve_manquant=rc.statement_missing,
     )
 
 
@@ -848,6 +859,7 @@ def _worksheet_context(rec: dict) -> dict:
     return {
         "rec": rec,
         "account": trust.get_account(rec["account_id"]),
+        "releve": releve_routes.worksheet_view(rc.TRUST, rec),
         **trust.reconciliation_as_of_context(rec["account_id"], rec["period_end"]),
     }
 
@@ -905,6 +917,37 @@ def reconciliation_abandon(rec_id: str):
             **_worksheet_context(current), errors=errors, **_labels(),
         ), 400
     return redirect_after_post(url_for("trust.reconciliations_list"))
+
+
+
+# ── The bank statement a reconciliation rests on (2026-11-10) ──────────────
+# Four twin URLs, one-line calls into routes/_releve_conciliation — every
+# rule is models/releve_conciliation's (art. 32: required to complete,
+# frozen once completed).
+
+
+@trust_bp.route("/conciliations/<rec_id>/releve/televersement", methods=["POST"])
+@login_required
+def reconciliation_statement_session(rec_id: str):
+    return releve_routes.session(rc.TRUST, rec_id)
+
+
+@trust_bp.route("/conciliations/<rec_id>/releve", methods=["POST"])
+@login_required
+def reconciliation_statement_finalize(rec_id: str):
+    return releve_routes.finalize(rc.TRUST, rec_id)
+
+
+@trust_bp.route("/conciliations/<rec_id>/releve/retirer", methods=["POST"])
+@login_required
+def reconciliation_statement_remove(rec_id: str):
+    return releve_routes.remove(rc.TRUST, rec_id)
+
+
+@trust_bp.route("/conciliations/<rec_id>/releve", methods=["GET"])
+@login_required
+def reconciliation_statement_consult(rec_id: str):
+    return releve_routes.consult(rc.TRUST, rec_id)
 
 
 # ── Exports (spec §8) — TWO-column « Recette » / « Crédit » ─────────────────

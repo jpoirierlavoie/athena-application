@@ -48,6 +48,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from scripts import verify_trust_integrity as vti
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 TODAY = "2031-11-20T16:00:00+00:00"
@@ -134,7 +135,7 @@ def build_bench(fake, set_attr) -> dict:
     e["a1"] = _entry(perso, "dépense", 2236, _d(7, 27), (1945, 97, 194),
                      category="abonnements", counterparty="Logiciel Exemple")
     rec = _ok(al.create_reconciliation(card["id"], _d(6, 30), 4864))
-    _ok(al.complete_reconciliation(rec["id"], []))
+    _ok(completer(al, rec["id"], []))
     return {"perso": perso, "card": card, "e": e}
 
 

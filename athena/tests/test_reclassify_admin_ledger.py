@@ -47,6 +47,7 @@ from google.api_core import exceptions as gexc  # noqa: E402
 
 from tests._accounting_history import legacy_fee_entry, legacy_trust_entry  # noqa: E402
 from tests._fake_firestore import FakeFirestore, install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 TODAY = "2027-09-25T16:00:00+00:00"
@@ -159,7 +160,7 @@ def build_bench(fake, set_attr) -> dict:
                     counterparty="Huissiers Exemple inc.",
                     net_amount=10007, gst_amount=500, qst_amount=998)
     rec = _ok(al.create_reconciliation(ops["id"], _d(7, 31), -25013 + 5021 - 11505))
-    _ok(al.complete_reconciliation(rec["id"], [e["b1"]["id"], e["b2"]["id"], e["a"]["id"]]))
+    _ok(completer(al, rec["id"], [e["b1"]["id"], e["b2"]["id"], e["a"]["id"]]))
     # August.
     e["b1d"] = _entry(ops, "dépense", 12004, _d(8, 4), category="autre", counterparty=OWNER)
     e["charge"] = _entry(card, "dépense", 30000, _d(8, 2), category="fournitures",
@@ -673,7 +674,7 @@ def test_a_card_draft_ending_on_the_payment_day_refuses_the_move(fake, bench, cl
 def test_a_completed_reconciliation_ending_between_the_two_days_refuses(fake, bench, cli):
     # As of Aug 4: July's −31 497, the Aug 4 dépense (12 004) left outstanding.
     rec = _ok(al.create_reconciliation(bench["ops"]["id"], _d(8, 4), -31497))
-    _ok(al.complete_reconciliation(rec["id"], []))
+    _ok(completer(al, rec["id"], []))
     verdict = _verdicts(rla.prepare(cli.csv(bench["lines"])))[2]
     assert _codes(verdict) == ["date_conciliation"]
 
@@ -718,7 +719,7 @@ def test_a_reconciliation_prepassed_before_the_batch_fails_as_modified(
         return context
 
     monkeypatch.setattr(al, "reconciliation_as_of_context", pre_pass_then_batch)
-    done, errors = al.complete_reconciliation(rec["id"], [])
+    done, errors = completer(al, rec["id"], [])
     assert applied["code"] == 0, applied["out"]
     assert done is None
     assert errors == [al._ABORT_MESSAGES["conciliation_modifiée"]]

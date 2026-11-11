@@ -160,6 +160,7 @@ from typing import Any, Optional
 from models import admin_ledger as al
 from models import db, provenance, trust
 from models import invoice as invoice_model
+from models import releve_conciliation
 from scripts import reclassify_admin_ledger as rla
 from scripts import verify_trust_integrity as vti
 from scripts.rectify_registers import (
@@ -211,13 +212,15 @@ _ENTRY_FACTS = ("amount", "direction", "date", "cleared_date", "status", "sequen
 #: The invoice amounts no write may move (control 4).
 _INVOICE_AMOUNTS = ("subtotal_fees", "subtotal_expenses", "subtotal", "gst_amount",
                     "qst_amount", "total", "retainer_applied", "amount_due")
-#: The keys a reconciliation holds (``admin_ledger.create_reconciliation`` and
-#: the stamps): none of them names an entry's kind or counterparty.
+#: The keys a reconciliation holds (``admin_ledger.create_reconciliation``, the
+#: stamps, and since 2026-11-10 its bank statement's six fields —
+#: ``releve_conciliation.FIELDS``: ids, a type, a size, a hash, an instant):
+#: none of them names an entry's kind or counterparty.
 _RECONCILIATION_KEYS = frozenset((
     "id", "account_id", "period_end", "statement_balance", "book_balance",
     "outstanding_total", "in_transit_total", "variance", "status", "completed_date",
     "cleared_transaction_ids", "notes", "created_at", "created_via", "updated_at",
-    "updated_via", "etag", "mcp_updated_at",
+    "updated_via", "etag", "mcp_updated_at", *releve_conciliation.FIELDS,
 ))
 #: The collections an untouchable document may live in (the run reads them whole).
 _READ_COLLECTIONS = (TX, ACCOUNTS, RECS, INVOICES, TRUST_TX)

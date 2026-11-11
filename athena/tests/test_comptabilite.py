@@ -156,6 +156,11 @@ def test_les_actions_menent_aux_ecrans_des_modules(web_rendu, monkeypatch):
     # « Concilier » présélectionne CE compte (phase 3).
     assert "/fideicommis/conciliations/nouvelle?account_id=ta1" in html
     assert "/administration/conciliations/nouvelle?account_id=aa1" in html
+    # Le rattrapage des relevés bancaires (2026-11-10, art. 32) : un lien
+    # par registre vers sa liste filtrée — le hub ne lit rien de plus.
+    assert html.count("Relevés manquants") == 2
+    assert "/fideicommis/conciliations/?releve=manquant" in html
+    assert "/administration/conciliations/?releve=manquant" in html
 
 
 def test_badges_type_ferme_et_conciliation(web_rendu, monkeypatch):

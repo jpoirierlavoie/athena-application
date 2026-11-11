@@ -17,6 +17,10 @@
   </div>
   {% endif %}
 
+  {# Le relevé bancaire (2026-11-10, art. 32) : requis pour compléter, figé
+     une fois la conciliation complétée — components/_releve_conciliation.html. #}
+  {% include "components/_releve_conciliation.html" %}
+
   {% if rec.status == 'complétée' %}
   <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 text-sm grid grid-cols-2 gap-3">
     <div><p class="text-xs text-gray-500">Statut</p><p><span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Complétée</span></p></div>
@@ -42,6 +46,8 @@
           fixedOutstanding: {{ fixed_outstanding_total | int }},
           fixedInTransit: {{ fixed_in_transit_total | int }},
           varianceCents: 0,
+          releveJoint: {{ 'true' if releve.joint else 'false' }},
+          releveOccupe: false,
           recompute() {
             let outstanding = this.fixedOutstanding, inTransit = this.fixedInTransit;
             this.$root.querySelectorAll('input[name=cleared_tx_ids]').forEach(function (el) {
@@ -118,10 +124,17 @@
     <div class="flex justify-between items-center">
       <button type="button" @click="$dispatch('open-confirm-abandon-conciliation')"
               class="px-4 py-2.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-xl hover:bg-red-50">Abandonner</button>
-      <button type="submit" :disabled="varianceCents !== 0"
-              :class="varianceCents === 0 ? 'bg-gray-900 hover:bg-gray-800' : 'bg-gray-300 cursor-not-allowed'"
+      {# Le téléverseur du relevé (une autre racine Alpine) signale son
+         envoi : compléter pendant un remplacement figerait l'ancien. #}
+      <button type="submit" :disabled="varianceCents !== 0 || !releveJoint || releveOccupe"
+              @releve-occupe.window="releveOccupe = $event.detail"
+              :class="(varianceCents === 0 && releveJoint && !releveOccupe) ? 'bg-gray-900 hover:bg-gray-800' : 'bg-gray-300 cursor-not-allowed'"
               class="px-4 py-2.5 text-sm font-medium text-white rounded-xl">Compléter la conciliation</button>
     </div>
+    {% if not releve.joint %}
+    {# Le serveur reste la garde (complete_reconciliation refuse sans relevé). #}
+    <p class="mt-2 text-xs text-gray-500 text-right">{{ releve.requis }}</p>
+    {% endif %}
   </form>
 
   {# ── Dialogue de confirmation d'abandon (hors du <form> de complétion). #}
@@ -136,7 +149,7 @@
       <div class="p-6">
         <h3 class="text-base font-semibold text-gray-900 mb-2">Abandonner cette conciliation ?</h3>
         <p class="text-sm text-gray-600 mb-6">
-          Le brouillon sera supprimé. Aucune écriture ne sera modifiée.
+          {% if releve.joint %}Le brouillon et son relevé joint seront supprimés{% else %}Le brouillon sera supprimé{% endif %}. Aucune écriture ne sera modifiée.
         </p>
         <div class="flex gap-3 justify-end">
           <button @click="open = false"

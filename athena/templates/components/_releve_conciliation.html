@@ -1,0 +1,349 @@
+{# The bank statement a reconciliation rests on (2026-11-10) — included by
+   both worksheets (trust/ and administration/reconciliation_worksheet.html),
+   composed by routes/_releve_conciliation.worksheet_view: every state comes
+   from models/releve_conciliation's predicates, never decided here.
+
+   A brouillon attaches, replaces or removes it; completing requires it; a
+   complétée without one takes it (the catch-up, « Relevés manquants »),
+   and a statement joined to a complétée is FROZEN — art. 32 of the
+   Règlement sur la comptabilité: kept as is, never replaced or removed.
+
+   The upload is the script's: browser → GCS directly (App Engine caps a
+   request at 32 MB), through the two JSON endpoints, one file. Server data
+   reaches the script only through the JSON block (CSP: no inline handler,
+   no server value in the script). « Retirer » is a plain POST in two steps;
+   « Consulter » a GET that redirects to a 15-minute signed URL. #}
+<section id="releve" class="bg-white rounded-xl border border-gray-200 p-4 mb-4 text-sm">
+  <div class="flex items-center justify-between gap-3">
+    <h2 class="text-sm font-semibold text-gray-900">Relevé bancaire</h2>
+    {% if releve.fige %}
+    <span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Figé</span>
+    {% elif releve.manquant %}
+    <span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Relevé manquant</span>
+    {% endif %}
+  </div>
+
+  {% if releve.message %}
+  <p role="status" class="mt-3 text-sm text-green-700">{{ releve.message }}</p>
+  {% endif %}
+  {% if releve.erreur %}
+  <div role="alert" class="mt-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 wrap-anywhere">{{ releve.erreur }}</div>
+  {% endif %}
+
+  {% if releve.joint %}
+  <p class="mt-2 text-gray-700">{{ releve.type_label }}{% if releve.taille %} · {{ releve.taille }}{% endif %}{% if releve.joint_le %} · joint le {{ releve.joint_le }}{% endif %}</p>
+  <div class="flex flex-wrap items-center gap-2 mt-3" x-data="{ confirmer: false, envoi: false }">
+    <a href="{{ releve.consulter }}" target="_blank" rel="noopener"
+       class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Consulter</a>
+    {% if releve.peut_retirer %}
+    <button type="button" x-show="!confirmer" @click="confirmer = true"
+            class="inline-flex items-center px-4 py-3 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">Retirer</button>
+    <form method="post" action="{{ releve.retirer }}" x-show="confirmer" x-cloak class="flex flex-wrap items-center gap-2"
+          @submit="envoi = true">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" :disabled="envoi"
+              class="inline-flex items-center px-4 py-3 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">Retirer le relevé</button>
+      <button type="button" @click="confirmer = false"
+              class="inline-flex items-center px-4 py-3 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Annuler</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if releve.fige %}
+  <p class="mt-2 text-xs text-gray-500">Joint à une conciliation complétée, ce relevé est conservé tel quel : il ne se remplace ni ne se retire (art. 32 du Règlement sur la comptabilité).</p>
+  {% endif %}
+  {% elif releve.brouillon %}
+  <p class="mt-2 text-gray-700">{{ releve.requis }}</p>
+  {% elif releve.manquant %}
+  <p class="mt-2 text-gray-700">Cette conciliation a été complétée sans son relevé. Joignez-le : une fois joint, il sera figé.</p>
+  {% endif %}
+
+  {% if releve.peut_joindre %}
+  <script type="application/json" id="releve-conciliation-config">{{ releve.config|tojson }}</script>
+  <div class="mt-3" x-data="releveConciliation()">
+    {# The token the two JSON endpoints check (X-CSRFToken) — it CARRIES its
+       value: the test apps run without CSRFProtect, so an empty token
+       would pass every test and refuse every upload in production. #}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" x-ref="csrf">
+    {# The input is sr-only: its keyboard focus shows on the label (a border
+       colour bound to it, both colours already compiled). #}
+    <label class="flex items-center justify-center gap-2 w-full px-4 py-3 text-sm font-medium text-gray-700 bg-white border-2 border-dashed rounded-xl cursor-pointer"
+           :class="focusAjout ? 'border-indigo-600' : 'border-gray-300 hover:border-gray-400'">
+      {{ ms('upload', 20) }}
+      <span x-show="!occupe">{{ 'Remplacer le relevé' if releve.joint else 'Joindre le relevé' }}</span>
+      <span x-show="occupe" x-cloak>Envoi en cours…</span>
+      <input type="file"
+             accept="{{ releve.accept }}"
+             class="sr-only"
+             :disabled="occupe"
+             @focus="focusAjout = true"
+             @blur="focusAjout = false"
+             @change="choisir($event)">
+    </label>
+    <p class="text-xs text-gray-500 mt-2">{{ releve.consignes }}</p>
+    {# Once an outcome was « incertain », its sentence stays (reload before
+       restarting or completing), whatever a later attempt answers. #}
+    <p x-show="incertain && !(fichier && fichier.statut === 'incertain')" x-cloak class="mt-2 text-xs text-amber-700" x-text="incertainTexte"></p>
+    <div aria-live="polite">
+      <template x-if="fichier">
+        <div class="mt-3 p-3 bg-gray-50 rounded-lg">
+          <p class="text-sm text-gray-900 truncate" x-text="fichier.name"></p>
+          <span class="sr-only" x-show="fichier.statut === 'en cours'">en cours</span>
+          <p class="text-xs"
+             :class="fichier.statut === 'rejeté' ? 'text-red-600' : (fichier.statut === 'joint' ? 'text-green-700' : (fichier.statut === 'incertain' ? 'text-amber-700' : 'text-gray-500'))"
+             :aria-hidden="fichier.statut === 'en cours'"
+             x-text="etiquette(fichier)"></p>
+          {# The catch-up FREEZES what it attaches: the chosen file is shown,
+             and attached only on an explicit « Joindre et figer ». #}
+          <div x-show="fichier.statut === 'à confirmer'" class="flex flex-wrap items-center gap-2 mt-2">
+            <button type="button" @click="confirmerEnvoi()"
+                    class="inline-flex items-center px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Joindre et figer</button>
+            <button type="button" @click="annuler()"
+                    class="inline-flex items-center px-4 py-3 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Annuler</button>
+          </div>
+          <div x-show="fichier.statut === 'en cours'" aria-hidden="true" class="mt-2 h-1.5 bg-gray-200 rounded-full">
+            <div class="h-1.5 bg-indigo-600 rounded-full" :style="'width: ' + fichier.pct + '%'"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+<script nonce="{{ csp_nonce }}">
+// The statement of a reconciliation (2026-11-10). The file goes browser →
+// GCS directly, never through the application: the session endpoint
+// judges the extension, the size and the reconciliation BEFORE a byte
+// moves and opens a create-only resumable session; the bytes go up in
+// 8 MiB chunks (resumed on 308); the finalization endpoint sniffs,
+// copies and attaches. Every URL comes from the server
+// (#releve-conciliation-config): none is composed here.
+function releveConciliation() {
+  const CONFIG = JSON.parse(
+    document.getElementById('releve-conciliation-config').textContent);
+  const CHUNK = 8 * 1024 * 1024;
+  return {
+    occupe: false,
+    focusAjout: false,
+    // {file, name, size, statut, pct, motif} — statut: 'en attente',
+    // 'en cours', 'joint', 'rejeté' or 'incertain'.
+    fichier: null,
+    // Set for the page's lifetime once an outcome was « incertain »: the
+    // record may hold either statement, so « Compléter » stays blocked and
+    // the sentence stays — only a reload re-reads the record.
+    incertain: false,
+    incertainTexte: CONFIG.incertain,
+
+    formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' o';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' Ko';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' Mo';
+    },
+
+    etiquette(f) {
+      if (f.statut === 'à confirmer') {
+        return this.formatSize(f.size) + ' — une fois joint, ce relevé sera figé.';
+      }
+      if (f.statut === 'en cours') { return f.pct + ' %'; }
+      if (f.statut === 'rejeté') { return 'rejeté : ' + (f.motif || ''); }
+      if (f.statut === 'incertain') { return f.motif; }
+      return f.statut + ' · ' + this.formatSize(f.size);
+    },
+
+    entetes() {
+      return {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': this.$refs.csrf.value,
+      };
+    },
+
+    // Reads the worksheet again (the same path and query: set the
+    // fragment in place and reload; another target: a navigation).
+    recharger(url) {
+      const cible = new URL(url, window.location.href);
+      if (cible.pathname === window.location.pathname
+          && cible.search === window.location.search) {
+        history.replaceState(null, '', cible.href);
+        window.location.reload();
+      } else {
+        window.location.assign(cible.href);
+      }
+    },
+
+    // The completion form (another Alpine root) stays disabled while a
+    // statement is on its way: completing would freeze the OLD one.
+    signaler(occupe) {
+      this.occupe = occupe;
+      this.$dispatch('releve-occupe', occupe);
+    },
+
+    async choisir(event) {
+      const choisi = (event.target.files || [])[0];
+      event.target.value = '';
+      if (!choisi || this.occupe) { return; }
+      this.fichier = {
+        file: choisi, name: choisi.name, size: choisi.size,
+        statut: 'en attente', pct: 0, motif: '',
+      };
+      // A completed reconciliation's catch-up freezes what it attaches:
+      // the file waits for « Joindre et figer ».
+      if (CONFIG.figer === true) {
+        this.fichier.statut = 'à confirmer';
+        return;
+      }
+      await this.envoyer();
+    },
+
+    async confirmerEnvoi() {
+      if (!this.fichier || this.fichier.statut !== 'à confirmer' || this.occupe) { return; }
+      await this.envoyer();
+    },
+
+    annuler() {
+      if (this.occupe) { return; }
+      this.fichier = null;
+    },
+
+    async envoyer() {
+      this.signaler(true);
+      await this.traiter(this.fichier);
+      if (this.fichier.statut === 'joint') { this.recharger(CONFIG.suivant); return; }
+      if (this.fichier.statut === 'incertain') { this.incertain = true; }
+      if (this.incertain) {
+        // The page cannot know which statement the record holds: no later
+        // outcome (a refusal included) releases « Compléter » — only a
+        // reload, which re-reads the record (the third review).
+        this.occupe = false;
+        return;
+      }
+      this.signaler(false);
+    },
+
+    async traiter(f) {
+      try {
+        f.statut = 'en cours'; f.pct = 0; f.motif = '';
+        const ouverture = await fetch(CONFIG.televersement, {
+          method: 'POST', headers: this.entetes(),
+          body: JSON.stringify({ name: f.name, size: f.size }),
+        });
+        const donnees = await ouverture.json().catch(function () { return {}; });
+        // An expired session answers the login page, a refused token an
+        // HTML 400: neither carries a URL.
+        if (!ouverture.ok || !donnees.url) {
+          f.statut = 'rejeté'; f.motif = donnees.erreur || 'refusé — rechargez la page';
+          return;
+        }
+        await this.televerser(f, donnees.url);
+        let resultat = await this.finaliser(donnees.objet);
+        if (resultat.incertain) {
+          // The outcome is unknown: one more finalization, about 2 s
+          // later — idempotent through the reserved id — settles it only
+          // when the store answers. Any other answer keeps the FIRST one.
+          const premier = resultat;
+          await new Promise(function (r) { setTimeout(r, 2000); });
+          resultat = await this.finaliser(donnees.objet);
+          if (!resultat.ok) {
+            f.statut = 'incertain'; f.motif = premier.erreur || CONFIG.incertain;
+            return;
+          }
+        }
+        if (!resultat.ok) {
+          f.statut = 'rejeté'; f.motif = resultat.erreur || 'refusé — rechargez la page';
+          return;
+        }
+        f.statut = 'joint'; f.pct = 100;
+      } catch (e) {
+        f.statut = 'rejeté'; f.motif = 'erreur réseau — réessayez';
+      }
+    },
+
+    // A finalization whose answer never came back may have attached the
+    // statement: « incertain », never a refusal — as is a 2xx whose body
+    // could not be read, and a 5xx that is not this endpoint's JSON. A
+    // 4xx, or a 200 whose body is not JSON at all, attached nothing.
+    async finaliser(objet) {
+      let fin;
+      try {
+        fin = await fetch(CONFIG.finaliser, {
+          method: 'POST', headers: this.entetes(),
+          body: JSON.stringify({ objet: objet }),
+        });
+      } catch (e) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      let illisible = false;
+      const resultat = await fin.json().catch(function (e) {
+        illisible = !(e instanceof SyntaxError);
+        return {};
+      });
+      if (fin.ok && illisible) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      if (fin.status >= 500 && !resultat.erreur) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      return {
+        ok: fin.ok && resultat.ok === true,
+        incertain: resultat.incertain === true,
+        erreur: resultat.erreur || '',
+      };
+    },
+
+    // Twins, verbatim: templates/documents/upload.html (putTranche, interrogerDecalage, televerser) — pinned by tests/test_pieces_identite_routes.py.
+    putTranche(f, url, debut) {
+      return new Promise(function (resolve, reject) {
+        const fin = Math.min(debut + CHUNK, f.size);
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('Content-Range',
+          'bytes ' + debut + '-' + (fin - 1) + '/' + f.size);
+        xhr.upload.onprogress = function (e) {
+          f.pct = Math.min(99, Math.round(((debut + e.loaded) / f.size) * 100));
+        };
+        xhr.onload = function () { resolve(xhr); };
+        xhr.onerror = function () { reject(new Error('réseau')); };
+        xhr.send(f.file.slice(debut, fin));
+      });
+    },
+
+    interrogerDecalage(f, url) {
+      // Reprise : PUT vide "bytes */total" → 308 + en-tête Range = déjà reçu.
+      return new Promise(function (resolve) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('Content-Range', 'bytes */' + f.size);
+        xhr.onload = function () {
+          if (xhr.status === 308) {
+            const range = xhr.getResponseHeader('Range');
+            resolve(range ? parseInt(range.split('-')[1], 10) + 1 : 0);
+          } else if (xhr.status === 200 || xhr.status === 201) {
+            resolve(f.size);
+          } else { resolve(0); }
+        };
+        xhr.onerror = function () { resolve(0); };
+        xhr.send();
+      });
+    },
+
+    async televerser(f, url) {
+      let debut = 0, tentatives = 0;
+      while (true) {
+        let xhr = null;
+        try { xhr = await this.putTranche(f, url, debut); } catch (e) { /* réseau */ }
+        if (xhr && (xhr.status === 200 || xhr.status === 201)) { return; }
+        if (xhr && xhr.status === 308) {
+          const range = xhr.getResponseHeader('Range');
+          debut = range ? parseInt(range.split('-')[1], 10) + 1 : debut + CHUNK;
+          tentatives = 0;
+          continue;
+        }
+        tentatives += 1;
+        if (tentatives > 3) { throw new Error('interrompu'); }
+        await new Promise(function (r) { setTimeout(r, 1000 * Math.pow(2, tentatives)); });
+        debut = await this.interrogerDecalage(f, url);
+        if (debut >= f.size && f.size > 0) { return; }
+      }
+    }
+  };
+}
+</script>
+  {% endif %}
+</section>

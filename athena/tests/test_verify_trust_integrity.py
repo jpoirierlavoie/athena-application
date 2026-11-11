@@ -56,6 +56,7 @@ from tests._accounting_history import (  # noqa: E402
     legacy_trust_entry,
 )
 from tests._fake_firestore import install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 
@@ -184,7 +185,7 @@ def _september(fake, monkeypatch, *, clear_r2_before_close: bool = False):
         statement = 150000
     rec, errs = trust.create_reconciliation("acc1", _d(2026, 9, 5), statement)
     assert errs == [], errs
-    _, errs = trust.complete_reconciliation(rec["id"], [])
+    _, errs = completer(trust, rec["id"], [])
     assert errs == [], errs
     _set(fake, _tx(r1["id"]), created_at=_at(9, 1), updated_at=_at(9, 2))
     _set(fake, _tx(r2["id"]), created_at=_at(9, 3),
@@ -202,7 +203,7 @@ def _july(fake, monkeypatch):
     r2 = _create(amount=50000, date=_d(2026, 7, 12))
     rec, errs = trust.create_reconciliation("acc1", _d(2026, 7, 15), 100000)
     assert errs == [], errs
-    _, errs = trust.complete_reconciliation(rec["id"], [])
+    _, errs = completer(trust, rec["id"], [])
     assert errs == [], errs
     _set(fake, _tx(r1["id"]), created_at=_at(7, 10), updated_at=_at(7, 11))
     _set(fake, _tx(r2["id"]), created_at=_at(7, 12), updated_at=_at(7, 12))
@@ -1219,7 +1220,7 @@ def test_chaque_ecriture_des_deux_registres_deplace_le_releve(fake, monkeypatch)
     rec, errs = trust.create_reconciliation("acc1", _d(2026, 9, 5), 100000)
     assert errs == []
     moved()
-    _, errs = trust.complete_reconciliation(rec["id"], [])
+    _, errs = completer(trust, rec["id"], [])
     assert errs == [] and moved(), "trust reconciliation completed"
 
 

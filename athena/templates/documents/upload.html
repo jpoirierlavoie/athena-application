@@ -438,7 +438,7 @@ function uploadForm() {
       };
     },
 
-    // Jumeaux à l'identique : templates/parties/_pieces_identite_gestion.html (putTranche, interrogerDecalage, televerser) — épinglés par tests/test_pieces_identite_routes.py.
+    // Jumeaux à l'identique : templates/parties/_pieces_identite_gestion.html et templates/components/_releve_conciliation.html (putTranche, interrogerDecalage, televerser) — épinglés par tests/test_pieces_identite_routes.py.
     putTranche(f, url, debut) {
       return new Promise(function (resolve, reject) {
         const fin = Math.min(debut + CHUNK, f.size);

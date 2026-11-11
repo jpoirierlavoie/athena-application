@@ -789,6 +789,10 @@ TrustEvent = Literal[
     "trust_reconciliation_completed",
     "trust_reconciliation_variance",
     "trust_reconciliation_abandoned",
+    # 2026-11-10 — the bank statement a reconciliation rests on
+    # (models/releve_conciliation): ids, size and type, never a file name.
+    "trust_reconciliation_statement_attached",
+    "trust_reconciliation_statement_removed",
     "trust_export",
 ]
 TrustOutcome = Literal["success", "refused"]
@@ -813,6 +817,10 @@ AdminLedgerEvent = Literal[
     "admin_reconciliation_completed",
     "admin_reconciliation_variance",
     "admin_reconciliation_abandoned",
+    # 2026-11-10 — the bank (or card) statement a reconciliation rests on
+    # (models/releve_conciliation): ids, size and type, never a file name.
+    "admin_reconciliation_statement_attached",
+    "admin_reconciliation_statement_removed",
     "admin_export",
 ]
 AdminLedgerOutcome = Literal["success", "refused", "failure"]

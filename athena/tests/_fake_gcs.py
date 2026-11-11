@@ -28,9 +28,15 @@ every ``Blob``, ``Bucket`` and ``Client`` signature is unchanged):
   ``generation``, ``content_type``, ``content_disposition``; ``NotFound``
   on a missing object. Before a reload (or a completed write) a new
   ``Blob`` reports ``size``/``generation`` as ``None``, like the library.
-* ``Blob.patch(…, if_generation_match=None, …)`` — persists
-  ``content_type``/``content_disposition``; ``NotFound`` / 412.
-* ``Blob.delete(…, if_generation_match=None, …)`` — ``NotFound`` / 412.
+* ``Blob.patch(…, if_generation_match=None, …, if_metageneration_match=None,
+  …)`` — persists ``content_type``/``content_disposition`` and raises the
+  object's ``metageneration`` by one, as the service does; ``NotFound`` /
+  412.
+* ``Blob.delete(…, if_generation_match=None, …, if_metageneration_match=None,
+  …)`` — ``NotFound`` / 412.
+* ``Blob.metageneration`` — 1 for a new generation, +1 per metadata update;
+  ``None`` before a reload (2026-11-10: the precondition that keeps a
+  rollback off an object another call adopted).
 * ``Blob.download_as_bytes(start=None, end=None, …)`` — ``end`` INCLUSIVE.
 * ``Blob.upload_from_file(file_obj, …, content_type=None, …,
   if_generation_match=None, …)``.
@@ -85,6 +91,11 @@ class StoredObject:
     content_disposition: Optional[str] = None
     time_created: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc))
+    # GCS's metageneration: 1 for a new generation, +1 on every metadata
+    # update (``patch``) — the precondition a rollback uses to never erase
+    # an object another call adopted (2026-11-10). LAST: callers build this
+    # dataclass positionally.
+    metageneration: int = 1
 
     @property
     def md5_hash(self) -> str:
@@ -174,6 +185,13 @@ class FakeBucket:
         if int(if_generation_match) != live:
             raise PreconditionFailed(f"412 conditionNotMet: {name}")
 
+    def _check_metageneration(self, name: str, if_metageneration_match) -> None:
+        if if_metageneration_match is None:
+            return
+        current = self.objects.get(name)
+        if current is None or int(if_metageneration_match) != current.metageneration:
+            raise PreconditionFailed(f"412 conditionNotMet: {name}")
+
 
 class FakeBlob:
     def __init__(self, bucket: FakeBucket, name: str):
@@ -181,6 +199,7 @@ class FakeBlob:
         self.name = name
         self.size: Optional[int] = None
         self.generation: Optional[int] = None
+        self.metageneration: Optional[int] = None
         self.md5_hash: Optional[str] = None
         self.crc32c: Optional[str] = None
         self.content_type: Optional[str] = None
@@ -190,6 +209,7 @@ class FakeBlob:
     def _load(self, obj: StoredObject) -> None:
         self.size = len(obj.data)
         self.generation = obj.generation
+        self.metageneration = obj.metageneration
         self.md5_hash = obj.md5_hash
         self.crc32c = obj.crc32c
         self.content_type = obj.content_type
@@ -269,16 +289,21 @@ class FakeBlob:
         self._load(obj)
         return None, total, total
 
-    def patch(self, client=None, if_generation_match=None, **_kwargs) -> None:
+    def patch(self, client=None, if_generation_match=None,
+              if_metageneration_match=None, **_kwargs) -> None:
         obj = self._live()
         self.bucket._check_generation(self.name, if_generation_match)
+        self.bucket._check_metageneration(self.name, if_metageneration_match)
         obj.content_type = self.content_type
         obj.content_disposition = self.content_disposition
+        obj.metageneration += 1
         self._load(obj)
 
-    def delete(self, client=None, if_generation_match=None, **_kwargs) -> None:
+    def delete(self, client=None, if_generation_match=None,
+               if_metageneration_match=None, **_kwargs) -> None:
         self._live()
         self.bucket._check_generation(self.name, if_generation_match)
+        self.bucket._check_metageneration(self.name, if_metageneration_match)
         del self.bucket.objects[self.name]
 
     def create_resumable_upload_session(

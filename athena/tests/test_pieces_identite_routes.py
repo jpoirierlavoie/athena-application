@@ -94,6 +94,8 @@ FINALIZE = f"/parties/{PID}/pieces-identite/finaliser"
 _TEMPLATES = _ATHENA / "templates"
 _GESTION = _TEMPLATES / "parties" / "_pieces_identite_gestion.html"
 _UPLOAD = _TEMPLATES / "documents" / "upload.html"
+# The third twin (2026-11-10): a reconciliation's bank statement.
+_RELEVE = _TEMPLATES / "components" / "_releve_conciliation.html"
 
 
 def _consult(proof_id=PROOF) -> str:
@@ -1442,12 +1444,17 @@ def test_the_chunked_put_functions_are_verbatim_twins_of_the_upload_page():
     drift: a fix on one page is a fix on both."""
     upload = _UPLOAD.read_text(encoding="utf-8")
     gestion = _GESTION.read_text(encoding="utf-8")
+    releve = _RELEVE.read_text(encoding="utf-8")
     assert _twin_drift(upload, gestion) == []
+    assert _twin_drift(upload, releve) == []
     for name in _TWINS:
         assert len(_method(upload, name).splitlines()) >= 12, name
-    # Each names the other, so an edit of one finds the other.
+    # Each copy names the original, which names each copy: an edit of one
+    # finds the others.
     assert "templates/parties/_pieces_identite_gestion.html" in upload
+    assert "templates/components/_releve_conciliation.html" in upload
     assert "templates/documents/upload.html" in gestion
+    assert "templates/documents/upload.html" in releve
     # The pin catches what it claims: one character of drift is seen.
     drifted = gestion.replace("Math.min(99,", "Math.min(98,")
     assert drifted != gestion

@@ -50,6 +50,7 @@ with mock.patch("google.cloud.firestore.Client"):
 from google.api_core import exceptions as gexc  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 TODAY = "2031-11-20T16:00:00+00:00"
@@ -154,7 +155,7 @@ def build_bench(fake, set_attr) -> dict:
                         category="fournitures", net_amount=3000, gst_amount=150,
                         qst_amount=299, cleared=_d(4, 21))
     rec = _ok(al.create_reconciliation(card["id"], _d(5, 31), 2135 + 4870 + 1299 + 2299 + 3449))
-    _ok(al.complete_reconciliation(rec["id"], []))
+    _ok(completer(al, rec["id"], []))
     # After the lock, on the operations account: unlocked, its payee in capitals.
     e["o1"] = _entry(ops, "dépense", 1500, _d(6, 5), counterparty=AI.upper(), category=SOURCE,
                      method="virement")

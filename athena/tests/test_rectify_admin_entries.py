@@ -52,6 +52,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from tz import to_mtl
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 TODAY = "2031-11-20T16:00:00+00:00"
@@ -182,9 +183,9 @@ def build_bench(fake, set_attr) -> dict:
                         counterparty="Me Exemple", method="virement")
     rec = _ok(al.create_reconciliation(card["id"], _d(10, 20), 36217 + 2558 + 2440 + 2491
                                        + 7077))
-    _ok(al.complete_reconciliation(rec["id"], []))
+    _ok(completer(al, rec["id"], []))
     rec = _ok(al.create_reconciliation(ops["id"], _d(10, 24), -(11103 + 19000 + 19000)))
-    _ok(al.complete_reconciliation(rec["id"], []))
+    _ok(completer(al, rec["id"], []))
     with provenance.writing_via("mcp"):
         model = _entry(perso, 3334, _d(11, 3), _d(11, 4), category="fournitures",
                        counterparty="Papeterie Exemple", net_amount=2900, gst_amount=145,

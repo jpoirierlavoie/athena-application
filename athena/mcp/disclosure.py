@@ -435,6 +435,10 @@ _REGISTER_DELETERS: tuple[str, ...] = (
 _REGISTER_SETUP_WRITERS: tuple[str, ...] = (
     "create_reconciliation", "complete_reconciliation",
     "delete_reconciliation", "create_account", "update_account",
+    # 2026-11-10 — a reconciliation's bank statement (art. 32,
+    # models/releve_conciliation): the lawyer's, in the application only.
+    "open_statement_upload", "file_staged_statement", "remove_statement",
+    "erase_statement_object",
 )
 _REGISTER_TRANSFER_WRITERS: tuple[str, ...] = (
     "create_inter_dossier_transfer",
@@ -713,6 +717,11 @@ NEVERS: tuple[Never, ...] = (
         forbidden=(
             "get_signed_url", "sign_blob_url", "generate_signed_url",
             "get_version_signed_url", "build_folder_zip_url",
+            # 2026-11-10 — the model signers that mint a 15-minute READ link
+            # of a stored file: a reconciliation's bank statement
+            # (models/releve_conciliation, reachable as an attribute of
+            # models.trust and models.admin_ledger) and a proof of identity.
+            "consult_url",
         ),
         behavioural_test=(
             "tests/test_mcp_framework_guards.py::"
@@ -799,10 +808,18 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="register_setup",
-        fr="<strong>concilier</strong>, créer ou modifier un compte",
+        # 2026-11-10: a reconciliation's bank statement (art. 32) is the
+        # lawyer's too — attached, replaced or removed in the application
+        # only (models/releve_conciliation); named on the screen in three
+        # words, since the connector now attaches an entry's RECEIPT.
+        fr=(
+            "<strong>concilier</strong> (relevé bancaire compris), créer ou "
+            "modifier un compte"
+        ),
         en=(
             "It never starts, completes or abandons a reconciliation, nor "
-            "creates or modifies an account: only the lawyer does, in the "
+            "attaches, replaces or removes its bank statement, nor creates "
+            "or modifies an account: only the lawyer does, in the "
             "application."
         ),
         forbidden=_REGISTER_SETUP_WRITERS,

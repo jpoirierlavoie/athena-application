@@ -95,6 +95,8 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.admin_ledger as al
     import models.invoice as invoice_model
 
+from tests._releve import completer  # noqa: E402
+
 
 X = 100_00  # $100.00 in cents
 
@@ -971,7 +973,7 @@ def test_reconciliation_completes_at_zero_variance_and_locks_the_period(store):
     )
     rec, errs = al.create_reconciliation("ops1", _d(2026, 7, 31), 100000)
     assert errs == []
-    done, errs = al.complete_reconciliation(rec["id"], [entry["id"]])
+    done, errs = completer(al, rec["id"], [entry["id"]])
     assert errs == []
     assert done["status"] == "complétée"
     assert done["book_balance"] == 100000
@@ -989,7 +991,7 @@ def test_reconciliation_refuses_nonzero_variance(store):
              amount=100000, date=_d(2026, 7, 10))
     )
     rec, _ = al.create_reconciliation("ops1", _d(2026, 7, 31), 99999)
-    done, errs = al.complete_reconciliation(rec["id"], list(store["admin_transactions"]))
+    done, errs = completer(al, rec["id"], list(store["admin_transactions"]))
     assert done is None and "équilibrée" in errs[0]
 
 
@@ -1002,7 +1004,7 @@ def test_card_reconciliation_converts_the_statement_sign(store):
     )
     rec, errs = al.create_reconciliation("carte1", _d(2026, 7, 31), 25000)
     assert errs == []
-    done, errs = al.complete_reconciliation(rec["id"], [entry["id"]])
+    done, errs = completer(al, rec["id"], [entry["id"]])
     assert errs == []
     assert done["book_balance"] == -25000  # ledger sign, snapshotted as-of
 
@@ -1015,14 +1017,14 @@ def test_reconciliation_unticked_entry_carries_to_the_next_period(store):
     b, _ = al.create_transaction(_new(amount=30000, date=_d(2026, 7, 20)))
     # Statement shows only the deposit — the cheque is still outstanding.
     rec, _ = al.create_reconciliation("ops1", _d(2026, 7, 31), 100000)
-    done, errs = al.complete_reconciliation(rec["id"], [a["id"]])
+    done, errs = completer(al, rec["id"], [a["id"]])
     assert errs == []
     assert store["admin_transactions"][b["id"]]["status"] == "en_circulation"
     # Next period: the cheque clears at the bank.
     ctx = al.reconciliation_as_of_context("ops1", _d(2026, 8, 12))
     assert [e["id"] for e in ctx["outstanding"]] == [b["id"]]
     rec2, _ = al.create_reconciliation("ops1", _d(2026, 8, 12), 70000)
-    done2, errs = al.complete_reconciliation(rec2["id"], [b["id"]])
+    done2, errs = completer(al, rec2["id"], [b["id"]])
     assert errs == []
 
 
@@ -1059,7 +1061,7 @@ def test_abandon_refuses_a_completed_reconciliation(store):
              amount=100000, date=_d(2026, 7, 10))
     )
     rec, _ = al.create_reconciliation("ops1", _d(2026, 7, 31), 100000)
-    al.complete_reconciliation(rec["id"], [entry["id"]])
+    completer(al, rec["id"], [entry["id"]])
     ok, errs = al.delete_reconciliation(rec["id"])
     assert not ok and "complétée" in errs[0]
 

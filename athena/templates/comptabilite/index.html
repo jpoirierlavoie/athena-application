@@ -15,7 +15,12 @@
     <div class="flex items-center justify-between mb-3">
       <h2 class="text-lg font-semibold text-gray-900">Fidéicommis</h2>
       {% if not trust_error %}
-      <a href="{{ url_for('trust.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        {# Le rattrapage des relevés bancaires (2026-11-10, art. 32) : un
+           lien seulement — la liste des conciliations compte et filtre. #}
+        <a href="{{ url_for('trust.reconciliations_list', releve='manquant') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Relevés manquants</a>
+        <a href="{{ url_for('trust.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+      </div>
       {% endif %}
     </div>
 
@@ -67,7 +72,12 @@
     <div class="flex items-center justify-between mb-3">
       <h2 class="text-lg font-semibold text-gray-900">Administration</h2>
       {% if not admin_error %}
-      <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+      <div class="flex flex-wrap items-center justify-end gap-2">
+        {# Le rattrapage des relevés bancaires (2026-11-10, art. 32) : un
+           lien seulement — la liste des conciliations compte et filtre. #}
+        <a href="{{ url_for('admin_ledger.reconciliations_list', releve='manquant') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Relevés manquants</a>
+        <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+      </div>
       {% endif %}
     </div>
 

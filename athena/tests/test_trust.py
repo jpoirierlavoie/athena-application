@@ -100,6 +100,8 @@ if not _module_available("firebase_admin"):
 with mock.patch("google.cloud.firestore.Client"):
     import models.trust as trust
 
+from tests._releve import completer  # noqa: E402
+
 
 X = 100_00  # $100.00, the § reference amount, in cents
 
@@ -837,7 +839,7 @@ def _day(n: int) -> datetime:
 def test_complete_reconciliation_variance_refused(store):
     trust.create_transaction(_new(direction="recette", amount=100000))  # in transit
     rec, _ = trust.create_reconciliation("acc1", _day(1), statement_balance=500)
-    _, errs = trust.complete_reconciliation(rec["id"], [])
+    _, errs = completer(trust, rec["id"], [])
     assert errs
     assert store["trust_reconciliations"][rec["id"]]["status"] == "brouillon"
 
@@ -845,7 +847,7 @@ def test_complete_reconciliation_variance_refused(store):
 def test_complete_reconciliation_balanced(store):
     r, _ = trust.create_transaction(_new(direction="recette", amount=100000))
     rec, _ = trust.create_reconciliation("acc1", _day(1), statement_balance=100000)
-    result, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+    result, errs = completer(trust, rec["id"], [r["id"]])
     assert errs == []
     assert result["status"] == "complétée"
     assert result["variance"] == 0
@@ -914,7 +916,7 @@ def test_retro_verification_only_completion(store):
 
     rec, errs = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
     assert errs == []
-    result, errs = trust.complete_reconciliation(rec["id"], [])
+    result, errs = completer(trust, rec["id"], [])
     assert errs == []
     assert result["status"] == "complétée" and result["variance"] == 0
     assert result["cleared_transaction_ids"] == []
@@ -934,14 +936,14 @@ def test_cross_period_outstanding_cheque(store):
 
     # Period 1: the cheque has not cleared the bank — left unticked.
     rec1, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
-    result1, errs = trust.complete_reconciliation(rec1["id"], [])
+    result1, errs = completer(trust, rec1["id"], [])
     assert errs == [] and result1["variance"] == 0
     assert result1["outstanding_cheques_total"] == 20000
     assert store["trust_transactions"][cheque["id"]]["status"] == "en_circulation"
 
     # Period 2: the cheque appears on THIS statement — ticked.
     rec2, _ = trust.create_reconciliation("acc1", _day(1), statement_balance=80000)
-    result2, errs = trust.complete_reconciliation(rec2["id"], [cheque["id"]])
+    result2, errs = completer(trust, rec2["id"], [cheque["id"]])
     assert errs == [] and result2["variance"] == 0
     entry = store["trust_transactions"][cheque["id"]]
     assert entry["status"] == "compensée"
@@ -959,11 +961,11 @@ def test_resurrection_cleared_after_period(store):
 
     rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=0)
     # Ticking a resurrected (already compensée) entry is refused loudly.
-    _, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+    _, errs = completer(trust, rec["id"], [r["id"]])
     assert errs and "conciliable" in errs[0]
     assert store["trust_reconciliations"][rec["id"]]["status"] == "brouillon"
     # Untouched, it balances: 0 (relevé) + 100000 (transit as-of) − 100000 (livre).
-    result, errs = trust.complete_reconciliation(rec["id"], [])
+    result, errs = completer(trust, rec["id"], [])
     assert errs == [] and result["variance"] == 0
     assert result["deposits_in_transit_total"] == 100000
 
@@ -975,7 +977,7 @@ def test_annulled_after_period_counts_outstanding(store):
     trust.reverse_transaction(r["id"], "erreur")  # reversal dated TODAY
 
     rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=0)
-    result, errs = trust.complete_reconciliation(rec["id"], [])
+    result, errs = completer(trust, rec["id"], [])
     assert errs == [] and result["variance"] == 0
     assert result["deposits_in_transit_total"] == 100000
 
@@ -1006,7 +1008,7 @@ def test_tick_entry_dated_after_period_refused(store):
     trust.clear_transaction(r["id"], _day(39))
     late, _ = trust.create_transaction(_new(direction="recette", amount=50000, date=_day(5)))
     rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
-    _, errs = trust.complete_reconciliation(rec["id"], [late["id"]])
+    _, errs = completer(trust, rec["id"], [late["id"]])
     assert errs and "conciliable" in errs[0]
 
 
@@ -1074,7 +1076,7 @@ def test_delete_reconciliation_brouillon(store):
 
 def test_delete_reconciliation_completee_refused(store):
     rec, _ = trust.create_reconciliation("acc1", _day(30), 0)
-    _, errs = trust.complete_reconciliation(rec["id"], [])  # empty register → 0
+    _, errs = completer(trust, rec["id"], [])  # empty register → 0
     assert errs == []
     ok, errs = trust.delete_reconciliation(rec["id"])
     assert ok is False and errs == ["Cette conciliation est déjà complétée."]
@@ -1166,7 +1168,7 @@ def test_firm_snapshot_or_of_accounts_and_never_flag(store, monkeypatch):
         "account_number_last4": "9999",
     })
     rec, _ = trust.create_reconciliation("acc1", _day(45), 0)
-    _, errs = trust.complete_reconciliation(rec["id"], [])
+    _, errs = completer(trust, rec["id"], [])
     assert errs == []
 
     snap = trust.get_firm_trust_snapshot()
@@ -1203,7 +1205,7 @@ def test_complete_bank_balance_incremented_not_set(store):
     trust.clear_transaction(b["id"], _day(9))
 
     rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=80000)
-    result, errs = trust.complete_reconciliation(rec["id"], [cheque["id"]])
+    result, errs = completer(trust, rec["id"], [cheque["id"]])
     assert errs == [] and result["variance"] == 0
     assert store["trust_accounts"]["acc1"]["bank_balance"] == 130000
 
@@ -1223,7 +1225,7 @@ def test_complete_concurrency_abort_on_account_change(store):
         return account
 
     with mock.patch.object(trust, "get_account", _get_then_mutate):
-        _, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+        _, errs = completer(trust, rec["id"], [r["id"]])
     assert errs == ["Le compte a changé pendant la conciliation. Veuillez recommencer."]
     assert store["trust_transactions"][r["id"]]["status"] == "en_circulation"
     assert store["trust_reconciliations"][rec["id"]]["status"] == "brouillon"
@@ -1238,7 +1240,7 @@ def test_completed_rec_snapshots_as_of_totals(store):
     trust.clear_transaction(late["id"], _day(4))
 
     rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=0)
-    result, errs = trust.complete_reconciliation(rec["id"], [])
+    result, errs = completer(trust, rec["id"], [])
     assert errs == []
     assert result["book_balance"] == 100000          # as-of, NOT 150000 (today)
     assert result["deposits_in_transit_total"] == 100000
@@ -1249,7 +1251,7 @@ def test_completed_rec_snapshots_as_of_totals(store):
 def test_ticked_recette_increments_dossier_cleared_map(store):
     r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
     rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
-    _, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+    _, errs = completer(trust, rec["id"], [r["id"]])
     assert errs == []
     assert store["dossiers"]["dos1"]["trust_cleared_by_client"]["c1"] == 100000
 

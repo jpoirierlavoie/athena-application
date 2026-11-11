@@ -34,6 +34,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from tests._accounting_history import FEE_PAYEE, legacy_fee_entry  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 
@@ -106,7 +107,7 @@ def _closed_september(fake, monkeypatch) -> dict:
     assert errs == [], errs
     rec, errs = trust.create_reconciliation("acc1", _d(2026, 9, 5), 100000)
     assert errs == [], errs
-    _, errs = trust.complete_reconciliation(rec["id"], [])
+    _, errs = completer(trust, rec["id"], [])
     assert errs == [], errs
     _set(fake, f"trust_transactions/{entry['id']}", created_at=_at(9, 1), updated_at=_at(9, 2))
     _set(fake, f"trust_reconciliations/{rec['id']}", completed_date=_at(9, 6))
@@ -441,7 +442,7 @@ def _cleared_expense(fake, monkeypatch, *, cleared_day: datetime,
     if february:
         rec, errs = admin_ledger.create_reconciliation("ops1", _d(2031, 2, 28), 0)
         assert errs == [], errs
-        _, errs = admin_ledger.complete_reconciliation(rec["id"], [])
+        _, errs = completer(admin_ledger, rec["id"], [])
         assert errs == [], errs
     row, errs = admin_ledger.create_transaction({
         "account_id": "ops1", "kind": "dépense", "category": "fournitures", "amount": 4321,
@@ -452,7 +453,7 @@ def _cleared_expense(fake, monkeypatch, *, cleared_day: datetime,
     assert errs == [], errs
     rec, errs = admin_ledger.create_reconciliation("ops1", _d(2031, 3, 10), -4321)
     assert errs == [], errs
-    _, errs = admin_ledger.complete_reconciliation(rec["id"], [])
+    _, errs = completer(admin_ledger, rec["id"], [])
     assert errs == [], errs
     path = f"admin_transactions/{row['id']}"
     if cleared_day != _d(2031, 3, 4):

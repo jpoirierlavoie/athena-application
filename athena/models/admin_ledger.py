@@ -93,6 +93,7 @@ from models import concurrency, db, full_reads, provenance
 # an occupied object the way their ingestion does. models.document imports
 # nothing from here — no cycle.
 from models import document as document_model
+from models import releve_conciliation
 from models.record_ids import is_addressable_id
 # The invoice payment is STAGED in this module's own transactions (lot 5a):
 # ``payment_updates`` is the one computation of amount_paid / paid_date /
@@ -1095,6 +1096,9 @@ _ABORT_MESSAGES = {
     ),
     "conciliation_introuvable": RECONCILIATION_NOT_FOUND,
     "conciliation_non_brouillon": "Cette conciliation est déjà complétée.",
+    # 2026-11-10 — art. 32: no completion without the bank statement.
+    "conciliation_sans_relevé": releve_conciliation.REQUIRED_TO_COMPLETE,
+    "conciliation_relevé_modifié": releve_conciliation.STATEMENT_CHANGED,
     "conciliation_variance": "La conciliation n'est pas équilibrée (écart non nul).",
     "conciliation_modifiée": "Le registre a changé pendant la conciliation. Veuillez recommencer.",
     "conciliation_période_future": "La date de fin de période ne peut être dans le futur.",
@@ -3744,6 +3748,7 @@ def delete_reconciliation(rec_id: str) -> tuple[bool, list[str]]:
         if rec.get("status") != "brouillon":
             raise _TxnAbort("conciliation_non_brouillon")
         info["account_id"] = rec.get("account_id")
+        info["rec"] = {**rec, "id": rec_ref.id}
         txn.delete(rec_ref)
 
     try:
@@ -3752,12 +3757,34 @@ def delete_reconciliation(rec_id: str) -> tuple[bool, list[str]]:
         return False, [_ABORT_MESSAGES.get(abort.reason, "Conciliation refusée.")]
     except Exception as exc:
         logger.error("admin delete_reconciliation failed: %s", type(exc).__name__)
-        return False, ["Erreur lors de la suppression. Veuillez réessayer."]
+        # A lost commit answer is « uncertain »: re-read to settle it, never
+        # report « nothing written » — a landed abandon whose draft carried
+        # a statement would otherwise strand its object with no id logged.
+        if "rec" not in info:
+            return False, ["Erreur lors de la suppression. Veuillez réessayer."]
+        try:
+            landed = not rec_ref.get().exists
+        except Exception as read_exc:
+            statement_id = info["rec"].get("statement_id")
+            log_unexpected(
+                "admin reconciliation: abandon uncertain", exc_info=False,
+                error_type=type(read_exc).__name__,
+                register=releve_conciliation.ADMIN,
+                reconciliation_id=sanitize_log_value(rec_id),
+                **({"statement_id": sanitize_log_value(statement_id)}
+                   if statement_id else {}))
+            return False, ["Erreur lors de la suppression. Veuillez réessayer."]
+        if not landed:
+            return False, ["Erreur lors de la suppression. Veuillez réessayer."]
 
     log_admin_ledger_event(
         "admin_reconciliation_abandoned", reconciliation_id=rec_id,
         account_id=info.get("account_id"),
     )
+    if releve_conciliation.has_statement(info.get("rec")):
+        # A follow-on of the committed abandon: never raises (ids logged).
+        releve_conciliation.erase_statement_object(
+            releve_conciliation.ADMIN, info["rec"])
     return True, []
 
 
@@ -3778,6 +3805,11 @@ def complete_reconciliation(
         return None, [_ABORT_MESSAGES["conciliation_introuvable"]]
     if rec.get("status") != "brouillon":
         return None, [_ABORT_MESSAGES["conciliation_non_brouillon"]]
+    # The statement it freezes: attached, at its shape, its object present
+    # (models/releve_conciliation.completion_refusal — never raises).
+    refusal = releve_conciliation.completion_refusal(releve_conciliation.ADMIN, rec)
+    if refusal:
+        return None, [refusal]
 
     account_id = rec["account_id"]
     account = get_account(account_id)
@@ -3827,8 +3859,19 @@ def complete_reconciliation(
     @firestore.transactional
     def _complete(txn) -> None:
         r_snap = rec_ref.get(transaction=txn)
-        if not r_snap.exists or r_snap.to_dict().get("status") != "brouillon":
+        rec_now = r_snap.to_dict() if r_snap.exists else None
+        if not rec_now or rec_now.get("status") != "brouillon":
             raise _TxnAbort("conciliation_non_brouillon")
+        # The statement is judged on THIS read, and the completed record is
+        # built from it — never from the pre-pass copy, which a statement
+        # attached or replaced meanwhile would have outdated (its fields
+        # would be lost by the set below).
+        if not releve_conciliation.has_statement(rec_now):
+            raise _TxnAbort("conciliation_sans_relevé")
+        # Replaced since the pre-pass checked its object: complete only on a
+        # statement whose bytes were checked.
+        if rec_now.get("statement_id") != rec.get("statement_id"):
+            raise _TxnAbort("conciliation_relevé_modifié")
         acc_snap = account_ref.get(transaction=txn)
         if not acc_snap.exists:
             raise _TxnAbort("compte_introuvable")
@@ -3864,7 +3907,7 @@ def complete_reconciliation(
             })
         txn.update(account_ref, provenance.update_fields(now))
         finalized = {
-            **rec,
+            **rec_now,
             "status": "complétée",
             "book_balance": book_balance,
             "outstanding_total": outstanding_after,

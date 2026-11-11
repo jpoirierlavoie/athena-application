@@ -45,6 +45,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from tests._accounting_history import legacy_fee_entry  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
+from tests._releve import completer  # noqa: E402
 
 UTC = timezone.utc
 TODAY = "2031-06-20T16:00:00+00:00"
@@ -146,7 +147,7 @@ def build_bench(fake, set_attr, *, settles: bool = True) -> dict:
     e["other"] = _entry(ops, "recette_autre", 1730, _d(3, 15), counterparty="Banque Exemple",
                         cleared=_d(3, 16))
     rec = _ok(al.create_reconciliation(ops["id"], _d(3, 31), FIRST - 7013 + APPORT + 1730))
-    _ok(al.complete_reconciliation(rec["id"], []))
+    _ok(completer(al, rec["id"], []))
     e["model"] = _entry(ops, "encaissement_facture", 18250, _d(5, 2), counterparty="Autre Client",
                         invoice_id=OTHER_INVOICE_ID)
     e["last"] = _entry(ops, "encaissement_facture",

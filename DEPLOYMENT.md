@@ -5147,6 +5147,74 @@ Notes:
   gabarit's. Then the code, with plugin 1.7.0; the receipts attached
   meanwhile stay, served by the web like any other.
 
+- **The bank statement of a reconciliation (2026-11-10).** Art. 32, 3°, of
+  the Barreau's accounting regulation (RLRQ c. B-1, r. 5): the bank
+  statements behind the registers are kept 7 years. Each reconciliation, of
+  either register, now carries ONE copy of its statement, through
+  `models/releve_conciliation` (the one door; `routes/_releve_conciliation`
+  and the partial `components/_releve_conciliation.html` on both
+  worksheets). The lawyer's decisions: a « brouillon » attaches, replaces or
+  removes it; « Compléter » REFUSES without it (both models'
+  `complete_reconciliation`, judged inside the transaction, whose completed
+  record is now built from the copy it read — the pre-pass copy, set over a
+  statement attached meanwhile, would have dropped it); a « complétée »
+  without one takes it once, then it is FROZEN — never replaced, never
+  removed. Every reconciliation completed before this release lacks one:
+  the catch-up is « Relevés manquants » (a banner, a `?releve=manquant`
+  filter and a badge on each list, a link on the Comptabilité page), with
+  no deadline. The bytes go browser → GCS (create-only resumable session on
+  `staging/{uid}/releve/{id}/upload{ext}`, sniffed, copied create-only to
+  `users/{uid}/{fideicommis|administration}/conciliations/{rec}/releve-{id}{ext}`
+  — ids only, no file name stored); « Consulter » is a 15-minute signed URL.
+  The six `statement_*` fields joined `_RECONCILIATION_KEYS` (the repair
+  scripts' whitelist). A completion checks the object it freezes (its
+  path's shape and its presence), and refuses a statement replaced since;
+  a finalization's own type patch is pinned to the metageneration its copy
+  produced, and its rollback to the last one the call saw, so a
+  finalization's rollback never erases an object a parallel finalization
+  has patched to adopt it; the erasures after a record stopped pointing at
+  its object (removal, replacement, abandon) are checked afterwards and
+  raise « erased object referenced » (the reviews of 2026-11-10). Change Impact: item 1 in name only (the « register_setup »
+  never-rule forbids the four new calls and names the statement — « (relevé
+  bancaire compris) », three words on the short screen, since the connector
+  now attaches an entry's receipt —, and the
+  « link » never-rule forbids `consult_url`, the model signer of a
+  statement's and a proof's read link — plugin 1.8.1, whose « Seule
+  l'application » the first feeds; the consent screen's « Jamais » clause
+  follows; no tool, schema or payload changes, no revocation: it
+  narrows); item 4 (four events —
+  `trust_`/`admin_reconciliation_statement_attached` / `_removed` — and the
+  module's messages, ids only); item 5 (four twin routes under the existing
+  prefixes, never CSRF-exempt, JSON with the `X-CSRFToken` header — not
+  App-Checked, like the proofs and the receipts); item 6 in name only (a
+  partial on compiled classes, the third verbatim twin of the chunked
+  uploader — no recompile); items 2, 3 and 7 not touched (no new query: the
+  lists filter what they already read).
+  In order:
+  1. *The push.*
+  2. *The reconciliation in progress, if any*: attach its statement on the
+     worksheet, then complete it (« Compléter » refuses without it).
+  3. *The catch-up*: Comptabilité → « Relevés manquants », one register then
+     the other: open each completed reconciliation listed, « Joindre le
+     relevé ». Once attached, it is frozen — check the file before.
+  4. *On the phone* (375 px): attach a photo or a PDF, « Consulter », and
+     check that « Retirer » is gone on a completed reconciliation.
+  5. *Plugin 1.8.1*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day. It carries 1.8.0's receipts too: a
+     1.8.0 not yet delivered is skipped, never delivered after it.
+  A rollback is the code and plugin 1.8.0: the older code completes without
+  a statement, offers no upload and shows the fields nowhere — but its
+  repair scripts (`rectify_admin_entries`, `rectify_pre_registration_taxes`,
+  whose `_RECONCILIATION_KEYS` lacks the six fields) then refuse, as
+  « conciliation_instantané », every entry a reconciliation completed with
+  a statement cites — run them from this release's code; and its abandon
+  deletes a draft without erasing the statement attached to it, leaving
+  the object under `users/{uid}/{fideicommis|administration}/conciliations/`
+  with no record and no log line — before rolling back, list the drafts
+  that carry a statement (and settle them), or afterwards erase the
+  objects no record points at.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

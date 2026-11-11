@@ -52,6 +52,7 @@ from werkzeug.utils import secure_filename
 from auth import login_required
 from config import Config
 from models import admin_ledger as al
+from models import releve_conciliation as rc
 from models.admin_ledger import (
     ACCOUNT_STATUS_LABELS,
     ACCOUNT_TYPE_LABELS,
@@ -94,6 +95,7 @@ from utils.logging_setup import (
     sanitize_log_value,
 )
 from utils import storage_identity
+from routes import _releve_conciliation as releve_routes
 from routes import edit_conflict
 from routes._helpers import (
     dossier_search_fragment,
@@ -1128,6 +1130,7 @@ def account_detail(account_id: str):
         "administration/account_detail.html", account=account,
         header=_account_header(account),
         reconciliations=al.list_reconciliations(account_id),
+        releve_manquant=rc.statement_missing,
         **_avoir_annee_civile(account["id"]), **_labels(),
     )
 
@@ -1155,12 +1158,20 @@ def account_edit(account_id: str):
 @admin_bp.route("/conciliations/")
 @login_required
 def reconciliations_list():
+    # « Relevés manquants » (2026-11-10): the catch-up of the statements a
+    # completed reconciliation lacks — counted and filtered over the WHOLE
+    # list this page reads (no cap), by the model's one predicate.
+    recs = al.list_reconciliations()
+    releve = releve_routes.list_filter()
     return render_template(
         "administration/reconciliations_list.html",
-        reconciliations=al.list_reconciliations(),
+        reconciliations=([r for r in recs if rc.statement_missing(r)]
+                         if releve == "manquant" else recs),
         accounts={a["id"]: a for a in al.list_accounts()}, **_labels(),
         # A closed code (this module's convention): reconciliation_abandon's.
         avertissement=request.args.get("avertissement", ""),
+        releve_filtre=releve, releves_manquants=releve_routes.missing_count(recs),
+        releve_manquant=rc.statement_missing,
     )
 
 
@@ -1202,6 +1213,7 @@ def _worksheet_context(rec: dict) -> dict:
     return {
         "rec": rec,
         "account": account,
+        "releve": releve_routes.worksheet_view(rc.ADMIN, rec),
         "statement_ledger": al.statement_to_ledger(
             (account or {}).get("account_type", ""),
             int(rec.get("statement_balance", 0)),
@@ -1260,6 +1272,37 @@ def reconciliation_abandon(rec_id: str):
             **_worksheet_context(current), errors=errors, **_labels(),
         ), 400
     return redirect_after_post(url_for("admin_ledger.reconciliations_list"))
+
+
+
+# ── The bank statement a reconciliation rests on (2026-11-10) ──────────────
+# Four twin URLs, one-line calls into routes/_releve_conciliation — every
+# rule is models/releve_conciliation's (art. 32: required to complete,
+# frozen once completed).
+
+
+@admin_bp.route("/conciliations/<rec_id>/releve/televersement", methods=["POST"])
+@login_required
+def reconciliation_statement_session(rec_id: str):
+    return releve_routes.session(rc.ADMIN, rec_id)
+
+
+@admin_bp.route("/conciliations/<rec_id>/releve", methods=["POST"])
+@login_required
+def reconciliation_statement_finalize(rec_id: str):
+    return releve_routes.finalize(rc.ADMIN, rec_id)
+
+
+@admin_bp.route("/conciliations/<rec_id>/releve/retirer", methods=["POST"])
+@login_required
+def reconciliation_statement_remove(rec_id: str):
+    return releve_routes.remove(rc.ADMIN, rec_id)
+
+
+@admin_bp.route("/conciliations/<rec_id>/releve", methods=["GET"])
+@login_required
+def reconciliation_statement_consult(rec_id: str):
+    return releve_routes.consult(rc.ADMIN, rec_id)
 
 
 # ── Exports ────────────────────────────────────────────────────────────────

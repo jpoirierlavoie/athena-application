@@ -19,6 +19,20 @@
   </div>
   {% endif %}
 
+  {# Les relevés manquants (2026-11-10, art. 32) : les conciliations
+     complétées sans leur relevé bancaire — le rattrapage, sans échéance.
+     Compté sur la liste entière (releve_conciliation.statement_missing). #}
+  {% if releves_manquants %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    {{ releves_manquants }} conciliation{{ 's' if releves_manquants > 1 }} complétée{{ 's' if releves_manquants > 1 }} sans relevé bancaire —
+    {% if releve_filtre == 'manquant' %}<a href="{{ url_for('admin_ledger.reconciliations_list') }}" class="font-medium underline">tout afficher</a>{% else %}<a href="{{ url_for('admin_ledger.reconciliations_list', releve='manquant') }}" class="font-medium underline">afficher les relevés manquants</a>{% endif %}
+  </div>
+  {% elif releve_filtre == 'manquant' %}
+  <div class="mb-4 p-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+    Aucun relevé manquant — <a href="{{ url_for('admin_ledger.reconciliations_list') }}" class="font-medium underline">tout afficher</a>
+  </div>
+  {% endif %}
+
   {% if not reconciliations %}
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucune conciliation.</div>
   {% else %}
@@ -27,9 +41,9 @@
     <a href="{{ url_for('admin_ledger.reconciliation_worksheet', rec_id=r.id) }}" class="flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-sm">
       <div>
         <p class="font-medium text-gray-900">{{ accounts.get(r.account_id, {}).get('name', '') }}</p>
-        <p class="text-xs text-gray-500">Période au {{ r.period_end.strftime('%Y-%m-%d') if r.period_end else '' }}</p>
+        <p class="text-xs text-gray-500 whitespace-nowrap">Période au {{ r.period_end.strftime('%Y-%m-%d') if r.period_end else '' }}</p>
       </div>
-      <span>{% if r.status == 'complétée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Complétée</span>{% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Brouillon</span>{% endif %}</span>
+      <span class="flex flex-wrap items-center justify-end gap-1">{% if r.status == 'complétée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Complétée</span>{% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Brouillon</span>{% endif %}{% if releve_manquant(r) %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Relevé manquant</span>{% endif %}</span>
     </a>
     {% endfor %}
   </div>
