@@ -29,16 +29,27 @@
        its own balance — the same sums (invoice.get_outstanding_totals). A
        single link to « envoyée » hid the late invoices the total counted.
        A <div>, not an <a>: the tile holds two links. Each link measures
-       48 px (py-1.5 around a 16 px label and a 20 px amount; Rule 9). #}
+       48 px (py-1.5 around a 16 px label and a 20 px amount; Rule 9).
+       When the sums failed, « indisponible » stands where every amount
+       would — never a 0,00 $ that reads « nothing is owed » (the
+       financial statements' own wording and classes). #}
     <div class="bg-white rounded-xl border border-gray-200 p-4">
       <p class="text-xs text-gray-500 uppercase tracking-wide">Factures impayées</p>
+      {% if stats.outstanding_unavailable %}
+      <p class="text-sm text-gray-500 mt-1">indisponible</p>
+      {% else %}
       <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.outstanding_invoices | cents_fr }}</p>
+      {% endif %}
       <div class="mt-1 divide-y divide-gray-100">
         {% for link in stats.outstanding_links %}
           <a href="{{ url_for('invoices.invoice_list', status=link.status) }}"
              class="block -mx-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">
             <span class="block text-xs text-gray-500">{{ link.label }}</span>
+            {% if stats.outstanding_unavailable %}
+            <span class="block text-sm text-gray-500">indisponible</span>
+            {% else %}
             <span class="block text-sm font-medium text-gray-900">{{ link.amount | cents_fr }}</span>
+            {% endif %}
           </a>
         {% endfor %}
       </div>

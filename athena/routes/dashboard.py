@@ -222,7 +222,9 @@ def _get_quick_stats() -> dict:
     (``invoice.get_outstanding_totals``, which says why). Each stat degrades
     independently: a failure leaves its safe default in place.
     ``outstanding_links`` — one ``{status, label, amount}`` per issued
-    status — always holds the tile's links, at 0 when the sums failed.
+    status — always holds the tile's links; ``outstanding_unavailable``
+    says the sums failed, and the tile then shows « indisponible » instead
+    of any amount — never a 0 that reads « nothing is owed ».
     """
     stats: dict = {
         "open_dossiers": 0,
@@ -247,17 +249,22 @@ def _get_quick_stats() -> dict:
         logger.warning("dashboard: unbilled time stat failed: %s", exc)
 
     by_status: dict = {}
+    stats["outstanding_unavailable"] = False
     try:
-        from models.invoice import get_outstanding_totals
+        from models.invoice import get_outstanding_totals_strict
         # ONE call for the whole tile: its total and each link's own figure
         # are the same sums, so they never disagree — and the total is what
         # get_outstanding_total gives the connector's get_agenda.
-        by_status = get_outstanding_totals()
+        by_status = get_outstanding_totals_strict()
         stats["outstanding_invoices"] = sum(by_status.values())
     except Exception as exc:
-        logger.warning("dashboard: outstanding invoices stat failed: %s", exc)
-    # The links stand even when the sums failed: the way to the lists, at
-    # the tile's 0,00 $ default.
+        # A failed read never passes for « nothing is owed »: the tile says
+        # « indisponible » (the lawyer's choice of 2026-11-11). The type
+        # only: an exception's text may quote a stored value.
+        stats["outstanding_unavailable"] = True
+        logger.warning("dashboard: outstanding invoices stat failed: %s",
+                       type(exc).__name__)
+    # The links stand even when the sums failed: the way to the lists.
     stats["outstanding_links"] = [
         {"status": status, "label": label, "amount": by_status.get(status, 0)}
         for status, label in _OUTSTANDING_LINK_LABELS.items()

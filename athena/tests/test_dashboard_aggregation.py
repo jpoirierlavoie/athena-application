@@ -650,7 +650,7 @@ def test_quick_stats_shape_and_passthrough(monkeypatch):
     # Lot 0: ONE call of the per-status sums feeds the tile — its total and
     # its two links (rewritten deliberately: the route no longer calls
     # get_outstanding_total, it sums the same figures).
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals",
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict",
                         lambda: {"envoyée": 200000, "en_retard": 50075})
     monkeypatch.setattr(
         trust_model, "get_firm_trust_snapshot",
@@ -663,6 +663,7 @@ def test_quick_stats_shape_and_passthrough(monkeypatch):
         "unbilled_hours": 12.3,
         "unbilled_amount": 45678,
         "outstanding_invoices": 250075,
+        "outstanding_unavailable": False,
         "outstanding_links": [
             {"status": "envoyée", "label": "Envoyées", "amount": 200000},
             {"status": "en_retard", "label": "En retard", "amount": 50075},
@@ -681,7 +682,7 @@ def test_quick_stats_degrades_per_stat(monkeypatch):
         time_entry_model, "get_unbilled_totals",
         lambda: {"hours": 1.5, "amount": 100},
     )
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals",
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict",
                         lambda: {"envoyée": 150, "en_retard": 50})
 
     stats = dashboard._get_quick_stats()
@@ -694,18 +695,36 @@ def test_quick_stats_degrades_per_stat(monkeypatch):
 
 
 def test_quick_stats_keep_the_invoice_links_when_the_sums_fail(monkeypatch):
-    """The tile's links are the way to the lists: they stand at 0 when its
-    sums raised, beside the total's 0 default."""
+    """The tile's links are the way to the lists: they stand when its sums
+    raised, and the tile is marked unavailable — it shows « indisponible »,
+    never a 0 that reads « nothing is owed »."""
     def _boom() -> dict:
         raise RuntimeError("sums failed")
 
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals", _boom)
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict", _boom)
     stats = dashboard._get_quick_stats()
+    assert stats["outstanding_unavailable"] is True
     assert stats["outstanding_invoices"] == 0
     assert stats["outstanding_links"] == [
         {"status": "envoyée", "label": "Envoyées", "amount": 0},
         {"status": "en_retard", "label": "En retard", "amount": 0},
     ]
+
+
+def test_the_strict_totals_raise_and_their_fail_open_twin_answers_zero(monkeypatch,
+                                                                        caplog):
+    """The tile's door raises on a failed read; get_agenda's twin answers 0
+    for each status and logs the exception's type (2026-11-11)."""
+    def _boom(*_a, **_k):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(invoice_model, "list_invoices_strict", _boom)
+    with pytest.raises(RuntimeError):
+        invoice_model.get_outstanding_totals_strict()
+    with caplog.at_level("WARNING", logger=invoice_model.logger.name):
+        assert invoice_model.get_outstanding_totals() == {"envoyée": 0, "en_retard": 0}
+    assert [r.getMessage() for r in caplog.records if r.name == invoice_model.logger.name] == [
+        "get_outstanding_totals: failed: RuntimeError"]
 
 
 # ── routes.dashboard._get_urgent_tasks ────────────────────────────────────

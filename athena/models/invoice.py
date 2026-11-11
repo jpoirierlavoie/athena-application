@@ -2874,7 +2874,7 @@ def delete_invoice(invoice_id: str) -> tuple[bool, str]:
 _aggregation_values = aggregation_values
 
 
-def get_outstanding_totals() -> dict[str, int]:
+def get_outstanding_totals_strict() -> dict[str, int]:
     """The live balance (cents) still owed on the issued invoices, PER issued
     status: ``{status: Σ balance_of}`` for each status of
     ``_ISSUED_STATUSES``, in that order — the one authority of the
@@ -2908,17 +2908,28 @@ def get_outstanding_totals() -> dict[str, int]:
     and ``models/trust`` made it its doctrine. The volume counts in dozens;
     the read's cap (``models/full_reads``) sits far above it.
 
-    Fails OPEN — every status at 0, the failure logged with its exception's
-    type — the tile's graceful degradation and its original posture: display
-    only, never a decision. A failed or truncated read and a corrupt stored
-    amount all land there: never a partial figure.
+    STRICT: a failed or truncated read, or a corrupt stored amount, RAISES —
+    never a partial figure, and never a 0 that would read « nothing is owed »
+    (« A failed read never passes for absence »). The dashboard's tile reads
+    this door and says « indisponible » (the lawyer's choice of 2026-11-11,
+    the financial statements' posture); :func:`get_outstanding_totals` is
+    its fail-open twin.
     """
+    invoices = list_invoices_strict(None)
+    return {
+        status: sum(balance_of(inv) for inv in invoices if inv.get("status") == status)
+        for status in _ISSUED_STATUSES
+    }
+
+
+def get_outstanding_totals() -> dict[str, int]:
+    """:func:`get_outstanding_totals_strict`, failing OPEN — every status at
+    0, the failure logged with its exception's type: the connector's
+    ``get_agenda`` total, through :func:`get_outstanding_total` (display
+    only, never a decision). The dashboard's tile reads the strict door
+    instead and says « indisponible »."""
     try:
-        invoices = list_invoices_strict(None)
-        return {
-            status: sum(balance_of(inv) for inv in invoices if inv.get("status") == status)
-            for status in _ISSUED_STATUSES
-        }
+        return get_outstanding_totals_strict()
     except Exception as exc:
         # The exception's type only: its text may quote a stored value.
         logger.warning("get_outstanding_totals: failed: %s", type(exc).__name__)

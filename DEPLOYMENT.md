@@ -5345,7 +5345,11 @@ Notes:
   strict read of the invoices (the two fail-open reads it replaces could
   fail apart: one status' real figure beside a « 0,00 $ » that only meant
   « unread », with nothing logged), and whose sum `get_outstanding_total`
-  stays the figure of the connector's `get_agenda`. The connector's
+  stays the figure of the connector's `get_agenda`. The tile reads them
+  through `invoice.get_outstanding_totals_strict`: a failed or truncated
+  read shows « indisponible » on its total and on both links, never a
+  « 0,00 $ » that reads « nothing is owed » (the lawyer's choice);
+  `get_agenda` keeps the fail-open twin, at 0 and logged. The connector's
   `get_billing_snapshot` sums its own rows on the same pair, pinned equal
   by `tests/test_dashboard_invoice_tile.py`. Change Impact: item 1 — touched
   only through those model functions: while the reads succeed, the
@@ -5355,9 +5359,10 @@ Notes:
   never a silent partial sum; no tool, schema, description or consent text
   moved, and the plugin's registry is unchanged
   (`exporter_plugin_athena --check`: `6f136c95b8ec`); items 2 and 3 not
-  touched; item 4 — no event; the tile's fail-open warning now reads
-  `get_outstanding_totals: failed`, names the exception's type only, never
-  its text, and a failed or truncated read now reaches it; item 5 not
+  touched; item 4 — no event; the tile's failure is logged by the route,
+  `dashboard: outstanding invoices stat failed`, and `get_agenda`'s
+  fail-open warning reads `get_outstanding_totals: failed` — each names
+  the exception's type only, never its text; item 5 not
   touched; item 6 — the dashboard template only, with compiled classes (no
   recompile), each link 48 px tall; item 7 — no index: one capped read of
   the whole invoices collection, with no filter and no order, instead of
@@ -5386,7 +5391,10 @@ Notes:
   On the web, the creation form's « Notes et conditions » becomes
   « Notes », without its « Conditions de paiement » box; so does the
   brouillon's correction form; and the sheet's « Conditions » row is gone,
-  on an older invoice too. A page opened before the deploy still posts the
+  on an older invoice too. The « Notes » box's hint now says they are
+  internal — « non imprimées sur la note d'honoraires » — since no field
+  of the note prints them (the lawyer's choice). A page opened before the
+  deploy still posts the
   field: it is ignored, never refused. Through the connector,
   `create_invoice`, `update_invoice` and `import_invoice` lose their
   `payment_terms` input, which their schemas

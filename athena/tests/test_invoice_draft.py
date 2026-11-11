@@ -839,3 +839,16 @@ def test_une_lecture_plantee_dans_un_gabarit_est_prise(name):
 @pytest.mark.parametrize("name", sorted(_INNOCENT_TEMPLATES))
 def test_une_mention_en_prose_dans_un_gabarit_ne_l_est_pas(name):
     assert _template_reads(_INNOCENT_TEMPLATES[name]) == [], name
+
+
+_INVOICE_TEMPLATES = pathlib.Path(__file__).resolve().parent.parent / "templates" / "invoices"
+
+
+@pytest.mark.parametrize("name", ["create.html", "draft_form.html"])
+def test_the_notes_hint_says_they_stay_internal(name):
+    """The lawyer's choice of 2026-11-11: an invoice's notes are internal —
+    no note d'honoraires field prints them — and both forms' hint says so,
+    never « imprimées sur la facture »."""
+    src = (_INVOICE_TEMPLATES / name).read_text(encoding="utf-8")
+    assert "Notes internes — non imprimées sur la note d'honoraires" in src
+    assert "imprimées sur la facture" not in src

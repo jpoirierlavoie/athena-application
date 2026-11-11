@@ -212,20 +212,22 @@ def test_get_billing_snapshot_counts_what_the_tile_counts(fake):
 
 
 def test_a_failed_sum_keeps_the_tile_and_its_links(client, monkeypatch):
-    """Fail-open, display only: should the sums raise all the same, the
-    route shows 0,00 $ — the tile's original posture — and both links stay,
-    the way to the lists."""
+    """Should the sums raise, the tile says « indisponible » on its total and
+    on both links — never a 0,00 $ that reads « nothing is owed » (the
+    lawyer's choice of 2026-11-11) — and both links stay, the way to the
+    lists."""
     def _boom(*_a, **_k):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals", _boom)
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict", _boom)
     tile = _tile(client)
     links = _links(tile)
     assert [parse_qs(urlsplit(h).query)["status"] for h, _ in links] == [
         ["envoyée"], ["en_retard"]]
-    assert [text for _, text in links] == [f"Envoyées {_money(0)}",
-                                           f"En retard {_money(0)}"]
-    assert " ".join(tile.split()).count(_money(0)) == 3
+    assert [text for _, text in links] == ["Envoyées indisponible",
+                                           "En retard indisponible"]
+    flat = " ".join(tile.split())
+    assert flat.count("indisponible") == 3 and _money(0) not in flat
 
 
 def _fail_invoice_queries(monkeypatch, fake, times: int) -> list:
@@ -257,14 +259,18 @@ def test_a_failed_read_shows_no_partial_figure_and_is_logged(client, fake, monke
     beside the late invoices' real figure — a 0 that only meant « unread » —
     and two showed 0,00 $ everywhere; neither logged anything."""
     failures = _fail_invoice_queries(monkeypatch, fake, times)
-    with caplog.at_level("WARNING", logger=invoice_model.logger.name):
+    with caplog.at_level("WARNING"):
         tile = _tile(client)
     assert failures                                     # the blip did happen
-    assert [text for _, text in _links(tile)] == [f"Envoyées {_money(0)}",
-                                                  f"En retard {_money(0)}"]
-    assert " ".join(tile.split()).count(_money(0)) == 3
-    assert [r.getMessage() for r in caplog.records if r.name == invoice_model.logger.name] == [
-        "get_outstanding_totals: failed: ServiceUnavailable"]
+    assert [text for _, text in _links(tile)] == ["Envoyées indisponible",
+                                                  "En retard indisponible"]
+    flat = " ".join(tile.split())
+    assert flat.count("indisponible") == 3 and _money(0) not in flat
+    # The route logs the failure, its type only; the fail-open twin of
+    # get_agenda never ran.
+    assert [r.getMessage() for r in caplog.records if r.name == dashboard_routes.logger.name] == [
+        "dashboard: outstanding invoices stat failed: ServiceUnavailable"]
+    assert not [r for r in caplog.records if r.name == invoice_model.logger.name]
 
 
 def test_the_links_follow_the_issued_statuses():
