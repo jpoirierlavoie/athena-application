@@ -5263,6 +5263,55 @@ Notes:
      as before — oldest first, the whole period.
   A rollback is the code alone.
 
+- **The Bibliothèque: Gabarits, Modèles and Documents (2026-11-11).**
+  « Bibliothèque » (icon `local_library`) replaces « Documents » and
+  « Gabarits » in the sidebar and in the phone's « Plus », where
+  « Documents » stood; it opens `/gabarits/`. One tab bar,
+  `templates/bibliotheque/_onglets.html`, links the three lists in the
+  lawyer's order: Gabarits, Modèles (`/modeles/`, new) and Documents. A
+  contract model is a template of the new kind `modele` (« Modèle (sans
+  champs) »), chosen at upload or set later in « Modifier » — that is how a
+  contract filed as a gabarit moves over, no migration: listed under
+  Modèles, never under Gabarits, downloaded and adapted in Word, never
+  filled — the generation popup never offers one and refuses it
+  (`generation_failed`, `kind_refused`), as `fill_gabarit` does. By the
+  lawyer's choice the connector sees modèles like any template:
+  `list_templates`' default list includes them, `kind="modele"` filters
+  them, and `create_template`, `update_template` and `begin_upload` accept
+  the kind. Change Impact: item 1 touched (the kind in the copied enum and
+  its descriptions, the refusal's sentence, plugin 1.9.0 — the registry
+  changed) — without the §11 train: a kind of template under writes
+  already consented, no new kind of data, no consent text; item 3 lightly
+  (the web refusal, one row of `GABARITS_PLACEHOLDERS.md`; the engines do
+  not change); item 4 (`kind_refused` on the web, registered); item 5
+  lightly (a GET-only browser blueprint at `/modeles`, under
+  `@login_required`, never CSRF-exempt, under no special-cased prefix);
+  item 6 (the icon subset regenerated from `sorted(MATERIAL_ICONS)` —
+  gstatic v383, 47 glyphs, `local_library` added —, the stylesheet
+  recompiled — the font's `url()` its only change — and rehashed,
+  `STATIC_CACHE` v18); items 2 and 7 not touched.
+  In order:
+  1. *The push.*
+  2. *On the phone* (375 px, light and dark) and on the desktop:
+     « Bibliothèque » in both menus between « Tâches » and « Réception »,
+     its icon drawn (not the word « local_library »), no « Documents » or
+     « Gabarits » entry left; the three tabs, the current one marked;
+     « Nouveau modèle » on Modèles (the round button on the phone).
+  3. *A real modèle*: upload a contract the lawyer KEEPS (a deleted test
+     modèle would leave a permanent journal row), download it and open it
+     in Word; if he wishes, switch a contract filed as a gabarit to
+     « Modèle » in « Modifier ».
+  4. *Plugin 1.9.0*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day. It follows 1.8.0: a 1.8.1 still
+     pending on another branch ships before it, or moves above 1.9.0.
+  5. *In claude.ai*, after reloading the connector's tools, the lawyer
+     asks for his contract models: `list_templates` with `kind="modele"`
+     lists the modèle; asking Claude to fill it is refused.
+  A rollback is the code alone, with plugin 1.8.0: on the old code a
+  modèle shows among the gabarits (its kind unknown there, `fill_gabarit`
+  still refuses it) and saving its form there turns it into a gabarit.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

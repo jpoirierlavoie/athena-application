@@ -7,9 +7,11 @@ screen; a name vendored but never used is dead weight.
 The woff2 was a SUPERSET from 2026-09-02 (dropping the chat took `forum`
 out of the vocabulary) until the regeneration of 2026-11-10, which added
 `monitoring` and rebuilt the subset from `sorted(MATERIAL_ICONS)`: exact
-again (utils/fonts/README.md). Nothing here reads the font's glyph table,
-so the agreement these tests enforce is between templates and the Python
-set.
+again (utils/fonts/README.md); the regeneration of 2026-11-11 added
+`local_library` (the « Bibliothèque » menu). Nothing here reads the font's
+glyph table, so the agreement these tests enforce is between templates and
+the Python set — and the file's SIZE is the one sign that the css2 API
+honoured the list (a misspelt name makes it serve the WHOLE font).
 """
 
 import os
@@ -78,6 +80,24 @@ def test_vendored_font_file_exists_and_matches_css():
     )
     # Licence sœur présente (Apache-2.0, pas OFL).
     assert list(VENDOR.glob("material-symbols-outlined-*Apache-2.0.txt"))
+
+
+#: The css2 API does not fail on a name it does not know: it drops the
+#: subset and serves the WHOLE font — 2,351,956 bytes measured 2026-09-11
+#: (utils/fonts/README.md). A subset weighs tens of KB.
+SUBSET_CEILING = 100_000
+WHOLE_FONT = 2_351_956
+
+
+def _is_a_subset(size: int) -> bool:
+    return size < SUBSET_CEILING
+
+
+def test_the_vendored_icon_font_is_a_subset_never_the_whole_font():
+    [font] = VENDOR.glob("material-symbols-outlined-*.woff2")
+    assert _is_a_subset(font.stat().st_size), font.stat().st_size
+    # The check catches what a typo in icon_names= would vendor.
+    assert not _is_a_subset(WHOLE_FONT)
 
 
 def test_ms_rejects_unknown_name_and_size():

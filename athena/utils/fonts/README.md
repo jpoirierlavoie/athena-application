@@ -42,13 +42,14 @@ for both families).
 Sous-ensemble variable (axes `opsz 20..48`, `wght 100..700`, `FILL 0..1` —
 GRAD exclu, app exclusivement claire) contenant EXACTEMENT les glyphes de
 `utils/icons.MATERIAL_ICONS`, épinglé par `tests/test_icons.py`. Téléchargé
-2026-11-10 via l'API css2 (User-Agent navigateur obligatoire), version
-gstatic **v383**, **46 glyphes** (ajout de `monitoring`, le menu
-« Finances ») — 26 660 octets :
+2026-11-11 via l'API css2 (User-Agent navigateur obligatoire), version
+gstatic **v383**, **47 glyphes** (ajout de `local_library`, le menu
+« Bibliothèque » ; `monitoring`, le menu « Finances », le 2026-11-10) —
+27 648 octets :
 
 | Fichier | SHA-256 |
 |---|---|
-| `material-symbols-outlined-v383-038db93f.woff2` | `038db93fb81e01c2ca2848ed8d7723da3da53bc399b1ef796ba6378a8657d0c3` |
+| `material-symbols-outlined-v383-fd3578ec.woff2` | `fd3578ec604362878c29c25a96c2f7ad7c743eb41356ecc95c2b540c60edb731` |
 
 URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
 
@@ -72,11 +73,10 @@ table de glyphes, et le fan-out complet coûterait six fichiers plus
 un littéral épinglé pour quelques centaines d'octets. Le retrait
 réel se fait à la prochaine régénération, celle-ci reconstruisant
 l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par construction.
-Surensemble courant : AUCUN — la régénération du 2026-11-10 (ajout de
-`monitoring`) a reconstruit l'URL depuis `sorted(MATERIAL_ICONS)`, donc à
-jour par construction : la table de ligatures du fichier, lue avec
-fontTools, porte les 46 noms (et leurs alias Google), et `forum` n'y est
-plus.
+Surensemble courant : AUCUN — la régénération du 2026-11-11 (ajout de
+`local_library`) a reconstruit l'URL depuis `sorted(MATERIAL_ICONS)`, donc
+à jour par construction : la table de ligatures du fichier, lue avec
+fontTools, porte les 47 noms (et leurs alias Google).
 
 ⚠ **La TAILLE du woff2 est la vérification du nom, et elle est binaire.**
 L'API css2 n'échoue PAS sur un nom qu'elle ne reconnaît pas : elle abandonne
@@ -86,7 +86,8 @@ noms valides rendent **2 548 octets**, quatre noms bidon en rendent
 glyphe manquant, il produit un actif de 2,3 Mo servi `immutable` pendant un
 an, et le glyphe s'affiche quand même (la police complète les a tous) — rien
 ne le signalerait. Après tout téléchargement : vérifier que le fichier pèse
-quelques dizaines de kilo-octets, jamais des mégaoctets.
+quelques dizaines de kilo-octets, jamais des mégaoctets — depuis le
+2026-11-11, `tests/test_icons.py` refuse un woff2 de 100 000 octets ou plus.
 
 Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v371-Apache-2.0.txt`.
 
