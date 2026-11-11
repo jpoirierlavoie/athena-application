@@ -251,7 +251,7 @@ def _get_quick_stats() -> dict:
         from models.invoice import get_outstanding_totals
         # ONE call for the whole tile: its total and each link's own figure
         # are the same sums, so they never disagree — and the total is what
-        # get_outstanding_total gives the connector.
+        # get_outstanding_total gives the connector's get_agenda.
         by_status = get_outstanding_totals()
         stats["outstanding_invoices"] = sum(by_status.values())
     except Exception as exc:

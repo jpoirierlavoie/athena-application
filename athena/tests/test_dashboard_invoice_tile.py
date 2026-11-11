@@ -5,10 +5,13 @@ invoices but linked to the « envoyée » list alone: the late invoices it
 counted sat one filter away, behind a link that hid them. It now shows the
 total and one link per issued status, each to that status' own filter
 (``/factures/?status=…``) with that status' own balance — one call,
-``invoice.get_outstanding_totals`` (the same two reads as before, one per
-issued status), whose sum ``get_outstanding_total`` gives the connector's
-``get_agenda``: the tile, its links and the connector cannot disagree. One link over both statuses was never an option: an ``in``
-filter with an ``order_by`` and a cursor fails on Firestore
+``invoice.get_outstanding_totals`` (one strict read of the invoices, summed
+per issued status), whose sum ``get_outstanding_total`` is the connector's
+``get_agenda`` figure: the tile, its links and ``get_agenda`` cannot
+disagree. The connector's other firm-wide « impayé », that of
+``get_billing_snapshot``, sums its own rows on the same pair; a test below
+pins the two equal. One link over both statuses was never an option: an
+``in`` filter with an ``order_by`` and a cursor fails on Firestore
 (``mcp/handlers.list_invoices``), and the list would swallow the failure
 into an empty page.
 
@@ -26,6 +29,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from google.api_core import exceptions as gexc
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ATHENA))
@@ -40,6 +44,7 @@ with mock.patch("google.cloud.firestore.Client"):
     # so that none of them keeps the mocked client.
     from models import dossier, hearing, protocol, task, time_entry, trust  # noqa: F401
     from models import invoice as invoice_model
+    import mcp.handlers as handlers  # get_billing_snapshot, the other « impayé »
     import routes.dashboard as dashboard_routes
     import routes.invoices as invoices_routes
     import routes.trust as trust_routes
@@ -148,7 +153,7 @@ def test_the_tile_shows_the_total_and_one_link_per_issued_status(client):
     assert _money(SENT + LATE) in " ".join(tile[total:tile.index("<a ")].split())
 
 
-def test_the_tile_and_the_connector_read_the_same_sums(client):
+def test_the_tile_and_get_agenda_read_the_same_sums(client):
     """One authority: the tile's figures are get_outstanding_totals', and its
     total is get_outstanding_total — the connector's get_agenda figure."""
     totals = invoice_model.get_outstanding_totals()
@@ -175,15 +180,45 @@ def test_each_link_opens_its_own_status_list(client):
         assert listed == numbers[status], (status, listed)
 
 
-@pytest.mark.parametrize("failing", ["get_outstanding_totals", "list_invoices"])
-def test_a_failed_sum_keeps_the_tile_and_its_links(client, monkeypatch, failing):
-    """Fail-open, display only: a failure inside the sums (or the route's
-    call itself) shows 0,00 $ — the tile's original posture — and both links
-    stay, the way to the lists."""
+def test_get_billing_snapshot_counts_what_the_tile_counts(fake):
+    """The connector serves a second firm-wide « impayé »:
+    get_billing_snapshot sums balance_of over its OWN read of the same pair,
+    so that its total matches the rows it lists, and never calls
+    get_outstanding_totals. Nothing but this test ties the two definitions:
+    on one store — every status, a payée set by hand with its balance left,
+    an imported late invoice, a partly paid one — they agree, so a change to
+    one that the other does not follow fails here, not in two contradictory
+    answers to claude.ai."""
+    extra = {
+        "inv-g": ("2030-117", "en_retard", 33000,
+                  {"imported": True, "legacy_ref": "facture:2030-117"}),
+        "inv-h": ("2031-F007", "payée", 4400, {}),
+    }
+    for iid, (number, status, due, more) in extra.items():
+        fake.seed(f"invoices/{iid}", {
+            "id": iid, "invoice_number": number, "status": status,
+            "dossier_id": "dos1", "dossier_file_number": "2031-004",
+            "dossier_title": "Exemple c. Témoin", "client_id": "c1",
+            "client_name": "Cliente Exemple",
+            "date": datetime(2031, 3, 9, tzinfo=UTC),
+            "due_date": datetime(2031, 4, 9, tzinfo=UTC),
+            "total": due, "retainer_applied": 0,
+            "amount_due": due, "amount_paid": 0, "etag": f"{iid}-e0", **more,
+        })
+    snapshot = handlers.get_billing_snapshot({})
+    assert snapshot["scope"] == "global"
+    assert snapshot["outstanding_cents"] == invoice_model.get_outstanding_total() == (
+        SENT + LATE + 33000)
+
+
+def test_a_failed_sum_keeps_the_tile_and_its_links(client, monkeypatch):
+    """Fail-open, display only: should the sums raise all the same, the
+    route shows 0,00 $ — the tile's original posture — and both links stay,
+    the way to the lists."""
     def _boom(*_a, **_k):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(invoice_model, failing, _boom)
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals", _boom)
     tile = _tile(client)
     links = _links(tile)
     assert [parse_qs(urlsplit(h).query)["status"] for h, _ in links] == [
@@ -191,6 +226,45 @@ def test_a_failed_sum_keeps_the_tile_and_its_links(client, monkeypatch, failing)
     assert [text for _, text in links] == [f"Envoyées {_money(0)}",
                                            f"En retard {_money(0)}"]
     assert " ".join(tile.split()).count(_money(0)) == 3
+
+
+def _fail_invoice_queries(monkeypatch, fake, times: int) -> list:
+    """The next *times* queries on ``invoices`` fail at the transport — a
+    Firestore blip, BELOW every model reader, where a real failure happens —
+    while every other read stays healthy (the house pattern of
+    tests/test_analyse_note_rules.py)."""
+    server = fake._fake_server
+    real = server.run_query
+    failures = []
+
+    def failing(request, metadata=None, **kwargs):
+        query = request["structured_query"]._pb
+        if any(f.collection_id == "invoices" for f in query.from_) and len(failures) < times:
+            failures.append(1)
+            raise gexc.ServiceUnavailable("injected query failure")
+        return real(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "run_query", failing)
+    return failures
+
+
+@pytest.mark.parametrize("times", [1, 2], ids=["the-first-invoice-read", "two-invoice-reads"])
+def test_a_failed_read_shows_no_partial_figure_and_is_logged(client, fake, monkeypatch,
+                                                            caplog, times):
+    """A Firestore blip on the invoices shows 0,00 $ on the total and on both
+    links, and is logged. Read once per status through list_invoices, which
+    swallows a failure into [], one failed read showed « Envoyées 0,00 $ »
+    beside the late invoices' real figure — a 0 that only meant « unread » —
+    and two showed 0,00 $ everywhere; neither logged anything."""
+    failures = _fail_invoice_queries(monkeypatch, fake, times)
+    with caplog.at_level("WARNING", logger=invoice_model.logger.name):
+        tile = _tile(client)
+    assert failures                                     # the blip did happen
+    assert [text for _, text in _links(tile)] == [f"Envoyées {_money(0)}",
+                                                  f"En retard {_money(0)}"]
+    assert " ".join(tile.split()).count(_money(0)) == 3
+    assert [r.getMessage() for r in caplog.records if r.name == invoice_model.logger.name] == [
+        "get_outstanding_totals: failed: ServiceUnavailable"]
 
 
 def test_the_links_follow_the_issued_statuses():

@@ -12,30 +12,43 @@ encaissement's cap (``models/admin_ledger._stage_create``,
 
 The sweep (section 1) reads every Python module of athena/ but its tests —
 never a virtualenv or a vendored tree kept inside it — and every template of
-both services. It refuses a subtraction between the stored ``amount_due``
-and ``amount_paid``, in either order (``paid − due`` is the balance
-negated), whatever the spelling:
+both services. It follows the SIGN with which each stored field enters a
+value, and refuses a value that takes one from the other — ``due − paid``,
+or ``paid − due``, the balance negated — whatever the spelling:
 
 * the field read as an attribute (``inv.amount_due``), a key
   (``inv["amount_due"]``), a call that names it (``inv.get("amount_due",
   0)``, ``getattr(inv, "amount_due")``, ``_cents(inv, "amount_due")``) or a
   bare name ``amount_due``;
 * wrapped in any call (``int``, ``float``, ``Decimal``, ``sum`` over rows, a
-  method of the read), a default (``or 0``), a conditional or a walrus — in
-  a template, a filter (``|int``) too;
+  method of the read), a default (``or 0``), a conditional, a walrus or an
+  ``await`` — in a template, a filter (``|int``) too;
 * bound first to a name, directly or through other names, a tuple included,
-  in the same function, an enclosing one or the module (in a template, by
-  ``{% set %}`` or ``{% with %}``). The analysis ignores order: a name bound
-  to the field anywhere in its scope counts everywhere in it;
-* with more terms (``due - written_off - paid``, ``due - (paid + fee)``),
-  as ``-=``, or as ``due + -paid``.
+  in the same function, an enclosing one or the module, or accumulated
+  (``due += …`` in a loop, ``balance -= paid``); in a template, by
+  ``{% set %}`` (its block form too), ``{% with %}`` or a namespace's
+  attribute (``{% set ns.due = ns.due + inv.amount_due %}``). The analysis
+  ignores order: a name bound to the field anywhere in its scope counts
+  everywhere in it;
+* among other terms, in any order (``due - written_off - paid``, ``w - paid
+  + due``, ``-paid + due``, ``due - (paid + fee)``), negated by a literal
+  factor (``paid * -1``), or summed as the items of a literal
+  (``sum([due, -paid])``).
 
-Out of its reach: a value another function returns, a comparison that never
-subtracts (``paid + amount > due``), and JavaScript. The financial
-statements' dated balance (``models/financial_statements._World.balance``)
-subtracts the REGISTERS' payments up to a day (``paid(iid, until)``), never
-the stored ``amount_paid``: their own derivation, by design, which the sweep
-rightly leaves alone.
+Out of its reach, by design — ``_OUT_OF_REACH_*`` below holds one example of
+each: a comparison, which subtracts nothing (``paid + amount > due``,
+``paid >= due``); a value carried by a container, an object's attribute or a
+``for`` target (``row["due"]``, ``self.due`` — a template's namespace
+excepted); a helper or a macro that receives the two fields as parameters
+(``_rest(due, paid)``), ``operator.sub``, and any value another function
+returns. Nor does it read JavaScript.
+
+Two derivations stand apart from it by design: the financial statements'
+dated balance (``models/financial_statements._World.balance``) subtracts the
+REGISTERS' payments up to a day (``paid(iid, until)``), never the stored
+``amount_paid``; and ``invoice.payment_updates`` caps a payment and flips
+« payée » by comparing the new ``amount_paid`` to ``amount_due``. The
+write-off lot changes each of them itself.
 
 Both scanners walk the language's own syntax tree (``ast``, Jinja's parser):
 no regular expression (CWE-1333). Section 2 runs on the shared fake
@@ -94,10 +107,47 @@ _JINJA = Environment(autoescape=True)
 # ══════════════════════════════════════════════════════════════════════
 # 1. The sweep
 # ══════════════════════════════════════════════════════════════════════
+#
+# A value's SIGNS are those with which a stored field enters it: {+1} for
+# ``due``, {-1} for ``-due`` or ``x - due``, both for ``due - due``, none
+# when the field does not enter it. A value takes one field from the other
+# when the two enter it with opposite signs.
+
+_NONE = frozenset()
+_PLUS = frozenset({1})
+
+
+def _flip(signs: frozenset) -> frozenset:
+    return frozenset(-sign for sign in signs)
+
+
+def _opposed(due: frozenset, paid: frozenset) -> bool:
+    """Whether the two fields enter one value with opposite signs."""
+    return (1 in due and -1 in paid) or (-1 in due and 1 in paid)
+
+
+def _fixed_point(pairs: list, field: str, inherited: dict, signs_of) -> dict:
+    """The signs of *field* each key carries: *inherited*'s, and what its
+    bindings ``(key, [value, …])`` add, to a fixed point (``a =
+    inv.amount_due; b = a`` binds both). A key's signs only grow, two at
+    most: the loop ends."""
+    env = dict(inherited)
+    while True:
+        changed = False
+        for key, values in pairs:
+            signs = env.get(key, _NONE).union(*(signs_of(v, field, env) for v in values))
+            if signs != env.get(key, _NONE):
+                env[key], changed = signs, True
+        if not changed:
+            return env
+
 
 # ── Python ─────────────────────────────────────────────────────────────
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+# A bare read: every other expression computes a value.
+_READS = (ast.Name, ast.Attribute, ast.Subscript, ast.Constant)
 
 
 def _spells(node: ast.AST, field: str) -> bool:
@@ -105,65 +155,66 @@ def _spells(node: ast.AST, field: str) -> bool:
     return isinstance(node, ast.Constant) and node.value == field
 
 
-def _reads(node: ast.AST, field: str, bound: frozenset) -> bool:
-    """Whether *node* evaluates to the stored *field* — read, wrapped, or a
-    name bound to such a read."""
+def _negative_literal(node: ast.AST) -> bool:
+    """``-1``, ``-100``: a factor whose sign the code spells. Any other
+    factor is taken as positive."""
+    return (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+            and type(node.operand.value) in (int, float))
+
+
+def _signs(node: ast.AST, field: str, env: dict) -> frozenset:
+    """The signs with which the stored *field* enters the value of *node* —
+    read, wrapped, or through a name *env* binds."""
     if isinstance(node, ast.Name):
-        return node.id == field or node.id in bound
+        return (_PLUS if node.id == field else _NONE) | env.get(node.id, _NONE)
     if isinstance(node, ast.Attribute):
-        return node.attr == field
+        return _PLUS if node.attr == field else _NONE
     if isinstance(node, ast.Subscript):
-        return _spells(node.slice, field)
+        return _PLUS if _spells(node.slice, field) else _NONE
     if isinstance(node, ast.Call):
         operands = [*node.args, *(k.value for k in node.keywords)]
         if isinstance(node.func, ast.Attribute):
             operands.append(node.func.value)        # a method of a read
-        return any(_spells(o, field) or _reads(o, field, bound) for o in operands)
+        if isinstance(node.func, ast.Name) and node.func.id == "sum":
+            # sum([due, -paid]): a literal's items are the sum's terms.
+            operands += [item for arg in node.args
+                         if isinstance(arg, (ast.List, ast.Tuple, ast.Set))
+                         for item in arg.elts]
+        named = _PLUS if any(_spells(o, field) for o in operands) else _NONE
+        return named.union(*(_signs(o, field, env) for o in operands))
     if isinstance(node, ast.BoolOp):
-        return any(_reads(v, field, bound) for v in node.values)
+        return _NONE.union(*(_signs(v, field, env) for v in node.values))
     if isinstance(node, ast.IfExp):
-        return _reads(node.body, field, bound) or _reads(node.orelse, field, bound)
-    if isinstance(node, (ast.NamedExpr, ast.Starred)):
-        return _reads(node.value, field, bound)
+        return _signs(node.body, field, env) | _signs(node.orelse, field, env)
+    if isinstance(node, (ast.NamedExpr, ast.Starred, ast.Await)):
+        return _signs(node.value, field, env)
     if isinstance(node, ast.UnaryOp):
-        return isinstance(node.op, ast.UAdd) and _reads(node.operand, field, bound)
+        if isinstance(node.op, ast.UAdd):
+            return _signs(node.operand, field, env)
+        if isinstance(node.op, ast.USub):
+            return _flip(_signs(node.operand, field, env))
+        return _NONE
     if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
-        return _reads(node.elt, field, bound)
+        return _signs(node.elt, field, env)
     if isinstance(node, ast.BinOp):
-        # A sum or a product carries either operand; a difference or a
-        # quotient its first (the second enters negated or inverted).
-        if isinstance(node.op, (ast.Add, ast.Mult)):
-            return _reads(node.left, field, bound) or _reads(node.right, field, bound)
-        return _reads(node.left, field, bound)
-    return False
-
-
-def _negates(node: ast.AST, field: str, bound: frozenset) -> bool:
-    return (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
-            and _reads(node.operand, field, bound))
-
-
-def _between(left, right, due: frozenset, paid: frozenset, *, negated=False) -> bool:
-    """Whether ``left − right`` — or ``left + right`` whose right side is a
-    negation — takes one stored field from the other, in either order."""
-    take = _negates if negated else _reads
-    return ((_reads(left, DUE, due) and take(right, PAID, paid))
-            or (_reads(left, PAID, paid) and take(right, DUE, due)))
-
-
-def _is_balance(node: ast.AST, due: frozenset, paid: frozenset) -> bool:
-    if isinstance(node, ast.BinOp):
-        if isinstance(node.op, ast.Sub):
-            return _between(node.left, node.right, due, paid)
+        left, right = _signs(node.left, field, env), _signs(node.right, field, env)
         if isinstance(node.op, ast.Add):
-            return (_between(node.left, node.right, due, paid, negated=True)
-                    or _between(node.right, node.left, due, paid, negated=True))
-    if isinstance(node, ast.AugAssign):
+            return left | right
         if isinstance(node.op, ast.Sub):
-            return _between(node.target, node.value, due, paid)
-        if isinstance(node.op, ast.Add):
-            return _between(node.target, node.value, due, paid, negated=True)
-    return False
+            return left | _flip(right)
+        if isinstance(node.op, ast.Mult):
+            return ((_flip(left) if _negative_literal(node.right) else left)
+                    | (_flip(right) if _negative_literal(node.left) else right))
+        if isinstance(node.op, (ast.Div, ast.FloorDiv)) and _negative_literal(node.right):
+            return _flip(left)
+        return left                     # a quotient, a remainder…: its first
+    return _NONE
+
+
+def _accumulated(node: ast.AugAssign) -> ast.BinOp:
+    """``x -= v`` as the value it gives ``x``: ``x - v``."""
+    return ast.BinOp(left=node.target, op=node.op, right=node.value)
 
 
 def _pairs(target: ast.AST, value: ast.AST) -> list:
@@ -177,10 +228,10 @@ def _pairs(target: ast.AST, value: ast.AST) -> list:
     return []
 
 
-def _bound(own: list, field: str, inherited: frozenset) -> frozenset:
-    """The names bound to a read of *field*: the enclosing scopes', and those
-    the scope's own assignments add, to a fixed point (``a =
-    inv.amount_due; b = a`` binds both)."""
+def _env(own: list, field: str, inherited: dict) -> dict:
+    """The signs of *field* each name of a scope carries: the enclosing
+    scopes', and those its own bindings add — ``=`` (a tuple included), an
+    annotated one, a walrus, an accumulation (``x += v``, ``x -= v``)."""
     pairs = []
     for node in own:
         if isinstance(node, ast.Assign):
@@ -188,14 +239,9 @@ def _bound(own: list, field: str, inherited: frozenset) -> frozenset:
                 pairs += _pairs(target, node.value)
         elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
             pairs += _pairs(node.target, node.value)
-    bound = set(inherited)
-    while True:
-        frozen = frozenset(bound)
-        new = {name for name, value in pairs
-               if name not in bound and _reads(value, field, frozen)}
-        if not new:
-            return frozen
-        bound |= new
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            pairs.append((node.target.id, _accumulated(node)))
+    return _fixed_point([(name, [value]) for name, value in pairs], field, inherited, _signs)
 
 
 def _own_nodes(scope: ast.AST) -> list:
@@ -210,24 +256,43 @@ def _own_nodes(scope: ast.AST) -> list:
     return own
 
 
-def python_findings(source: str, rel: str, *, allowed=(AUTHORITY,)) -> list[str]:
-    """Every subtraction between the two stored fields in one module, as
-    ``path:line (function): code`` — save in the *allowed* functions."""
-    found = []
+def _computed(node: ast.AST):
+    """The value *node* computes — an accumulation's included — or ``None``
+    for a bare read or a statement."""
+    if isinstance(node, ast.AugAssign):
+        return _accumulated(node)
+    if isinstance(node, ast.expr) and not isinstance(node, _READS):
+        return node
+    return None
 
-    def visit(scope, qualname: str, due: frozenset, paid: frozenset) -> None:
+
+def _outermost_first(node: ast.AST) -> tuple:
+    return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0),
+            -(getattr(node, "end_lineno", 0) or 0), -(getattr(node, "end_col_offset", 0) or 0))
+
+
+def python_findings(source: str, rel: str, *, allowed=(AUTHORITY,)) -> list[str]:
+    """Every line of one module that computes a value taking one stored field
+    from the other, as ``path:line (function): code`` — save in the
+    *allowed* functions."""
+    found = {}
+
+    def visit(scope, qualname: str, due: dict, paid: dict) -> None:
         own = _own_nodes(scope)
-        due, paid = _bound(own, DUE, due), _bound(own, PAID, paid)
-        for node in own:
-            if _is_balance(node, due, paid) and (rel, qualname) not in allowed:
-                found.append((node.lineno, f"{rel}:{node.lineno} "
-                              f"({qualname or '<module>'}): {ast.unparse(node)}"))
+        due, paid = _env(own, DUE, due), _env(own, PAID, paid)
+        # Outermost first: a line's finding quotes its whole expression.
+        for node in sorted(own, key=_outermost_first):
+            value = _computed(node)
+            if (value is not None and (rel, qualname) not in allowed
+                    and _opposed(_signs(value, DUE, due), _signs(value, PAID, paid))):
+                found.setdefault(node.lineno, f"{rel}:{node.lineno} "
+                                 f"({qualname or '<module>'}): {ast.unparse(node)}")
             if isinstance(node, _SCOPES):
                 name = getattr(node, "name", "<lambda>")
                 visit(node, f"{qualname}.{name}" if qualname else name, due, paid)
 
-    visit(ast.parse(source, filename=rel), "", frozenset(), frozenset())
-    return [text for _line, text in sorted(found)]
+    visit(ast.parse(source, filename=rel), "", {}, {})
+    return [found[line] for line in sorted(found)]
 
 
 def python_sources() -> list[pathlib.Path]:
@@ -244,95 +309,126 @@ def python_sources() -> list[pathlib.Path]:
 
 # ── Templates ──────────────────────────────────────────────────────────
 
+# A bare read, or an assignment's target: every other expression computes
+# a value.
+_J_READS = (nodes.Name, nodes.Getattr, nodes.Getitem, nodes.Const,
+            nodes.TemplateData, nodes.NSRef)
+
 
 def _j_spells(node, field: str) -> bool:
     return isinstance(node, nodes.Const) and node.value == field
 
 
-def _j_reads(node, field: str, bound: frozenset) -> bool:
-    """:func:`_reads` for a Jinja expression."""
-    if node is None:
-        return False
+def _j_key(node):
+    """The key a value is bound under: a name (``due``), or a namespace's
+    attribute (``ns.due``: set as ``{% set ns.due = … %}``, read as
+    ``ns.due``)."""
     if isinstance(node, nodes.Name):
-        return node.name == field or node.name in bound
+        return node.name
+    if isinstance(node, nodes.NSRef):
+        return f"{node.name}.{node.attr}"
+    if isinstance(node, nodes.Getattr) and isinstance(node.node, nodes.Name):
+        return f"{node.node.name}.{node.attr}"
+    return None
+
+
+def _j_negative_literal(node) -> bool:
+    return (isinstance(node, nodes.Neg) and isinstance(node.node, nodes.Const)
+            and type(node.node.value) in (int, float))
+
+
+def _j_signs(node, field: str, env: dict) -> frozenset:
+    """:func:`_signs` for a Jinja expression."""
+    if node is None:
+        return _NONE
+    if isinstance(node, nodes.Name):
+        return (_PLUS if node.name == field else _NONE) | env.get(node.name, _NONE)
     if isinstance(node, nodes.Getattr):
-        return node.attr == field
+        return (_PLUS if node.attr == field else _NONE) | env.get(_j_key(node), _NONE)
     if isinstance(node, nodes.Getitem):
-        return _j_spells(node.arg, field)
+        return _PLUS if _j_spells(node.arg, field) else _NONE
     if isinstance(node, (nodes.Call, nodes.Filter)):
         operands = [*node.args, *(k.value for k in node.kwargs)]
         if isinstance(node, nodes.Filter):
             operands.append(node.node)          # its input: inv.amount_due|int
+            if node.name == "sum" and isinstance(node.node, (nodes.List, nodes.Tuple)):
+                operands += node.node.items     # [due, -paid]|sum
         elif isinstance(node.node, nodes.Getattr):
             operands.append(node.node.node)     # a method of a read
-        return any(_j_spells(o, field) or _j_reads(o, field, bound) for o in operands)
-    if isinstance(node, (nodes.Or, nodes.And)):
-        return _j_reads(node.left, field, bound) or _j_reads(node.right, field, bound)
+        named = _PLUS if any(_j_spells(o, field) for o in operands) else _NONE
+        return named.union(*(_j_signs(o, field, env) for o in operands))
+    if isinstance(node, (nodes.Or, nodes.And, nodes.Add)):
+        return _j_signs(node.left, field, env) | _j_signs(node.right, field, env)
     if isinstance(node, nodes.CondExpr):
-        return _j_reads(node.expr1, field, bound) or _j_reads(node.expr2, field, bound)
+        return _j_signs(node.expr1, field, env) | _j_signs(node.expr2, field, env)
     if isinstance(node, nodes.Pos):
-        return _j_reads(node.node, field, bound)
-    if isinstance(node, (nodes.Add, nodes.Mul)):
-        return _j_reads(node.left, field, bound) or _j_reads(node.right, field, bound)
-    if isinstance(node, (nodes.Sub, nodes.Div, nodes.FloorDiv)):
-        return _j_reads(node.left, field, bound)
-    return False
-
-
-def _j_negates(node, field: str, bound: frozenset) -> bool:
-    return isinstance(node, nodes.Neg) and _j_reads(node.node, field, bound)
-
-
-def _j_between(left, right, due, paid, *, negated=False) -> bool:
-    take = _j_negates if negated else _j_reads
-    return ((_j_reads(left, DUE, due) and take(right, PAID, paid))
-            or (_j_reads(left, PAID, paid) and take(right, DUE, due)))
+        return _j_signs(node.node, field, env)
+    if isinstance(node, nodes.Neg):
+        return _flip(_j_signs(node.node, field, env))
+    if isinstance(node, nodes.Sub):
+        return _j_signs(node.left, field, env) | _flip(_j_signs(node.right, field, env))
+    if isinstance(node, nodes.Mul):
+        left, right = _j_signs(node.left, field, env), _j_signs(node.right, field, env)
+        return ((_flip(left) if _j_negative_literal(node.right) else left)
+                | (_flip(right) if _j_negative_literal(node.left) else right))
+    if isinstance(node, (nodes.Div, nodes.FloorDiv)):
+        left = _j_signs(node.left, field, env)
+        return _flip(left) if _j_negative_literal(node.right) else left
+    if isinstance(node, (nodes.Mod, nodes.Pow)):
+        return _j_signs(node.left, field, env)
+    return _NONE
 
 
 def _j_pairs(target, value) -> list:
-    if isinstance(target, nodes.Name):
-        return [(target.name, value)]
+    """``(key, [value])`` for each name or namespace attribute *target* binds
+    to a part of *value*."""
+    if isinstance(target, (nodes.Name, nodes.NSRef)):
+        return [(_j_key(target), [value])]
     if (isinstance(target, nodes.Tuple) and isinstance(value, nodes.Tuple)
             and len(target.items) == len(value.items)):
         return [pair for t, v in zip(target.items, value.items) for pair in _j_pairs(t, v)]
     return []
 
 
-def _j_bound(tree, field: str) -> frozenset:
-    """The names a template binds to a read of *field* (``{% set %}``,
-    ``{% with %}``), to a fixed point — the whole template is one scope."""
+def _j_printed(block) -> list:
+    """The expressions a ``{% set x %}…{% endset %}`` block prints: the
+    value it binds."""
+    outputs = [n for n in block.body if isinstance(n, nodes.Output)]
+    outputs += [o for n in block.body for o in n.find_all(nodes.Output)]
+    return [e for o in outputs for e in o.nodes if not isinstance(e, nodes.TemplateData)]
+
+
+def _j_env(tree, field: str) -> dict:
+    """The signs of *field* each name — or namespace attribute — of a
+    template carries: ``{% set %}`` (a tuple, a block, a namespace's
+    attribute included), ``{% with %}``, and a ``namespace(…)``'s own
+    arguments. The whole template is one scope."""
     pairs = []
-    for node in tree.find_all((nodes.Assign, nodes.With)):
+    for node in tree.find_all((nodes.Assign, nodes.AssignBlock, nodes.With)):
         if isinstance(node, nodes.Assign):
             pairs += _j_pairs(node.target, node.node)
+            call = node.node
+            if (isinstance(node.target, nodes.Name) and isinstance(call, nodes.Call)
+                    and isinstance(call.node, nodes.Name) and call.node.name == "namespace"):
+                pairs += [(f"{node.target.name}.{k.key}", [k.value]) for k in call.kwargs]
+        elif isinstance(node, nodes.AssignBlock):
+            if isinstance(node.target, (nodes.Name, nodes.NSRef)):
+                pairs.append((_j_key(node.target), _j_printed(node)))
         else:
             for target, value in zip(node.targets, node.values):
                 pairs += _j_pairs(target, value)
-    bound: set = set()
-    while True:
-        frozen = frozenset(bound)
-        new = {name for name, value in pairs
-               if name not in bound and _j_reads(value, field, frozen)}
-        if not new:
-            return frozen
-        bound |= new
+    return _fixed_point(pairs, field, {}, _j_signs)
 
 
 def template_findings(source: str, name: str) -> list[str]:
-    """Every subtraction between the two stored fields in one template, as
-    ``path:line``."""
+    """Every line of one template that computes a value taking one stored
+    field from the other, as ``path:line``."""
     tree = _JINJA.parse(source)
-    due, paid = _j_bound(tree, DUE), _j_bound(tree, PAID)
-    found = []
-    for node in tree.find_all((nodes.Sub, nodes.Add)):
-        if isinstance(node, nodes.Sub):
-            hit = _j_between(node.left, node.right, due, paid)
-        else:
-            hit = (_j_between(node.left, node.right, due, paid, negated=True)
-                   or _j_between(node.right, node.left, due, paid, negated=True))
-        if hit:
-            found.append(f"{name}:{node.lineno}")
-    return sorted(found)
+    due, paid = _j_env(tree, DUE), _j_env(tree, PAID)
+    lines = {node.lineno for node in tree.find_all(nodes.Expr)
+             if not isinstance(node, _J_READS)
+             and _opposed(_j_signs(node, DUE, due), _j_signs(node, PAID, paid))}
+    return [f"{name}:{line}" for line in sorted(lines)]
 
 
 def template_sources() -> list[pathlib.Path]:
@@ -422,6 +518,8 @@ _PLANTED_PYTHON = {
     "method_of_a_read": ("def f(inv):\n"
                          "    return Decimal(inv['amount_due']).quantize(Q) - inv['amount_paid']\n"),
     "conditional": "def f(inv, x):\n    return (inv.amount_due if x else 0) - inv.amount_paid\n",
+    "awaited": ("async def f(inv):\n"
+                "    return (await cents(inv['amount_due'])) - inv['amount_paid']\n"),
     "bare_names": "def f(amount_due, amount_paid):\n    return amount_due - amount_paid\n",
     "bound_names": ("def f(inv):\n    due = int(inv['amount_due'])\n"
                     "    paid = int(inv['amount_paid'])\n    return due - paid\n"),
@@ -435,17 +533,40 @@ _PLANTED_PYTHON = {
         "def f(inv):\n    due = inv['amount_due']\n"
         "    def g():\n        return due - inv['amount_paid']\n    return g()\n"),
     "bound_at_module_level": "DUE = INV['amount_due']\ndef f(inv):\n    return DUE - inv['amount_paid']\n",
+    "bound_negated": ("def f(inv):\n    credit = -inv['amount_paid']\n"
+                      "    return inv['amount_due'] + credit\n"),
     "augmented": ("def f(inv):\n    balance = inv['amount_due']\n"
                   "    balance -= inv['amount_paid']\n    return balance\n"),
     "augmented_negated": ("def f(inv):\n    balance = inv['amount_due']\n"
                           "    balance += -inv['amount_paid']\n    return balance\n"),
+    # Accumulators, the house's style for totals (get_invoice_summary).
+    "accumulated": ("def f(inv):\n    balance = 0\n"
+                    "    balance += int(inv.get('amount_due', 0))\n"
+                    "    balance -= int(inv.get('amount_paid', 0))\n    return balance\n"),
+    "accumulated_paid_first": ("def f(inv):\n    balance = 0\n"
+                               "    balance -= inv['amount_paid']\n"
+                               "    balance += inv['amount_due']\n    return balance\n"),
+    "accumulated_in_a_loop": (
+        "def summary(rows):\n    total_due = total_paid = 0\n    for inv in rows:\n"
+        "        total_due += int(inv.get('amount_due', 0))\n"
+        "        total_paid += int(inv.get('amount_paid', 0))\n"
+        "    return {'total_outstanding': total_due - total_paid}\n"),
+    "accumulated_by_a_product": ("def f(inv):\n    x = 1\n    x *= inv['amount_due']\n"
+                                 "    return x - inv['amount_paid']\n"),
     "more_terms_left": "def f(inv, w):\n    return inv.amount_due - w - inv.amount_paid\n",
     "more_terms_right": "def f(inv, w):\n    return inv.amount_due - (inv.amount_paid + w)\n",
+    "more_terms_in_any_order": "def f(inv, w):\n    return w - inv.amount_paid + inv.amount_due\n",
+    "negated_among_terms": "def f(inv, w):\n    return -inv.amount_paid + w + inv.amount_due\n",
     "plus_negated": "def f(inv):\n    return inv.amount_due + -inv.amount_paid\n",
     "negated_first": "def f(inv):\n    return -inv.amount_paid + inv.amount_due\n",
+    "negative_literal_factor": "def f(inv):\n    return inv.amount_due + inv.amount_paid * -1\n",
     "reversed": "def f(inv):\n    return inv['amount_paid'] - inv['amount_due']\n",
     "summed_over_rows": ("def f(rows):\n    return (sum(r['amount_due'] for r in rows)\n"
                          "            - sum(r['amount_paid'] for r in rows))\n"),
+    "sum_of_a_literal": "def f(inv):\n    return sum([inv['amount_due'], -inv['amount_paid']])\n",
+    "in_an_f_string": "def f(inv):\n    return f'{inv.amount_due - inv.amount_paid}'\n",
+    "in_a_dict_comprehension": ("def f(inv, keys):\n"
+                                "    return {k: inv['amount_due'] - inv['amount_paid'] for k in keys}\n"),
     "in_a_lambda": "KEY = lambda inv: inv['amount_due'] - inv['amount_paid']\n",
     "in_a_method": ("class C:\n    def balance(self):\n"
                     "        return self.inv.amount_due - self.inv.amount_paid\n"),
@@ -468,10 +589,44 @@ _INNOCENT_PYTHON = {
     "a_new_payment_against_the_due": ("def f(inv, amount):\n"
                                       "    due = int(inv.get('amount_due', 0))\n"
                                       "    return amount - due\n"),
+    "a_payment_accumulated_then_compared": ("def f(inv, amount):\n"
+                                            "    paid = int(inv.get('amount_paid', 0))\n"
+                                            "    paid += amount\n"
+                                            "    return paid > int(inv.get('amount_due', 0))\n"),
+    "a_new_payment_against_an_accumulated_due": ("def f(inv, amount):\n    due = 0\n"
+                                                 "    due += int(inv.get('amount_due', 0))\n"
+                                                 "    return amount - due\n"),
+    "both_fields_added": "def f(inv):\n    return int(inv['amount_due']) + int(inv['amount_paid'])\n",
+    "both_fields_negated": "def f(inv):\n    return -inv['amount_due'] - inv['amount_paid']\n",
+    "rows_side_by_side": ("def f(inv):\n"
+                          "    return [_row('Dû', inv['amount_due']), _row('Payé', -inv['amount_paid'])]\n"),
     "names_bound_in_a_sibling_function": (
         "def a(inv):\n    due = inv['amount_due']\n    return due\n"
         "def b(due, paid):\n    return due - paid\n"),
     "prose": "HELP = 'amount_due - amount_paid'\n",
+}
+
+# The module docstring's « Out of its reach », one example each — by design.
+_OUT_OF_REACH_PYTHON = {
+    "a_comparison_cap": (
+        "def _stage_create(invoice, amount):\n"
+        "    if amount + int(invoice.get('amount_paid', 0)) > int(invoice.get('amount_due', 0)):\n"
+        "        raise Abort\n"),
+    "a_settled_flag": ("def f(inv):\n"
+                       "    return int(inv.get('amount_paid', 0)) >= int(inv.get('amount_due', 0))\n"),
+    "a_container": ("def f(inv):\n    row = {'due': inv['amount_due'], 'paid': inv['amount_paid']}\n"
+                    "    return row['due'] - row['paid']\n"),
+    "an_attribute": ("class C:\n    def __init__(self, inv):\n"
+                     "        self.due = inv['amount_due']\n        self.paid = inv['amount_paid']\n"
+                     "    def balance(self):\n        return self.due - self.paid\n"),
+    "a_for_target": ("def f(rows):\n"
+                     "    for due, paid in ((r['amount_due'], r['amount_paid']) for r in rows):\n"
+                     "        yield due - paid\n"),
+    "a_helper_s_parameters": ("def _rest(due, paid):\n    return due - paid\n"
+                              "def f(inv):\n    return _rest(inv['amount_due'], inv['amount_paid'])\n"),
+    "operator_sub": ("def f(inv):\n"
+                     "    return operator.sub(inv['amount_due'], inv['amount_paid'])\n"),
+    "another_function_s_values": "def f(inv):\n    return due_of(inv) - paid_of(inv)\n",
 }
 
 
@@ -485,6 +640,13 @@ def test_an_innocent_python_line_is_not(name):
     assert python_findings(_INNOCENT_PYTHON[name], "models/planted.py") == [], name
 
 
+@pytest.mark.parametrize("name", sorted(_OUT_OF_REACH_PYTHON))
+def test_a_documented_python_limit_is_not_caught(name):
+    """The limits are written, and pinned: a scanner that learns one of these
+    moves it to _PLANTED_PYTHON and drops it from the module docstring."""
+    assert python_findings(_OUT_OF_REACH_PYTHON[name], "models/planted.py") == [], name
+
+
 _PLANTED_TEMPLATES = {
     "attribute": "{{ inv.amount_due - inv.amount_paid }}",
     "filtered": "{{ (inv.amount_due|int) - (inv.amount_paid|int) }}",
@@ -495,18 +657,44 @@ _PLANTED_TEMPLATES = {
     "set": "{% set due = inv.amount_due %}{% set paid = inv.amount_paid %}{{ due - paid }}",
     "set_through_names": "{% set a = inv.amount_due %}{% set b = a %}{{ b - inv.amount_paid }}",
     "set_tuple": "{% set due, paid = inv.amount_due, inv.amount_paid %}{{ due - paid }}",
+    "set_block": "{% set due %}{{ inv.amount_due }}{% endset %}{{ due|int - inv.amount_paid }}",
+    "set_negated": "{% set credit = -inv.amount_paid %}{{ inv.amount_due + credit }}",
     "with": "{% with due = inv.amount_due, paid = inv.amount_paid %}{{ due - paid }}{% endwith %}",
+    # A namespace: the one way a template accumulates across a loop.
+    "namespace_accumulated": (
+        "{% set ns = namespace(due=0, paid=0) %}{% for inv in invoices %}"
+        "{% set ns.due = ns.due + inv.amount_due %}{% set ns.paid = ns.paid + inv.amount_paid %}"
+        "{% endfor %}{{ ns.due - ns.paid }}"),
+    "namespace_initialised": "{% set ns = namespace(due=inv.amount_due) %}{{ ns.due - inv.amount_paid }}",
     "inside_a_tag": "{% if inv.amount_due - inv.amount_paid > 0 %}x{% endif %}",
     "more_terms": "{{ inv.amount_due - (inv.amount_paid + fee) }}",
+    "more_terms_in_any_order": "{{ w - inv.amount_paid + inv.amount_due }}",
     "plus_negated": "{{ inv.amount_due + -inv.amount_paid }}",
+    "negative_literal_factor": "{{ inv.amount_due + inv.amount_paid * -1 }}",
     "reversed": "{{ inv.amount_paid - inv.amount_due }}",
+    "summed_over_rows": "{{ rows|sum(attribute='amount_due') - rows|sum(attribute='amount_paid') }}",
+    "sum_of_a_literal": "{{ [inv.amount_due, -inv.amount_paid]|sum }}",
 }
 
 _INNOCENT_TEMPLATES = {
     "the_route_value": "{{ inv._balance|cents_fr }}",
     "another_field": "{{ inv.amount_due - inv.retainer_applied }}",
     "printed_side_by_side": "{{ inv.amount_due|cents_fr }} − {{ inv.amount_paid|cents_fr }}",
+    "both_fields_added": "{{ inv.amount_due + inv.amount_paid }}",
+    "a_namespace_of_another_field": (
+        "{% set ns = namespace(held=0) %}{% for i in invoices %}"
+        "{% set ns.held = ns.held + i.retainer_applied %}{% endfor %}"
+        "{{ inv.amount_due - ns.held }}"),
     "prose": "amount_due - amount_paid",
+}
+
+# The module docstring's « Out of its reach », one example each — by design.
+_OUT_OF_REACH_TEMPLATES = {
+    "a_comparison": "{% if inv.amount_paid >= inv.amount_due %}payée{% endif %}",
+    "a_container": "{% set row = {'due': inv.amount_due} %}{{ row['due'] - inv.amount_paid }}",
+    "a_for_target": "{% for due, paid in [(inv.amount_due, inv.amount_paid)] %}{{ due - paid }}{% endfor %}",
+    "a_macro_s_parameters": ("{% macro rest(due, paid) %}{{ due - paid }}{% endmacro %}"
+                             "{{ rest(inv.amount_due, inv.amount_paid) }}"),
 }
 
 
@@ -518,6 +706,13 @@ def test_a_planted_template_balance_is_caught(name):
 @pytest.mark.parametrize("name", sorted(_INNOCENT_TEMPLATES))
 def test_an_innocent_template_is_not(name):
     assert template_findings(_INNOCENT_TEMPLATES[name], "templates/planted.html") == [], name
+
+
+@pytest.mark.parametrize("name", sorted(_OUT_OF_REACH_TEMPLATES))
+def test_a_documented_template_limit_is_not_caught(name):
+    """The limits are written, and pinned: a scanner that learns one of these
+    moves it to _PLANTED_TEMPLATES and drops it from the module docstring."""
+    assert template_findings(_OUT_OF_REACH_TEMPLATES[name], "templates/planted.html") == [], name
 
 
 # ══════════════════════════════════════════════════════════════════════

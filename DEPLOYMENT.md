@@ -5320,29 +5320,46 @@ Notes:
   radiation, intérêts ». An invoice's live balance has ONE authority,
   `invoice.balance_of`: the two caps that restated its subtraction — the
   administration encaissement's (`encaissement_excède_solde`) and the
-  trust fee payment's (`virement_excède_facture`) — now call it, so that
-  the write-offs of a later lot change every reader at once.
+  trust fee payment's (`virement_excède_facture`) — now call it, so that a
+  later lot's write-offs reach every caller of `balance_of` at once. Two
+  derivations keep their own, which the write-off lot changes itself:
+  `invoice.payment_updates`' cap and « payée » flip, which compare the new
+  `amount_paid` to `amount_due`, and the financial statements' dated
+  balance, built on the registers' payments.
   `tests/test_invoice_balance_authority.py` sweeps every module and
-  template for a copy, whatever its spelling, and proves that both caps
-  obey `balance_of`; their behaviour is unchanged, to the cent. The
-  dashboard tile « Factures impayées » summed the envoyée AND en_retard
-  balances but linked to the envoyée list alone: it now shows the total
-  and two links, « Envoyées » and « En retard », each to its own filtered
-  list (`/factures/?status=…`) with its own balance — one call,
-  `invoice.get_outstanding_totals` (per status, the same two reads as
-  before), whose sum `get_outstanding_total` stays the figure of the
-  connector's `get_agenda`. Change Impact: item 1 — touched only through
-  those model functions, and the connector's figures are unchanged:
-  `get_agenda`'s outstanding total is the same sum of the same reads, and
-  `record_admin_entry` and a trust fee payment cap on the same balance; no
-  tool, schema, description or consent text moved, and the plugin's
-  registry is unchanged (`exporter_plugin_athena --check`:
-  `6f136c95b8ec`); items 2, 3 and 7 not touched (no new query: the same
-  two reads of the invoices); item 4 — no event; the tile's fail-open
-  warning now reads `get_outstanding_totals: failed` and names the
-  exception's type only, never its text; item 5 not touched; item 6 — the
-  dashboard template only, with compiled classes (no recompile), each link
-  48 px tall. In order:
+  template for a value that takes one stored field from the other,
+  whatever its spelling — wrapped, bound to names, accumulated (`+=`,
+  `-=`), among other terms, in a template's `{% set %}` blocks and
+  namespaces — and its docstring names what it cannot see, each limit
+  pinned by an example: a comparison, a value carried by a container, an
+  attribute or a `for` target, a helper's parameters or another function's
+  value; nor does it read JavaScript. It also proves that both caps obey
+  `balance_of`; their behaviour is unchanged, to the cent. The dashboard
+  tile « Factures impayées » summed the envoyée AND en_retard balances but
+  linked to the envoyée list alone: it now shows the total and two links,
+  « Envoyées » and « En retard », each to its own filtered list
+  (`/factures/?status=…`) with its own balance — one call,
+  `invoice.get_outstanding_totals`, which sums both statuses from ONE
+  strict read of the invoices (the two fail-open reads it replaces could
+  fail apart: one status' real figure beside a « 0,00 $ » that only meant
+  « unread », with nothing logged), and whose sum `get_outstanding_total`
+  stays the figure of the connector's `get_agenda`. The connector's
+  `get_billing_snapshot` sums its own rows on the same pair, pinned equal
+  by `tests/test_dashboard_invoice_tile.py`. Change Impact: item 1 — touched
+  only through those model functions: while the reads succeed, the
+  connector's figures are unchanged (`get_agenda`'s outstanding total is
+  the same sum, and `record_admin_entry` and a trust fee payment cap on the
+  same balance); on a failed read, `get_agenda`'s total is 0 and logged,
+  never a silent partial sum; no tool, schema, description or consent text
+  moved, and the plugin's registry is unchanged
+  (`exporter_plugin_athena --check`: `6f136c95b8ec`); items 2 and 3 not
+  touched; item 4 — no event; the tile's fail-open warning now reads
+  `get_outstanding_totals: failed`, names the exception's type only, never
+  its text, and a failed or truncated read now reaches it; item 5 not
+  touched; item 6 — the dashboard template only, with compiled classes (no
+  recompile), each link 48 px tall; item 7 — no index: one capped read of
+  the whole invoices collection, with no filter and no order, instead of
+  the two the tile made. In order:
   1. *The push* — no index, no connector train.
   2. *On the phone (375 px) and the desktop*: the dashboard's tile shows
      the unpaid total and, under it, « Envoyées » and « En retard » with

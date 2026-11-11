@@ -132,6 +132,7 @@ if not _module_available("firebase_admin"):
 # (models/__init__.py instantiates the client at import time).
 with mock.patch("google.cloud.firestore.Client"):
     import models.dossier as dossier_model
+    import models.full_reads as full_reads
     import models.hearing as hearing_model
     import models.invoice as invoice_model
     import models.protocol as protocol_model
@@ -304,6 +305,19 @@ def test_count_open_failure_returns_zero(monkeypatch):
     assert dossier_model.count_open() == 0
 
 
+def _invoice_rows(monkeypatch, rows: list[dict]) -> _ChainQueryStub:
+    """The invoices collection holds *rows*: one stream serves every read.
+
+    Lot 0's review rewrote the outstanding-total tests onto the store
+    deliberately: they stubbed ``list_invoices``, which the sums no longer
+    call (one strict read, ``list_invoices_strict``) — nothing they pinned
+    is relaxed."""
+    stub = _ChainQueryStub(stream_result=[
+        _FakeSnap(dict(row), snap_id=f"inv{i}") for i, row in enumerate(rows)])
+    monkeypatch.setattr(invoice_model, "db", stub)
+    return stub
+
+
 def test_outstanding_total_sums_the_LIVE_balance(monkeypatch):
     """Σ (amount_due − amount_paid), jamais Σ amount_due : ce dernier est figé
     à l'émission et reste à pleine valeur sur une facture réglée.
@@ -311,84 +325,114 @@ def test_outstanding_total_sums_the_LIVE_balance(monkeypatch):
     Somme Python bornée, plus d'agrégation Firestore — deux agrégations
     exigeraient un index (status, amount_due, amount_paid) inexistant, dont
     l'absence rend 0 EN SILENCE, indiscernable de « rien n'est dû »."""
-    par_statut = {
-        "envoyée": [{"amount_due": 114975, "amount_paid": 0},
-                    {"amount_due": 200000, "amount_paid": 50000}],
-        "en_retard": [{"amount_due": 100000, "amount_paid": 100000}],
-    }
-    monkeypatch.setattr(invoice_model, "list_invoices",
-                        lambda status_filter=None, **kw: par_statut.get(status_filter, []))
+    _invoice_rows(monkeypatch, [
+        {"status": "envoyée", "amount_due": 114975, "amount_paid": 0},
+        {"status": "envoyée", "amount_due": 200000, "amount_paid": 50000},
+        {"status": "en_retard", "amount_due": 100000, "amount_paid": 100000},
+    ])
     result = invoice_model.get_outstanding_total()
     assert result == 114975 + 150000 + 0
     assert isinstance(result, int)
 
 
 def test_outstanding_total_ignores_the_unissued(monkeypatch):
-    """Un brouillon ne doit rien, une annulée non plus : la fonction ne
-    demande QUE les deux statuts émis."""
-    demandes = []
-
-    def _liste(status_filter=None, **kw):
-        demandes.append(status_filter)
-        return []
-    monkeypatch.setattr(invoice_model, "list_invoices", _liste)
-    invoice_model.get_outstanding_total()
-    assert demandes == list(invoice_model._ISSUED_STATUSES)
+    """Un brouillon ne doit rien, une annulée non plus, une payée est
+    réglée : seuls les deux statuts émis comptent. Chaque statut connu porte
+    ici une facture au même solde, et seules les deux émises s'additionnent."""
+    _invoice_rows(monkeypatch, [
+        {"status": status, "amount_due": 1000, "amount_paid": 0}
+        for status in invoice_model.VALID_STATUSES])
+    assert invoice_model.get_outstanding_totals() == {"envoyée": 1000, "en_retard": 1000}
+    assert invoice_model.get_outstanding_total() == 2000
 
 
-def test_outstanding_total_failure_returns_zero(monkeypatch):
+def test_outstanding_total_failure_returns_zero(monkeypatch, caplog):
+    """Fail-open, display only — and a failed read REACHES the logged branch:
+    through list_invoices, which swallows a failure into [], it answered 0
+    with nothing logged."""
     monkeypatch.setattr(invoice_model, "db", _ExplodingDb())
-    assert invoice_model.get_outstanding_total() == 0
+    with caplog.at_level("WARNING", logger=invoice_model.logger.name):
+        assert invoice_model.get_outstanding_total() == 0
+    assert [r.getMessage() for r in caplog.records] == [
+        "get_outstanding_totals: failed: RuntimeError"]
 
 
 def test_outstanding_totals_sum_the_live_balance_per_issued_status(monkeypatch):
     """Lot 0: the per-status sums the dashboard tile shows beside each of its
     two links — Σ balance_of per issued status, in _ISSUED_STATUSES' order."""
-    by_status = {
-        "envoyée": [{"amount_due": 114975, "amount_paid": 0},
-                    {"amount_due": 80000, "amount_paid": 30000}],
-        "en_retard": [{"amount_due": 57490, "amount_paid": 7490}],
-        "payée": [{"amount_due": 20000, "amount_paid": 0}],   # never asked
-    }
-    monkeypatch.setattr(invoice_model, "list_invoices",
-                        lambda status_filter=None, **kw: by_status.get(status_filter, []))
+    _invoice_rows(monkeypatch, [
+        {"status": "envoyée", "amount_due": 114975, "amount_paid": 0},
+        {"status": "envoyée", "amount_due": 80000, "amount_paid": 30000},
+        {"status": "en_retard", "amount_due": 57490, "amount_paid": 7490},
+        {"status": "payée", "amount_due": 20000, "amount_paid": 0},   # never counted
+    ])
     totals = invoice_model.get_outstanding_totals()
     assert totals == {"envoyée": 164975, "en_retard": 50000}
     assert list(totals) == list(invoice_model._ISSUED_STATUSES)
     assert all(type(v) is int for v in totals.values())
 
 
+def test_outstanding_totals_come_from_one_strict_read(monkeypatch):
+    """ONE read serves every status, and a strict one: list_invoices, read
+    once per status, swallowed a failure into [] — so one status could show
+    0 for « unread » beside the other's real figure, with nothing logged."""
+    stub = _invoice_rows(monkeypatch, [
+        {"status": "envoyée", "amount_due": 500, "amount_paid": 0},
+        {"status": "en_retard", "amount_due": 700, "amount_paid": 0}])
+
+    def _fail_open_reader(*_a, **_kw):
+        raise AssertionError("the sums read through list_invoices, which fails open")
+
+    monkeypatch.setattr(invoice_model, "list_invoices", _fail_open_reader)
+    assert invoice_model.get_outstanding_totals() == {"envoyée": 500, "en_retard": 700}
+    assert [call[0] for call in stub.calls].count("stream") == 1
+
+
 def test_outstanding_total_is_the_sum_of_the_per_status_totals(monkeypatch):
-    """One authority: the connector's figure (get_agenda) is the sum of
-    get_outstanding_totals — never a read or a rule of its own."""
-    def _no_read(**_kw):
-        raise AssertionError("get_outstanding_total read the store itself")
+    """The connector's get_agenda figure is the sum of get_outstanding_totals
+    — never a read or a rule of its own."""
+    class _NoRead:
+        def collection(self, *_a, **_kw):
+            raise AssertionError("get_outstanding_total read the store itself")
 
     monkeypatch.setattr(invoice_model, "get_outstanding_totals",
                         lambda: {"envoyée": 1234, "en_retard": 5678})
-    monkeypatch.setattr(invoice_model, "list_invoices", _no_read)
+    monkeypatch.setattr(invoice_model, "db", _NoRead())
     assert invoice_model.get_outstanding_total() == 6912
 
 
-@pytest.mark.parametrize("rows", [
-    pytest.param(None, id="the-read-raises"),
-    pytest.param([{"amount_due": "1 234,56", "amount_paid": 0}], id="a-corrupt-amount"),
-])
-def test_outstanding_totals_fail_open_to_zero(monkeypatch, caplog, rows):
-    """Fail-open, display only — the tile's original posture: every status
-    at 0, and the total with them. The warning names the exception's type,
-    never its text, which can quote a stored value."""
-    def _list(status_filter=None, **_kw):
-        if rows is None:
-            raise ValueError("invalid literal for int(): '1 234,56'")
-        return rows if status_filter == "en_retard" else [{"amount_due": 500, "amount_paid": 0}]
+class _FailingStream(_ChainQueryStub):
+    """A query whose stream fails, its message quoting a stored value."""
 
-    monkeypatch.setattr(invoice_model, "list_invoices", _list)
+    def stream(self, *args, **kwargs):
+        raise RuntimeError("stream failed near '1 234,56'")
+
+
+@pytest.mark.parametrize("case", ["a-failed-read", "a-truncated-read", "a-corrupt-amount"])
+def test_outstanding_totals_fail_open_to_zero(monkeypatch, caplog, case):
+    """Fail-open, display only — the tile's original posture: every status
+    at 0, and the total with them, NEVER a partial figure. A failed read, a
+    truncated one (a capped read never passes for complete) and a corrupt
+    stored amount all reach the warning, which names the exception's type,
+    never its text: it can quote a stored value."""
+    rows = [{"status": "envoyée", "amount_due": 500, "amount_paid": 0},
+            {"status": "en_retard", "amount_due": 700, "amount_paid": 0}]
+    if case == "a-failed-read":
+        monkeypatch.setattr(invoice_model, "db", _FailingStream())
+        expected = "RuntimeError"
+    elif case == "a-truncated-read":
+        _invoice_rows(monkeypatch, rows)
+        monkeypatch.setattr(full_reads, "FULL_READ_CAP", 1)
+        expected = "TruncatedRead"
+    else:
+        _invoice_rows(monkeypatch, [
+            *rows, {"status": "en_retard", "amount_due": "1 234,56", "amount_paid": 0}])
+        expected = "ValueError"
     with caplog.at_level("WARNING", logger=invoice_model.logger.name):
         assert invoice_model.get_outstanding_totals() == {"envoyée": 0, "en_retard": 0}
         assert invoice_model.get_outstanding_total() == 0
     messages = [r.getMessage() for r in caplog.records]
-    assert "get_outstanding_totals: failed: ValueError" in messages
+    assert messages == [f"get_outstanding_totals: failed: {expected}"] * 2
     assert not any("1 234,56" in m for m in messages)
 
 

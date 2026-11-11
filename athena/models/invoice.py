@@ -1715,7 +1715,9 @@ def list_invoices_strict(transaction) -> list[dict]:
     """Every invoice of every status, read inside *transaction* — strict and
     capped (``models/full_reads``): the financial statements' reader, where
     a failed or truncated read must never pass for « no invoice »
-    (``list_invoices`` above fails open, for display)."""
+    (``list_invoices`` above fails open, for display). Given ``None``, one
+    plain query outside any transaction: the reader of
+    :func:`get_outstanding_totals`, which must SEE a failure to log it."""
     return full_reads.stream_all(db.collection(COLLECTION), transaction=transaction)
 
 
@@ -2877,14 +2879,18 @@ _aggregation_values = aggregation_values
 def get_outstanding_totals() -> dict[str, int]:
     """The live balance (cents) still owed on the issued invoices, PER issued
     status: ``{status: Σ balance_of}`` for each status of
-    ``_ISSUED_STATUSES``, in that order — the one authority of the firm's
-    outstanding total. :func:`get_outstanding_total` is its sum (the
-    connector's ``get_agenda``); the dashboard's « Factures impayées » tile
-    shows that sum, and each status' own figure on its link to that status'
-    list.
+    ``_ISSUED_STATUSES``, in that order — the one authority of the
+    dashboard's « Factures impayées » tile (its total, and each status' own
+    figure on its link to that status' list) and of the connector's
+    ``get_agenda`` total, through :func:`get_outstanding_total`, their sum.
+    The connector's ``get_billing_snapshot`` does NOT call it: it sums
+    ``balance_of`` over its own read of the same pair, so that its total
+    matches the rows it lists (``mcp/handlers.get_billing_snapshot``), and
+    ``tests/test_dashboard_invoice_tile.py`` pins the two figures equal.
 
-    A PYTHON sum over a bounded read, never a Firestore aggregation, by
-    design:
+    A PYTHON sum over ONE strict read of the invoices
+    (:func:`list_invoices_strict`, outside any transaction), never a
+    Firestore aggregation, by design:
 
     * ``amount_due`` is FROZEN at issuance and stays whole on a settled
       invoice: summing it overstated the receivables by everything already
@@ -2892,19 +2898,27 @@ def get_outstanding_totals() -> dict[str, int]:
     * an aggregation cannot subtract two fields. It would take two, hence an
       index ``(status, amount_due, amount_paid)`` that does not exist, and
       whose absence fails SILENTLY: the exception swallowed, 0 answered,
-      which reads as « nothing is owed » (the incident of June 2026).
+      which reads as « nothing is owed » (the incident of June 2026);
+    * one STRICT read for every status: one read per status through
+      :func:`list_invoices`, which swallows a failure into ``[]``, could fail
+      apart and show one status' real figure beside a 0 that only meant
+      « unread », with nothing logged.
 
     The repository already sums in Python on this collection —
     ``routes/admin_ledger._factures_impayees``,
     ``routes/trust._factures_emises``, ``routes/invoices._journal_rows`` —
-    and ``models/trust`` made it its doctrine. The volume counts in dozens.
+    and ``models/trust`` made it its doctrine. The volume counts in dozens;
+    the read's cap (``models/full_reads``) sits far above it.
 
-    Fails OPEN — every status at 0, the failure logged — the tile's graceful
-    degradation and its original posture: display only, never a decision.
+    Fails OPEN — every status at 0, the failure logged with its exception's
+    type — the tile's graceful degradation and its original posture: display
+    only, never a decision. A failed or truncated read and a corrupt stored
+    amount all land there: never a partial figure.
     """
     try:
+        invoices = list_invoices_strict(None)
         return {
-            status: sum(balance_of(inv) for inv in list_invoices(status_filter=status))
+            status: sum(balance_of(inv) for inv in invoices if inv.get("status") == status)
             for status in _ISSUED_STATUSES
         }
     except Exception as exc:
@@ -2915,9 +2929,9 @@ def get_outstanding_totals() -> dict[str, int]:
 
 def get_outstanding_total() -> int:
     """The live balance (cents) still owed on the issued invoices: the sum of
-    :func:`get_outstanding_totals`, its one authority — the figure of the
-    connector's ``get_agenda``, and the dashboard tile's total. Fails open
-    with it, to 0."""
+    :func:`get_outstanding_totals` — the figure of the connector's
+    ``get_agenda``, and the dashboard tile's total. Fails open with it, to
+    0."""
     return sum(get_outstanding_totals().values())
 
 
