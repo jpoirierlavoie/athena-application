@@ -66,6 +66,19 @@ def test_les_deux_rows_partials_reemettent_export_et_header_oob():
         assert "request.headers.get('HX-Request')" in src, rep
 
 
+def test_les_deux_rows_partials_paginent_et_signalent_la_troncature():
+    """Les deux journaux montrent les écritures les plus récentes d'abord, une
+    page à la fois (l'avocat, 2026-11-10) : la barre partagée est incluse
+    DANS le partial — donc dans #…-rows, la cible que ses contrôles visent —,
+    et une lecture tronquée le dit, nommant les écritures récentes qui
+    manquent. Un seul côté paginé = l'autre redevient une page sans fin."""
+    for cle, rep in _PAIRES.items():
+        src = _template(f"{rep}/_transaction_rows.html")
+        assert '{% include "components/pagination.html" %}' in src, rep
+        assert "{% if truncated %}" in src, rep
+        assert "les écritures les plus récentes de la période" in src, rep
+
+
 def test_les_deux_selects_de_compte_portent_hx_include():
     """Sans hx-include, changer de compte perd les filtres actifs en
     silence (revue 2026-08-13 ; rétroporté au trust le 2026-08-15)."""

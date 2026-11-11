@@ -44,6 +44,7 @@ from models.trust import (
 from pagination import (
     PAGE_SIZE,
     cursor_pagination,
+    paginate,
     parse_trail,
     resolve_page,
     total_pages_of,
@@ -244,7 +245,8 @@ def journal():
     accounts = trust.list_accounts()
     if not accounts:
         return render_template("trust/list.html", accounts=[], account=None, rows=[],
-                               pagination=None, header=None, filters={}, **_labels())
+                               pagination=None, truncated=False, filtered=False,
+                               header=None, filters={}, **_labels())
 
     account_id = request.args.get("account_id") or accounts[0]["id"]
     account = next((a for a in accounts if a["id"] == account_id), accounts[0])
@@ -261,12 +263,29 @@ def journal():
 
     filtered = bool(status or direction or date_from or date_to)
     pagination = None
+    truncated = False
     if filtered:
-        rows = trust.list_transactions(
-            account_id=account_id, status=status, direction=direction,
-            date_from=date_from, date_to=date_to, limit=200,
-        )
-        rows = list(reversed(rows))  # newest first for display
+        # The COMPLETE register of the period (2026-11-10) — the reader the
+        # art. 38 sheet prints, its dates pushed to Firestore and its
+        # truncation REPORTED —, then newest first, one page at a time. The
+        # old path read the account's oldest 600 entries and kept 200, so a
+        # filter silently lost every later entry.
+        rows, truncated = trust.list_register(account_id, date_from, date_to)
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        if direction:
+            rows = [r for r in rows if r.get("direction") == direction]
+        # The unfiltered journal's own order, newest sequence first: the
+        # order the stored balances were frozen in, so a filter never
+        # reorders the rows its « Solde » chains through. list_register
+        # returns the art. 38 sheet's (day, sequence) order — the same
+        # whenever days never decrease in sequence order (integrity check 7),
+        # not for a date edited outside the model.
+        rows.sort(key=lambda r: int(r.get("sequence") or 0), reverse=True)
+        rows, pagination = paginate(rows, request.args.get("page", 1, type=int))
+        pagination["url"] = url_for("trust.journal")
+        pagination["target"] = "#trust-rows"
+        pagination["extra_vals"] = {"account_id": account_id}
     else:
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
@@ -294,6 +313,7 @@ def journal():
 
     ctx = dict(
         accounts=accounts, account=account, rows=rows, pagination=pagination,
+        truncated=truncated, filtered=filtered,
         header=_account_header(account),
         filters={"status": status or "", "direction": direction or "",
                  "date_from": request.args.get("date_from", ""),
@@ -692,20 +712,40 @@ def card(dossier_id: str, client_id: str):
         return render_template("errors/404.html"), 404
     date_from = _parse_date(request.args.get("date_from", ""))
     date_to = _parse_date(request.args.get("date_to", ""))
-    rows = trust.list_card_transactions(dossier_id, client_id, date_from, date_to)
+    # Newest first, one page at a time (2026-11-10), over the card's
+    # COMPLETE read — its truncation reported, never silent. The card's
+    # exports keep list_card_transactions: oldest first, whole.
+    rows, truncated = trust.list_card_register(
+        dossier_id, client_id, date_from, date_to)
+    rows.reverse()
+    rows, pagination = paginate(rows, request.args.get("page", 1, type=int))
+    pagination["url"] = url_for("trust.card", dossier_id=dossier_id,
+                                client_id=client_id)
+    pagination["target"] = "#card-rows"
+    # The card has no filter inputs for the pager's hx-include to carry:
+    # its period rides in two hidden inputs of a #filters block on the page
+    # (trust/card.html) — the PARSED dates, re-formatted, never the raw
+    # query string. Always both inputs, empty without a period: htmx logs
+    # an error when an hx-include selector matches nothing.
+    period = {name: value.strftime("%Y-%m-%d") if value is not None else ""
+              for name, value in (("date_from", date_from), ("date_to", date_to))}
     client_name = next(
         (c.get("name", "") for c in dossier.get("clients", []) if c.get("id") == client_id), ""
     )
     book = int((dossier.get("trust_balance_by_client") or {}).get(client_id, 0))
     cleared = int((dossier.get("trust_cleared_by_client") or {}).get(client_id, 0))
-    return render_template(
-        "trust/card.html", dossier=dossier, client_id=client_id,
-        client_name=client_name, rows=rows,
+    ctx = dict(
+        dossier=dossier, client_id=client_id,
+        client_name=client_name, rows=rows, pagination=pagination,
+        truncated=truncated, period=period,
         book_cents=book, cleared_cents=cleared, in_transit_cents=book - cleared,
         filters={"date_from": request.args.get("date_from", ""),
                  "date_to": request.args.get("date_to", "")},
         **_labels(),
     )
+    if _is_htmx():
+        return render_template("trust/_card_rows.html", **ctx)
+    return render_template("trust/card.html", **ctx)
 
 
 @trust_bp.route("/client/<client_id>")

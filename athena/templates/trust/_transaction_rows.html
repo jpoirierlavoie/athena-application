@@ -1,6 +1,11 @@
+{% if truncated %}
+<div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+  Le registre a été tronqué : les écritures les plus récentes de la période n'y figurent pas — resserrez la période.
+</div>
+{% endif %}
 {% if not rows %}
 <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
-  Aucune écriture pour ce compte.
+  Aucune écriture pour ce compte{% if filtered %} avec ces filtres{% endif %}.
 </div>
 {% else %}
 <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">

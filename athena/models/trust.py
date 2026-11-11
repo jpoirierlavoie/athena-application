@@ -3070,23 +3070,38 @@ def list_transactions(
         query = db.collection(TRANSACTIONS_COLLECTION).order_by("sequence")
 
     rows = [d.to_dict() for d in query.limit(max(limit * 3, limit)).stream()]
-    df = _as_utc(date_from).date() if date_from else None
-    dt = _as_utc(date_to).date() if date_to else None
+    df, dt = _day_bounds(date_from, date_to)
     out = []
     for r in rows:
         if status and r.get("status") != status:
             continue
         if direction and r.get("direction") != direction:
             continue
-        rd = _as_utc(r.get("date"))
-        if df and (rd is None or rd.date() < df):
-            continue
-        if dt and (rd is None or rd.date() > dt):
+        if not _within_days(r, df, dt):
             continue
         out.append(r)
         if len(out) >= limit:
             break
     return out
+
+
+def _day_bounds(date_from, date_to) -> tuple:
+    """The calendar days (UTC) a period filter keeps, each optional."""
+    return (_as_utc(date_from).date() if date_from else None,
+            _as_utc(date_to).date() if date_to else None)
+
+
+def _within_days(row: dict, df, dt) -> bool:
+    """``row``'s calendar day (UTC) lies within ``[df, dt]`` — either bound
+    optional, both kept whole. The ONE day filter of :func:`list_transactions`
+    and :func:`list_card_register`; a row without a date is outside any
+    bounded period."""
+    rd = _as_utc(row.get("date"))
+    if df and (rd is None or rd.date() < df):
+        return False
+    if dt and (rd is None or rd.date() > dt):
+        return False
+    return True
 
 
 def list_register(
@@ -3236,6 +3251,29 @@ def list_card_transactions(
         dossier_id=dossier_id, client_id=client_id,
         date_from=date_from, date_to=date_to, limit=1000,
     )
+
+
+def list_card_register(
+    dossier_id: str, client_id: str, date_from=None, date_to=None,
+    limit: int = 10000,
+) -> tuple[list[dict], bool]:
+    """The carte-client PAGE's complete read (2026-11-10): every entry of one
+    (dossier, client) couple in the order and with the day bounds of
+    :func:`list_card_transactions` — chronological ASC by sequence (index
+    #3) —, which the card's exports and the dossier tab keep. Returns
+    ``(rows, truncated)``: the page shows NEWEST first, and a cap that kept
+    the oldest rows without saying so would pass the newest off as absent.
+    Fails CLOSED (propagates)."""
+    query = (
+        db.collection(TRANSACTIONS_COLLECTION)
+        .where(filter=FieldFilter("dossier_id", "==", dossier_id))
+        .where(filter=FieldFilter("client_id", "==", client_id))
+        .order_by("sequence")
+    )
+    rows = [d.to_dict() for d in query.limit(limit + 1).stream()]
+    truncated = len(rows) > limit
+    df, dt = _day_bounds(date_from, date_to)
+    return [r for r in rows[:limit] if _within_days(r, df, dt)], truncated
 
 
 def list_dossier_transactions(dossier_id: str, limit: int = 10) -> list[dict]:

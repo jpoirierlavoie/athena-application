@@ -1,7 +1,7 @@
 {% set dl = direction_labels_for(account.account_type) %}
 {% if truncated %}
 <div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-  Le registre a été tronqué — resserrez la période pour une vue complète.
+  Le registre a été tronqué : les écritures les plus récentes de la période n'y figurent pas — resserrez la période.
 </div>
 {% endif %}
 {% if not rows %}
@@ -24,17 +24,9 @@
       </tr>
     </thead>
     <tbody class="divide-y divide-gray-100">
-      {% if show_solde and opening and filters.date_from %}
-      <tr class="bg-gray-50">
-        <td class="px-3 py-2 text-xs font-medium text-gray-500" colspan="4">
-          Solde reporté au {{ filters.date_from }}{% if not opening.had_prior %} — aucune inscription antérieure{% endif %}
-        </td>
-        <td class="px-3 py-2"></td>
-        <td class="px-3 py-2"></td>
-        <td class="px-3 py-2 text-right whitespace-nowrap text-xs font-medium text-gray-700">{{ opening.cents | cents_fr }}</td>
-        <td class="px-3 py-2"></td>
-      </tr>
-      {% endif %}
+      {# Newest first (2026-11-10): each row's « Solde » is the balance AFTER
+         it, so the top row carries the latest one, and the balance carried
+         into the period closes the LAST page, under its oldest entry. #}
       {% for r in rows %}
       <tr class="hover:bg-gray-50">
         <td class="px-3 py-2 whitespace-nowrap"><a href="{{ url_for('admin_ledger.entry_detail', tx_id=r.id) }}" class="text-indigo-600 hover:underline">{{ r.date.strftime('%Y-%m-%d') if r.date else '' }}</a></td>
@@ -55,11 +47,25 @@
         </td>
       </tr>
       {% endfor %}
+      {% if show_solde and opening and filters.date_from and not (pagination and pagination.has_next) %}
+      <tr class="bg-gray-50">
+        <td class="px-3 py-2 text-xs font-medium text-gray-500" colspan="4">
+          Solde reporté au {{ filters.date_from }}{% if not opening.had_prior %} — aucune inscription antérieure{% endif %}
+        </td>
+        <td class="px-3 py-2"></td>
+        <td class="px-3 py-2"></td>
+        <td class="px-3 py-2 text-right whitespace-nowrap text-xs font-medium text-gray-700">{{ opening.cents | cents_fr }}</td>
+        <td class="px-3 py-2"></td>
+      </tr>
+      {% endif %}
     </tbody>
   </table>
 </div>
 {% if not show_solde and not truncated %}
 <p class="mt-2 text-xs text-gray-400">La colonne « Solde » n'est affichée que sans filtre de type, de statut ou de catégorie — un solde courant sur un sous-ensemble serait un chiffre faux.</p>
+{% endif %}
+{% if pagination %}
+{% include "components/pagination.html" %}
 {% endif %}
 {% endif %}
 

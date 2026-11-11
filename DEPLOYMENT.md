@@ -5226,6 +5226,43 @@ Notes:
   that carry a statement (and settle them), or afterwards erase the
   objects no record points at.
 
+- **Journals newest first, paginated (2026-11-10).** The administration
+  journal (each account), the trust journal when a filter is set (without
+  one it already paged newest first) and the carte-client show their newest
+  entries first, 15 per page, under the shared pager
+  (`components/pagination.html`, in its « page » mode: `pagination.paginate`).
+  Each view reads its period as before and pages it in memory, so every
+  « Solde » stays exact: the administration running balance is computed over
+  the whole period before the page is cut (« Solde reporté » now closes the
+  last page, under the oldest entry), and the trust balances are stored on
+  each row. The filtered trust journal reads the complete register of its
+  period (`trust.list_register`, the art. 38 reader) instead of the oldest
+  600 entries it used to keep 200 of, shown in the unfiltered journal's
+  order (newest sequence first), and the carte-client a complete read of
+  its own (`trust.list_card_register`); a truncated read says that the
+  newest entries are missing. The exports are unchanged: the CSV and the PDF
+  read the whole period, oldest first, and ignore the page. Change Impact:
+  item 1 — touched only by a refactor that leaves `trust.list_transactions`
+  (which the connector's `list_trust_transactions` reaches) equivalent: its
+  day filter moved into `_day_bounds` / `_within_days`, with the same
+  query, limit, order and day bounds, checked against the previous release
+  output for output (the connector's tools, every export, the dossier's
+  trust tab); items 2, 3, 4 and 7 not touched (no new query shape, so no
+  index to deploy); item 5 — a `page` parameter, parsed as an integer and
+  clamped, and the carte-client's period carried in two hidden inputs
+  re-formatted from the parsed dates, never the raw query string; item 6 —
+  templates with compiled classes only. In order:
+  1. *The push* — no index, no connector train.
+  2. *On the desktop and the phone (375 px)*: `/administration/` for each
+     account — newest first, « Page 1 / N », each row's « Solde » the
+     balance after it, and with a period, « Solde reporté » under the
+     oldest entry of the last page; `/fideicommis/` with a filter (paged)
+     and without (as before); a carte-client, from a dossier's
+     « Fidéicommis » tab.
+  3. *The exports*, opened from page 2 of each view: the same CSV and PDF
+     as before — oldest first, the whole period.
+  A rollback is the code alone.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

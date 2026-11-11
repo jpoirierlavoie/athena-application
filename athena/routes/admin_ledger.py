@@ -86,6 +86,7 @@ from models.document import (
     sign_blob_url,
 )
 from models.dossier import get_dossier
+from pagination import paginate
 from security import safe_internal_redirect
 from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
@@ -238,7 +239,8 @@ def journal():
     if not accounts:
         return render_template("administration/list.html", accounts=[], account=None,
                                rows=[], header=None, filters={}, opening=None,
-                               truncated=False, show_solde=False, **_labels())
+                               truncated=False, show_solde=False,
+                               pagination=None, **_labels())
 
     account_id = request.args.get("account_id") or accounts[0]["id"]
     account = next((a for a in accounts if a["id"] == account_id), accounts[0])
@@ -285,10 +287,21 @@ def journal():
             show_solde = False
             opening = None
 
+    # Newest first, one page at a time (the lawyer, 2026-11-10). The period
+    # is read and its running balance computed WHOLE and oldest first, as
+    # before, so every row's « Solde » stays exact; only then is it reversed
+    # and sliced. The exports (journal_export) keep their own oldest-first
+    # read of the whole period, never this page.
+    rows.reverse()
+    rows, pagination = paginate(rows, request.args.get("page", 1, type=int))
+    pagination["url"] = url_for("admin_ledger.journal")
+    pagination["target"] = "#admin-rows"
+
     header = _account_header(account)
     ctx = dict(
         accounts=accounts, account=account, rows=rows, header=header,
         opening=opening, truncated=truncated, show_solde=show_solde,
+        pagination=pagination,
         filters={"status": status or "", "kind": kind or "", "category": category or "",
                  "date_from": request.args.get("date_from", ""),
                  "date_to": request.args.get("date_to", ""), "account_id": account_id},
