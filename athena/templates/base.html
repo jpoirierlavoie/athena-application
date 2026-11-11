@@ -18,6 +18,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   {% if ui_color_scheme is defined %}<meta name="color-scheme" content="{{ ui_color_scheme }}">{% endif %}
   <meta name="csrf-token" content="{{ csrf_token() }}">
+  {# htmx keeps NO page snapshot (2026-11-11). By default each URL push
+     (hx-push-url: the pagers, the filter bars, the dossier tabs) saved the
+     page being left, whole, in localStorage: client names, amounts and
+     balances, up to ten pages, kept past logout; Back restored that copy,
+     however stale. historyCacheSize 0 saves nothing; refreshOnHistoryMiss
+     makes Back and Forward between pushed URLs reload the URL as a full
+     page, instead of the bare XHR htmx sends on a miss (HX-Request without
+     the App Check token: a 401 that leaves the old page under the new URL).
+     So every pushed URL renders a full page on a plain GET (Rule 8), and
+     Back needs the network like any page: offline, it shows /offline. The
+     list saved before this setting is deleted by a script at the end of
+     <body>, at every page load. htmx reads this meta at DOMContentLoaded,
+     before it processes the body; tests/test_htmx_history.py. #}
+  <meta name="htmx-config" content='{"historyCacheSize": 0, "refreshOnHistoryMiss": true}'>
   <title>{% block title %}Pallas Athena{% endblock %}</title>
 
   <!-- Favicon + App Icons -->
@@ -304,6 +318,13 @@
       var f = e.target.closest('form[data-confirm]');
       if (f && !window.confirm(f.getAttribute('data-confirm'))) e.preventDefault();
     });
+  </script>
+
+  {# The page copies htmx saved before the htmx-config meta (<head>) turned
+     them off: deleted at every page load. htmx itself deletes them only at
+     its next URL push, which a visit may never make. #}
+  <script nonce="{{ csp_nonce }}">
+    try { localStorage.removeItem('htmx-history-cache'); } catch (e) {}
   </script>
 
   {% block page_scripts %}{% endblock %}
