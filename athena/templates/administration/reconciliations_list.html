@@ -34,7 +34,11 @@
   {% endif %}
 
   {% if not reconciliations %}
+  {# Sous le filtre, le bandeau vert « Aucun relevé manquant » répond déjà :
+     la carte générique dirait à tort le registre vide. #}
+  {% if releve_filtre != 'manquant' %}
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucune conciliation.</div>
+  {% endif %}
   {% else %}
   <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
     {% for r in reconciliations %}

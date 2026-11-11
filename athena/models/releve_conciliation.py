@@ -712,7 +712,8 @@ def file_staged_statement(
     reconciliation); its REAL size; the reconciliation (strict read —
     already this statement is ``rejoue``; one that accepts no statement is
     refused); a 512-byte sniff; a GCS-side, create-only copy (a 412 on
-    identical bytes ADOPTS the object, which this call then never erases);
+    identical bytes ADOPTS the object, which this call then never erases; on
+    an occupant it cannot reload, ``indisponible``);
     the object's content type; then a transaction that re-reads the
     reconciliation and sets the six fields. A draft's earlier statement is
     erased AFTER that commit. Codes: :data:`FILING_CODES`."""
@@ -804,7 +805,15 @@ def _file(staging, register: str, rec_id: str, uid: str, statement_id: str,
             # reserved path (a parallel one, an « incertain » predecessor,
             # or this call's own retried rewrite). ADOPTED only when it
             # holds these very bytes — and then never erased by this call.
-            if not document_model._same_object(dest, staging):
+            # An occupant that cannot be reloaded is UNKNOWN, never « other
+            # bytes » (document._object_verdict — the shared ingestion's
+            # rule since d4a7965, and the receipts' door's): « indisponible ».
+            verdict = document_model._object_verdict(dest, staging)
+            if verdict is None:
+                log_unexpected("reconciliation statement: occupant unreadable",
+                               exc_info=False, **ids)
+                return Outcome(None, [FILING_FAILED], CODE_INDISPONIBLE)
+            if verdict is False:
                 log_unexpected("reconciliation statement: object occupied",
                                exc_info=False, **ids)
                 return Outcome(None, [OCCUPIED], CODE_REFUS)

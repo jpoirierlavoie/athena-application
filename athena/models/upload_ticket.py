@@ -23,10 +23,12 @@ What a ticket binds at creation (never re-read from the caller afterwards):
 * a NEUTRAL staging object, ``staging/{uid}/mcp/{ticket_id}/upload{ext}``:
   under the owner's uid (plan rule 8 — ``require_uid``, never an
   « unknown » prefix), with no client file name in any path or URL, and
-  shaped so neither web finalizer can file it — ``routes/documents.api_finaliser``
+  shaped so no web finalizer can file it — ``routes/documents.api_finaliser``
   and ``routes/admin_ledger.api_recu`` (the receipt finalizer) both accept
   only ``staging/{uid}/{uuid4}/{name}``, four segments, the third a canonical
-  UUIDv4, and ``mcp/{ticket_id}/upload{ext}`` is five; swept by the
+  UUIDv4, and ``mcp/{ticket_id}/upload{ext}`` is five; the proofs' and the
+  reconciliation statements' finalizers accept only their own literal third
+  segment (``identite``, ``releve``); swept by the
   canonical bucket's ``staging/`` 7-day lifecycle rule if nothing does;
 * RESERVED ids, minted here: the document id (purpose ``document``) or the
   template id (purpose ``gabarit``, mode create). They are what make a

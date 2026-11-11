@@ -1817,15 +1817,17 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   payment, an encaissement: each RECORDS A PAYMENT on the invoice): delete
   an entry (a trust entry is corrected only
   by a reversal, an administration entry while it stays editable, then by
-  a reversal), start, complete or abandon a reconciliation, create or
-  modify an account, transfer funds between dossiers
+  a reversal), start, complete or abandon a reconciliation, attach,
+  replace or remove its bank statement, create or modify an account,
+  transfer funds between dossiers
   (or reverse one leg of such a transfer), withdraw trust funds in cash,
   back a fee payment with a paper invoice, an invoice not yet sent, one
   that imputes a provision, another client's invoice or — in a dossier of
   several clients — one naming none (D21), make a fee payment to anyone but
   you or your firm as « Paramètres » names you (D23), show a bank number.
   (Attaching a receipt left that list on 2026-11-10: the connector now
-  attaches or replaces one, the replaced file kept.) A write token lists
+  attaches or replaces one, the replaced file kept. A reconciliation's
+  bank statement joined it the same day: only the lawyer attaches it.) A write token lists
   them the moment it is granted — **90** tools (34 read, 56 write) since
   2026-11-10 —, a read-only one the **34** reads, `get_admin_ledger` and
   `get_admin_receipt` among them. Before the first real bank movement

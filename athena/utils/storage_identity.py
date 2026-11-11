@@ -2,11 +2,16 @@
 
 Every object the application stores lives under a uid-keyed prefix —
 ``users/{uid}/dossiers/…`` (documents), ``users/{uid}/templates/…``
-(gabarits), ``users/{uid}/administration/…`` (receipts),
+(gabarits), ``users/{uid}/administration/…`` (receipts, and the
+administration register's reconciliation statements under
+``…/administration/conciliations/…``), ``users/{uid}/fideicommis/…`` (the
+trust register's reconciliation statements, ``models/releve_conciliation.py``),
 ``users/{uid}/parties/…`` (a contact's proofs of identity,
 ``models/piece_identite.py``), and ``staging/{uid}/…`` (the direct-to-GCS
-upload sessions — a proof of identity's under ``staging/{uid}/identite/…``
-— and the zip exports). Until 2026-09-25 each route read that uid as
+upload sessions — a proof of identity's under ``staging/{uid}/identite/…``,
+a statement's under ``staging/{uid}/releve/…``, the connector's under
+``staging/{uid}/mcp/…`` — and the zip exports). The builders themselves are
+the authority: the sweep of tests/test_storage_identity.py finds each one. Until 2026-09-25 each route read that uid as
 ``session.get("user_id", "unknown")``: under ``@login_required`` the
 fallback never fired, but it was a loaded default — a caller WITHOUT a
 browser session (the connector, a script, a future scheduled job) would

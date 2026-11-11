@@ -304,6 +304,29 @@ def test_a_statement_removed_after_the_pre_pass_stops_the_completion(db, bucket,
     assert _stored(db, register)["status"] == "brouillon"
 
 
+@both
+def test_the_completed_record_is_built_from_the_transaction_s_read(db, bucket, register,
+                                                                  monkeypatch):
+    """The completed record is built from the copy the transaction read,
+    never spread from the pre-pass copy. Here the pre-pass copy names the
+    SAME statement — the in-transaction comparison lets it through — but is
+    stale elsewhere: none of its values may reach the record. (Since the
+    statement_id comparison aborts on any other difference, this is the
+    test that still sees a completion built from the stale copy — the
+    review of the rebase, 2026-11-11.)"""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register)
+    fields = joindre(model, "rec1", bucket=bucket)
+    stale = {**model.get_reconciliation("rec1"), "notes": "copie périmée",
+             "statement_attached_at": datetime(2025, 1, 1, tzinfo=UTC)}
+    monkeypatch.setattr(model, "get_reconciliation", lambda rec_id: dict(stale))
+    done, errors = model.complete_reconciliation("rec1", [])
+    assert errors == [] and done["status"] == "complétée"
+    stored = _stored(db, register)
+    assert stored["status"] == "complétée" and stored["notes"] == ""
+    assert {k: stored[k] for k in rc.FIELDS} == fields
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. The upload
 # ══════════════════════════════════════════════════════════════════════
@@ -615,6 +638,25 @@ def test_the_list_counts_and_filters_the_missing_statements(web, db, bucket, reg
     other = web.get(f"{REGISTERS[register][0]}/conciliations/?releve=nimporte"
                     ).get_data(as_text=True)
     assert '/conciliations/d"' in other          # an unknown value is no filter
+
+
+@both
+def test_an_empty_filter_says_none_is_missing_never_that_the_register_is_empty(
+        web, db, bucket, register):
+    """After the catch-up, « Relevés manquants » (a link the Comptabilité
+    page always shows) lands on an empty filtered list: the green banner
+    answers, and the generic « Aucune conciliation. » — false, the register
+    holds reconciliations — is not shown. Without the filter, an empty
+    register still says it (the review of the rebase, 2026-11-11)."""
+    _prefix, model, _account = REGISTERS[register]
+    base = f"{REGISTERS[register][0]}/conciliations/"
+    assert "Aucune conciliation." in web.get(base).get_data(as_text=True)
+    _seed(db, register, "a", status="complétée")
+    joindre(model, "a")
+    _seed(db, register, "b")
+    page = web.get(base + "?releve=manquant").get_data(as_text=True)
+    assert "Aucun relevé manquant" in page
+    assert "Aucune conciliation." not in page
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1004,6 +1046,36 @@ def test_no_file_name_is_ever_logged(web, db, bucket, register, caplog):
     logged = " ".join(r.getMessage() + repr(getattr(r, "json_fields", ""))
                       for r in caplog.records)
     assert "Tremblay" not in logged and "storage.example" not in logged
+
+
+@both
+def test_an_unreadable_occupant_is_unknown_never_other_bytes(db, bucket, register,
+                                                           monkeypatch, caplog):
+    """A 412 on the reserved path, then the occupant cannot be reloaded: the
+    door cannot tell whose bytes it holds — « indisponible », never « Un
+    autre fichier occupe… » (the shared ingestion's rule since d4a7965, and
+    the receipts' door's; the review of the rebase, 2026-11-11). Nothing is
+    attached and the occupant is left as it was."""
+    _seed(db, register)
+    doc = _open_and_put(bucket, register)
+    statement_id, ext = rc.parse_staging_object(doc["objet"], UID)
+    path = rc.storage_path(UID, register, "rec1", statement_id, ext)
+    bucket.put(path, PDF, content_type="application/pdf")
+    real_reload = FakeBlob.reload
+
+    def _reload(self, *args, **kwargs):
+        if self.name == path:
+            raise RuntimeError("storage down")
+        return real_reload(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeBlob, "reload", _reload)
+    caplog.set_level(logging.WARNING)
+    out = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert out.code == rc.CODE_INDISPONIBLE and out.errors == [rc.FILING_FAILED]
+    assert not rc.has_statement(_stored(db, register))
+    assert path in bucket.objects                   # the occupant untouched
+    logged = _logged(caplog)
+    assert "occupant unreadable" in logged and "object occupied" not in logged
 
 
 @both

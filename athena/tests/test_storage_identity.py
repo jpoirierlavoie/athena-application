@@ -576,6 +576,10 @@ def test_the_sweep_finds_the_builders_it_exists_for():
         # check all call.
         "models/piece_identite.py:staging_object",
         "models/piece_identite.py:storage_path",
+        # A reconciliation's bank statement (2026-11-10, art. 32): its
+        # staging name and its object name, each built in ONE place.
+        "models/releve_conciliation.py:staging_object",
+        "models/releve_conciliation.py:storage_path",
     ):
         assert expected in builders, expected
 
