@@ -73,9 +73,14 @@ Declared exceptions to the house rules:
   removal, a draft's replacement, an abandoned draft
   (:func:`erase_statement_object`): the reverse of ``piece_identite``'s
   deletion. A COMPLETED reconciliation must never point at an erased
-  object, and a completion re-reads the statement inside its transaction;
-  an erase that fails leaves an object no screen reaches, logged by ids
-  for an operator.
+  object: a completion re-reads the statement inside its transaction and
+  refuses one written since its pre-pass checked the object (the
+  reconciliation's etag). Only a completion that runs WHOLE between a
+  removal's commit and its erase — the same upload re-posted in between —
+  can still freeze on the erased path; the erase's re-read then raises
+  « erased object referenced » with ``status`` « complétée », for a restore
+  from the bucket's soft delete. An erase that fails leaves an object no
+  screen reaches, logged by ids for an operator.
 * **No etag on these writes.** The transaction re-reads the
   reconciliation's status and statement — the only state these rules
   judge — and regenerates its etag with the provenance stamps.
@@ -545,7 +550,10 @@ def _check_after_erase(register: str, rec: dict, path: str, ids: dict) -> None:
     the erased path (a re-posted finalization of the same upload landing
     between the record's change and the erase) is a statement whose bytes
     survive only in the bucket's 7-day soft delete — an ERROR an operator
-    acts on, by these ids, within the week. Never raises."""
+    acts on, by these ids, within the week. It names the record's
+    ``status``: a « complétée » one is FROZEN on the erased path (a
+    completion ran whole in between) — nothing in the application repairs
+    or lists it, only the restore does. Never raises."""
     rec_id = (rec or {}).get("id")
     if not rec_id:
         return
@@ -557,7 +565,8 @@ def _check_after_erase(register: str, rec: dict, path: str, ids: dict) -> None:
         return
     if current is not None and current.get("statement_storage_path") == path:
         log_unexpected("reconciliation statement: erased object referenced",
-                       exc_info=False, **ids)
+                       exc_info=False,
+                       status=sanitize_log_value(current.get("status")), **ids)
 
 
 def _uid_refusal(value: object) -> tuple[Optional[str], Optional[Outcome]]:

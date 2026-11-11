@@ -1049,6 +1049,97 @@ def test_no_file_name_is_ever_logged(web, db, bucket, register, caplog):
 
 
 @both
+def test_an_occupant_with_other_bytes_is_refused_and_left(db, bucket, register,
+                                                         caplog):
+    """A 412 on the reserved path whose occupant holds OTHER bytes: refused
+    « occupé », nothing attached, the occupant left as it was — never
+    adopted, never re-typed (the second review of the rebase: no test held
+    this leg)."""
+    _seed(db, register)
+    doc = _open_and_put(bucket, register)
+    statement_id, ext = rc.parse_staging_object(doc["objet"], UID)
+    path = rc.storage_path(UID, register, "rec1", statement_id, ext)
+    other = b"%PDF-1.7\n" + b"un autre fichier " * 30
+    bucket.put(path, other, content_type="application/octet-stream")
+    caplog.set_level(logging.WARNING)
+    out = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert out.code == rc.CODE_REFUS and out.errors == [rc.OCCUPIED]
+    assert not rc.has_statement(_stored(db, register))
+    assert bucket.objects[path].data == other                 # never overwritten
+    assert bucket.objects[path].content_type == "application/octet-stream"
+    assert "object occupied" in _logged(caplog)
+
+
+@both
+def test_a_removal_and_a_re_attach_after_the_pre_pass_stop_the_completion(
+        db, bucket, register, monkeypatch, caplog):
+    """The second review of the rebase: the completion's pre-pass checks the
+    object; then « Retirer » commits, a re-post of the same upload re-attaches
+    that very statement_id, and the removal's erase deletes its object. The
+    statement_id is unchanged — but the etag is not: the completion refuses,
+    never freezing on erased bytes, and the next attempt's pre-pass sees the
+    object gone."""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register)
+    doc = _open_and_put(bucket, register)
+    first = rc.file_staged_statement(register, "rec1", doc["objet"], UID)
+    assert first.code == rc.CODE_JOINT
+    path = first.doc["statement_storage_path"]
+    # The second post of the same upload still finds its staging object (a
+    # double tap, or a cleanup that failed).
+    bucket.put(doc["objet"], PDF, content_type="application/pdf")
+    real_refusal, real_erase = rc.completion_refusal, rc.erase_statement_object
+    seen = {}
+
+    def _erase_after_a_repost(reg, rec):
+        if "repost" not in seen:
+            seen["repost"] = rc.file_staged_statement(reg, "rec1", doc["objet"], UID).code
+        return real_erase(reg, rec)
+
+    def _prepass_then_removal(reg, rec):
+        verdict = real_refusal(reg, rec)              # the object is there
+        monkeypatch.setattr(rc, "erase_statement_object", _erase_after_a_repost)
+        seen["removal"] = rc.remove_statement(reg, "rec1").code
+        monkeypatch.setattr(rc, "erase_statement_object", real_erase)
+        return verdict
+
+    monkeypatch.setattr(rc, "completion_refusal", _prepass_then_removal)
+    caplog.set_level(logging.WARNING)
+    done, errors = model.complete_reconciliation("rec1", [])
+    assert seen == {"removal": rc.CODE_RETIRE, "repost": rc.CODE_JOINT}
+    assert done is None and errors == [rc.STATEMENT_CHANGED]
+    stored = _stored(db, register)
+    assert stored["status"] == "brouillon" and stored["statement_storage_path"] == path
+    assert path not in bucket.objects
+    (alarm,) = [r for r in caplog.records
+                if r.getMessage().endswith("erased object referenced")]
+    assert alarm.json_fields["status"] == "brouillon"
+    # The next attempt: its pre-pass sees the object gone.
+    monkeypatch.setattr(rc, "completion_refusal", real_refusal)
+    assert model.complete_reconciliation("rec1", []) == (
+        None, [rc.OBJECT_MISSING_TO_COMPLETE])
+
+
+@both
+def test_the_erase_alarm_names_a_frozen_record(db, register, caplog):
+    """A completion that ran WHOLE between a removal's commit and its erase
+    leaves the record « complétée » on the erased path — nothing in the
+    application repairs or lists it: the alarm says so by the record's
+    status, the restore its only remedy."""
+    _prefix, model, _account = REGISTERS[register]
+    _seed(db, register, status="complétée")
+    fields = joindre(model, "rec1")
+    caplog.set_level(logging.ERROR)
+    rc._check_after_erase(register, _stored(db, register),
+                          fields["statement_storage_path"],
+                          rc._ids(register, "rec1", fields["statement_id"]))
+    (alarm,) = [r for r in caplog.records
+                if r.getMessage().endswith("erased object referenced")]
+    assert alarm.json_fields["status"] == "complétée"
+    assert alarm.json_fields["statement_id"] == fields["statement_id"]
+
+
+@both
 def test_an_unreadable_occupant_is_unknown_never_other_bytes(db, bucket, register,
                                                            monkeypatch, caplog):
     """A 412 on the reserved path, then the occupant cannot be reloaded: the

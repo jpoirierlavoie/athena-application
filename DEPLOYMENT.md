@@ -5170,13 +5170,17 @@ Notes:
   — ids only, no file name stored); « Consulter » is a 15-minute signed URL.
   The six `statement_*` fields joined `_RECONCILIATION_KEYS` (the repair
   scripts' whitelist). A completion checks the object it freezes (its
-  path's shape and its presence), and refuses a statement replaced since;
+  path's shape and its presence), and refuses a statement replaced or
+  rewritten since that check (the reconciliation's etag);
   a finalization's own type patch is pinned to the metageneration its copy
   produced, and its rollback to the last one the call saw, so a
   finalization's rollback never erases an object a parallel finalization
   has patched to adopt it; the erasures after a record stopped pointing at
   its object (removal, replacement, abandon) are checked afterwards and
-  raise « erased object referenced » (the reviews of 2026-11-10). Change Impact: item 1 in name only (the « register_setup »
+  raise « erased object referenced », naming the record's status — a
+  « complétée » one is frozen on the erased path: restore it from the
+  bucket's 7-day soft delete (OBSERVABILITY.md; the reviews of 2026-11-10
+  and 2026-11-11). Change Impact: item 1 in name only (the « register_setup »
   never-rule forbids the four new calls and names the statement — « (relevé
   bancaire compris) », three words on the short screen, since the connector
   now attaches an entry's receipt —, and the
