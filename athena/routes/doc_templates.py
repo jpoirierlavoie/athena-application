@@ -161,7 +161,7 @@ _RESTORE_STALE = (
 def _kind_from_form(form) -> str:
     """Template kind from the upload/edit form.
 
-    Form control: a ``kind`` radio (gabarit | note_honoraires | note).
+    Form control: a ``kind`` radio — one per ``VALID_KINDS`` value.
     Legacy fallback: the pre-radio ``is_note_honoraires`` checkbox, so a
     stale cached form still maps correctly. An unknown radio value falls
     through the legacy path to « gabarit ».
@@ -720,8 +720,13 @@ def generate_modal() -> str:
     """Popup step 1 — modal shell (HTMX partial)."""
     template_id = _arg("template_id")
     template = get_template(template_id) if template_id else None
+    # A modèle (a stale « Générer », or a select rendered before its kind
+    # changed): the popup's OWN shell says why, with the gabarit select and
+    # the entry point's context kept — a bare fragment would land in the
+    # page, outside any popup, and wipe an open one.
+    refusal = ""
     if is_modele(template):
-        return _champs_error(MODELE_NOT_GENERATED)
+        refusal, template = MODELE_NOT_GENERATED, None
     template_fixed = request.args.get("fixed", "") == "1" and template is not None
 
     # Prefill from the entry points.
@@ -746,6 +751,7 @@ def generate_modal() -> str:
         "dossier_id": dossier_id if dossier else "",
         "slots_required": [],
         "fields": None,
+        "refusal": refusal,
     }
     if template:
         # A partie prefill lands in the destinataire slot (spec §9).

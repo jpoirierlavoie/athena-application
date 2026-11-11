@@ -1236,3 +1236,21 @@ def test_a_template_becomes_a_modele_and_one_is_created_as_such(world):
     created = _create(kind="modele", category="autre")
     assert created["entity"]["kind"] == "modele"
     assert created["entity"]["active"] is False
+
+
+def test_a_modele_is_told_its_own_story(world):
+    """A modèle is never filled: switching a template with fields to it
+    says they never fill; a new file for it never warns of « tel quel »
+    printing or of fields lost, and its kept version is restored under
+    Bibliothèque › Modèles, where it is listed."""
+    switched = _update(world, kind="modele")
+    assert any("jamais remplis" in w for w in switched["warnings"])
+    _seed_source(world, "v2src", V2)
+    replaced = _update(world, source_document_id="v2src", expected_version=1)
+    assert replaced["file_replaced"] is True
+    joined = " ".join(replaced["warnings"])
+    assert "(Bibliothèque › Modèles)" in joined and "(Gabarits)" not in joined
+    assert "tel quel" not in joined and "ne s'imprimeront plus" not in joined
+    _seed_source(world)
+    created = _create(kind="modele", category="autre")
+    assert not any("tel quel" in w for w in created["warnings"])

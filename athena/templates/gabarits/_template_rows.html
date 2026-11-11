@@ -6,9 +6,11 @@
 <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
   {% for t in templates %}
   {% set modele = t.kind == modele_kind %}
-  <div class="flex items-center gap-3 px-4 py-3">
+  {#- A modèle's row carries its padding on the link: the whole row
+      height is tappable (44 px and more), even with a name alone. #}
+  <div class="flex items-center gap-3 px-4 {{ '' if modele else 'py-3' }}">
     <a href="{{ url_for('doc_templates.template_detail', template_id=t.id) }}"
-       class="flex-1 min-w-0">
+       class="flex-1 min-w-0 {{ 'py-4' if modele else '' }}">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-sm font-medium text-gray-900 truncate">{{ t.name }}</span>
         {% if not modele %}
@@ -46,8 +48,8 @@
     </a>
     {% if modele %}
     <a href="{{ url_for('doc_templates.template_download', template_id=t.id) }}"
-       title="Télécharger"
-       aria-label="Télécharger"
+       title="Télécharger « {{ t.name }} »"
+       aria-label="Télécharger « {{ t.name }} »"
        class="inline-flex items-center justify-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 flex-shrink-0">
       {{ ms('download', 20) }}
     </a>
@@ -64,6 +66,13 @@
     {% endif %}
   </div>
   {% endfor %}
+</div>
+{% elif search_query or category_filter %}
+{#- A search or a category that matched nothing: never « nothing yet ». #}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  <p class="text-gray-500 text-sm">
+    {{ 'Aucun modèle' if section == 'modeles' else 'Aucun gabarit' }} ne correspond à la recherche.
+  </p>
 </div>
 {% elif section == 'modeles' %}
 <div class="flex flex-col items-center justify-center py-16 text-center">

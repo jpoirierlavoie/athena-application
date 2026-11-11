@@ -817,3 +817,31 @@ def test_a_modele_is_listed_and_filtered_by_its_own_kind(store):
     payload = handlers.list_templates({"kind": "modele"})
     assert payload["items"][0]["kind"] == "modele"
     _conforms("list_templates", payload)
+
+
+def test_a_modele_preview_asks_for_no_slot_and_says_it_never_fills(store):
+    """A modèle holding fields (a contract switched over from the gabarits):
+    on a two-client dossier the preview asks for no client — no fill will
+    ever use one — and says it is never filled."""
+    data = _docx(["client.nom_complet", "Clause_particuliere"])
+    modele, errors = tpl_model.create_template(
+        io.BytesIO(data), "contrat.docx", len(data),
+        {"name": "Contrat à trous", "category": "autre", "kind": "modele"},
+        UID)
+    assert errors == [], errors
+    payload = handlers.list_templates(
+        {"template_id": modele["id"], "dossier_id": "d1"})
+    assert payload["found"] is True
+    joined = " ".join(payload["warnings"])
+    assert "ne se remplit jamais" in joined and "jamais remplis" in joined
+    assert "Passez dossier_id" not in joined
+    bare = handlers.list_templates({"template_id": modele["id"]})
+    assert not any("Passez dossier_id" in w for w in bare["warnings"])
+    _conforms("list_templates", payload)
+
+
+def test_the_output_schema_names_every_template_kind():
+    """One source per list: the published description of `kind` is built
+    from a literal the model's vocabulary pins."""
+    from mcp import output_schemas
+    assert output_schemas._TEMPLATE_KIND_NAMES == tpl_model.VALID_KINDS

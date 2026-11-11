@@ -15,7 +15,12 @@
   <a href="{{ back_url }}"
      class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
     {{ ms('chevron_left', 16) }}
+    {#- A back link names where it leads: the record's page when editing. #}
+    {%- if edit_mode is defined and edit_mode and template and template.id %}
+    {{ 'Fiche du modèle' if modele else 'Fiche du gabarit' }}
+    {%- else %}
     {{ 'Modèles' if modele else 'Gabarits' }}
+    {%- endif %}
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">

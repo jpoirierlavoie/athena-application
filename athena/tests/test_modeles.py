@@ -148,7 +148,8 @@ def test_a_modele_row_offers_its_download_never_a_generation(store, web):
     modele = _create("Contrat de services", kind="modele", text="Texte")
     page = _html(web, "/modeles/")
     assert f'href="/gabarits/{modele}/download"' in page
-    assert 'aria-label="Télécharger"' in page and 'title="Télécharger"' in page
+    named = "Télécharger « Contrat de services »"
+    assert f'aria-label="{named}"' in page and f'title="{named}"' in page
     assert "/gabarits/generer" not in page
     # No gabarit-only parts: no category (« Autre »), no field count.
     assert "Autre" not in page and "champ" not in page
@@ -237,7 +238,8 @@ def test_the_active_template_can_never_become_a_modele(store):
     tid = _create("Note", kind="note_honoraires", text="{{facture.numero}}")
     tpl.set_active_template(tid, par="juriste", expected_etag=None)
     _, errors, _ = tpl.update_template(tid, {"kind": "modele"})
-    assert errors
+    assert errors == [tpl.ACTIVE_KIND_CHANGE_ERROR.format(
+        kind=tpl.ACTIVE_KIND_NAMES["note_honoraires"])]
     assert db.peek(f"doc_templates/{tid}")["kind"] == "note_honoraires"
 
 
@@ -291,14 +293,26 @@ def test_the_generation_popup_never_offers_a_modele(store, web):
     assert "Contrat de services" not in popup
 
 
-@pytest.mark.parametrize("url", [
-    "/gabarits/generer?template_id={tid}&fixed=1",
-    "/gabarits/generer/champs?template_id={tid}",
-])
-def test_the_popup_refuses_a_modele(store, web, url):
+def test_the_popup_refuses_a_modele_inside_its_own_shell(store, web):
+    """A stale « Générer » on a template that became a modèle: the popup
+    itself says why — overlay, « Fermer », the gabarit select (never the
+    modèle) and the dossier context — never a bare line in the page."""
+    gabarit = _create("Lettre type")
     modele = _create("Contrat", kind="modele")
-    assert rdt.MODELE_NOT_GENERATED in _html(
-        web, url.format(tid=modele), headers=HX)
+    popup = _html(web, f"/gabarits/generer?template_id={modele}&fixed=1"
+                       "&dossier_id=d404&locked=1", headers=HX)
+    assert "fixed inset-0" in popup and 'aria-label="Fermer"' in popup
+    assert 'role="alert"' in popup and rdt.MODELE_NOT_GENERATED in popup
+    assert f'<option value="{gabarit}"' in popup
+    assert f'value="{modele}"' not in popup
+
+
+def test_the_fields_view_refuses_a_modele_in_its_swap_zone(store, web):
+    modele = _create("Contrat", kind="modele")
+    fields = _html(web, f"/gabarits/generer/champs?template_id={modele}",
+                   headers=HX)
+    assert fields.startswith('<div id="gabarit-champs">')
+    assert rdt.MODELE_NOT_GENERATED in fields
 
 
 def test_generating_a_modele_is_refused_and_writes_nothing(
@@ -325,3 +339,66 @@ def test_generating_a_modele_is_refused_and_writes_nothing(
                        {"template_id": modele, "reason": "kind_refused"})] * 2
     assert db.peek_collection("documents") == {}
     assert dict(bucket.objects) == objects
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. The review's findings (2026-11-11)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_search_that_matches_nothing_never_says_the_list_is_empty(
+    store, web
+):
+    _create("Lettre type")
+    _create("Contrat de services", kind="modele")
+    miss = _html(web, "/modeles/?q=bail", headers=HX)
+    assert "Aucun modèle ne correspond à la recherche." in miss
+    assert "pour le moment" not in miss and "Téléverser" not in miss
+    for url in ("/gabarits/?q=bail", "/gabarits/?category=correspondance"):
+        miss = _html(web, url, headers=HX)
+        assert "Aucun gabarit ne correspond à la recherche." in miss, url
+        assert "pour le moment" not in miss, url
+
+
+def test_a_legacy_template_without_a_kind_stays_a_gabarit(store, web):
+    """Records stored before the kind existed (2026-07) carry none: the new
+    kinds= filter reads them as gabarits — on the Gabarits list and in the
+    popup, never on Modèles."""
+    db, _ = store
+    tid = _create("Lettre ancienne")
+    stored = db.peek(f"doc_templates/{tid}")
+    del stored["kind"]
+    db.seed(f"doc_templates/{tid}", stored)
+    assert f"/gabarits/{tid}" in _html(web, "/gabarits/")
+    assert f"/gabarits/{tid}" in _html(web, "/gabarits/?q=ancienne", headers=HX)
+    assert f'<option value="{tid}"' in _html(web, "/gabarits/generer",
+                                            headers=HX)
+    assert f"/gabarits/{tid}" not in _html(web, "/modeles/")
+
+
+def test_a_modele_row_is_tappable_on_its_whole_height(store, web):
+    """Rule 9: a modèle named alone made a 20 px link — its padding now
+    sits on the link (py-4: 52 px with a name alone)."""
+    modele = _create("Contrat", kind="modele")
+    page = _html(web, "/modeles/")
+    link = re.search(rf'<a href="/gabarits/{modele}"\s+class="([^"]*)"', page)
+    assert link and "py-4" in link.group(1).split(), link
+
+
+def test_a_modele_pages_main_action_is_44_px(store, web):
+    modele = _create("Contrat", kind="modele")
+    page = _html(web, f"/gabarits/{modele}")
+    button = re.search(r'class="([^"]*)">\s*Télécharger le modèle', page)
+    assert button and "py-3" in button.group(1).split(), button
+
+
+def test_the_edit_forms_back_link_names_the_page_it_leads_to(store, web):
+    for kind, label in (("modele", "Fiche du modèle"),
+                        ("gabarit", "Fiche du gabarit")):
+        tid = _create("Fichier", kind=kind)
+        page = _html(web, f"/gabarits/{tid}/edit")
+        link = re.search(r'<a href="([^"]*)"\s+class="inline-flex items-center '
+                         r'gap-1 text-sm text-gray-500[^"]*">(.*?)</a>',
+                         page, re.S)
+        assert link and link.group(1) == f"/gabarits/{tid}", kind
+        assert label in link.group(2), (kind, link.group(2))

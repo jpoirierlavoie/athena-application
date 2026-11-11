@@ -2160,6 +2160,9 @@ def _template_detail(args: dict) -> dict:
     template = {**template, "placeholders": _template_placeholders(template)}
     kind = template.get("kind") or "gabarit"
     flow_slots = _FLOW_SLOTS.get(kind)
+    # A modèle is never filled: nothing to resolve strictly, no slot to
+    # name — the preview must never ask for what no fill will use.
+    modele = doc_template_model.is_modele(template)
     if flow_slots is not None:
         # A special kind is filled by ITS flow, which never reads some
         # slots: an id for one of them would preview a resolution the
@@ -2185,8 +2188,9 @@ def _template_detail(args: dict) -> dict:
             str(args.get("adverse_id") or ""),
             str(args.get("destinataire_id") or ""),
             required_slots=(
-                classification.slots_required if flow_slots is None else ()),
-            refuse_ambiguous=flow_slots is None,
+                classification.slots_required
+                if flow_slots is None and not modele else ()),
+            refuse_ambiguous=flow_slots is None and not modele,
         )
     except gabarit_service.GenerationRefused as exc:
         raise _gabarit_refusal(exc, dossier_id=dossier_id)
@@ -2242,7 +2246,11 @@ def _template_detail(args: dict) -> dict:
                 "l'application ni create_document ne s'en servent tant que "
                 "le juriste ne l'a pas désigné."
             )
-    read_slots = set(classification.slots_required)
+    if modele:
+        warnings.append(_MODELE_NEVER_FILLED)
+        if template["placeholders"]:
+            warnings.append(_MODELE_FIELDS_NEVER_FILLED)
+    read_slots = set() if modele else set(classification.slots_required)
     usable = read_slots if flow_slots is None else read_slots & set(flow_slots)
     never = sorted(read_slots - usable)
     if never:
@@ -2265,7 +2273,7 @@ def _template_detail(args: dict) -> dict:
             "Ce gabarit lit le créneau « destinataire » et aucun n'est "
             "retenu : ses champs s'imprimeraient « [CHAMP MANQUANT : …] »."
         )
-    if template.get("validation_warnings"):
+    if template.get("validation_warnings") and not modele:
         warnings.append(
             "Des champs sont fragmentés par Word (voir validation_warnings) : "
             "ils ne se rempliront pas tant qu'ils n'auront pas été retapés "
@@ -16126,8 +16134,32 @@ def _finalize_template_upload(holder: _UploadHolder, blob) -> dict:
     return _replace_uploaded_template(holder, data, leak, scrubbed, warnings)
 
 
+# Bibliothèque (2026-11-11): a contract model is never filled — neither
+# « tel quel » printing nor fragmented or dropped fields concern it; only
+# the fields it may still hold, which never fill, are worth saying.
+_MODELE_NEVER_FILLED = (
+    "Ce modèle ne se remplit jamais : l'avocat le télécharge et l'adapte "
+    "dans Word — fill_gabarit le refuse."
+)
+_MODELE_FIELDS_NEVER_FILLED = (
+    "Ce modèle contient des champs {{…}} qui ne seront jamais remplis : "
+    "pour les remplir, il lui faut le type « gabarit »."
+)
+
+
+def _kept_version_warning(template: dict, version: int) -> str:
+    where = ("Bibliothèque › Modèles" if doc_template_model.is_modele(template)
+             else "Gabarits")
+    return (f"La version {version} est conservée : le juriste peut la "
+            f"rétablir dans l'application ({where}).")
+
+
 def _template_file_warnings(template: dict) -> list[str]:
     warnings: list[str] = []
+    if doc_template_model.is_modele(template):
+        if template.get("placeholders"):
+            warnings.append(_MODELE_FIELDS_NEVER_FILLED)
+        return warnings
     fragmented = template.get("validation_warnings") or []
     if fragmented:
         warnings.append(
@@ -16268,10 +16300,7 @@ def _replace_uploaded_template(holder: _UploadHolder, data: bytes,
             f"(v{version}) : aucune nouvelle version n'a été créée."
         )
     else:
-        warnings.append(
-            f"La version {replaced} est conservée : le juriste peut la "
-            "rétablir dans l'application (Gabarits)."
-        )
+        warnings.append(_kept_version_warning(template, replaced))
         # The same NEW-FILE warnings update_template gives (completeness
         # critic of lot 2A — the T10 review's parity finding): a new file
         # for the ACTIVE template prints at once on every document of its
@@ -17412,6 +17441,9 @@ def _update_template_metadata(args: dict, template_id: str, template: dict) -> d
         warnings += _never_active_warning(data["kind"])
         warnings += _special_kind_file_warnings(
             data["kind"], _template_placeholders(updated))
+        if doc_template_model.is_modele(updated):
+            warnings += _template_file_warnings(
+                {**updated, "placeholders": _template_placeholders(updated)})
     _log_template_write(
         "template_updated", template_id=template_id, file_replaced=False,
         version=int(updated.get("version") or 1), fields_changed=changed,
@@ -17448,7 +17480,10 @@ def _template_version_moved(stored: int, expected: int) -> ToolArgumentError:
 
 def _dropped_fields_warning(before: dict, after: dict) -> list[str]:
     """Fields the previous version printed that the new file no longer has
-    — names of FIELDS, never values (list_templates shows them too)."""
+    — names of FIELDS, never values (list_templates shows them too). A
+    modèle prints nothing: dropping its fields loses nothing."""
+    if doc_template_model.is_modele(after):
+        return []
     kept = set(_template_placeholders(after))
     dropped = [p for p in _template_placeholders(before) if p not in kept]
     if not dropped:
@@ -17545,10 +17580,7 @@ def _replace_template_file(args: dict, template_id: str, template: dict) -> dict
             f"version {version} s'imprime dès maintenant sur chaque document "
             "de ce type. Sa désignation n'a pas changé."
         )
-    warnings.append(
-        f"La version {expected_version} est conservée : le juriste peut la "
-        "rétablir dans l'application (Gabarits)."
-    )
+    warnings.append(_kept_version_warning(updated, expected_version))
     warnings += _dropped_fields_warning(template, updated)
     warnings += _special_kind_file_warnings(
         updated.get("kind") or "gabarit", _template_placeholders(updated),

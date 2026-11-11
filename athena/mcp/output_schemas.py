@@ -1269,6 +1269,13 @@ def _protocol_sync_keys() -> dict[str, Any]:
     }
 
 
+# The template kinds, a literal (this module imports nothing from the
+# package) pinned to models.doc_template.VALID_KINDS by
+# tests/test_mcp_template_reads.py — a description, never an enum: an
+# output schema never forbids growth.
+_TEMPLATE_KIND_NAMES = ("gabarit", "note_honoraires", "note", "modele")
+
+
 def _template_summary() -> dict:
     """A gabarit, as list_templates shows it — metadata and counts only.
 
@@ -1283,12 +1290,15 @@ def _template_summary() -> dict:
         "description": _str(),
         "category": _str("procédure | correspondance | autre — the "
                          "template's OWN taxonomy, never a document's."),
-        "kind": _str("gabarit | note_honoraires | note."),
+        "kind": _str(" | ".join(_TEMPLATE_KIND_NAMES) + " — modele: a "
+                     "contract model the lawyer adapts by hand, never "
+                     "filled."),
         "version": _int("Version of the file in force (1 = never replaced)."),
         "active": _bool(
             "true = THE template of its kind (note_honoraires or note), "
             "designated by the lawyer in the application — the one the "
-            "application fills. Always false for kind « gabarit »."),
+            "application fills. Always false for kinds « gabarit » and "
+            "« modele »."),
         "placeholder_count": _int(),
         "auto_count": _int(),
         "manual_count": _int(),
@@ -1296,7 +1306,7 @@ def _template_summary() -> dict:
         "flow_count": _int(
             "note / note_honoraires only: placeholders the kind's OWN flow "
             "fills (note.*, facture.* and the invoice rows); 0 for a "
-            "gabarit."),
+            "gabarit or a modèle."),
         "slots_required": _arr(_str(
             "dossier | client | adverse | destinataire — what the auto "
             "fields read.")),
@@ -2549,7 +2559,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "note / note_honoraires only: filled by the kind's own "
                     "flow — create_document (source markdown for a note, "
                     "invoice_note for an invoice note) or the application's "
-                    "own buttons — never by hand. [] for a gabarit.")),
+                    "own buttons — never by hand. [] for a gabarit or a "
+                    "modèle.")),
                 "versions": {
                     "type": ["array", "null"],
                     "items": _obj({

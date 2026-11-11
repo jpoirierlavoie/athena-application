@@ -5310,7 +5310,10 @@ Notes:
      lists the modèle; asking Claude to fill it is refused.
   A rollback is the code alone, with plugin 1.8.0: on the old code a
   modèle shows among the gabarits (its kind unknown there, `fill_gabarit`
-  still refuses it) and saving its form there turns it into a gabarit.
+  still refuses it, but the web popup offers and generates it like a
+  gabarit); saving its form there turns it into a gabarit, and its other
+  edits (« Rétablir », Claude's rename or new file) are refused « Type de
+  gabarit invalide ».
 
 ## 16. Troubleshooting
 
