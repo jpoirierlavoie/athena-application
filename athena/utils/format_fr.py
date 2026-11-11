@@ -158,7 +158,8 @@ def formats_label(mime_types: dict[str, str]) -> str:
     """« PDF, JPG ou PNG » — one name per distinct type, its first extension
     in the mapping's order, upper case: the hint and the refusal of an upload
     say which formats it takes from the very mapping that decides it
-    (``models/piece_identite``, ``models/admin_ledger``)."""
+    (``models/piece_identite``, ``models/admin_ledger``,
+    ``models/releve_conciliation``)."""
     names: list[str] = []
     seen: set[str] = set()
     for ext, mime in mime_types.items():

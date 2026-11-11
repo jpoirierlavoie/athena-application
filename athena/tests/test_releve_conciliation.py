@@ -208,6 +208,16 @@ def test_the_predicates_hold_the_lawyer_s_decisions():
     assert not rc.statement_missing({**done, **joined}) and not rc.statement_missing(draft)
 
 
+def test_the_formats_label_is_the_shared_rule_over_the_module_s_mapping():
+    """« PDF, JPG ou PNG » comes from utils/format_fr.formats_label — the rule
+    the proofs and the receipts share since 2026-11-10 — over MIME_TYPES, the
+    mapping that decides; no copy of the rule lives in the module."""
+    from utils.format_fr import formats_label
+    assert rc.FORMATS_LABEL == formats_label(rc.MIME_TYPES) == "PDF, JPG ou PNG"
+    assert rc.TYPE_REFUSED.endswith("Formats acceptés : PDF, JPG ou PNG.")
+    assert not hasattr(rc, "_formats_label")
+
+
 @both
 def test_completing_requires_the_statement(db, bucket, register):
     _prefix, model, _account = REGISTERS[register]

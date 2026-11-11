@@ -100,6 +100,7 @@ from models import concurrency, db, provenance
 from models import document as document_model
 from models.document import sign_blob_url
 from utils import storage_identity
+from utils.format_fr import formats_label
 from utils.logging_setup import (
     log_admin_ledger_event,
     log_trust_event,
@@ -145,20 +146,9 @@ EXTENSIONS: tuple[str, ...] = tuple(MIME_TYPES)
 ACCEPT = ",".join(EXTENSIONS + tuple(dict.fromkeys(MIME_TYPES.values())))
 
 
-def _formats_label(mime_types: dict[str, str]) -> str:
-    """« PDF, JPG ou PNG » — one name per distinct type, its first extension."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for ext, mime in mime_types.items():
-        if mime not in seen:
-            seen.add(mime)
-            names.append(ext.lstrip(".").upper())
-    if len(names) == 1:
-        return names[0]
-    return f"{', '.join(names[:-1])} ou {names[-1]}"
-
-
-FORMATS_LABEL = _formats_label(MIME_TYPES)
+# « PDF, JPG ou PNG » — the rule the proofs and the receipts share
+# (utils/format_fr.formats_label), over the very mapping that decides.
+FORMATS_LABEL = formats_label(MIME_TYPES)
 _MIB = 1024 * 1024
 MAX_SIZE = 20 * _MIB
 MAX_SIZE_LABEL = f"{MAX_SIZE // _MIB} Mo"
