@@ -13589,6 +13589,8 @@ _GABARIT_FLOWS_FR = {
         "imprime une note, dans l'application — pour mettre en forme un "
         "texte, utilisez create_document (source « markdown »)"
     ),
+    # Bibliothèque (2026-11-11): a contract model is never filled.
+    "modele": "est un modèle, que l'avocat télécharge et adapte dans Word",
 }
 _STORAGE_UNAVAILABLE = (
     "L'identité de stockage du cabinet n'a pas pu être établie : rien n'a "

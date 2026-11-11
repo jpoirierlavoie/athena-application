@@ -5,14 +5,18 @@
 {#- Imported INSIDE the block (never at root level): a test that renders
     only this block would not see a root-level import. #}
 {% from "components/_edit_conflict.html" import etag_field %}
+{#- A modèle (kind « modele », 2026-11-11) is downloaded and adapted in
+    Word, never filled: no « Générer », no field inventory, and its links
+    lead back to the Modèles list. #}
+{% set modele = template.kind == modele_kind %}
 <div class="max-w-4xl mx-auto px-4 py-6">
 
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
-    <a href="{{ url_for('doc_templates.template_list') }}"
+    <a href="{{ url_for('modeles.modele_list') if modele else url_for('doc_templates.template_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       {{ ms('chevron_left', 16) }}
-      Gabarits
+      {{ 'Modèles' if modele else 'Gabarits' }}
     </a>
     <div class="flex items-center gap-2">
       <a href="{{ url_for('doc_templates.template_edit', template_id=template.id) }}"
@@ -44,9 +48,11 @@
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
     <div class="flex items-center gap-2 flex-wrap mb-1">
       <h1 class="text-xl font-semibold text-gray-900">{{ template.name }}</h1>
+      {% if not modele %}
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
         {{ category_labels.get(template.category, template.category) }}
       </span>
+      {% endif %}
       {% if special %}
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
         {{ kind_labels.get(template.kind, template.kind) }}
@@ -66,6 +72,12 @@
       {% if template.updated_at %} · mis à jour le {{ (template.updated_at|to_mtl).strftime('%Y-%m-%d') }}{% endif %}
     </p>
     <div class="flex items-center gap-2 flex-wrap">
+      {% if modele %}
+      <a href="{{ url_for('doc_templates.template_download', template_id=template.id) }}"
+         class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Télécharger le modèle
+      </a>
+      {% else %}
       <button type="button"
               hx-get="{{ url_for('doc_templates.generate_modal', template_id=template.id, fixed=1) }}"
               hx-target="#gabarit-modal"
@@ -77,6 +89,7 @@
          class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Télécharger le gabarit
       </a>
+      {% endif %}
     </div>
   </div>
 
@@ -136,8 +149,8 @@
   {% endif %}
   {% endif %}
 
-  {# ── Split-run warnings ──────────────────────────────────────── #}
-  {% if template.validation_warnings %}
+  {# ── Split-run warnings (fields to fill: none on a modèle) ──────── #}
+  {% if template.validation_warnings and not modele %}
   <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
     <ul class="text-sm text-gray-700 space-y-1">
       {% for w in template.validation_warnings %}
@@ -147,7 +160,15 @@
   </div>
   {% endif %}
 
-  {# ── Field inventory ─────────────────────────────────────────── #}
+  {# ── Field inventory (a modèle: only a note if its file holds some) ── #}
+  {% if modele %}
+  {% if template.placeholders %}
+  <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Ce modèle contient des champs {{ '{{…}}' }} qui ne seront jamais
+    remplis. Pour les remplir, changez son type pour « Gabarit » (Modifier).
+  </div>
+  {% endif %}
+  {% else %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-3">
       Champs ({{ template.placeholders|length }})
@@ -184,6 +205,7 @@
     <p class="text-sm text-gray-500">Aucun champ détecté dans ce gabarit.</p>
     {% endif %}
   </div>
+  {% endif %}
 
   {# ── Versions (D11) — un remplacement ne détruit plus rien : chaque
        fichier installé reste ici, et « Rétablir » en fait une NOUVELLE
@@ -249,11 +271,16 @@
   <div @click.outside="open = false"
        class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
     <div class="p-6">
-      <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce gabarit ?</h3>
+      <h3 class="text-base font-semibold text-gray-900 mb-2">{{ 'Supprimer ce modèle ?' if modele else 'Supprimer ce gabarit ?' }}</h3>
       <p class="text-sm text-gray-600 mb-6">
+        {%- if modele %}
+        Le fichier du modèle et toutes ses versions antérieures seront
+        supprimés.
+        {%- else %}
         Le fichier du gabarit et toutes ses versions antérieures seront
         supprimés. Les documents déjà générés dans les dossiers ne seront
         pas touchés.
+        {%- endif %}
         {%- if designated %}
         C'est le gabarit actif des « {{ active_kind_name }} » : après sa
         suppression, aucun ne sera désigné, et la génération sera refusée

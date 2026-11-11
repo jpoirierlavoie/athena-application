@@ -1,20 +1,25 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Modifier le gabarit' if edit_mode is defined and edit_mode else 'Nouveau gabarit' }} — Pallas Athena{% endblock %}
+{% block title %}{{ ('Modifier le ' if edit_mode is defined and edit_mode else 'Nouveau ') ~ ('modèle' if template and template.kind == modele_kind else 'gabarit') }} — Pallas Athena{% endblock %}
 
 {% block content %}
 {#- Imported INSIDE the block (never at root level): a test that renders
     only this block would not see a root-level import. #}
 {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+{#- A modèle (kind « modele », 2026-11-11): the same form, its own words;
+    a new one comes from the Modèles list (« ?kind=modele »). Only the
+    matching url_for is evaluated (test apps register doc_templates alone). #}
+{% set modele = template and template.kind == modele_kind %}
+{% set back_url = url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else (url_for('modeles.modele_list') if modele else url_for('doc_templates.template_list')) %}
 <div class="max-w-2xl mx-auto px-4 py-6">
 
-  <a href="{{ url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_list') }}"
+  <a href="{{ back_url }}"
      class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
     {{ ms('chevron_left', 16) }}
-    Gabarits
+    {{ 'Modèles' if modele else 'Gabarits' }}
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
-    {{ 'Modifier le gabarit' if edit_mode is defined and edit_mode else 'Nouveau gabarit' }}
+    {{ ('Modifier le ' if edit_mode is defined and edit_mode else 'Nouveau ') ~ ('modèle' if modele else 'gabarit') }}
   </h1>
 
   {{ conflict_banner(conflict) }}
@@ -55,7 +60,7 @@
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-gray-700 mb-1.5">Type de gabarit</label>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Type</label>
       <div class="space-y-1">
         {% for kind_key, kind_label in kind_labels.items() %}
         <label class="flex items-center gap-2 text-sm text-gray-700">
@@ -72,7 +77,9 @@
         bloc-notes ({% raw %}{{note.titre}}, {{note.contenu}}{% endraw %}, … —
         voir GABARITS_PLACEHOLDERS.md §7). Pour chacun de ces deux types, la
         génération utilise le gabarit que vous avez désigné comme actif, sur
-        sa fiche — jamais simplement le plus récent.
+        sa fiche — jamais simplement le plus récent. « Modèle (sans champs) » :
+        un contrat que vous téléchargez et adaptez dans Word ; il est classé
+        sous « Modèles » et ne se génère jamais.
       </p>
     </div>
 
@@ -91,6 +98,14 @@
              {{ '' if edit_mode is defined and edit_mode else 'required' }}
              class="w-full text-sm text-gray-700">
       <p class="text-xs text-gray-400 mt-2">
+        {% if modele %}
+        Document Word (.docx) — 10 Mo max.
+        {% if edit_mode is defined and edit_mode %}
+        Le remplacement du fichier crée une nouvelle version ; la version
+        précédente est conservée et peut être rétablie depuis la fiche du
+        modèle.
+        {% endif %}
+        {% else %}
         Document Word (.docx) contenant des champs
         <span class="font-medium">{{ '{{champ}}' }}</span> — 10 Mo max.
         {% if edit_mode is defined and edit_mode %}
@@ -100,15 +115,16 @@
         {% else %}
         Les champs seront extraits et affichés après le téléversement.
         {% endif %}
+        {% endif %}
       </p>
     </div>
 
     <div class="flex gap-3 pt-2">
       <button type="submit"
               class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
-        {{ 'Enregistrer' if edit_mode is defined and edit_mode else 'Téléverser le gabarit' }}
+        {{ 'Enregistrer' if edit_mode is defined and edit_mode else ('Téléverser le modèle' if modele else 'Téléverser le gabarit') }}
       </button>
-      <a href="{{ url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_list') }}"
+      <a href="{{ back_url }}"
          class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>

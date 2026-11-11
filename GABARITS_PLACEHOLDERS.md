@@ -345,7 +345,7 @@ A passthrough name is also what **Claude** may write, through the connector's
 
 | Argument | What it is | Limits |
 |---|---|---|
-| `template_id` | The gabarit. **Kind « gabarit » only** — a « Note d'honoraires » or « Note (impression) » template is refused: they have their own flows (the invoice's « Note d'honoraires (Word) » in the application, or the connector's `create_document` with `source: invoice_note` — lot 3b; the connector's `create_document` with `source: markdown` for a note print, §7) | — |
+| `template_id` | The gabarit. **Kind « gabarit » only** — a « Note d'honoraires » or « Note (impression) » template is refused: they have their own flows (the invoice's « Note d'honoraires (Word) » in the application, or the connector's `create_document` with `source: invoice_note` — lot 3b; the connector's `create_document` with `source: markdown` for a note print, §7). A « Modèle (sans champs) » — a contract model, kind `modele` — is refused too: it is never filled, only downloaded and adapted in Word | — |
 | `dossier_id` | **Required.** Its data fills every auto field, and the document is saved as a NEW document in ITS « Projets » folder — **always there**, never another folder, never a download. Since the default folder tree (2026-09-30) « Projets » sits under « Interne » (« Interne › Projets »); a dossier not yet given the tree keeps its old root « Projets », used where it is | — |
 | `client_id` / `adverse_id` | The « client » / « adverse » slots — a party **on that dossier**, needed when the dossier has several and the gabarit reads the slot (never guessed, never the first one by default) | — |
 | `destinataire_id` | The « destinataire » slot — any contact; no default | — |

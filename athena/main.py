@@ -113,7 +113,7 @@ def create_app() -> Flask:
     from routes.protocols import protocols_bp
     from routes.documents import documents_bp
     from routes.notes import notes_bp
-    from routes.doc_templates import doc_templates_bp
+    from routes.doc_templates import doc_templates_bp, modeles_bp
     from routes.trust import trust_bp
     from routes.budgets import budgets_bp
     from routes.admin_ledger import admin_bp
@@ -133,6 +133,10 @@ def create_app() -> Flask:
     app.register_blueprint(documents_bp)
     app.register_blueprint(notes_bp)
     app.register_blueprint(doc_templates_bp)
+    # Bibliothèque → Modèles (2026-11-11): the list of the templates of
+    # kind « modele », GET only, under @login_required — a browser
+    # blueprint, never CSRF-exempt, under no special-cased prefix.
+    app.register_blueprint(modeles_bp)
     app.register_blueprint(trust_bp)
     app.register_blueprint(budgets_bp)
     app.register_blueprint(admin_bp)

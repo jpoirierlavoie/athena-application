@@ -1040,7 +1040,7 @@ _DOCUMENT_CATEGORIES = [
 # documents one above. tests/test_mcp_template_reads.py pins both pairs; a
 # literal, not an import, because importing models.* runs firestore.Client()
 # at load.
-_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note"]
+_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note", "modele"]
 _TEMPLATE_CATEGORIES = ["procédure", "correspondance", "autre"]
 # How many folders list_documents(include_folders) returns — a dossier holds
 # tens; the cap only bounds a pathological tree (folders_truncated says so).
@@ -2444,7 +2444,9 @@ TOOLS: dict[str, dict] = {
             "filled by their own flow (their fields: flow_fields); at most "
             "ONE of each is active, designated by the lawyer in the "
             "application — none designated, that flow refuses; nothing "
-            "here changes it."
+            "here changes it. Kind modele: the lawyer's contract models "
+            "(« Modèles »), Word files he adapts by hand — never filled, "
+            "fill_gabarit refuses them."
         ),
         "input_schema": {
             "type": "object",
@@ -2459,7 +2461,8 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "List only: « gabarit » (letters, procedures), "
                         "« note_honoraires » (the invoice note), « note » "
-                        "(the note print)."
+                        "(the note print), « modele » (contract models, "
+                        "never filled)."
                     ),
                 },
                 "category": {
@@ -6479,7 +6482,8 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "enum": _TEMPLATE_KINDS,
                     "description": (
                         "gabarit create: default « gabarit ». A special kind "
-                        "is created NOT active."
+                        "is created NOT active. « modele »: a contract "
+                        "model, never filled."
                     ),
                 },
                 "template_id": _id(
@@ -6689,7 +6693,7 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "enum": _TEMPLATE_KINDS,
                     "description": (
                         "Default « gabarit ». A special kind is created NOT "
-                        "active."
+                        "active. « modele »: a contract model, never filled."
                     ),
                 },
                 "accept_residual": {
@@ -6776,7 +6780,8 @@ TOOLS: dict[str, dict] = {
                 "kind": {
                     "type": "string", "enum": _TEMPLATE_KINDS,
                     "description": (
-                        "Metadata: a special kind is never made active here."
+                        "Metadata: a special kind is never made active "
+                        "here. « modele »: a contract model, never filled."
                     ),
                 },
                 "source_document_id": _id(

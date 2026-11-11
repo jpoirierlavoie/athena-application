@@ -1130,3 +1130,19 @@ def test_an_invoice_note_whose_save_is_unknown_keeps_the_claim(
     _uncertain_then_in_flight(handlers.create_document, {
         "source": "invoice_note", "invoice_id": "i1",
         "idempotency_key": "note-incertaine"})
+
+
+def test_a_modele_is_never_filled(world):
+    """Bibliothèque (2026-11-11): a contract model (kind « modele ») is
+    adapted by hand in Word — fill_gabarit refuses it in its own words,
+    and nothing is generated."""
+    template, errors = tpl_model.create_template(
+        io.BytesIO(GABARIT), "contrat.docx", len(GABARIT),
+        {"name": "Contrat de services", "category": "autre", "kind": "modele"},
+        UID)
+    assert errors == [], errors
+    before = _documents(world["db"])
+    message = _refused(handlers.fill_gabarit,
+                       {"template_id": template["id"], "dossier_id": "d1"})
+    assert "est un modèle" in message and "fill_gabarit ne remplit" in message
+    _nothing_generated(world, before)

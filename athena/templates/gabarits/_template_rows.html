@@ -1,15 +1,21 @@
-{# Gabarit list rows — used by both full page (include) and HTMX swap. #}
+{# Gabarit list rows — used by both full page (include) and HTMX swap.
+   A modèle's row (kind « modele », the Modèles list) drops the gabarit-only
+   parts — category, field count, warnings, « Générer » — and offers the
+   download instead: a modèle is adapted in Word, never filled. #}
 {% if templates %}
 <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
   {% for t in templates %}
+  {% set modele = t.kind == modele_kind %}
   <div class="flex items-center gap-3 px-4 py-3">
     <a href="{{ url_for('doc_templates.template_detail', template_id=t.id) }}"
        class="flex-1 min-w-0">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-sm font-medium text-gray-900 truncate">{{ t.name }}</span>
+        {% if not modele %}
         <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
           {{ category_labels.get(t.category, t.category) }}
         </span>
+        {% endif %}
         {% if t.kind in special_kinds %}
         <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
           {{ kind_labels.get(t.kind, t.kind) }}
@@ -21,17 +27,31 @@
         {% endif %}
         {% endif %}
         <span class="text-xs text-gray-400">v{{ t.version }}</span>
-        {% if t.validation_warnings %}
+        {% if t.validation_warnings and not modele %}
         <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-amber-50 text-amber-700 border border-amber-200">
           {{ t.validation_warnings|length }} avertissement{{ 's' if t.validation_warnings|length > 1 }}
         </span>
         {% endif %}
       </div>
+      {% if modele %}
+      {% if t.description %}
+      <p class="text-xs text-gray-500 mt-0.5">{{ t.description|truncate(80) }}</p>
+      {% endif %}
+      {% else %}
       <p class="text-xs text-gray-500 mt-0.5">
         {{ t.placeholders|length }} champ{{ 's' if t.placeholders|length > 1 }}
         {% if t.description %} · {{ t.description|truncate(80) }}{% endif %}
       </p>
+      {% endif %}
     </a>
+    {% if modele %}
+    <a href="{{ url_for('doc_templates.template_download', template_id=t.id) }}"
+       title="Télécharger"
+       aria-label="Télécharger"
+       class="inline-flex items-center justify-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 flex-shrink-0">
+      {{ ms('download', 20) }}
+    </a>
+    {% else %}
     <button type="button"
             title="Générer"
             aria-label="Générer"
@@ -41,8 +61,21 @@
             class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 flex-shrink-0">
       {{ ms('draft', 20) }}
     </button>
+    {% endif %}
   </div>
   {% endfor %}
+</div>
+{% elif section == 'modeles' %}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  {{ ms('draft', 48, 'text-gray-300 mb-4') }}
+  <p class="text-gray-500 text-sm mb-4">
+    Aucun modèle pour le moment. Téléversez un contrat .docx, sans champs,
+    que vous adapterez dans Word.
+  </p>
+  <a href="{{ url_for('doc_templates.template_new', kind=modele_kind) }}"
+     class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    Téléverser un modèle
+  </a>
 </div>
 {% else %}
 <div class="flex flex-col items-center justify-center py-16 text-center">

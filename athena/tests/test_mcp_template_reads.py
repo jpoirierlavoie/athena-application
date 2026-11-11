@@ -792,3 +792,28 @@ def test_a_parent_cycle_neither_vanishes_nor_loops(store):
     payload = handlers.list_documents({"dossier_id": "d2", "include_folders": True})
     assert sorted((f["id"], f["path"]) for f in payload["folders"]) == [
         ("fa", ""), ("fb", "")]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Bibliothèque (2026-11-11) — a contract model, kind « modele »
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_modele_is_listed_and_filtered_by_its_own_kind(store):
+    """A contract model is a template of kind « modele »: the lawyer wants
+    it visible to the connector — in the default list, and alone under its
+    own kind; the gabarit kind never returns it."""
+    _, _, letter, note = store
+    data = _docx([], extra="<w:p><w:r><w:t>Contrat</w:t></w:r></w:p>")
+    modele, errors = tpl_model.create_template(
+        io.BytesIO(data), "contrat.docx", len(data),
+        {"name": "Contrat de services", "category": "autre", "kind": "modele"},
+        UID)
+    assert errors == [], errors
+    ids = lambda p: [r["id"] for r in p["items"]]  # noqa: E731
+    assert ids(handlers.list_templates({"kind": "modele"})) == [modele["id"]]
+    assert modele["id"] in ids(handlers.list_templates({}))
+    assert modele["id"] not in ids(handlers.list_templates({"kind": "gabarit"}))
+    payload = handlers.list_templates({"kind": "modele"})
+    assert payload["items"][0]["kind"] == "modele"
+    _conforms("list_templates", payload)

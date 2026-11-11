@@ -100,12 +100,29 @@ CATEGORY_LABELS = {
 # category taxonomy stays free. For each special kind, the template the
 # LAWYER DESIGNATED is the one used (lot 2A, T3 — before, the most recently
 # updated one won, and any edit could switch it).
-VALID_KINDS = ("gabarit", "note_honoraires", "note")
+#
+# « modele » (Bibliothèque, 2026-11-11): a contract model — a .docx the
+# lawyer downloads and adapts by hand, listed under Bibliothèque → Modèles
+# instead of Gabarits. It is NEVER filled (the web generation and the
+# connector's fill_gabarit both refuse it) and never designated (not a
+# special kind); the connector sees it like any template, by his choice.
+MODELE_KIND = "modele"
+VALID_KINDS = ("gabarit", "note_honoraires", "note", MODELE_KIND)
 KIND_LABELS = {
     "gabarit": "Gabarit",
     "note_honoraires": "Note d'honoraires (facture)",
     "note": "Note (impression)",
+    MODELE_KIND: "Modèle (sans champs)",
 }
+# Every kind but « modele »: what the Gabarits tab and the generation popup
+# list — one source, derived, so a future kind lands on the Gabarits side.
+GABARIT_LIST_KINDS = tuple(k for k in VALID_KINDS if k != MODELE_KIND)
+
+
+def is_modele(template: Optional[dict]) -> bool:
+    """A contract model (kind « modele »): listed under Modèles, never
+    filled. A legacy record with no ``kind`` is a gabarit."""
+    return (template or {}).get("kind") == MODELE_KIND
 # The kinds that carry an « actif » designation — exactly one template each.
 SPECIAL_KINDS = ("note_honoraires", "note")
 # The short name the refusals give each special kind.
@@ -868,10 +885,16 @@ def list_templates(
     category: Optional[str] = None,
     search: Optional[str] = None,
     *,
+    kinds: Optional[tuple] = None,
     strict: bool = False,
 ) -> list[dict]:
     """All templates ordered by name; small bounded collection (tens of
     docs) — category/search filtering happens client-side, no index.
+
+    ``kinds`` keeps only the records of those kinds (a legacy record with
+    no ``kind`` is a « gabarit »): the Bibliothèque's Gabarits tab passes
+    :data:`GABARIT_LIST_KINDS`, its Modèles tab ``(MODELE_KIND,)``.
+    ``None`` lists every kind — the connector's call, unchanged.
 
     Fails OPEN to ``[]`` by default — right for the web list and the popup
     select. ``strict=True`` RAISES :class:`TemplateReadError` instead: the
@@ -888,6 +911,8 @@ def list_templates(
         logger.warning("list_templates failed: %s", type(exc).__name__)
         return []
 
+    if kinds is not None:
+        results = [t for t in results if (t.get("kind") or "gabarit") in kinds]
     if category and category in VALID_CATEGORIES:
         results = [t for t in results if t.get("category") == category]
     if search:

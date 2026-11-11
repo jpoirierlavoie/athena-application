@@ -1222,3 +1222,17 @@ def test_the_web_form_renames_freely_a_template_with_no_recorded_source(world):
         "expected_etag": before["etag"]})
     assert resp.status_code == 302
     assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre Tremblay"
+
+
+def test_a_template_becomes_a_modele_and_one_is_created_as_such(world):
+    """Bibliothèque (2026-11-11): « modele » is a kind like any other for
+    the connector (the lawyer wants contract models visible) — never a
+    special one, so nothing is ever said about a designation."""
+    result = _update(world, kind="modele")
+    assert result["entity"]["kind"] == "modele"
+    assert result["entity"]["active"] is False
+    assert not any("actif" in w for w in result["warnings"])
+    _seed_source(world)
+    created = _create(kind="modele", category="autre")
+    assert created["entity"]["kind"] == "modele"
+    assert created["entity"]["active"] is False

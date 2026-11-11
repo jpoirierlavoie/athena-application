@@ -13,6 +13,13 @@ two-step HTMX generation popup:
 * ``POST /gabarits/generer`` — fill and either save into the dossier's
   documents (HTMX partial response) or stream the .docx download.
 
+Bibliothèque (2026-11-11): ``modeles_bp`` lists, at ``/modeles/``, the
+templates of kind « modele » — contract models the lawyer downloads and
+adapts by hand. Only that list lives under ``/modeles/``: a modèle is a
+``doc_templates`` record, so its page, edit, versions, download and delete
+are the ``/gabarits/<id>`` routes below. A modèle is never generated: the
+popup never offers one and its three views refuse one.
+
 Never log field values (client PII) — placeholder names, counts and IDs
 only (§11 of the Phase H spec).
 """
@@ -38,7 +45,9 @@ from models.doc_template import (
     ACTIVE_KIND_NAMES,
     CATEGORY_LABELS,
     DOCX_MIME,
+    GABARIT_LIST_KINDS,
     KIND_LABELS,
+    MODELE_KIND,
     SPECIAL_KINDS,
     VALID_CATEGORIES,
     VALID_KINDS,
@@ -52,6 +61,7 @@ from models.doc_template import (
     get_template_bytes,
     get_version_signed_url,
     is_active,
+    is_modele,
     list_templates,
     list_versions,
     restore_template_version,
@@ -72,6 +82,14 @@ from routes._helpers import dossier_search_fragment, is_htmx, redirect_after_pos
 from security import sanitize
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
+# The Bibliothèque's « Modèles » tab — one GET list (see the module docstring).
+modeles_bp = Blueprint("modeles", __name__, url_prefix="/modeles")
+
+# A modèle is downloaded and adapted in Word, never filled: the popup's
+# three views refuse one (the connector's fill_gabarit refuses it too).
+MODELE_NOT_GENERATED = (
+    "Un modèle ne se génère pas : téléchargez-le et adaptez-le dans Word."
+)
 
 # The generation logic (slots, values and their ceilings, fill, save into
 # « Projets ») lives in services/gabarits.py since lot 2A, step T4 — one
@@ -100,6 +118,7 @@ def _template_context() -> dict:
         "category_labels": CATEGORY_LABELS,
         "kind_labels": KIND_LABELS,
         "special_kinds": SPECIAL_KINDS,
+        "modele_kind": MODELE_KIND,
     }
 
 
@@ -160,11 +179,33 @@ def _kind_from_form(form) -> str:
 def template_list() -> str:
     category = request.args.get("category", "").strip() or None
     search = request.args.get("q", "").strip() or None
-    templates = list_templates(category=category, search=search)
+    templates = list_templates(
+        category=category, search=search, kinds=GABARIT_LIST_KINDS)
     ctx = _template_context()
     ctx.update(
         templates=templates,
+        section="gabarits",
         category_filter=category or "",
+        search_query=search or "",
+    )
+    if _is_htmx():
+        return render_template("gabarits/_template_rows.html", **ctx)
+    return render_template("gabarits/list.html", **ctx)
+
+
+@modeles_bp.route("/")
+@login_required
+def modele_list() -> str:
+    """The Bibliothèque's « Modèles » tab: the templates of kind « modele »,
+    on the Gabarits page's own template (``section``), with no category
+    filter — the gabarit categories do not sort contracts."""
+    search = request.args.get("q", "").strip() or None
+    templates = list_templates(search=search, kinds=(MODELE_KIND,))
+    ctx = _template_context()
+    ctx.update(
+        templates=templates,
+        section="modeles",
+        category_filter="",
         search_query=search or "",
     )
     if _is_htmx():
@@ -175,8 +216,18 @@ def template_list() -> str:
 @doc_templates_bp.route("/new")
 @login_required
 def template_new() -> str:
+    """The upload form. ``?kind=`` preselects the type — the Modèles tab's
+    « Nouveau modèle » passes « modele », which also preselects the
+    category « Autre » (the gabarit categories do not sort contracts). An
+    unknown value is ignored: the form's own default, « Gabarit », stands."""
+    kind = request.args.get("kind", "").strip()
+    prefill = None
+    if kind == MODELE_KIND:
+        prefill = {"kind": MODELE_KIND, "category": "autre"}
+    elif kind in VALID_KINDS:
+        prefill = {"kind": kind}
     ctx = _template_context()
-    ctx.update(template=None, errors=[])
+    ctx.update(template=prefill, errors=[])
     return render_template("gabarits/form.html", **ctx)
 
 
@@ -380,6 +431,8 @@ def template_delete(template_id: str) -> Response | str:
             title=(existing or {}).get("name", ""),
             status=(existing or {}).get("category", ""),
         )
+        if is_modele(existing):
+            return redirect_after_post(url_for("modeles.modele_list"))
         return redirect_after_post(url_for("doc_templates.template_list"))
     # Failure: keep the user on the template (it still exists) rather than
     # silently redirecting to the list as if the delete had worked. The
@@ -667,6 +720,8 @@ def generate_modal() -> str:
     """Popup step 1 — modal shell (HTMX partial)."""
     template_id = _arg("template_id")
     template = get_template(template_id) if template_id else None
+    if is_modele(template):
+        return _champs_error(MODELE_NOT_GENERATED)
     template_fixed = request.args.get("fixed", "") == "1" and template is not None
 
     # Prefill from the entry points.
@@ -680,7 +735,9 @@ def generate_modal() -> str:
     dossier = get_dossier(dossier_id) if dossier_id else None
 
     ctx = {
-        "templates": list_templates() if not template_fixed else [],
+        "templates": (
+            list_templates(kinds=GABARIT_LIST_KINDS)
+            if not template_fixed else []),
         "template": template,
         "template_fixed": template_fixed,
         "locked": locked,
@@ -703,6 +760,8 @@ def generate_fields() -> str:
     template = get_template(_arg("template_id"))
     if not template:
         return _champs_error("Gabarit introuvable.")
+    if is_modele(template):
+        return _champs_error(MODELE_NOT_GENERATED)
     ctx = _fields_context(template)
     return render_template("gabarits/_generate_fields.html", **ctx)
 
@@ -742,6 +801,9 @@ def generate() -> Response | str:
         if _is_htmx():
             return _champs_error("Gabarit introuvable.")
         return redirect(url_for("doc_templates.template_list"))
+    if is_modele(template):
+        return _generation_refused(template_id, gabarits.GenerationRefused(
+            "kind_refused", MODELE_NOT_GENERATED))
 
     dossier_id = request.form.get("dossier_id", "").strip()
     try:

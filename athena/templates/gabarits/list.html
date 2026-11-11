@@ -1,25 +1,36 @@
 {% extends "base.html" %}
-{% block title %}Gabarits — Pallas Athena{% endblock %}
+{% block title %}{{ 'Modèles' if section == 'modeles' else 'Gabarits' }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{#- One page for two lists (2026-11-11): `section` is « gabarits » (every
+    kind but « modele », template_list) or « modeles » (kind « modele »,
+    modele_list). Only the section's own url_for is evaluated, so a test
+    app registering doc_templates_bp alone still renders the Gabarits list. #}
+{% set modeles = section == 'modeles' %}
+{% set new_url = url_for('doc_templates.template_new', kind=modele_kind) if modeles else url_for('doc_templates.template_new') %}
+{% set new_label = 'Nouveau modèle' if modeles else 'Nouveau gabarit' %}
+{% set list_url = url_for('modeles.modele_list') if modeles else url_for('doc_templates.template_list') %}
 <div class="max-w-4xl mx-auto px-4 py-6">
 
   {# ── Header ─────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-gray-900">Gabarits</h1>
+    <h1 class="text-xl font-semibold text-gray-900">{{ 'Modèles' if modeles else 'Gabarits' }}</h1>
     <div class="hidden md:flex items-center gap-2">
-      <a href="{{ url_for('doc_templates.template_new') }}"
+      <a href="{{ new_url }}"
          class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
         {{ ms('add', 16) }}
-        Nouveau gabarit
+        {{ new_label }}
       </a>
     </div>
   </div>
 
   {# ── Filters ────────────────────────────────────────────────── #}
+  {#- The gabarit categories do not sort contracts: no category filter
+      on the Modèles list. #}
   <div class="flex items-center gap-3 mb-4">
+    {% if not modeles %}
     <select name="category"
-            hx-get="{{ url_for('doc_templates.template_list') }}"
+            hx-get="{{ list_url }}"
             hx-trigger="change"
             hx-target="#gabarit-content"
             hx-include="[name='q']"
@@ -29,13 +40,14 @@
       <option value="{{ cat_key }}" {{ 'selected' if cat_key == category_filter }}>{{ cat_label }}</option>
       {% endfor %}
     </select>
+    {% endif %}
     <input type="search" name="q" value="{{ search_query }}"
            placeholder="Rechercher…"
            autocomplete="off"
-           hx-get="{{ url_for('doc_templates.template_list') }}"
+           hx-get="{{ list_url }}"
            hx-trigger="input changed delay:300ms, search"
            hx-target="#gabarit-content"
-           hx-include="[name='category']"
+           {% if not modeles %}hx-include="[name='category']"{% endif %}
            class="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
   </div>
 
@@ -49,7 +61,9 @@
 
   {# ── Mobile FAB ─────────────────────────────────────────────── #}
   <div class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30">
-    <a href="{{ url_for('doc_templates.template_new') }}"
+    <a href="{{ new_url }}"
+       aria-label="{{ new_label }}"
+       title="{{ new_label }}"
        class="w-14 h-14 flex items-center justify-center text-white bg-indigo-600 rounded-full shadow-lg">
       {{ ms('add', 24) }}
     </a>
