@@ -182,7 +182,7 @@ and cannot reach the singleton.
 | `FIRM_STREET`, `FIRM_UNIT`, `FIRM_CITY`, `FIRM_POSTAL_CODE` | ○ | `""` | Address, in the app's own six-suffix shape |
 | `FIRM_PROVINCE` | ○ | `QC` | ⚠ The only non-empty default here, and it disagrees with the convention every contact address in the app follows (`Québec`, spelled out). `_seed_from_env` migrates it through `apply_address_defaults`, so the stored profile is correct — but a reader of `app.yaml` sees `QC` |
 | `FIRM_PHONE`, `FIRM_FAX`, `FIRM_EMAIL` | ○ | `""` | Phones are stored **E.164**; `cabinet_dict()` renders the local form |
-| `GST_NUMBER`, `QST_NUMBER` | ○ | `""` | ⚠ Read at invoice creation and **snapshotted per invoice** — nothing rewrites them on an existing invoice (a brouillon's correction, lot 3a, reaches its notes, terms, due date and billing address only), so setting them here (or in « Paramètres ») affects **future invoices only**. **Since lot 3a a NEW invoice charging GST or QST under an EMPTY number is REFUSED**, on the web form as through the connector — fill both in « Paramètres → Profil du cabinet » before deploying it (§15 « Lot 3 », step 1) |
+| `GST_NUMBER`, `QST_NUMBER` | ○ | `""` | ⚠ Read at invoice creation and **snapshotted per invoice** — nothing rewrites them on an existing invoice (a brouillon's correction, lot 3a, reaches its notes, due date and billing address only), so setting them here (or in « Paramètres ») affects **future invoices only**. **Since lot 3a a NEW invoice charging GST or QST under an EMPTY number is REFUSED**, on the web form as through the connector — fill both in « Paramètres → Profil du cabinet » before deploying it (§15 « Lot 3 », step 1) |
 
 #### Integrations — Microsoft Graph, Bookings, Outlook mirror
 
@@ -4742,8 +4742,10 @@ Notes:
   tools by the lawyer's decision (item 1) — and `preview_invoice` now
   returns the `date` and `due_date` the write would store (two new keys of
   a read). The default payment terms read « Payable dans un délai d'un
-  mois suivant la date de facturation. »; the due date stays correctable
-  on a brouillon; existing invoices keep their stored due date and terms.
+  mois suivant la date de facturation. » (*superseded on 2026-11-11*: the
+  payment terms are retired — « Invoices lose « Conditions » », below); the
+  due date stays correctable on a brouillon; existing invoices keep their
+  stored due date and terms.
   **The note d'honoraires prints the due date (`{{facture.date_echeance}}`)
   but no placeholder carries the payment terms:** any delay written in the
   active « Note d'honoraires » gabarit (« 30 jours ») is the gabarit's own
@@ -5366,6 +5368,72 @@ Notes:
      their own amounts, which add up to it; each opens the invoice list
      filtered on its status (« Envoyée » or « En retard » selected).
   A rollback is the code alone.
+
+- **Invoices lose « Conditions » (2026-11-11).** Lot 1 of the lawyer's
+  plan « Factures : retard, radiation, intérêts ». The payment terms (the
+  stored key `payment_terms`, « Conditions » on the invoice's sheet) were
+  typed on every invoice, but no note d'honoraires placeholder ever printed
+  them (`utils/invoice_docx.py` fills none): they leave the invoices.
+  `models/invoice.py` no longer accepts them on creation
+  (`_CREATE_DATA_KEYS` drops the key), defaults them
+  (`DEFAULT_PAYMENT_TERMS` is gone) or corrects them on a brouillon
+  (`DRAFT_FIELDS` is `notes` and `due_date`; a correction naming the key is
+  refused by name, and its cap went with it). The module's docstring
+  declares the key RETIRED: an invoice written before keeps it — no
+  migration and no purge, since every write after creation is a partial
+  `update()` of the keys it changes — and nothing reads it, which
+  `tests/test_invoice_draft.py` sweeps for in every module and template.
+  On the web, the creation form's « Notes et conditions » becomes
+  « Notes », without its « Conditions de paiement » box; so does the
+  brouillon's correction form; and the sheet's « Conditions » row is gone,
+  on an older invoice too. A page opened before the deploy still posts the
+  field: it is ignored, never refused. Through the connector,
+  `create_invoice`, `update_invoice` and `import_invoice` lose their
+  `payment_terms` input, which their schemas
+  (`additionalProperties: false`) now refuse by name, and `get_invoice` no
+  longer returns the key (its property and its `required` entry left
+  together; output schemas never forbid an extra key, so a payload served
+  before the deploy still conforms). Change Impact: item 1 — touched:
+  three write inputs narrowed (`update_invoice`'s description no longer
+  names the field) and one read key removed; no disclosure promise and no
+  consent text moved; the registry fingerprint moved (`6f136c95b8ec` →
+  `45319ee6ddf9`), so the plugin goes to 1.9.1 — only its generated version
+  line changes — delivered on the lawyer's « go » (step 5).
+  **`validate_args` runs before the idempotency replay**: a same-key retry
+  of a call made before the deploy that carried `payment_terms` is refused
+  instead of replayed — hence step 1. Item 2 — not touched (invoices are
+  not DAV-exposed). Item 3 — not touched: the docx engine and its fields
+  are unchanged, but the active « Note d'honoraires » gabarit may print
+  payment terms of its own — step 4. Item 4 — no new event:
+  `invoice_draft_updated`'s `fields_changed` no longer names
+  `payment_terms`, and the draft's `validation` refusal no longer covers
+  empty payment terms (OBSERVABILITY.md). Item 5 — not touched: no route,
+  header, CSRF exemption, prefix or setting; a form field removed. Item 6
+  — three invoice templates, markup removed and no class added (no
+  recompile). Item 7 — no query. In order:
+  1. *Before the push*: no invoice write through the connector in the last
+     24 hours (the idempotency replay's window) — this prints nothing:
+     `gcloud logging read 'jsonPayload.tool=("create_invoice" OR "update_invoice" OR "import_invoice")' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.event,jsonPayload.tool)"`.
+     If it prints a line, push a day after the last one.
+  2. *The push* — no index, no consent train.
+  3. *On the phone (375 px) and the desktop*: « Nouvelle facture » shows a
+     « Notes » section without « Conditions de paiement »; « Modifier le
+     brouillon » likewise; an invoice's sheet shows no « Conditions » row
+     under « Facturation », an older invoice's included.
+  4. *The active note d'honoraires gabarit*, opened in Word: any payment
+     terms it prints (« Payable dans… », a delay) are its own static text —
+     the « Guide des champs des gabarits » lists no field for them — and
+     now the only terms a client reads: keep them, or correct them in a new
+     version designated « actif ». If it prints none and the client should
+     read some, add them there.
+  5. *Plugin 1.9.1*, on the lawyer's « go »: rebuild it, unpack it into the
+     mirror `athena-plugin` (the old copy removed first), bump the mirror's
+     marketplace.json, commit and push it the same day. It follows 1.9.0;
+     until then, `exporter_plugin_athena --check` reports the drift.
+  A rollback is the code alone, with plugin 1.9.0: the old code reads a
+  missing key as empty — `get_invoice` answers `""`, the sheet shows no
+  « Conditions » row, and a brouillon's correction form shows an empty box
+  whose unchanged value saves.
 
 ## 16. Troubleshooting
 

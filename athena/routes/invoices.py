@@ -34,10 +34,8 @@ from utils.cabinet import cabinet_dict
 from utils.deadlines import today_utc
 from utils.format_fr import format_rate_fr
 from models.invoice import (
-    DEFAULT_PAYMENT_TERMS,
     DRAFT_FIELDS,
     DRAFT_NOTES_MAX_LENGTH,
-    DRAFT_PAYMENT_TERMS_MAX_LENGTH,
     STATUS_LABELS,
     VALID_STATUSES,
     available_transitions,
@@ -91,11 +89,10 @@ def _template_context() -> dict:
     and the detail page is a DATA sheet — it never restates the firm's own
     identity. The tax numbers a given invoice was issued under live on the
     invoice itself (``gst_number``/``qst_number``, snapshotted at creation),
-    which is what the sheet shows. The creation form's default payment terms
-    are the model's own constant — the template keeps no copy.
+    which is what the sheet shows. No payment terms either: the key is
+    retired (``models/invoice.py``), and no page renders a legacy invoice's.
     """
-    return {"status_labels": STATUS_LABELS,
-            "default_payment_terms": DEFAULT_PAYMENT_TERMS}
+    return {"status_labels": STATUS_LABELS}
 
 
 # ── Invoice list ─────────────────────────────────────────────────────────
@@ -350,7 +347,6 @@ def invoice_create() -> str:
         "date": _parse_date(f.get("invoice_date", "")),
         "due_date": _parse_date(f.get("due_date", "")),
         "notes": f.get("notes", "").strip(),
-        "payment_terms": f.get("payment_terms", "").strip(),
         "gst_number": _cab.get("gst_number", ""),
         "qst_number": _cab.get("qst_number", ""),
     }
@@ -394,7 +390,6 @@ def invoice_create() -> str:
                                  if e.get("id") in chosen_expenses],
             form_due_date=f.get("due_date", ""),
             form_notes=f.get("notes", ""),
-            form_payment_terms=f.get("payment_terms", ""),
         )
         return render_template("invoices/create.html", **ctx)
 
@@ -486,8 +481,8 @@ def invoice_detail(invoice_id: str) -> str:
         paiements=paiements,
         method_labels=METHOD_LABELS,
         tx_status_labels=TX_STATUS_LABELS,
-        # A brouillon is corrected on its own page (notes, terms, due date,
-        # billing address) — never its figures.
+        # A brouillon is corrected on its own page (notes, due date, billing
+        # address) — never its figures.
         can_edit_draft=not draft_edit_refusal(invoice),
         return_to=safe_internal_redirect(request.args.get("return_to"), ""),
         # Rebond des actions de la fiche (statut, annulation, suppression) :
@@ -513,7 +508,6 @@ def _draft_form_values(invoice: dict) -> dict:
         "id": invoice.get("id", ""),
         "etag": invoice.get("etag") or "",
         "notes": invoice.get("notes", "") or "",
-        "payment_terms": invoice.get("payment_terms", "") or "",
         "due_date": due.strftime("%Y-%m-%d") if hasattr(due, "strftime") else "",
         "refresh_billing_address": False,
     }
@@ -533,7 +527,6 @@ def _render_draft_form(
         errors=errors or [],
         conflict=conflict,
         notes_max=DRAFT_NOTES_MAX_LENGTH,
-        payment_terms_max=DRAFT_PAYMENT_TERMS_MAX_LENGTH,
     )
     return render_template("invoices/draft_form.html", **ctx)
 
@@ -541,8 +534,8 @@ def _render_draft_form(
 @invoices_bp.route("/<invoice_id>/brouillon")
 @login_required
 def invoice_draft_edit(invoice_id: str) -> str:
-    """The correction form of a brouillon — notes, terms, due date, and a
-    fresh snapshot of the client's billing address. Never its figures."""
+    """The correction form of a brouillon — notes, due date, and a fresh
+    snapshot of the client's billing address. Never its figures."""
     invoice = get_invoice(invoice_id)
     if not invoice:
         return redirect(url_for("invoices.invoice_list"))
@@ -569,7 +562,9 @@ def invoice_draft_update(invoice_id: str) -> str:
     # By PRESENCE, never ``f.get(k, "")``: on this model a present empty
     # key ERASES (« '' clears » the notes) while an absent one survives, so
     # a POST lacking a field must leave that field alone rather than blank
-    # it. The page always posts all three.
+    # it. The page always posts both. Only DRAFT_FIELDS are read: a page
+    # rendered before « Conditions » was retired still posts
+    # ``payment_terms``, which is ignored here rather than refused by name.
     changes = {k: f[k] for k in DRAFT_FIELDS if k in f}
     refresh = f.get("refresh_billing_address") == "on"
     _doc, errors, _changed = update_invoice_draft(

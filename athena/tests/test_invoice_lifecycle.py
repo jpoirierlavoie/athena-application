@@ -102,7 +102,7 @@ def _invoice(fake, **over) -> dict:
         "gst_rate": 500, "gst_amount": 1750, "qst_rate": 9975,
         "qst_amount": 3491, "total": 40241, "retainer_applied": 0,
         "amount_due": 40241, "amount_paid": 0, "paid_date": None,
-        "gst_number": "", "qst_number": "", "notes": "", "payment_terms": "",
+        "gst_number": "", "qst_number": "", "notes": "",
         "etag": ETAG, "created_at": WHEN, "updated_at": WHEN,
     }
     doc.update(over)
@@ -691,7 +691,9 @@ def test_create_invoice_force_l_etat_de_paiement(fake):
          "client_name": "Jean", "legacy_ref": "OLD-1",
          # What no caller may decide:
          "status": "payée", "amount_paid": 40241, "paid_date": WHEN,
-         "etag": "forged", "id": "forged", "voided": True},
+         "etag": "forged", "id": "forged", "voided": True,
+         # Retired on 2026-11-11 (« Conditions »): dropped like the rest.
+         "payment_terms": "Payable à réception."},
         invoice_number="2019-F001",
     )
     assert errors == [], errors
@@ -701,6 +703,7 @@ def test_create_invoice_force_l_etat_de_paiement(fake):
     assert stored["id"] == invoice["id"] != "forged"
     assert stored["etag"] != "forged"
     assert "voided" not in stored
+    assert "payment_terms" not in stored
     assert stored["legacy_ref"] == "OLD-1"         # whitelisted, kept
     assert stored["client_name"] == "Jean"
 
@@ -737,10 +740,14 @@ def test_la_liste_blanche_couvre_ce_que_les_deux_appelants_envoient():
     web = _data_keys("routes/invoices.py", "invoice_create")
     mcp = _data_keys("mcp/handlers.py", "_import_invoice_impl")
     assert web and mcp
+    assert "notes" in web and "notes" in mcp
     assert web - invoice_model._CREATE_DATA_KEYS == set()
-    assert (mcp | {"notes", "payment_terms"}) - invoice_model._CREATE_DATA_KEYS == set()
+    assert mcp - invoice_model._CREATE_DATA_KEYS == set()
     for forced in ("status", "amount_paid", "paid_date", "invoice_number"):
         assert forced not in invoice_model._CREATE_DATA_KEYS
+    # « Conditions », retired on 2026-11-11: neither caller sends it, and the
+    # whitelist would drop it if one did.
+    assert "payment_terms" not in web | mcp | invoice_model._CREATE_DATA_KEYS
 
 
 # ══════════════════════════════════════════════════════════════════════

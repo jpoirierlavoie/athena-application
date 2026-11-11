@@ -3433,7 +3433,7 @@ def _inv(n, day, status="envoyée", **over):
         "qst_rate": 9975, "qst_amount": 9975,
         "total": 114975, "retainer_applied": 0, "amount_due": 114975,
         "amount_paid": 0, "paid_date": None,
-        "notes": "", "payment_terms": "Payable dans les 30 jours.",
+        "notes": "",
     }
     doc.update(over)
     return doc

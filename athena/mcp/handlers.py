@@ -241,7 +241,6 @@ from mcp.tools import (
     IMAGE_RESULT_KEY,
     INVOICE_NOTES_MAX_CHARS,
     INVOICE_SOURCES_MAX,
-    INVOICE_TERMS_MAX_CHARS,
     MARKDOWN_DOCUMENT_MAX_CHARS,
     PHASE_BULK_MAX,
     REGISTER_CLEAR_MAX,
@@ -2999,7 +2998,10 @@ def _line_item_row(item: dict) -> dict:
 
 
 def get_invoice(args: dict) -> dict:
-    """One invoice with its totals and its line items."""
+    """One invoice with its totals and its line items.
+
+    Never the retired ``payment_terms`` (« Conditions », 2026-11-11 —
+    ``models/invoice.py``), which an older invoice still stores."""
     invoice_id = args["invoice_id"]
     invoice, items = invoice_model.get_invoice_with_items(invoice_id)
     if invoice is None:
@@ -3010,7 +3012,6 @@ def get_invoice(args: dict) -> dict:
         "dossier_title": invoice.get("dossier_title", ""),
         "client_id": invoice.get("client_id", ""),
         "notes": invoice.get("notes", ""),
-        "payment_terms": invoice.get("payment_terms", ""),
         "gst_rate_display": format_rate_fr(invoice.get("gst_rate", 0), 100),
         "qst_rate_display": format_rate_fr(invoice.get("qst_rate", 0), 1000),
     })
@@ -6511,15 +6512,14 @@ def _import_invoice_impl(args: dict) -> dict:
         data["billing_address"] = billing_address
     if due is not None:
         data["due_date"] = due
-    for key, cap in (("notes", 1500), ("payment_terms", 500)):
-        if key in args:
-            value = str(args[key] or "")
-            if len(value) > cap:
-                raise ToolArgumentError(
-                    f"`{key}` dépasse {cap} caractères — il serait tronqué "
-                    "silencieusement à l'enregistrement."
-                )
-            data[key] = _clean_entity_text(value, key)
+    if "notes" in args:
+        notes = str(args["notes"] or "")
+        if len(notes) > 1500:
+            raise ToolArgumentError(
+                "`notes` dépasse 1500 caractères — il serait tronqué "
+                "silencieusement à l'enregistrement."
+            )
+        data["notes"] = _clean_entity_text(notes, "notes")
     if "retainer_applied_cents" in args:
         retainer = int(args["retainer_applied_cents"])
         if retainer < 0:
@@ -6646,8 +6646,7 @@ _CONNECTOR_STATUS_MOVES = frozenset({
     ("brouillon", "envoyée"), ("envoyée", "en_retard"),
     ("en_retard", "envoyée"),
 })
-_INVOICE_DRAFT_ARGS = ("notes", "payment_terms", "due_date",
-                       "refresh_billing_address")
+_INVOICE_DRAFT_ARGS = ("notes", "due_date", "refresh_billing_address")
 # The YEAR COUNTER's promise (monotone: it never reissues a number) — the
 # only one create_invoice can make, since every number it takes comes from
 # that counter. An IMPORTED number is import_invoice's (its own warning).
@@ -6975,16 +6974,6 @@ def _create_invoice_impl(args: dict) -> dict:
     if "notes" in args:
         data["notes"] = _clean_entity_text(
             str(args["notes"] or ""), "notes", INVOICE_NOTES_MAX_CHARS)
-    if "payment_terms" in args:
-        terms = _clean_entity_text(
-            str(args["payment_terms"] or ""), "payment_terms",
-            INVOICE_TERMS_MAX_CHARS)
-        if not terms:
-            raise ToolArgumentError(
-                "`payment_terms` ne peut pas être vide : elles s'impriment sur "
-                "la facture. Omettez-les pour les conditions par défaut."
-            )
-        data["payment_terms"] = terms
 
     invoice, errors = invoice_model.create_invoice(
         dossier_id, entry_ids, expense_ids, data,
@@ -7097,8 +7086,7 @@ def _update_invoice_impl(args: dict) -> dict:
     if not draft_keys:
         raise ToolArgumentError(
             "Aucune modification demandée : `status`, ou un champ de "
-            "brouillon (notes, payment_terms, due_date, "
-            "refresh_billing_address)."
+            "brouillon (notes, due_date, refresh_billing_address)."
         )
     return _edit_invoice_draft(args, invoice)
 
@@ -7285,9 +7273,9 @@ def _edit_invoice_draft(args: dict, invoice: dict) -> dict:
     if refusal:
         raise ToolArgumentError(refusal, reason="invoice_refused")
     changes: dict[str, Any] = {}
-    for key in ("notes", "payment_terms"):
-        if key in args:
-            changes[key] = str(args[key] if args[key] is not None else "")
+    if "notes" in args:
+        changes["notes"] = str(args["notes"] if args["notes"] is not None
+                               else "")
     if "due_date" in args:
         due = _write_date(args, "due_date", required=True)
         changes["due_date"] = due

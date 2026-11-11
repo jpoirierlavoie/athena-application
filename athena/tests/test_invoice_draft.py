@@ -4,26 +4,34 @@ et la page ``/factures/<id>/brouillon``.
 Il n'existait AUCUN moyen de corriger un brouillon : une coquille dans ses
 notes, une échéance erronée, un client qui a déménagé avant l'envoi — chaque
 fois, la seule « correction » était d'annuler la facture, ce qui retire son
-numéro pour toujours. La correction touche quatre choses et rien d'autre :
-les notes, les conditions de paiement, la date d'échéance, et un nouvel
-instantané de l'adresse de facturation lu sur la fiche ACTUELLE du client.
-Jamais un montant, jamais une ligne : c'est une mise à jour PARTIELLE, et la
-forme de l'écriture est épinglée.
+numéro pour toujours. La correction touche trois choses et rien d'autre :
+les notes, la date d'échéance, et un nouvel instantané de l'adresse de
+facturation lu sur la fiche ACTUELLE du client. Jamais un montant, jamais
+une ligne : c'est une mise à jour PARTIELLE, et la forme de l'écriture est
+épinglée.
+
+Les conditions de paiement (« Conditions », clé ``payment_terms``) sont
+retirées depuis le 2026-11-11 (section 7) : une facture qui les porte
+encore se lit et se corrige sans qu'on les montre ni qu'on les touche, et
+aucun module ni gabarit ne les lit plus.
 
 Tout passe par le faux Firestore partagé (le client, ses transactions et la
 boucle de reprise de ``transactional`` sont les vrais) ; on relit ce qui est
 STOCKÉ.
 """
 
+import ast
 import os
 import pathlib
 import re
 import sys
 from datetime import datetime, timezone
+from html import unescape
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from jinja2 import nodes
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ATHENA))
@@ -45,6 +53,11 @@ from flask import Flask  # noqa: E402
 from google.cloud.firestore_v1.transaction import Transaction  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
+# The lot 0 sweep's own reach — every first-party module and both template
+# trees — so the retired key's sweep (section 7) cannot read less.
+from tests.test_invoice_balance_authority import (  # noqa: E402
+    _JINJA, _rel, python_sources, template_sources,
+)
 from tz import to_mtl  # noqa: E402
 from utils.format_fr import format_cents_fr  # noqa: E402
 from utils.icons import ms  # noqa: E402
@@ -129,14 +142,12 @@ def test_un_brouillon_se_corrige(fake):
     _invoice(fake)
     doc, errors, changed = _edit({
         "notes": "  Merci de votre confiance.  ",
-        "payment_terms": "Payable à réception.",
         "due_date": "2026-08-01",
     })
     assert errors == [], errors
-    assert changed == ["due_date", "notes", "payment_terms"]
+    assert changed == ["due_date", "notes"]
     stored = fake.peek(PATH)
     assert stored["notes"] == "Merci de votre confiance."
-    assert stored["payment_terms"] == "Payable à réception."
     assert stored["due_date"] == datetime(2026, 8, 1, tzinfo=UTC)
     assert stored["etag"] != ETAG and doc["etag"] == stored["etag"]
     assert stored["updated_via"] == "script"      # no request: a script
@@ -199,10 +210,10 @@ def test_une_demande_vide_est_refusee(fake):
 
 @pytest.mark.parametrize("changes, needle", [
     ({"notes": "x" * 1501}, "1500 caractères"),
-    ({"payment_terms": "y" * 501}, "500 caractères"),
-    ({"payment_terms": "   "}, "ne peuvent pas être vides"),
     ({"notes": "si a < b et b > c"}, "chevrons"),
-    ({"payment_terms": "<b>30 jours</b>"}, "chevrons"),
+    # Retired 2026-11-11 (section 7): refused by name, like any other key.
+    ({"payment_terms": "Payable à réception."},
+     "Champ non modifiable sur un brouillon : payment_terms."),
     ({"notes": 12}, "chaîne"),
     ({"due_date": ""}, "requise"),
     ({"due_date": None}, "requise"),
@@ -267,16 +278,14 @@ def test_un_texte_renvoye_par_le_navigateur_n_est_pas_un_changement(fake):
     page, passaient pour CHANGÉES à chaque sauvegarde : réécrites en CRLF,
     rapportées dans ``fields_changed`` au journal — alors que le juriste n'y
     avait pas touché.)"""
-    _invoice(fake, notes=_LF, payment_terms="Payable\nà réception.")
+    _invoice(fake, notes=_LF)
     _, errors, changed = _edit({
         "notes": _LF.replace("\n", "\r\n"),
-        "payment_terms": "Payable\r\nà réception.",
         "due_date": "2026-08-01",
     })
     assert errors == [] and changed == ["due_date"]
     stored = fake.peek(PATH)
     assert stored["notes"] == _LF
-    assert stored["payment_terms"] == "Payable\nà réception."
 
 
 def test_une_note_importee_proche_du_plafond_ne_bloque_pas_une_autre_correction(
@@ -505,7 +514,6 @@ def test_enregistrer_revient_a_la_fiche(fake, client):
     _partie(fake)
     resp = client.post(f"/factures/{INV}/brouillon", data={
         "expected_etag": ETAG, "notes": "Revue", "due_date": "2026-07-30",
-        "payment_terms": "Payable dans les 30 jours.",
         "refresh_billing_address": "on"})
     assert resp.status_code == 302
     assert urlparse(resp.location).path == f"/factures/{INV}"
@@ -520,8 +528,7 @@ def test_une_facture_envoyee_entre_temps_renvoie_a_sa_fiche_avec_le_motif(
 ):
     _invoice(fake, status="envoyée")
     resp = client.post(f"/factures/{INV}/brouillon", data={
-        "expected_etag": ETAG, "notes": "Revue", "due_date": "2026-07-30",
-        "payment_terms": "Payable."})
+        "expected_etag": ETAG, "notes": "Revue", "due_date": "2026-07-30"})
     assert resp.status_code == 302
     assert "erreur" in parse_qs(urlparse(resp.location).query)
 
@@ -534,13 +541,10 @@ def test_la_page_ne_reecrit_pas_des_notes_que_le_navigateur_renvoie_en_crlf(
     _invoice(fake, notes=_LF)
     resp = client.post(f"/factures/{INV}/brouillon", data={
         "expected_etag": ETAG, "notes": _LF.replace("\n", "\r\n"),
-        # The STORED terms, re-sent unchanged (the page's own value).
-        "payment_terms": invoice_model.DEFAULT_PAYMENT_TERMS,
         "due_date": "2026-07-30"})
     assert resp.status_code == 302
     stored = fake.peek(PATH)
     assert stored["notes"] == _LF
-    assert stored["payment_terms"] == invoice_model.DEFAULT_PAYMENT_TERMS
     assert stored["due_date"] == datetime(2026, 7, 30, tzinfo=UTC)
 
 
@@ -617,7 +621,7 @@ def test_la_page_et_ses_ajouts_n_emploient_que_des_classes_compilees(
     _invoice(fake, created_via="mcp")
     pages = client.get(f"/factures/{INV}/brouillon").get_data(as_text=True)
     pages += client.post(f"/factures/{INV}/brouillon", data={
-        "expected_etag": RIVAL, "notes": "x", "payment_terms": "y",
+        "expected_etag": RIVAL, "notes": "x",
         "due_date": "2026-07-30"}).get_data(as_text=True)     # the banner
     # The page content only — never base.html's navigation or its scripts.
     def _content(page: str) -> str:
@@ -635,3 +639,203 @@ def test_la_page_et_ses_ajouts_n_emploient_que_des_classes_compilees(
     # Not vacuous: the form, the conflict banner and the chip were scanned.
     assert {"bg-indigo-600", "bg-amber-50", "rounded-full"} <= classes
     assert not _absent_classes(classes, _compiled_css())
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. « Conditions » retirées (2026-11-11)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Aucun champ de la note d'honoraires n'imprimait les conditions de paiement
+# (clé ``payment_terms``) : l'avocat les a retirées (plan « Factures »,
+# lot 1). Une facture écrite avant les GARDE — ni migration ni purge — et
+# rien ne les lit plus.
+
+_RETIRED = "payment_terms"
+# A marker no page prints on its own: wherever it shows, the stored value
+# leaked.
+_LEGACY_TERMS = "Payable sous 45 jours — CONDITIONS-HÉRITÉES-Z7"
+_IN_2031 = {"date": datetime(2031, 6, 15, tzinfo=UTC),
+            "due_date": datetime(2031, 7, 15, tzinfo=UTC)}
+
+
+def _legacy(fake, **over) -> dict:
+    """A brouillon written before the retirement: it still carries the key."""
+    return _invoice(fake, **{_RETIRED: _LEGACY_TERMS, **_IN_2031, **over})
+
+
+def _main(page: str) -> str:
+    """The page's own content: base.html's menus link « Conditions
+    d'utilisation », which is not this field."""
+    start = page.index("<main ")
+    return page[start:page.index("</main>", start)]
+
+
+def test_un_brouillon_qui_porte_encore_ses_conditions_se_corrige_sans_y_toucher(
+    fake, monkeypatch,
+):
+    """Ni migration ni purge : la correction reste un update() PARTIEL des
+    seules clés qui changent, dont la clé retirée ne fait jamais partie — sa
+    valeur reste telle quelle."""
+    _legacy(fake)
+    staged = []
+    real_update = Transaction.update
+
+    def _spy(self, reference, field_updates, option=None):
+        staged.append(set(field_updates))
+        return real_update(self, reference, field_updates, option=option)
+
+    monkeypatch.setattr(Transaction, "update", _spy)
+    _, errors, changed = _edit({"notes": "Revue", "due_date": "2031-08-01"})
+    assert errors == [] and changed == ["due_date", "notes"]
+    assert staged == [{"notes", "due_date", "updated_at", "etag",
+                       "updated_via"}]
+    stored = fake.peek(PATH)
+    assert stored["notes"] == "Revue"
+    assert stored[_RETIRED] == _LEGACY_TERMS
+
+
+def test_une_facture_qui_porte_encore_ses_conditions_ne_les_montre_jamais(
+    fake, client,
+):
+    """La fiche et la page de correction d'une facture qui porte encore la
+    clé : ni sa valeur, ni la rangée « Conditions », ni le champ."""
+    _legacy(fake)
+    for url in (f"/factures/{INV}", f"/factures/{INV}/brouillon"):
+        resp = client.get(url)
+        assert resp.status_code == 200, url
+        page = unescape(resp.get_data(as_text=True))
+        assert "CONDITIONS-HÉRITÉES" not in page, url
+        main = _main(page)
+        assert "Premier jet" in main, url        # the invoice itself rendered
+        assert "Conditions" not in main, url
+        assert _RETIRED not in main, url
+
+
+def test_une_page_d_avant_le_retrait_qui_envoie_encore_les_conditions(
+    fake, client,
+):
+    """Un onglet ouvert avant le déploiement envoie encore le champ, même
+    modifié : la route ne lit que DRAFT_FIELDS. Le reste s'enregistre, la
+    valeur stockée ne bouge pas, et rien n'est refusé pour autant."""
+    _legacy(fake)
+    resp = client.post(f"/factures/{INV}/brouillon", data={
+        "expected_etag": ETAG, "notes": "Revue", "due_date": "2031-07-30",
+        _RETIRED: "Payable à réception."})
+    assert resp.status_code == 302
+    assert urlparse(resp.location).path == f"/factures/{INV}"
+    stored = fake.peek(PATH)
+    assert stored["notes"] == "Revue"
+    assert stored["due_date"] == datetime(2031, 7, 30, tzinfo=UTC)
+    assert stored[_RETIRED] == _LEGACY_TERMS
+
+
+def _python_reads(source: str) -> list[int]:
+    """The lines where Python CODE names the retired key: the string itself
+    (a dict key, ``.get``, a subscript, ``getattr``), or a name, attribute,
+    import, keyword or parameter that contains it (``DEFAULT_PAYMENT_TERMS``,
+    ``payment_terms_max=…``). Prose — a comment, a docstring — is not code."""
+    lines = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant):
+            hit = node.value == _RETIRED
+        elif isinstance(node, ast.Name):
+            hit = _RETIRED in node.id.lower()
+        elif isinstance(node, ast.Attribute):
+            hit = _RETIRED in node.attr.lower()
+        elif isinstance(node, ast.alias):
+            hit = _RETIRED in node.name.lower()
+        elif isinstance(node, (ast.keyword, ast.arg)):
+            hit = _RETIRED in (node.arg or "").lower()
+        else:
+            continue
+        if hit:
+            lines.add(node.lineno)
+    return sorted(lines)
+
+
+def _template_reads(source: str) -> list[int]:
+    """The same for a template, through Jinja's own parser (its comments are
+    gone): an attribute or a name that contains the key
+    (``invoice.payment_terms``, ``form_payment_terms``), the key as a string,
+    or markup that names it (``name="payment_terms"``)."""
+    lines = set()
+    for node in _JINJA.parse(source).find_all(
+            (nodes.Getattr, nodes.Name, nodes.Const, nodes.TemplateData)):
+        if isinstance(node, nodes.Getattr):
+            hit = _RETIRED in node.attr.lower()
+        elif isinstance(node, nodes.Name):
+            hit = _RETIRED in node.name.lower()
+        elif isinstance(node, nodes.Const):
+            hit = node.value == _RETIRED
+        else:
+            hit = _RETIRED in node.data
+        if hit:
+            lines.add(node.lineno)
+    return sorted(lines)
+
+
+def test_aucun_module_ni_gabarit_ne_lit_plus_les_conditions():
+    """« Rien ne les lit » : la docstring de models/invoice.py le promet, ce
+    balayage le tient, sur chaque module Python d'athena/ (hors tests) et
+    chaque gabarit des deux services. Une trouvaille nomme sa ligne : la
+    retirer, ou revenir sur la décision de l'avocat."""
+    modules = {_rel(p): p for p in python_sources()}
+    templates = {_rel(p): p for p in template_sources()}
+    # Not vacuous: every file that read the key before reaches the sweep.
+    assert {"models/invoice.py", "routes/invoices.py", "mcp/handlers.py",
+            "mcp/tools.py", "mcp/output_schemas.py"} <= set(modules)
+    assert {f"templates/invoices/{n}.html"
+            for n in ("create", "draft_form", "detail")} <= set(templates)
+    findings = [f"{rel}:{line}" for rel, p in sorted(modules.items())
+                for line in _python_reads(p.read_text(encoding="utf-8"))]
+    findings += [f"{rel}:{line}" for rel, p in sorted(templates.items())
+                 for line in _template_reads(p.read_text(encoding="utf-8"))]
+    assert findings == [], "\n".join(findings)
+
+
+_PLANTED_PYTHON = {
+    "get": 'x = invoice.get("payment_terms", "")\n',
+    "subscript": 'data["payment_terms"] = ""\n',
+    "dict_key": 'row = {"payment_terms": terms}\n',
+    "getattr": 'x = getattr(invoice, "payment_terms")\n',
+    "import": "from models.invoice import DEFAULT_PAYMENT_TERMS\n",
+    "keyword": "ctx.update(payment_terms_max=500)\n",
+    "attribute": "x = invoice_model.DRAFT_PAYMENT_TERMS_MAX_LENGTH\n",
+    "parameter": "def show(payment_terms):\n    return 1\n",
+}
+_INNOCENT_PYTHON = {
+    "docstring": '"""The retired ``payment_terms`` is never read."""\n',
+    "comment": "x = 1  # payment_terms is retired\n",
+    "prose": 'x = "Conditions de paiement"\n',
+}
+_PLANTED_TEMPLATES = {
+    "getattr": "{{ invoice.payment_terms }}",
+    "getitem": "{{ invoice['payment_terms'] }}",
+    "markup": '<textarea name="payment_terms"></textarea>',
+    "name": "{{ form_payment_terms }}",
+    "test": "{% if default_payment_terms %}x{% endif %}",
+}
+_INNOCENT_TEMPLATES = {
+    "comment": "{# invoice.payment_terms : retirées #}<p>x</p>",
+    "prose": "<p>Conditions de paiement</p>",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_PLANTED_PYTHON))
+def test_une_lecture_plantee_en_python_est_prise(name):
+    assert _python_reads(_PLANTED_PYTHON[name]) != [], name
+
+
+@pytest.mark.parametrize("name", sorted(_INNOCENT_PYTHON))
+def test_une_mention_en_prose_python_ne_l_est_pas(name):
+    assert _python_reads(_INNOCENT_PYTHON[name]) == [], name
+
+
+@pytest.mark.parametrize("name", sorted(_PLANTED_TEMPLATES))
+def test_une_lecture_plantee_dans_un_gabarit_est_prise(name):
+    assert _template_reads(_PLANTED_TEMPLATES[name]) != [], name
+
+
+@pytest.mark.parametrize("name", sorted(_INNOCENT_TEMPLATES))
+def test_une_mention_en_prose_dans_un_gabarit_ne_l_est_pas(name):
+    assert _template_reads(_INNOCENT_TEMPLATES[name]) == [], name

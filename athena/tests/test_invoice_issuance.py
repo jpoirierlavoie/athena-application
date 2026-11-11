@@ -604,8 +604,7 @@ def test_un_refus_rend_la_selection_et_les_saisies_de_l_avocat(fake, client):
     facturé, et un refus la re-rendait ainsi. L'entrée que l'avocat avait
     délibérément laissée de côté était donc RECOCHÉE en silence après un
     refus — une sélection périmée, un numéro de taxe vide… — et le « Créer »
-    suivant la facturait. Ses notes, ses conditions et son échéance
-    disparaissaient aussi.)"""
+    suivant la facturait. Ses notes et son échéance disparaissaient aussi.)"""
     ok = _entry(fake, "te-ok")
     _entry(fake, "te-laissee-de-cote")                  # listed, NOT chosen
     stale = _entry(fake, "te-stale", invoiced=True, invoice_id="inv-autre")
@@ -615,7 +614,6 @@ def test_un_refus_rend_la_selection_et_les_saisies_de_l_avocat(fake, client):
         "dossier_id": "d1", "invoice_date": "2026-06-15",
         "selected_entries": [ok, stale], "selected_expenses": [x_ok],
         "notes": "Mes notes pour le client",
-        "payment_terms": "Payable à réception.",
         "due_date": "2026-07-01",
     })
     html = resp.get_data(as_text=True)
@@ -624,7 +622,6 @@ def test_un_refus_rend_la_selection_et_les_saisies_de_l_avocat(fake, client):
     assert 'selectedEntries: ["te-ok"]' in html
     assert 'selectedExpenses: ["x-ok"]' in html
     assert "Mes notes pour le client" in html
-    assert "Payable à réception." in html
     assert 'name="due_date" value="2026-07-01"' in html
 
 
@@ -636,7 +633,6 @@ def test_le_premier_affichage_coche_tout_le_non_facture(fake, client):
     html = client.get("/factures/new?dossier_id=d1").get_data(as_text=True)
     (initial,) = re.findall(r"selectedEntries: (\[[^\]]*\])", html)
     assert sorted(json.loads(initial)) == ["te-a", "te-b"]
-    assert invoice_model.DEFAULT_PAYMENT_TERMS in unescape(html)
 
 
 def test_le_formulaire_n_offre_ni_n_envoie_de_provision(fake, client):
@@ -818,13 +814,17 @@ def test_une_date_qui_n_est_pas_une_date_est_refusee_jamais_jugee(fake):
     _nothing_written(fake, f"timeentries/{eid}")
 
 
-def test_les_conditions_par_defaut_disent_un_mois(fake):
-    assert invoice_model.DEFAULT_PAYMENT_TERMS == (
-        "Payable dans un délai d'un mois suivant la date de facturation.")
+def test_une_facture_nait_sans_conditions(fake):
+    """« Conditions » retirées le 2026-11-11 (models/invoice.py) : une
+    facture créée n'en porte plus aucune — ni valeur par défaut, ni celle
+    qu'un appelant enverrait encore, que la liste blanche écarte."""
     eid = _entry(fake, "te1")
-    doc, _ = invoice_model.create_invoice(
-        "d1", [eid], [], _data(), require_all_sources=True)
-    assert doc["payment_terms"] == invoice_model.DEFAULT_PAYMENT_TERMS
+    doc, errors = invoice_model.create_invoice(
+        "d1", [eid], [], _data(payment_terms="Payable à réception."),
+        require_all_sources=True)
+    assert errors == [], errors
+    assert "payment_terms" not in doc
+    assert "payment_terms" not in fake.peek(f"invoices/{doc['id']}")
 
 
 def test_le_formulaire_preremplit_le_jour_utc_et_l_accepte(
@@ -858,17 +858,30 @@ def test_le_formulaire_refuse_une_date_future_et_le_dit(
     assert fake.peek_collection("invoices") == {}
 
 
-def test_le_formulaire_annonce_un_mois_et_tient_les_conditions_du_modele(
+def test_le_formulaire_annonce_un_mois_et_n_offre_plus_de_conditions(
     fake, client,
 ):
     page = client.get("/factures/new?dossier_id=d1").get_data(as_text=True)
     # A visible line: browsers draw no placeholder on <input type="date">.
     assert "Laissée vide : un mois après la date de la facture." in page
-    assert invoice_model.DEFAULT_PAYMENT_TERMS in unescape(page)
-    # Une seule source : le gabarit n'en garde aucune copie.
-    gabarit = (_ATHENA / "templates" / "invoices" / "create.html").read_text(
-        encoding="utf-8")
-    assert "Payable dans" not in gabarit
+    # « Conditions » retirées le 2026-11-11 : ni le champ, ni son texte par
+    # défaut, ni la section qui les nommait.
+    assert 'name="payment_terms"' not in page
+    assert "Conditions de paiement" not in page
+    assert "Notes et conditions" not in page
+    assert "Payable dans" not in unescape(page)
+
+
+def test_une_page_d_avant_le_retrait_qui_envoie_encore_les_conditions(
+    fake, client,
+):
+    """Un onglet ouvert avant le déploiement envoie encore le champ : la
+    route ne le lit plus. La facture est créée, sans conditions."""
+    eid = _entry(fake, "te1")
+    resp = _post(client, eid, payment_terms="Payable à réception.")
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:400]
+    (stored,) = fake.peek_collection("invoices").values()
+    assert "payment_terms" not in stored
 
 
 def test_la_liste_s_appelle_honoraires_et_le_retour_aussi(fake, client):

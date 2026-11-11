@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Modifier le brouillon {{ invoice.invoice_number }} — Pallas Athena{% endblock %}
 
-{# Correction d'un BROUILLON (lot 3a) : notes, conditions de paiement, date
-   d'échéance, et un nouvel instantané de l'adresse de facturation depuis la
-   fiche du client. Jamais un montant ni une ligne : ce sont eux qui FONT la
-   facture, et les changer revient à l'annuler pour en émettre une autre.
+{# Correction d'un BROUILLON (lot 3a) : notes, date d'échéance, et un nouvel
+   instantané de l'adresse de facturation depuis la fiche du client. Jamais
+   un montant ni une ligne : ce sont eux qui FONT la facture, et les changer
+   revient à l'annuler pour en émettre une autre. Les conditions de paiement
+   (« Conditions ») sont retirées depuis le 2026-11-11 : models/invoice.py.
    Toutes les classes ci-dessous sont recopiées de invoices/create.html et
    invoices/detail.html — déjà compilées (tests/test_invoice_draft.py le
    vérifie contre static/vendor/app.*.css). #}
@@ -59,18 +60,13 @@
     </div>
 
     <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-      <h2 class="text-sm font-semibold text-gray-900 mb-4">Notes et conditions</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-4">Notes</h2>
       <div class="space-y-4">
         <div>
           <label for="notes" class="block text-xs font-medium text-gray-700 mb-1">Notes ({{ notes_max }} caractères au plus)</label>
           <textarea id="notes" name="notes" rows="3"
                     class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2"
                     placeholder="Notes imprimées sur la facture">{{ form.notes }}</textarea>
-        </div>
-        <div>
-          <label for="payment_terms" class="block text-xs font-medium text-gray-700 mb-1">Conditions de paiement ({{ payment_terms_max }} caractères au plus)</label>
-          <textarea id="payment_terms" name="payment_terms" rows="2"
-                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{{ form.payment_terms }}</textarea>
         </div>
       </div>
     </div>

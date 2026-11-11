@@ -1084,7 +1084,6 @@ _CREATE_DOCUMENT_SOURCES = ["markdown", "copy", "invoice_note"]
 # against its source, so none can drift.
 INVOICE_SOURCES_MAX = 200               # each list, and both together
 INVOICE_NOTES_MAX_CHARS = 1500          # models.invoice.DRAFT_NOTES_MAX_LENGTH
-INVOICE_TERMS_MAX_CHARS = 500           # …DRAFT_PAYMENT_TERMS_MAX_LENGTH
 VOID_REASON_MAX_CHARS = 500             # …VOID_REASON_MAX_LENGTH
 # The statuses update_invoice can SET — « annulée » is the void, never a bare
 # status write. Never « payée » (only a recorded payment says so) nor
@@ -4978,10 +4977,6 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "maxLength": 1500,
                     "description": "Notes carried on the invoice.",
                 },
-                "payment_terms": {
-                    "type": "string", "maxLength": 500,
-                    "description": "Payment terms as originally printed.",
-                },
                 **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
@@ -5026,14 +5021,6 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "maxLength": INVOICE_NOTES_MAX_CHARS,
                     "description": "Printed on the invoice, French.",
                 },
-                "payment_terms": {
-                    "type": "string", "minLength": 1,
-                    "maxLength": INVOICE_TERMS_MAX_CHARS,
-                    "description": (
-                        "Stored on the invoice, shown on its sheet (no note "
-                        "d'honoraires placeholder prints it); default "
-                        "« Payable dans un délai d'un mois… »."),
-                },
                 "expected_total_cents": {
                     "type": "integer", "minimum": 0,
                     "description": (
@@ -5065,7 +5052,7 @@ TOOLS: dict[str, dict] = {
         },
         "description": (
             "WRITE — ONE change a call, against expected_etag (get_invoice). "
-            "DRAFT, a brouillon only: notes, payment_terms, due_date, "
+            "DRAFT, a brouillon only: notes, due_date, "
             "refresh_billing_address REPLACE what they name — amounts, lines, "
             "client and number never change; an issued invoice is corrected "
             "by voiding it and issuing a new one. STATUS: brouillon → "
@@ -5100,11 +5087,6 @@ TOOLS: dict[str, dict] = {
                 "notes": {
                     "type": "string", "maxLength": INVOICE_NOTES_MAX_CHARS,
                     "description": "DRAFT: replaces the notes; \"\" clears them.",
-                },
-                "payment_terms": {
-                    "type": "string", "minLength": 1,
-                    "maxLength": INVOICE_TERMS_MAX_CHARS,
-                    "description": "DRAFT: replaces the payment terms.",
                 },
                 "due_date": _date("DRAFT: YYYY-MM-DD, not before the "
                                   "invoice date."),

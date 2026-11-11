@@ -386,10 +386,11 @@ def _seed_invoice(db, dossier_id):
     return "inv1"
 
 
-def _invoice_draft_form(dossier_id, notes, *,
-                        payment_terms="Payable dans les 30 jours."):
-    return {"notes": notes, "payment_terms": payment_terms,
-            "due_date": "2026-04-03"}
+def _invoice_draft_form(dossier_id, notes, *, due_date="2026-04-03"):
+    # « Conditions » (payment_terms) was retired on 2026-11-11: the page
+    # posts the notes and the due date only — an empty due date is now the
+    # value it refuses (« requise »).
+    return {"notes": notes, "due_date": due_date}
 
 
 CASES = [
@@ -503,7 +504,7 @@ CASES = [
         lambda i: f"/factures/{i}/brouillon",
         lambda i: f"/factures/{i}/brouillon",
         None, _invoice_draft_form,
-        lambda d, m: _invoice_draft_form(d, m, payment_terms=""),
+        lambda d, m: _invoice_draft_form(d, m, due_date=""),
         "notes", "SOUMIS-7Q4",
     ),
     FormCase(

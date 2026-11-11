@@ -15,9 +15,19 @@ the retired ``dry_run`` doubled every write into two model calls that the
 handlers had to keep in step by hand, and that is exactly the drift this
 shape removes.
 
-A brouillon is corrected by :func:`update_invoice_draft` — notes, payment
-terms, due date and a fresh billing-address snapshot, never a money figure
-or a line item.
+A brouillon is corrected by :func:`update_invoice_draft` — notes, due date
+and a fresh billing-address snapshot, never a money figure or a line item.
+
+RETIRED KEY: ``payment_terms`` (« Conditions », retired by the lawyer's
+decision of 2026-11-11 — no note d'honoraires placeholder ever printed it).
+No creation stores it (``_CREATE_DATA_KEYS`` drops it), no default writes
+it (``_default_doc``), and a draft correction naming it is refused by name
+(``DRAFT_FIELDS``). An invoice written before keeps it: no migration and no
+purge — the exception to « purge on save » this module declares, since no
+write after creation replaces the document (each is a partial ``update()``
+of the keys it changes, never the merged ``set()``) — and nothing reads it:
+no page, export, note d'honoraires or connector output shows it, and no
+writer copies it forward.
 
 Invoice dates are UTC (the lawyer's decision of 2026-11-07). :func:`plan_invoice`
 refuses a date only when it falls AFTER the current UTC calendar day
@@ -151,11 +161,12 @@ _TRUST_TRANSACTIONS = "trust_transactions"
 # storage verbatim, which only the two callers' own whitelists prevented
 # (a « payée » invoice with a payment on no ledger is exactly what the
 # single-writer doctrine of 2026-08-17 exists to make impossible). A key
-# outside this set is dropped, never merged.
+# outside this set is dropped, never merged — the retired ``payment_terms``
+# among them (module docstring).
 _CREATE_DATA_KEYS = frozenset({
     "dossier_id", "dossier_file_number", "dossier_title",
     "client_id", "client_name", "billing_address",
-    "date", "due_date", "notes", "payment_terms",
+    "date", "due_date", "notes",
     "retainer_applied", "gst_number", "qst_number",
     "legacy_ref",
     # Honoured by provenance.stamp_create only when it is a VALID via — the
@@ -308,17 +319,12 @@ def available_transitions(
 GST_RATE_BPS = 500       # 5.00%
 QST_RATE_BPS = 9975      # 9.975%
 
-DEFAULT_PAYMENT_TERMS = (
-    "Payable dans un délai d'un mois suivant la date de facturation."
-)
-
 
 def default_due_date(invoice_date: datetime) -> datetime:
     """The due date an invoice gets when none is given: its date plus one
     CALENDAR month, the day clamped to that month's last (31 January → 28
     or 29 February) — ``utils.recours.add_period``, the house's one month
-    arithmetic. It matches ``DEFAULT_PAYMENT_TERMS`` (the lawyer's decision
-    of 2026-11-07; it was 30 days)."""
+    arithmetic (the lawyer's decision of 2026-11-07; it was 30 days)."""
     return add_period(invoice_date, 1, MONTHS)
 
 
@@ -386,7 +392,6 @@ def _default_doc() -> dict:
         "gst_number": "",
         "qst_number": "",
         "notes": "",
-        "payment_terms": DEFAULT_PAYMENT_TERMS,
         # Identifiant de l'enregistrement dans le système d'origine,
         # posé par la reprise historique (août 2026) ; « » partout
         # ailleurs. C'est l'ancre anti-doublon DURABLE : la clé
@@ -2517,12 +2522,12 @@ def void_invoice(
 
 #: The fields a brouillon may correct — and nothing else. No money figure,
 #: no line item, no client, no number: those are what the invoice IS, and
-#: changing one means voiding it and issuing a new one.
-DRAFT_FIELDS = ("notes", "payment_terms", "due_date")
-#: The connector's import caps (``mcp/handlers._import_invoice_impl``), so a
+#: changing one means voiding it and issuing a new one. (The retired
+#: ``payment_terms`` left on 2026-11-11 — module docstring.)
+DRAFT_FIELDS = ("notes", "due_date")
+#: The connector's import cap (``mcp/handlers._import_invoice_impl``), so a
 #: brouillon correctable on one surface is correctable on the other.
 DRAFT_NOTES_MAX_LENGTH = 1500
-DRAFT_PAYMENT_TERMS_MAX_LENGTH = 500
 
 
 def draft_edit_refusal(invoice: dict) -> str:
@@ -2557,18 +2562,15 @@ class _DraftInvalid(Exception):
         self.errors = errors
 
 
-def _draft_text_errors(
-    text: str, *, label: str, cap: int, required: bool,
-) -> list[str]:
+def _draft_text_errors(text: str, *, label: str, cap: int) -> list[str]:
     """Why a CHANGED draft text is refused rather than altered — [] if fine.
 
     ``sanitize`` truncates and deletes angle-bracket runs in silence; on a
     document the client receives, a note that loses « < b et b > » with a
     success message is worse than a refusal. So the length is checked first,
-    and the value must come out of ``sanitize`` unchanged.
+    and the value must come out of ``sanitize`` unchanged. An empty text is
+    never refused: ``''`` clears the notes.
     """
-    if required and not text:
-        return [f"{label} ne peuvent pas être vides."]
     if len(text) > cap:
         return [
             f"{label} dépassent {cap} caractères ({len(text)}) : elles ne "
@@ -2598,11 +2600,9 @@ def _parse_draft_due_date(value: object) -> tuple[Optional[datetime], list[str]]
     return datetime(day.year, day.month, day.day, tzinfo=timezone.utc), []
 
 
-# {field: (French label, cap, required)} — the two draft texts.
+# {field: (French label, cap)} — the one draft text.
 _DRAFT_TEXT_RULES = {
-    "notes": ("Les notes", DRAFT_NOTES_MAX_LENGTH, False),
-    "payment_terms": (
-        "Les conditions de paiement", DRAFT_PAYMENT_TERMS_MAX_LENGTH, True),
+    "notes": ("Les notes", DRAFT_NOTES_MAX_LENGTH),
 }
 
 
@@ -2641,8 +2641,6 @@ def update_invoice_draft(
 
     * ``notes`` — at most :data:`DRAFT_NOTES_MAX_LENGTH` characters; ``''``
       clears them;
-    * ``payment_terms`` — at most :data:`DRAFT_PAYMENT_TERMS_MAX_LENGTH`;
-      ``''`` is refused (they print on the invoice);
     * ``due_date`` — a ``datetime``/``date`` or ``'YYYY-MM-DD'``, never
       before the invoice date.
 
@@ -2653,7 +2651,8 @@ def update_invoice_draft(
     line-ending convention) is not a change and is not re-judged: the web
     form resubmits every field, and a brouillon written before these caps
     (web notes went to 2 000 characters) must stay correctable in its other
-    fields. Any other key is refused by name. With
+    fields. Any other key is refused by name — the retired ``payment_terms``
+    among them (module docstring). With
     *refresh_billing_address*, the frozen billing address is re-snapshotted
     from the invoice's client as it is on file NOW (``billing_address_from``,
     the one builder) — read inside the transaction; a client that does not
@@ -2664,7 +2663,7 @@ def update_invoice_draft(
     1. the invoice (missing → refused); it must still be a brouillon;
     2. the client, when refreshing;
     3. the fields that actually CHANGE are computed, and only they are
-       judged (the texts; the due date against the invoice date). When
+       judged (the notes; the due date against the invoice date). When
        none changes, nothing is written and the stored invoice is returned
        with ``changed_fields == []``. This comes BEFORE the etag check on
        purpose: a replay of a save that already succeeded (a double
@@ -2686,15 +2685,15 @@ def update_invoice_draft(
     if unknown:
         return None, [
             "Champ non modifiable sur un brouillon : " + ", ".join(unknown)
-            + ". Seuls les notes, les conditions de paiement, la date "
-            "d'échéance et l'adresse de facturation se corrigent."
+            + ". Seules les notes, la date d'échéance et l'adresse de "
+            "facturation se corrigent."
         ], []
     if not changes and not refresh_billing_address:
         return None, ["Aucune modification demandée."], []
 
     wanted: dict = {}
     errors: list[str] = []
-    for key, (label, _cap, _required) in _DRAFT_TEXT_RULES.items():
+    for key, (label, _cap) in _DRAFT_TEXT_RULES.items():
         if key not in changes:
             continue
         if not isinstance(changes[key], str):
@@ -2760,9 +2759,8 @@ def update_invoice_draft(
         invalid: list[str] = []
         for key in changed:
             if key in _DRAFT_TEXT_RULES:
-                label, cap, required = _DRAFT_TEXT_RULES[key]
-                invalid += _draft_text_errors(
-                    target[key], label=label, cap=cap, required=required)
+                label, cap = _DRAFT_TEXT_RULES[key]
+                invalid += _draft_text_errors(target[key], label=label, cap=cap)
         if "due_date" in changed:
             invoice_day = _calendar_day(invoice.get("date"))
             due_day = _calendar_day(target["due_date"])

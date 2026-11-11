@@ -1001,7 +1001,7 @@ def _invoice_doc(**over):
         "qst_rate": 9975, "qst_amount": 9975,
         "total": 114975, "retainer_applied": 0, "amount_due": 114975,
         "amount_paid": 0, "paid_date": None,
-        "notes": "", "payment_terms": "Payable dans les 30 jours.",
+        "notes": "",
     }
     doc.update(over)
     return doc
@@ -1037,6 +1037,28 @@ def test_get_invoice_conforms_found_and_not_found(monkeypatch):
     monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
                         lambda i: (None, []))
     _conforms("get_invoice", handlers.get_invoice({"invoice_id": "nope"}))
+
+
+def test_get_invoice_declares_and_serves_no_payment_terms(monkeypatch):
+    """« Conditions » was retired on 2026-11-11 (models/invoice.py): the key
+    left the contract — its property and its `required` entry together —
+    and an invoice written before, which still stores it, is served without
+    it and conforms. (Output schemas never forbid an extra key, so a payload
+    served before the deploy, which carried it, conforms too.)"""
+    found, _ = OUTPUT_SCHEMAS["get_invoice"]["anyOf"]
+    invoice = found["properties"]["invoice"]
+    assert "payment_terms" not in invoice["properties"]
+    assert "payment_terms" not in invoice["required"]
+    assert "notes" in invoice["required"]            # the list is the real one
+    legacy = _invoice_doc(payment_terms="Payable sous 45 jours.")
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (legacy, []))
+    payload = handlers.get_invoice({"invoice_id": "inv1"})
+    _conforms("get_invoice", payload)
+    assert "payment_terms" not in payload["invoice"]
+    before_the_deploy = {**payload, "invoice": {
+        **payload["invoice"], "payment_terms": "Payable sous 45 jours."}}
+    _conforms("get_invoice", before_the_deploy)
 
 
 def test_billing_snapshot_still_conforms_after_the_shared_row_grew(monkeypatch):

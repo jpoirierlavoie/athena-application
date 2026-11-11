@@ -32,7 +32,7 @@
     </a>
     <div class="flex flex-wrap items-center gap-2">
       {# Un brouillon se corrige sur sa propre page (lot 3a) : notes,
-         conditions, échéance, adresse — jamais un montant ni une ligne. #}
+         échéance, adresse — jamais un montant ni une ligne. #}
       {% if can_edit_draft %}
       <a href="{{ url_for('invoices.invoice_draft_edit', invoice_id=invoice.id) }}"
          class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
@@ -223,12 +223,8 @@
           <dt class="text-gray-500 flex-shrink-0">N° TVQ</dt>
           <dd class="text-gray-900 text-right">{{ invoice.qst_number or '—' }}</dd>
         </div>
-        {% if invoice.payment_terms %}
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Conditions</dt>
-          <dd class="text-gray-900 text-right">{{ invoice.payment_terms }}</dd>
-        </div>
-        {% endif %}
+        {# Plus de « Conditions » : retirées le 2026-11-11 (models/invoice.py),
+           jamais montrées, même sur une facture qui les porte encore. #}
       </dl>
     </div>
 

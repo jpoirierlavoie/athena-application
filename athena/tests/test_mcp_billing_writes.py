@@ -59,7 +59,9 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
+    import mcp.bearer as bearer
     import mcp.handlers as handlers
+    import mcp.store as store
     import mcp.tools as tools
     import services.note_honoraires as nh
     from models import doc_template as tpl_model
@@ -69,6 +71,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from tests._fake_firestore import install  # noqa: E402
 from tests._fake_gcs import FakeBucket  # noqa: E402
+from tests.test_mcp_jsonrpc import _make_app, _rpc, _token_doc  # noqa: E402
 from tests.test_mcp_output_schemas import _conforms  # noqa: E402
 from utils import phases, storage_identity  # noqa: E402
 
@@ -207,8 +210,6 @@ def _etag_of(world, invoice_id: str) -> str:
 
 def test_the_hand_copied_ceilings_are_the_models_own():
     assert tools.INVOICE_NOTES_MAX_CHARS == invoice_model.DRAFT_NOTES_MAX_LENGTH
-    assert (tools.INVOICE_TERMS_MAX_CHARS
-            == invoice_model.DRAFT_PAYMENT_TERMS_MAX_LENGTH)
     assert tools.VOID_REASON_MAX_CHARS == invoice_model.VOID_REASON_MAX_LENGTH
 
 
@@ -223,9 +224,8 @@ def test_the_budget_enum_is_derived_and_never_carries_adm_nor_hor():
 
 def test_the_invoice_date_texts_say_what_the_model_does():
     """Lot D (2026-11-07): the default due date is the invoice date plus one
-    calendar month on every path, an imported date is never after today's
-    UTC date, and the default terms say « un mois » — where the registry
-    used to promise 30 days."""
+    calendar month on every path — where the registry used to promise 30
+    days — and an imported date is never after today's UTC date."""
     props = {name: tools.TOOLS[name]["input_schema"]["properties"]
              for name in ("preview_invoice", "create_invoice", "import_invoice")}
     for name, schema_props in props.items():
@@ -237,10 +237,81 @@ def test_the_invoice_date_texts_say_what_the_model_does():
     for name in ("preview_invoice", "create_invoice"):
         assert ("Never after today's Montréal date"
                 in props[name]["date"]["description"]), name
-    assert ("Payable dans un délai d'un mois"
-            in props["create_invoice"]["payment_terms"]["description"])
-    assert invoice_model.DEFAULT_PAYMENT_TERMS.startswith(
-        "Payable dans un délai d'un mois")
+
+
+#: The three invoice writers that took « Conditions » (`payment_terms`),
+#: retired on 2026-11-11 (models/invoice.py), each with arguments its schema
+#: accepts — so the key alone is what a refusal can be about.
+_TERMS_WRITERS = {
+    "create_invoice": {"dossier_id": "d1", "expected_total_cents": 51750,
+                       "idempotency_key": "cle-conditions-0001"},
+    "import_invoice": {"dossier_id": "d1", "invoice_number": "2031-F014",
+                       "date": "2031-01-31", "expected_total_cents": 51750},
+    "update_invoice": {"invoice_id": "inv1", "expected_etag": "e1",
+                       "notes": "Revue"},
+}
+
+
+@pytest.mark.parametrize("tool", sorted(_TERMS_WRITERS))
+def test_every_invoice_writer_refuses_payment_terms(tool):
+    """A caller still sending the retired key is refused by its schema
+    (`additionalProperties: false`), by name — never told it was taken. The
+    same call without it passes; no description names it any more."""
+    schema = tools.TOOLS[tool]["input_schema"]
+    args = _TERMS_WRITERS[tool]
+    assert tools.validate_args(schema, args) == []
+    errors = tools.validate_args(
+        schema, {**args, "payment_terms": "Payable à réception."})
+    assert len(errors) == 1, errors
+    assert errors[0].startswith("`payment_terms` is not a supported argument")
+    assert "payment_terms" not in schema["properties"]
+    assert "payment_terms" not in tools.TOOLS[tool]["description"]
+
+
+def test_a_call_still_sending_payment_terms_never_reaches_a_handler(
+    monkeypatch,
+):
+    """Through the real JSON-RPC endpoint and a write token: tools/call
+    checks the schema BEFORE the handler — so before ``run_write`` and its
+    idempotency replay. A same-key retry of a call made before the deploy
+    that carried the key is therefore REFUSED, never replayed (hence the
+    DEPLOYMENT.md §15 check: no invoice write in the 24 hours before the
+    push). The control: the same arguments without it reach the handler."""
+    reached = []
+
+    def _recorder(name):
+        def _run(args):
+            reached.append(name)
+            return {"entity": {"id": "inv1"}}
+        return _run
+
+    for name in _TERMS_WRITERS:
+        monkeypatch.setattr(handlers, name, _recorder(name))
+    monkeypatch.setattr(store, "get_token",
+                        lambda h: _token_doc("athena:read athena:write"))
+    monkeypatch.setattr(store, "stamp_token_last_used", lambda h: None)
+    bearer.reset_brake_state()
+    try:
+        client = _make_app().test_client()
+        for rid, (name, args) in enumerate(sorted(_TERMS_WRITERS.items()), 1):
+            body = _rpc(client, {
+                "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                "params": {"name": name, "arguments": {
+                    **args, "payment_terms": "Payable à réception."}},
+            }).get_json()
+            assert body["error"]["code"] == -32602, (name, body)
+            assert body["error"]["message"].startswith(
+                "`payment_terms` is not a supported argument"), name
+        assert reached == []
+        for rid, (name, args) in enumerate(sorted(_TERMS_WRITERS.items()), 10):
+            body = _rpc(client, {
+                "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                "params": {"name": name, "arguments": dict(args)},
+            }).get_json()
+            assert body["result"]["isError"] is False, (name, body)
+    finally:
+        bearer.reset_brake_state()
+    assert reached == sorted(_TERMS_WRITERS)
 
 
 def test_the_status_enum_is_three_targets_the_model_knows():
@@ -658,6 +729,29 @@ def test_a_draft_correction_on_an_issued_invoice_is_refused(world):
     with pytest.raises(tools.ToolArgumentError, match="brouillon"):
         handlers.update_invoice({"invoice_id": iid, "notes": "x",
                                  "expected_etag": sent["entity"]["etag"]})
+
+
+def test_a_legacy_invoice_is_read_and_corrected_without_its_payment_terms(
+    world,
+):
+    """A brouillon written before « Conditions » was retired (2026-11-11)
+    still stores ``payment_terms``: get_invoice serves it without the key,
+    and conforms; a draft correction changes what it names and leaves the
+    key exactly as it was — no migration, no purge."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    world.external_write(f"invoices/{iid}", {
+        **invoice, "payment_terms": "Payable sous 45 jours."})
+    read = handlers.get_invoice({"invoice_id": iid})
+    _conforms("get_invoice", read)
+    assert "payment_terms" not in read["invoice"]
+    payload = handlers.update_invoice({"invoice_id": iid, "notes": "Revue",
+                                       "expected_etag": read["invoice"]["etag"]})
+    _conforms("update_invoice", payload)
+    assert payload["mode"] == "draft" and payload["changed_fields"] == ["notes"]
+    stored = world.peek(f"invoices/{iid}")
+    assert stored["notes"] == "Revue"
+    assert stored["payment_terms"] == "Payable sous 45 jours."
 
 
 def test_one_change_per_call(world):

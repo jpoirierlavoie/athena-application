@@ -70,7 +70,6 @@ def _invoice(**over) -> dict:
         "amount_paid": 0, "paid_date": None,
         "gst_number": "123456789 RT0001", "qst_number": "1234567890 TQ0001",
         "notes": "Merci de votre confiance.",
-        "payment_terms": "Payable dans les 30 jours.",
     }
     doc.update(over)
     return doc
@@ -132,9 +131,19 @@ def test_renders_the_stored_data():
     assert "12 rue des Érables" in html                # adresse figée
     assert "123456789 RT0001" in html                  # n° TPS de la facture
     assert "Merci de votre confiance." in html         # notes
-    assert "Payable dans les 30 jours." in html        # conditions
     assert "Solde" in html
     assert format_cents_fr(184535) in html             # total, fr-CA
+
+
+def test_a_legacy_invoice_s_payment_terms_are_never_shown():
+    """« Conditions » was retired on 2026-11-11 (models/invoice.py): an
+    invoice written before still stores ``payment_terms``, and the sheet
+    shows neither its value nor the row that used to carry it."""
+    html = _render(invoice={
+        "payment_terms": "Payable sous 45 jours — CONDITIONS-HÉRITÉES-Z7"})
+    assert "Merci de votre confiance." in html         # the sheet rendered
+    assert "CONDITIONS-HÉRITÉES" not in html
+    assert "Conditions" not in html
 
 
 def test_tax_rates_come_from_the_invoice_not_from_hardcoded_markup():

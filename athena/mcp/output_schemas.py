@@ -2806,7 +2806,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "dossier_title": _str("Snapshot at issuance."),
             "client_id": _str(),
             "notes": _str(),
-            "payment_terms": _str(),
             "gst_rate_display": _str("e.g. « 5 % »."),
             "qst_rate_display": _str("e.g. « 9,975 % »."),
             **_money("subtotal_fees"),
