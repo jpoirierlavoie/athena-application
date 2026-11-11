@@ -82,3 +82,30 @@ def test_the_invoice_pages_back_link_names_the_list_honoraires():
         src = (_TEMPLATES / "invoices" / page).read_text(encoding="utf-8")
         assert "'Retour' if return_to else 'Honoraires'" in src, page
         assert "'Factures'" not in src, page
+
+
+# ── The Bibliothèque (2026-11-11) ──────────────────────────────────────
+#: « Bibliothèque » replaces « Documents » and « Gabarits », where
+#: « Documents » stood, and opens its first tab (the lawyer's order:
+#: Gabarits · Modèles · Documents — tests/test_bibliotheque.py).
+LIBRARY = ("/gabarits/", "Bibliothèque")
+
+
+def test_the_library_entry_replaces_documents_and_gabarits():
+    for name, nav in MENUS.items():
+        entries = _entries(nav)
+        assert entries.count(LIBRARY) == 1, name
+        hrefs = [href for href, _ in entries]
+        labels = [label for _, label in entries]
+        for gone in ("/documents", "/documents/", "/gabarits", "/modeles/"):
+            assert gone not in hrefs, (name, gone)
+        assert "Documents" not in labels and "Gabarits" not in labels, name
+        at = hrefs.index("/gabarits/")
+        assert hrefs[at - 1:at + 2] == ["/taches", "/gabarits/", "/reception"], (
+            name, hrefs)
+
+
+def test_the_library_entry_draws_its_own_icon():
+    for name, nav in MENUS.items():
+        body = dict(_ANCHOR.findall(nav))["/gabarits/"]
+        assert "ms('local_library', 20" in body, name

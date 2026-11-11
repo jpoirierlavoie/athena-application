@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Modèles' if section == 'modeles' else 'Gabarits' }} — Pallas Athena{% endblock %}
+{% block title %}{{ 'Modèles' if section == 'modeles' else 'Gabarits' }} — Bibliothèque — Pallas Athena{% endblock %}
 
 {% block content %}
 {#- One page for two lists (2026-11-11): `section` is « gabarits » (every
@@ -14,7 +14,7 @@
 
   {# ── Header ─────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-gray-900">{{ 'Modèles' if modeles else 'Gabarits' }}</h1>
+    <h1 class="text-xl font-semibold text-gray-900">Bibliothèque</h1>
     <div class="hidden md:flex items-center gap-2">
       <a href="{{ new_url }}"
          class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
@@ -23,6 +23,8 @@
       </a>
     </div>
   </div>
+
+  {% with onglet = 'modeles' if modeles else 'gabarits' %}{% include "bibliotheque/_onglets.html" %}{% endwith %}
 
   {# ── Filters ────────────────────────────────────────────────── #}
   {#- The gabarit categories do not sort contracts: no category filter

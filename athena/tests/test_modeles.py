@@ -136,7 +136,7 @@ def test_the_modeles_list_shows_only_modeles(store, web):
     modele = _create("Contrat de services", kind="modele", text="Texte libre")
     page = _html(web, "/modeles/")
     assert "Contrat de services" in page and "Lettre type" not in page
-    assert "<title>Modèles — Pallas Athena</title>" in page
+    assert "<title>Modèles — Bibliothèque — Pallas Athena</title>" in page
     rows = _html(web, "/modeles/?q=services", headers=HX)
     assert "<h1" not in rows                      # the rows partial alone
     assert f"/gabarits/{modele}" in rows

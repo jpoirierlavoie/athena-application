@@ -135,9 +135,12 @@
           {{ ms('check_circle', 20) }}
           Tâches
         </a>
-        <a href="/documents" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
-          {{ ms('draft', 20) }}
-          Documents
+        {# « Bibliothèque » (2026-11-11) replaces « Documents » and
+           « Gabarits »: its tabs (bibliotheque/_onglets.html) — Gabarits,
+           Modèles, Documents — open on Gabarits. #}
+        <a href="/gabarits/" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
+          {{ ms('local_library', 20) }}
+          Bibliothèque
         </a>
         <a href="/reception" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
           {{ ms('archive', 20) }}
@@ -145,10 +148,6 @@
           {% if reception_count %}
           <span class="ml-auto inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">{{ reception_count }}</span>
           {% endif %}
-        </a>
-        <a href="/gabarits" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
-          {{ ms('assignment', 20) }}
-          Gabarits
         </a>
         <a href="/notes" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
           {{ ms('edit', 20) }}
@@ -236,7 +235,8 @@
          le menu était purement textuel). #}
       <a href="/parties" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('group', 20, 'text-gray-400') }}Impliqués</a>
       <a href="/taches" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('check_circle', 20, 'text-gray-400') }}Tâches</a>
-      <a href="/documents" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('draft', 20, 'text-gray-400') }}Documents</a>
+      {# « Bibliothèque » (2026-11-11), as in the sidebar. #}
+      <a href="/gabarits/" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('local_library', 20, 'text-gray-400') }}Bibliothèque</a>
       <a href="/reception" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
         {{ ms('archive', 20, 'text-gray-400') }}
         Réception
@@ -244,7 +244,6 @@
         <span class="ml-auto inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700">{{ reception_count }}</span>
         {% endif %}
       </a>
-      <a href="/gabarits" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('assignment', 20, 'text-gray-400') }}Gabarits</a>
       <a href="/notes" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('edit', 20, 'text-gray-400') }}Notes</a>
       <hr class="my-1 border-gray-200">
       {# L'argent du cabinet, ensemble (2026-11-10), comme dans la barre latérale. #}

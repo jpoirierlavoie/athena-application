@@ -1,0 +1,10 @@
+{#- The Bibliothèque tab bar (2026-11-11): the one list of its tabs, in the
+    lawyer's order. Literal paths, like base.html's menu: the test apps
+    that register a single blueprint render these pages. The including
+    page sets `onglet` ('gabarits' | 'modeles' | 'documents'). #}
+<nav aria-label="Sections de la bibliothèque" class="flex border-b border-gray-200 mb-6 overflow-x-auto">
+  {% for key, label, path in [('gabarits', 'Gabarits', '/gabarits/'), ('modeles', 'Modèles', '/modeles/'), ('documents', 'Documents', '/documents/')] %}
+  <a href="{{ path }}"{% if onglet == key %} aria-current="page"{% endif %}
+     class="flex-shrink-0 px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors focus-visible:-outline-offset-2 {{ 'border-indigo-600 text-indigo-600' if onglet == key else 'border-transparent text-gray-500 hover:text-gray-700' }}">{{ label }}</a>
+  {% endfor %}
+</nav>
