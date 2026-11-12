@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Nouvelle écriture — Fidéicommis — Pallas Athena{% endblock %}
 {% block content %}
+{% from "components/_champ_contrepartie.html" import champ_contrepartie %}
 <div class="max-w-2xl mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-6">
     <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
@@ -60,6 +61,10 @@
           institution: '', lastPrefill: null,
           prefillFor: function (p) { let t = this.entryTypes; if ((t.client_prefill || []).includes(p)) { let id = this.clientId; let c = this.clients.find(function (x) { return x.id === id; }); return c ? (c.name || '') : ''; } if ((t.bank_prefill || []).includes(p)) { return this.institution || ''; } return ''; },
           applyPrefill: function () { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } let v = this.prefillFor(this.purpose); if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = v; this.lastPrefill = v; } },
+          {# The suggestions (lot 6, components/_champ_contrepartie.html):
+             a row picked writes its name, never replaced by a pre-fill. #}
+          cpSkip: false, cpEmpty: true, cpStatus: '',
+          pickCounterparty: function (b) { let f = this.$refs.counterparty; f.value = b.dataset.counterparty; this.lastPrefill = null; this.cpOpen = false; this.cpSkip = true; f.focus(); },
           dossierOpen: false, cpOpen: false
         }"
         x-init="$watch('purpose', function (p) { if (implied[p]) { direction = implied[p]; } applyPrefill(); }); $watch('clientId', function () { applyPrefill(); }); institution = ($refs.account && $refs.account.selectedOptions.length) ? ($refs.account.selectedOptions[0].dataset.institution || '') : ''; applyPrefill();"
@@ -125,6 +130,12 @@
     <p x-show="implied[purpose] === 'recette' && direction !== 'recette'" x-cloak class="text-xs text-amber-600">Cet objet est une recette : choisissez le sens « Recette » — inscrit en déboursé, la ligne du registre dirait le contraire du mouvement.</p>
     <p x-show="implied[purpose] === 'déboursé' && direction !== 'déboursé'" x-cloak class="text-xs text-amber-600">Cet objet est un déboursé : choisissez le sens « Déboursé » — inscrit en recette, la ligne du registre dirait le contraire du mouvement.</p>
     <p class="text-xs text-gray-500">Un virement de fonds d'un dossier à un autre s'inscrit par l'écran <a href="{{ url_for('trust.transfer') }}" class="text-indigo-600 hover:underline">« Virement inter-dossiers »</a>, qui écrit ses deux volets ensemble.</p>
+    {% if types_url %}
+    {# « Que fait chaque objet ? » (lot 7) : la page des types, à la carte de
+       l'objet choisi, dans un nouvel onglet. #}
+    <a href="{{ types_url }}" :href="'{{ types_url }}#type-fideicommis-' + purpose" target="_blank" rel="noopener"
+       class="inline-flex items-center gap-1 py-3 text-sm text-indigo-600 hover:underline">{{ ms('info', 20) }} Que fait chaque objet ?</a>
+    {% endif %}
 
     {# Art. 57 / 72 (RLRQ c. B-1, r. 5) : aucun retrait en espèces, sauf le
        remboursement en espèces d'une somme de 7 500 $ ou plus REÇUE en
@@ -202,18 +213,12 @@
        dépôt, remise) ou de la banque du compte (intérêts, frais bancaires),
        seulement s'il est vide ou porte encore le dernier préremplissage (D6,
        2026-11-11). #}
-    <div class="relative" @click.outside="cpOpen = false" x-show="purpose !== 'virement_honoraires'">
-      <label class="block text-sm font-medium text-gray-700 mb-1" x-text="(entryTypes.payee_labels || {})[direction] || entryTypes.payee_label_fallback || ''">{{ payee_label }}</label>
-      <input type="text" name="counterparty" required autocomplete="off" x-ref="counterparty" value="{{ entry.counterparty if entry else '' }}"
-             :disabled="purpose === 'virement_honoraires'"
-             @focus="cpOpen = true" @input="cpOpen = true"
-             hx-get="{{ url_for('trust.counterparty_suggest') }}" hx-trigger="focus, input changed delay:300ms"
-             hx-target="#cp-results" hx-include="[name='dossier_id']"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      <div id="cp-results" x-show="cpOpen" x-cloak
-           @click="let li = $event.target.closest('li'); if (li) { $root.querySelector('[name=counterparty]').value = li.dataset.counterparty; cpOpen = false; }"
-           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
-    </div>
+    {{ champ_contrepartie(url_for('trust.counterparty_suggest'),
+                          "[name='purpose'], [name='dossier_id'], [name='client_id'], [name='account_id']",
+                          entry.counterparty if entry else '', payee_label,
+                          "(entryTypes.payee_labels || {})[direction] || entryTypes.payee_label_fallback || ''",
+                          disabled_bind="purpose === 'virement_honoraires'",
+                          show_bind="purpose !== 'virement_honoraires'") }}
 
     {# D23 (art. 58) — the payee of a fee payment is the lawyer or his firm,
        as the firm profile names them (models/fee_payment.fee_payees): a

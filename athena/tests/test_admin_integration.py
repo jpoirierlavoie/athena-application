@@ -506,6 +506,11 @@ def test_la_route_du_fideicommis_n_atteint_aucun_ecrivain_d_administration():
                 reached.add(f"{owner.id}.{node.attr}")
         if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("admin_ledger"):
             reached.add(f"import {node.module}")
+        # « from models import admin_ledger » too — a function-level import
+        # of that form once slipped past this sweep (lot 8, 2026-11-12).
+        if isinstance(node, ast.ImportFrom) and any(
+                a.name == "admin_ledger" for a in node.names):
+            reached.add(f"from {node.module} import admin_ledger")
         if isinstance(node, ast.Import) and any(
                 a.name.endswith("admin_ledger") for a in node.names):
             reached.add("import admin_ledger")

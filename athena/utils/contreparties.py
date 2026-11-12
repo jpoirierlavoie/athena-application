@@ -20,6 +20,9 @@ Pure (stdlib only, pinned by tests/test_entry_types.py): both models import
 it, and the routes and the connector may.
 """
 
+import re
+import unicodedata
+
 #: The trust account, as a virement interne names it — the exact string
 #: ``scripts/reclassify_admin_ledger.TRUST_COUNTERPARTY`` matches (pinned).
 TRUST_ACCOUNT_NAME = "Compte en fidéicommis"
@@ -72,3 +75,63 @@ PREFILLS = (
     PREFILL_INVOICE_CLIENT, PREFILL_CHOSEN_CLIENT, PREFILL_LAWYER,
     PREFILL_TAX_AUTHORITY, PREFILL_BANK,
 )
+
+
+# ── The suggestions (lot 6 of 2026-11-11) ──────────────────────────────────
+#: Contacts are searched from this many typed characters on; the names the
+#: entry points to and the fixed names show as soon as the field is focused.
+MIN_TYPED = 2
+#: The rows a suggestion list shows; more matches say « précisez ».
+SUGGESTION_LIMIT = 8
+
+
+def fold(text: str) -> str:
+    """Lower case, no accents, punctuation as spaces: the fold of
+    ``utils/rapprochement.plier_contrepartie``, restated because this module
+    stays stdlib-only (the two are pinned equal by tests)."""
+    plain = "".join(c for c in unicodedata.normalize("NFD", text or "")
+                    if unicodedata.category(c) != "Mn")
+    return re.sub(r"[^a-z0-9]+", " ", plain.lower()).strip()
+
+
+def rank(pinned, fixed, contacts, typed: str, *,
+         limit: int = SUGGESTION_LIMIT) -> tuple[list[dict], bool]:
+    """``(rows, more)``: the suggestions a counterparty field lists.
+
+    *pinned* (the names the entry points to: the invoice's client, the
+    dossier's clients or parties) and *fixed* (the trust account, the tax
+    authorities) come first: all of them on an empty field, those that
+    contain the typed text otherwise. *contacts* are searched only from
+    ``MIN_TYPED`` typed characters: those whose name or one of its
+    ``alternates`` (first or last name, legal name, trade name) STARTS with
+    the typed text, then those that CONTAIN it, in the order given. A
+    candidate is ``{"name", "detail", "category", "alternates"}``; a name
+    already listed (folded) is skipped. At most *limit* rows; *more* says
+    matches were left out."""
+    needle = fold(typed)
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    def add(candidate: dict) -> None:
+        key = fold(candidate.get("name", ""))
+        if key and key not in seen:
+            seen.add(key)
+            rows.append({"name": candidate["name"],
+                         "detail": candidate.get("detail", ""),
+                         "category": candidate.get("category", "")})
+
+    for candidate in list(pinned) + list(fixed):
+        if not needle or needle in fold(candidate.get("name", "")):
+            add(candidate)
+    if len(needle) >= MIN_TYPED:
+        starts, contains = [], []
+        for candidate in contacts:
+            keys = [fold(candidate.get("name", ""))] + [
+                fold(a) for a in candidate.get("alternates", ())]
+            if any(k.startswith(needle) for k in keys):
+                starts.append(candidate)
+            elif any(needle in k for k in keys):
+                contains.append(candidate)
+        for candidate in starts + contains:
+            add(candidate)
+    return rows[:limit], len(rows) > limit

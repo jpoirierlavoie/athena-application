@@ -338,8 +338,10 @@ def test_the_forms_alpine_codes_are_the_models():
     # The counterparty's label and example come from each type's profile
     # (the route's JSON block, admin_ledger.ENTRY_TYPES, 2026-11-11): no
     # label is restated in the template any more.
-    assert 'x-text="profile(kind).payee_label' in src
-    assert ':placeholder="profile(kind).placeholder' in src
+    # (since lot 6 through components/_champ_contrepartie.html, whose call
+    # names the two expressions).
+    assert "\"profile(kind).payee_label || entryTypes.payee_label_fallback || ''\"" in src
+    assert "placeholder_bind=\"profile(kind).placeholder || ''\"" in src
     assert "'Payeur / Fournisseur'" not in src
     assert "'Compte de contrepartie'" not in src
     assert "noDossierKinds: {{ no_dossier_kinds | join(',') | jsattr }}.split(',')," in src

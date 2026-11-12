@@ -26,7 +26,9 @@ from flask import Blueprint, render_template
 
 from auth import login_required
 from models import admin_ledger as al
+from models import financial_statements as fs
 from models import trust
+from services import types_ecritures as types_service
 from utils.logging_setup import log_unexpected
 
 comptabilite_bp = Blueprint("comptabilite", __name__, url_prefix="/comptabilite")
@@ -68,4 +70,18 @@ def hub() -> str:
         admin_error=admin_error,
         trust_type_labels=trust.ACCOUNT_TYPE_LABELS,
         admin_type_labels=al.ACCOUNT_TYPE_LABELS,
+    )
+
+
+@comptabilite_bp.route("/types-ecritures")
+@login_required
+def types_ecritures() -> str:
+    """What each entry type of the two registers does (lot 7 of
+    2026-11-11) — derived from the model (``services/types_ecritures``),
+    with NO Firestore read: the page answers whatever the store's state."""
+    return render_template(
+        "comptabilite/types_ecritures.html",
+        administration=types_service.administration(),
+        fideicommis=types_service.fideicommis(),
+        trust_statement=fs.TRUST_STATEMENT_SENTENCE,
     )

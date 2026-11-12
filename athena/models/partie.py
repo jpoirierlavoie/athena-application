@@ -823,6 +823,28 @@ def list_parties_strict() -> list[dict]:
     return [doc.to_dict() for doc in db.collection(COLLECTION).stream()]
 
 
+#: The most contacts one suggestion read returns; more says « précisez ».
+SUGGESTION_READ_CAP = 500
+
+
+def list_by_roles_strict(roles, *, limit: int = SUGGESTION_READ_CAP
+                         ) -> tuple[list[dict], bool]:
+    """``(contacts, truncated)``: the contacts whose role is one of *roles*
+    — the counterparty suggestions' reader (lot 6 of 2026-11-11). A read
+    failure PROPAGATES: a failed read never passes for « no supplier ». An
+    empty or unknown role is refused BEFORE any query (``ValueError``).
+    At most *limit* contacts, *truncated* saying more exist. One ``in``
+    equality and no ``order_by``: the single-field index serves it."""
+    wanted = list(dict.fromkeys(roles))
+    if not wanted or any(r not in VALID_CONTACT_ROLES for r in wanted):
+        raise ValueError(f"contact roles outside the vocabulary: {wanted!r}")
+    query = (db.collection(COLLECTION)
+             .where(filter=FieldFilter("contact_role", "in", wanted))
+             .limit(limit + 1))
+    rows = [doc.to_dict() for doc in query.stream()]
+    return rows[:limit], len(rows) > limit
+
+
 def list_parties(
     type_filter: Optional[str] = None,
     role_filter: Optional[str] = None,

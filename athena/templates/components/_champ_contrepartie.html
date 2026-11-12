@@ -1,0 +1,45 @@
+{# Le champ de contrepartie des deux registres et ses suggestions (lot 6 du
+   2026-11-11). Le champ reste du TEXTE LIBRE : une suggestion n'est
+   qu'une aide, et le nom saisi s'inscrit tel quel.
+
+   L'état vit dans le x-data du FORMULAIRE (jamais un x-data imbriqué : un
+   x-ref s'y inscrirait, hors de portée des méthodes du formulaire) :
+   cpOpen, cpSkip, cpEmpty, cpStatus et la méthode pickCounterparty(b).
+   - Les suggestions arrivent par htmx dans #cp-results ; une réponse sans
+     l'en-tête X-Athena-Fragment (la page de connexion d'une session échue,
+     une erreur) ou un envoi en échec (hors ligne, App Check) affiche
+     « indisponibles ».
+   - Clavier : Flèche bas mène au premier rang ; Échap ferme et rend le
+     focus au champ ; cpSkip empêche le focus de rouvrir la liste après un
+     choix ou Échap.
+   - Le rang choisi inscrit son nom (et, pour un fournisseur, sa catégorie
+     si elle est vide — pickCounterparty, propre à chaque formulaire).
+
+   Paramètres : l'URL des suggestions, les champs qu'elles lisent
+   (hx-include), la valeur, le libellé rendu et son x-text, l'exemple et
+   son :placeholder, et, au besoin, les expressions de :disabled et de
+   x-show (le paiement d'honoraires du fidéicommis, D23). Ces expressions
+   sont des constantes du gabarit appelant, rendues telles quelles
+   (|safe) : n'y passez JAMAIS une valeur de la requête. #}
+{% macro champ_contrepartie(suggest_url, include, value, label, label_bind, placeholder='', placeholder_bind='', disabled_bind='', show_bind='') %}
+<div class="relative" @click.outside="cpOpen = false"{% if show_bind %} x-show="{{ show_bind|safe }}"{% endif %}
+     @htmx:before-swap="if ($event.detail.target.id === 'cp-results' &amp;&amp; !$event.detail.xhr.getResponseHeader('X-Athena-Fragment')) { $event.detail.shouldSwap = true; $event.detail.isError = false; $event.detail.serverResponse = document.getElementById('cp-indisponible').innerHTML; }"
+     @htmx:after-swap="if ($event.detail.target.id === 'cp-results') { let n = $event.detail.target.querySelectorAll('button[data-counterparty]').length; cpEmpty = !$event.detail.target.firstElementChild; cpStatus = n ? n + ' suggestion(s)' : ''; }"
+     @htmx:send-error="if ($event.detail.elt === $refs.counterparty) { document.getElementById('cp-results').innerHTML = document.getElementById('cp-indisponible').innerHTML; cpEmpty = false; }">
+  <label for="contrepartie" class="block text-sm font-medium text-gray-700 mb-1" x-text="{{ label_bind|safe }}">{{ label }}</label>
+  <input type="text" name="counterparty" required autocomplete="off" x-ref="counterparty" id="contrepartie" value="{{ value }}"{% if disabled_bind %} :disabled="{{ disabled_bind|safe }}"{% endif %}{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}{% if placeholder_bind %} :placeholder="{{ placeholder_bind|safe }}"{% endif %}
+         role="combobox" aria-autocomplete="list" aria-controls="cp-results" :aria-expanded="cpOpen &amp;&amp; !cpEmpty ? 'true' : 'false'"
+         @focus="if (cpSkip) { cpSkip = false; } else { cpOpen = true; }" @input="cpOpen = true"
+         @keydown.arrow-down.prevent="cpOpen = true; $nextTick(function () { let b = document.querySelector('#cp-results button'); if (b) { b.focus(); } })"
+         @keydown.escape="cpOpen = false"
+         hx-get="{{ suggest_url }}" hx-trigger="focus, input changed delay:300ms"
+         hx-target="#cp-results" hx-include="{{ include|safe }}"
+         class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+  <div id="cp-results" x-show="cpOpen &amp;&amp; !cpEmpty" x-cloak role="listbox" aria-label="Suggestions"
+       @click="let b = $event.target.closest('button[data-counterparty]'); if (b) { pickCounterparty(b); }"
+       @keydown.escape="cpOpen = false; cpSkip = true; $refs.counterparty.focus()"
+       class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto"></div>
+  <template id="cp-indisponible"><p class="px-3 py-3 text-sm text-gray-500">Suggestions indisponibles — saisissez le nom.</p></template>
+  <p class="sr-only" aria-live="polite" x-text="cpStatus"></p>
+</div>
+{% endmacro %}

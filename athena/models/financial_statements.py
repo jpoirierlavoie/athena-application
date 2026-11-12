@@ -164,6 +164,59 @@ CASH_FLOW_LINE_LABELS = {
     "avances_versees": "Avances versées au fidéicommis",
 }
 
+#: What each administration entry type does in these statements, in one
+#: sentence (« Aux états financiers : … ») — the « Types d'écritures » page
+#: prints it (lot 7 of 2026-11-11), for the lawyer's accountant to review.
+#: Restated from this module's rules (its docstring); one per kind of
+#: ``admin_ledger.VALID_KINDS``, pinned by tests/test_types_ecritures.py.
+KIND_STATEMENT_SENTENCES = {
+    "encaissement_facture": (
+        "règle la facture : le revenu a été compté à la date de la facture "
+        "(revenu facturé) ; l'encaissement réduit son solde dû, jamais un "
+        "revenu de plus."),
+    "recette_autre": (
+        "un « autre produit », avant taxes — sauf celle qu'inscrit un "
+        "paiement d'honoraires depuis le fidéicommis : elle règle la facture "
+        "que nomme l'écriture du fidéicommis, sinon elle est signalée parmi "
+        "les points à vérifier."),
+    "dépense": (
+        "une charge de sa catégorie, nette de TPS/TVQ — directe si elle porte "
+        "un dossier, variable ou fixe selon sa catégorie ; la TPS/TVQ payée "
+        "réduit la TPS/TVQ due (CTI/RTI), au bilan."),
+    "remboursement_depense": (
+        "réduit la charge de la catégorie remboursée et rend la TPS/TVQ "
+        "réclamée — jamais un revenu."),
+    "prélèvement": "hors des résultats : réduit l'avoir de l'avocat.",
+    "apport": "hors des résultats : augmente l'avoir de l'avocat.",
+    "virement_interne_sortant": (
+        "hors des résultats : l'argent du cabinet passe à un compte hors de "
+        "ce registre ; marqué « avances », il verse au fidéicommis les avances "
+        "de clients et éteint la dette envers eux."),
+    "virement_interne_entrant": (
+        "hors des résultats : l'argent du cabinet revient d'un compte hors de "
+        "ce registre."),
+    "avance_honoraires": (
+        "ni revenu ni charge : une dette envers le client (« Avances de "
+        "clients à verser au fidéicommis ») jusqu'au virement interne marqué "
+        "« avances »."),
+    "remise_tps_tvq": "ni revenu ni charge : paie la TPS/TVQ due, au bilan.",
+    "remboursement_tps_tvq": (
+        "ni revenu ni charge : la TPS/TVQ remboursée par l'administration "
+        "fiscale, au bilan."),
+    "paiement_carte": (
+        "ni revenu ni charge : un virement entre deux comptes du registre, "
+        "qui réduit la dette de la carte."),
+    "correction": (
+        "compte comme l'écriture qu'elle contre-passe, en sens inverse, le "
+        "jour de la correction."),
+}
+#: The trust register in these statements, for every purpose.
+TRUST_STATEMENT_SENTENCE = (
+    "jamais dans un total : c'est l'argent des clients, qui ne paraît qu'en "
+    "mémoire. Un paiement d'honoraires y prend la somme et l'inscrit, dans "
+    "la même opération, au compte d'administration, où elle règle la "
+    "facture.")
+
 #: Categories that are normally a dossier's cost: one filed without its
 #: dossier lands in the fixed costs, and is listed.
 _DOSSIER_CATEGORIES = ("huissier", "sténographe", "timbres_judiciaires")

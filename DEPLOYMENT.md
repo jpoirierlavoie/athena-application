@@ -5946,6 +5946,68 @@ Notes:
   made before the due date. A rollback of the code takes `cron.yaml`'s job
   with it.
 
+- **The counterparty suggestions (2026-11-12).** Both entry forms' counterparty
+  field suggests names as the lawyer types, by the entry's type
+  (`admin_ledger.ENTRY_TYPES`, `trust.PURPOSE_TYPES`): an expense, its refund
+  and a trust payment to a third party, the suppliers and the professionals
+  (never a client); a client's money, the clients, the dossier's first; an
+  encaissement, the invoice's client first; TPS/TVQ, the tax authorities; a
+  virement interne, « Compte en fidéicommis ». The names the entry points to
+  show on focus, the contacts from two typed letters (« starts with » before
+  « contains », eight rows, then « précisez »). A pick writes the trade name,
+  else the legal name — never « Me » — and, on an expense or its refund, the
+  supplier's usual category if the category is empty. The field stays free
+  text. One component (`templates/components/_champ_contrepartie.html`): 44 px
+  rows, Down arrow to the list, Escape to close; a failed read, an expired
+  session or a network failure says « Suggestions indisponibles — saisissez
+  le nom. ». Change Impact: item 4 (the existing `unexpected` event, register
+  and type only — never what was typed); item 5 (`/administration/
+  counterparty-suggest` joins the trust one, both behind login; htmx carries
+  App Check); item 6 (compiled classes only); item 7 (one `in` equality on
+  `contact_role`, served by the single-field index, capped at 500); items 1
+  to 3 not touched.
+  In order:
+  1. *The push.*
+  2. *A new dépense* (desktop, then the phone): type three letters of a
+     supplier — the list shows it with its role; pick it — the name, and its
+     usual category if the category was empty.
+  3. *A trust « Déboursé à un tiers »*: the same names, never a client.
+  A rollback is the code alone.
+- **The trust fixes (2026-11-12).** The inter-dossier transfer form offers
+  the « Référence » its route already stored on both legs but no field ever
+  sent. A fee payment's detail page — and its correction's — links to its
+  recette at the administration account (`services/comptabilite
+  .recettes_du_paiement`: the existing query on `trust_transaction_id`,
+  strict, made only for those entries); a failed read says « indisponible »
+  and the page still answers. Change Impact: item 4 (one more line on the
+  existing `unexpected` event, the entry's id only); item 7 (the existing
+  single-field equality); items 1, 2, 3, 5 and 6 not touched.
+  In order:
+  1. *The push.*
+  2. *A fee payment's page* (Fidéicommis → the entry): « Recette au compte
+     d'administration : n° … » opens the recette.
+  A rollback is the code alone.
+- **The « Types d'écritures » page (2026-11-12).** `/comptabilite/types-ecritures`
+  — a button on the Comptabilité hub, and « Que fait chaque type ? » under the
+  administration form's « Type » (« Que fait chaque objet ? » under the trust
+  form's « Objet »), which opens the chosen type's card in a new tab. For every
+  type of both registers, family by family: its direction, its dossier, its
+  category and split, its counterparty (label, suggestions, pre-fill), its
+  cash-flow line, where it is entered, and one sentence « Aux états
+  financiers » (`financial_statements.KIND_STATEMENT_SENTENCES`, for the
+  lawyer's accountant to review). Every card derives from the model
+  (`services/types_ecritures`); the page reads nothing from Firestore.
+  Change Impact: item 6 (compiled classes only; the `info` icon is already in
+  the subset); items 1 to 5 and 7 not touched.
+  In order:
+  1. *The push.*
+  2. *The page*, on the desktop and at 375 px: Comptabilité → « Types
+     d'écritures ».
+  3. *A form's link*: in a new administration entry, choose « Remise de
+     TPS/TVQ », then « Que fait chaque type ? » — the new tab opens on its
+     card.
+  A rollback is the code alone.
+
 - **Invoices: an unreadable stored amount is named, never fatal
   (2026-11-12).** Four defects older than lot 2, fixed on the lawyer's
   decision of 2026-11-12 — preventively: a read-only scan of production
