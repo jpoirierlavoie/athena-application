@@ -57,7 +57,7 @@
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
           dossierOpen: false
         }"
-        x-init="var sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; }"
+        x-init="let sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; }"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% if mode == 'edit' %}{{ etag_field(entry) }}{% endif %}
@@ -194,7 +194,7 @@
       <label class="block text-sm font-medium text-gray-700">Facture encaissée</label>
       {% if factures %}
       <select name="invoice_id" :disabled="kind !== 'encaissement_facture'"
-              @change="var o = $event.target.selectedOptions[0]; if (o &amp;&amp; o.dataset.solde) { document.getElementById('montant-input').value = (parseInt(o.dataset.solde, 10) / 100).toFixed(2).replace('.', ','); }"
+              @change="let o = $event.target.selectedOptions[0]; if (o &amp;&amp; o.dataset.solde) { document.getElementById('montant-input').value = (parseInt(o.dataset.solde, 10) / 100).toFixed(2).replace('.', ','); }"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         <option value="">Choisir la facture…</option>
         {% for f in factures %}
@@ -267,7 +267,7 @@
              hx-get="{{ url_for('admin_ledger.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
       <div id="dossier-results" x-show="dossierOpen" x-cloak
-           @click="var li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; }"
+           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; }"
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       <p class="text-xs text-gray-400 mt-1">Un déboursé refacturable au client s'inscrit aussi dans Dépenses (/temps) — ce registre ne crée pas la dépense au dossier.</p>
     </div>
