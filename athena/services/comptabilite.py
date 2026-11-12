@@ -294,6 +294,16 @@ def nom_avocat() -> str:
     return fee_payment.lawyer_name()
 
 
+def recettes_du_paiement(trust_transaction_id: str) -> list[dict]:
+    """The administration recettes a fee payment wrote with it, in its one
+    transaction (``models/fee_payment``) — the trust detail page's link to
+    them (lot 8 of 2026-11-11). STRICT (``admin_ledger
+    .list_by_trust_transaction``): a failed read raises, which the page
+    answers « indisponible », never « none ». Display only: no write
+    decides on it."""
+    return al.list_by_trust_transaction(trust_transaction_id)
+
+
 def beneficiaire_honoraires_par_defaut(method: str) -> Optional[str]:
     """The payee a fee payment takes when none is named: the lawyer on a
     cheque (art. 58 — « chèque tiré à l'ordre de l'avocat »), the firm on a

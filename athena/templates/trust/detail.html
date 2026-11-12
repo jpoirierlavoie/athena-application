@@ -77,11 +77,15 @@
     {% if entry.description %}<div class="pt-3 border-t border-gray-100"><p class="text-xs text-gray-500">Description</p><p class="text-gray-900 whitespace-pre-line">{{ entry.description }}</p></div>{% endif %}
 
     {# Links to related entries #}
-    {% if reversal or reverses or other_leg %}
+    {% if reversal or reverses or other_leg or recettes or recettes_indisponibles %}
     <div class="pt-3 border-t border-gray-100 space-y-1">
       {% if reverses %}<p class="text-xs">Contre-passe l'écriture <a href="{{ url_for('trust.entry_detail', tx_id=reverses.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reverses.sequence }}</a></p>{% endif %}
       {% if reversal %}<p class="text-xs">Contre-passée par l'écriture <a href="{{ url_for('trust.entry_detail', tx_id=reversal.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reversal.sequence }}</a></p>{% endif %}
       {% if other_leg %}<p class="text-xs">Autre volet du virement : <a href="{{ url_for('trust.entry_detail', tx_id=other_leg.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ other_leg.sequence }}</a></p>{% endif %}
+      {# Le paiement d'honoraires et sa recette au compte d'administration
+         (lot 8) — une correction mène à celle de son original. #}
+      {% for r in recettes %}<p class="text-xs">Recette au compte d'administration : <a href="{{ url_for('admin_ledger.entry_detail', tx_id=r.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ r.sequence }}</a></p>{% endfor %}
+      {% if recettes_indisponibles %}<p class="text-xs text-amber-600">Recette au compte d'administration : indisponible.</p>{% endif %}
     </div>
     {% endif %}
   </div>

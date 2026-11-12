@@ -5970,6 +5970,20 @@ Notes:
      usual category if the category was empty.
   3. *A trust « Déboursé à un tiers »*: the same names, never a client.
   A rollback is the code alone.
+- **The trust fixes (2026-11-12).** The inter-dossier transfer form offers
+  the « Référence » its route already stored on both legs but no field ever
+  sent. A fee payment's detail page — and its correction's — links to its
+  recette at the administration account (`services/comptabilite
+  .recettes_du_paiement`: the existing query on `trust_transaction_id`,
+  strict, made only for those entries); a failed read says « indisponible »
+  and the page still answers. Change Impact: item 4 (one more line on the
+  existing `unexpected` event, the entry's id only); item 7 (the existing
+  single-field equality); items 1, 2, 3, 5 and 6 not touched.
+  In order:
+  1. *The push.*
+  2. *A fee payment's page* (Fidéicommis → the entry): « Recette au compte
+     d'administration : n° … » opens the recette.
+  A rollback is the code alone.
 
 ## 16. Troubleshooting
 
