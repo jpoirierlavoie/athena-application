@@ -451,10 +451,47 @@ def test_the_flow_prefixes_are_the_builders_own_namespaces():
     own = {k for k in ctx.values if "." in k and k.split(".", 1)[0] == "note"}
     assert own and all(k.startswith("note.") for k in {*own, *ctx.rich_values})
     assert handlers._FLOW_PREFIXES["note"] == ("note.",)
+    # Lot 3d — the credit note: its own nc.* and the few facture.* fields it
+    # prints, EXACTLY the builder's keys outside the catalog's header.
+    from utils.invoice_docx import CREDIT_NOTE_FIELDS, build_credit_note_context
+    from utils.template_fields import (
+        CATALOG, CREDIT_NOTE_INVOICE_FIELDS, FLAT_ALIASES, FLOW_NAMES,
+        is_flow_field,
+    )
+    credit = build_credit_note_context(
+        {"invoice_number": "2031-F001"}, _CREDIT_WRITE_OFF, firm={},
+        destinataire=None, dossier=None, today=datetime(2031, 3, 10).date(),
+        balance_cents=0)
+    header = set(CATALOG) | set(FLAT_ALIASES)
+    own = {k for k in credit.values if k not in header}
+    assert own == set(CREDIT_NOTE_FIELDS) | set(CREDIT_NOTE_INVOICE_FIELDS)
+    assert handlers._FLOW_PREFIXES["note_credit"] == ("nc.",)
+    assert all(k.startswith("nc.") for k in CREDIT_NOTE_FIELDS)
+    assert FLOW_NAMES == {"note_credit": CREDIT_NOTE_INVOICE_FIELDS}
+    assert all(is_flow_field(k, "note_credit") for k in own)
+    # The credit note's flow fills no OTHER facture.* field: one left in its
+    # gabarit stays as typed, a bloc, never reported as filled.
+    assert not is_flow_field("facture.total_apres_taxes", "note_credit")
+    assert is_flow_field("facture.total_apres_taxes", "note_honoraires")
+    assert not is_flow_field("nc.numero", "gabarit")
+    # One table per special kind, no more, no less.
+    assert set(handlers._FLOW_PREFIXES) == set(tpl_model.SPECIAL_KINDS)
+    assert set(FLOW_NAMES) <= set(tpl_model.SPECIAL_KINDS)
     # No catalog field lives in a flow namespace (it would be mis-filed).
-    from utils.template_fields import CATALOG
     for prefixes in handlers._FLOW_PREFIXES.values():
         assert not [c for c in CATALOG if c.lower().startswith(prefixes)]
+    for names in FLOW_NAMES.values():
+        assert not set(names) & set(CATALOG)
+
+
+# A standing radiation as the write-off door stores it (fictitious year,
+# invented amounts).
+_CREDIT_WRITE_OFF = {
+    "id": "rad-1", "kind": "radiation",
+    "date": datetime(2031, 3, 10, tzinfo=UTC), "amount": 11498,
+    "gst_amount": 500, "qst_amount": 998, "tax_claimed": True,
+    "reason": "", "reverses_id": "", "credit_note_number": "2031-NC001",
+}
 
 
 def _special(kind, names):
@@ -512,9 +549,45 @@ def test_a_note_preview_fills_the_dossier_alone(store):
     _conforms("list_templates", payload)
 
 
+def test_a_credit_note_preview_mirrors_its_own_flow(store):
+    """Lot 3d — a « note_credit » template: the invoice's dossier and client
+    (destinataire), as the note d'honoraires; nc.* and its few facture.*
+    fields are the flow's own, any other facture.* a bloc left as typed;
+    the warnings name the application's button — no tool generates it."""
+    tpl = _special("note_credit", ["dossier.titre", "destinataire.nom_complet",
+                                   "nc.numero", "nc.total", "facture.numero",
+                                   "facture.total_apres_taxes"])
+    payload = handlers.list_templates({"template_id": tpl["id"], "dossier_id": "d1"})
+    assert payload["flow_fields"] == ["nc.numero", "nc.total", "facture.numero"]
+    assert [b["name"] for b in payload["blocs"]] == ["facture.total_apres_taxes"]
+    assert payload["template"]["flow_count"] == 3
+    text = " ".join(payload["warnings"])
+    assert "Générer la note de crédit" in text and "aucun outil" in text
+    assert "viennent du client de la facture" in text
+    assert "n'est PAS le gabarit actif des « Note de crédit »" in text
+    _conforms("list_templates", payload)
+    with pytest.raises(tools.ToolArgumentError,
+                       match="depuis la radiation et sa facture"):
+        handlers.list_templates({"template_id": tpl["id"], "client_id": "c1"})
+    # fill_gabarit names its own way, never « a son propre flux ».
+    assert "Générer la note de crédit" in handlers._GABARIT_FLOWS_FR["note_credit"]
+
+
+def test_every_special_kind_has_its_flow_tables():
+    """Each table is read by kind (`_FLOW_SOURCES_FR[kind]`): a special kind
+    missing from one would crash the preview — lot 3d adds the third."""
+    special = set(tpl_model.SPECIAL_KINDS)
+    for table in (handlers._FLOW_PREFIXES, handlers._FLOW_SOURCES_FR,
+                  handlers._FLOW_SLOTS, handlers._FLOW_ORIGIN_FR):
+        assert set(table) == special
+    assert set(handlers._GABARIT_FLOWS_FR) == set(tpl_model.VALID_KINDS) - {"gabarit"}
+
+
 @pytest.mark.parametrize("kind, key", [
     ("note_honoraires", "client_id"),
     ("note_honoraires", "adverse_id"),
+    ("note_credit", "client_id"),
+    ("note_credit", "adverse_id"),
     ("note", "client_id"),
     ("note", "destinataire_id"),
 ])
@@ -548,6 +621,12 @@ def test_the_flow_slots_are_the_builders_own(monkeypatch):
     invoice_docx.build_invoice_context(
         {"billing_address": {"name": "X"}}, [], firm={}, destinataire=None,
         dossier=dossier, today=datetime(2026, 9, 27).date())
+    # Lot 3d: the credit note's builder, its own capture.
+    monkeypatch.setattr(invoice_docx, "resolve_values", _capture("note_credit"))
+    invoice_docx.build_credit_note_context(
+        {"billing_address": {"name": "X"}}, _CREDIT_WRITE_OFF, firm={},
+        destinataire=None, dossier=dossier, today=datetime(2031, 3, 10).date(),
+        balance_cents=0)
     note_docx.build_note_context({"title": "T"}, dossier=dossier, firm={},
                                  today=datetime(2026, 9, 27).date())
     assert {k: set(v) for k, v in handlers._FLOW_SLOTS.items()} == seen

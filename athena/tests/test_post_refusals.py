@@ -1479,11 +1479,13 @@ _PLANTS = {
                                    "        return '<div>Tâche requise.</div>'"
                                    ", 422\n" + _TASK_TOGGLE_START)],
                                  "Tâche requise.", ["4xx-under-htmx"]),
-    # A helper answering a 4xx fragment, returned by an hx-post view.
+    # A helper answering a 4xx fragment, returned by an hx-post view — by
+    # two since lot 3d: the note d'honoraires' and the credit note's.
     "note-error-helper-422": ("routes/invoices.py",
                               [(_NOTE_ERROR, _NOTE_ERROR.replace(
                                   "    )\n", "    ), 422\n"))],
-                              "return _note_error(", ["4xx-under-htmx"]),
+                              "return _note_error(",
+                              ["4xx-under-htmx", "4xx-under-htmx"]),
     # A refusal named otherwise, sent to the list.
     "an-outcome-named-problems": ("routes/tasks.py",
                                   [(_TASK_DELETE_ROUTE,

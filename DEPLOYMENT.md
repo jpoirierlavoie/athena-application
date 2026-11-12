@@ -6326,6 +6326,110 @@ Notes:
   `credit_note_number`, so a radiation written here still reads there (its
   statements then take it off revenue again, lot 3a's way); the counter
   stays, and a later deploy continues its series.
+- **Gabarits: the credit note — a kind designated « actif », generated from
+  the sheet, filed in the dossier — lot 3d (2026-11-12).** Lot 3d of the
+  lawyer's plan « Factures : retard, radiation, intérêts », on his decision
+  8 of 2026-11-12: a write-off is shown to the client as a price reduction
+  documented by a CREDIT NOTE, which the write-off door numbers since lot
+  3b; this lot prints it, in Word, on demand.
+  1. *The kind* (`models/doc_template.py`). `note_credit` — « Note de crédit
+     (radiation) » — joins `VALID_KINDS` and `SPECIAL_KINDS`: ONE template of
+     the kind is designated « actif » by the lawyer on its page, as the note
+     d'honoraires' is, never the most recent; the refusal to designate an
+     ordinary gabarit names the three kinds, derived. The one-shot
+     designation script of lot 2A (`scripts/designer_gabarits_actifs.py`)
+     keeps its two kinds (`LEGACY_KINDS`): a credit note never had a
+     recency rule to reproduce.
+  2. *The fill* (`services/note_credit.py`, `utils/invoice_docx
+     .build_credit_note_context`). For ONE standing radiation of an invoice:
+     the note d'honoraires' engine (string substitution in the document,
+     header and footer XML, every other entry byte for byte, no new part),
+     its fingerprint — given the credit note's subject, its kind and its
+     radiation, so two radiations never share a document and the note
+     d'honoraires' own fingerprints do not move —, its save into « Mandat ›
+     Factures » with the invoice link (`source_invoice_id`), tagged
+     `note_credit`. A cancelled radiation gets none (its credit note keeps
+     its number, « annulée »), nor does an id that names no radiation of the
+     invoice; no designated template refuses, naming « Gabarits »; every
+     refusal writes nothing. The button REUSES: a second click while
+     nothing it prints has changed returns the credit note already filed,
+     never a second copy (the note d'honoraires' button keeps filing one per
+     click).
+  3. *The fields* (GABARITS_PLACEHOLDERS.md section 7, hence
+     `/gabarits/aide`; the note print and the templatizing became sections 8
+     and 9). The note d'honoraires' header fields (one resolution),
+     `{{nc.numero}}`, `{{nc.date}}`, `{{nc.motif}}`,
+     `{{nc.montant_avant_taxes}}` (W − TPS − TVQ), `{{nc.tps}}`,
+     `{{nc.tvq}}`, `{{nc.total}}` (W), and the invoice's `{{facture.numero}}`,
+     `{{facture.date}}`, `{{facture.tps_numero}}`, `{{facture.tvq_numero}}`
+     and `{{facture.solde_restant}}` (zero). They are the kind's own « flow »
+     fields, as `facture.*` and `note.*` are — not catalogue fields, which an
+     ordinary gabarit would print « [CHAMP MANQUANT : …] » —, in one table
+     beside the catalogue (`utils/template_fields.FLOW_PREFIXES` /
+     `FLOW_NAMES` / `is_flow_field`) that the connector and the gabarit page
+     both read: that page now lists a special kind's own fields under
+     « Remplis depuis … » instead of « À compléter dans Word ».
+  4. *The button* (`routes/invoices.py`, `templates/invoices/detail.html`).
+     Each standing radiation of the sheet's « Radiations » section offers
+     « Générer la note de crédit » (`POST …/radiation/<event_id>/note-de-
+     credit`, CSRF, 44 px) while the sheet can read the invoice's amounts:
+     htmx gets the fragment that links to the document — a refusal at 200 —;
+     without JavaScript the document opens, or the sheet comes back with
+     `?erreur=`.
+  5. *The connector* — no new tool. `list_templates` knows the kind (its
+     `kind` value, its `flow_fields`, the slots its flow reads — the dossier
+     and the destinataire, the invoice's client —, warnings naming the
+     application's button, which is the only way to generate one);
+     `fill_gabarit` refuses it as it refuses every special kind, naming that
+     button; `begin_upload` (purpose gabarit), `create_template` and
+     `update_template` accept the kind, never active. `update_invoice`'s
+     « a note d'honoraires is filed » no longer counts a credit note (its
+     own tag, `note_credit`); every other document of the invoice link
+     counts as before.
+  Change Impact: item 1 — touched: the `kind` enums of `list_templates`,
+  `begin_upload`, `create_template` and `update_template` gain
+  `note_credit` (a value a caller must name: no default or match
+  widened), their descriptions and two output descriptions name it; no
+  new tool, read or write; no disclosure promise moved (the connector still never designates a
+  template nor generates a credit note); the consent screen is untouched —
+  no new kind of data is read; `exporter_plugin_athena --check`: registry
+  `f38e98b4dbf7` → `88c3cb576b15`, so the plugin goes to 1.9.3 — only its
+  generated version line changes — delivered on the lawyer's « go » (step
+  5). Item 2 — not touched (documents and gabarits are not DAV-exposed).
+  Item 3 — touched: a new fill through the same engine, by string
+  substitution, no new part — a test reads the filed credit note back: its
+  document, header and footer filled, a split run healed, a repeated field
+  filled twice, every other part byte for byte; the .docx must open in Word
+  without repair (step 4). Item 4 — no new event: `document_generated` and
+  `generation_failed` carry `source="note_credit"`, ids only, and five new
+  reasons; `template_activated` / `template_deactivated` a third kind —
+  OBSERVABILITY.md. Item 5 — touched: one route on the CSRF-protected
+  `invoices` blueprint, `@login_required`, the token in its form; no
+  exemption, prefix, header or setting. Item 6 — touched: the sheet, the
+  gabarit page and the gabarit form, compiled classes only (checked
+  against the artifact by test, no recompile), no icon. Item 7 — not
+  touched: the designation reads and the invoice link's lookup are
+  single-field equalities (automatic indexes). In order:
+  1. *The push* — no index, no migration, no consent train.
+  2. *The gabarit*: the lawyer uploads his « Note de crédit » gabarit
+     (Gabarits → Téléverser, type « Note de crédit (radiation) ») and, on
+     its page, « Désigner comme gabarit actif »; the page lists its
+     `nc.*` and `facture.*` fields under « Remplis depuis la radiation et sa
+     facture ».
+  3. *The first real write-off*: on the invoice's sheet, its radiation's
+     « Générer la note de crédit » — the fragment links to the document,
+     filed under « Mandat › Factures »; a second click returns the same one.
+  4. *In Word*: the generated .docx opens WITHOUT REPAIR (by hand — CI
+     cannot see the repair prompt), every field filled.
+  5. *Plugin 1.9.3*, on the lawyer's « go »: rebuild it, unpack it into the
+     mirror `athena-plugin` (the old copy removed first), bump the mirror's
+     marketplace.json, commit and push it the same day; until then,
+     `exporter_plugin_athena --check` reports the drift.
+  A rollback is the code alone, with plugin 1.9.2: the old code generates
+  no credit note and no longer lists a template of kind `note_credit`
+  among the Gabarits (its page stays reachable by its link, where a save
+  makes it an ordinary gabarit); the credit notes already filed stay in
+  « Mandat › Factures ».
 
 ## 16. Troubleshooting
 

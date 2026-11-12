@@ -4,7 +4,7 @@ For developers. This French guide is the page the Gabarits list opens
 tests/test_gabarits_placeholders_doc.py pins against the code:
 utils/docx_fill.py (syntax), utils/template_fields.py (catalogue, flat
 aliases, manual and passthrough fields), utils/invoice_docx.py (note
-d'honoraires), utils/note_docx.py and utils/markdown_docx.py (note print),
+d'honoraires and credit note), utils/note_docx.py and utils/markdown_docx.py (note print),
 utils/docx_templatize.py (templatizing). Add or rename a field there: update
 this guide. Write it ONE line per paragraph and per list item — the page's
 Markdown pipeline prints every line break (tests/test_gabarits_guide.py).
@@ -12,7 +12,7 @@ Markdown pipeline prints every line break (tests/test_gabarits_guide.py).
 
 # Champs des gabarits — guide de référence
 
-Tous les champs que vous pouvez placer dans un **gabarit** Word (`.docx`) — qu'il serve à produire un document, une **note d'honoraires** ou l'**impression d'une note** — et les règles de syntaxe qui les régissent.
+Tous les champs que vous pouvez placer dans un **gabarit** Word (`.docx`) — qu'il serve à produire un document, une **note d'honoraires**, une **note de crédit** ou l'**impression d'une note** — et les règles de syntaxe qui les régissent.
 
 > **Ce qui fait foi.** Ce guide recense ce que l'application remplit réellement. En cas d'écart, c'est le code de l'application qui l'emporte; à chaque mise à jour de l'application, un test automatique vérifie que ce guide nomme bien tous les champs, alias courts et choix qu'elle connaît.
 
@@ -250,7 +250,7 @@ Un champ laissé tel quel est aussi ce que **Claude** peut rédiger, par l'outil
 
 | Argument | Description | Limites |
 |---|---|---|
-| `template_id` | Le gabarit. **Type « gabarit » seulement** — un gabarit « Note d'honoraires » ou « Note (impression) » est refusé, car chacun a son propre circuit : pour une note d'honoraires, le bouton « Note d'honoraires (Word) » de la facture dans l'application, ou `create_document` avec `source: invoice_note` par le connecteur; pour l'impression d'une note, `create_document` avec `source: markdown` par le connecteur (voir la section 7). Un « Modèle (sans champs) » — un modèle de contrat, de type `modele` — est refusé lui aussi : il ne se remplit jamais; il se télécharge et s'adapte dans Word | — |
+| `template_id` | Le gabarit. **Type « gabarit » seulement** — un gabarit « Note d'honoraires », « Note de crédit » ou « Note (impression) » est refusé, car chacun a son propre circuit : pour une note d'honoraires, le bouton « Note d'honoraires (Word) » de la facture dans l'application, ou `create_document` avec `source: invoice_note` par le connecteur; pour une note de crédit, le bouton « Générer la note de crédit » d'une radiation, sur la fiche de la facture, dans l'application seulement (voir la section 7); pour l'impression d'une note, `create_document` avec `source: markdown` par le connecteur (voir la section 8). Un « Modèle (sans champs) » — un modèle de contrat, de type `modele` — est refusé lui aussi : il ne se remplit jamais; il se télécharge et s'adapte dans Word | — |
 | `dossier_id` | **Obligatoire.** Ses données remplissent tous les champs automatiques, et le document est enregistré comme NOUVEAU document dans le sous-dossier « Projets » de CE dossier — **toujours là** : jamais dans un autre sous-dossier, jamais en téléchargement. Dans l'arborescence par défaut, « Projets » se trouve sous « Interne » (« Interne › Projets »); un dossier qui n'a pas encore reçu cette arborescence garde son ancien sous-dossier « Projets » à la racine, utilisé là où il se trouve | — |
 | `client_id` / `adverse_id` | Les créneaux « client » / « adverse » — une partie **de ce dossier**, à fournir quand le dossier en compte plusieurs et que le gabarit lit ce créneau (jamais devinée, jamais la première par défaut) | — |
 | `destinataire_id` | Le créneau « destinataire » — n'importe quel contact; aucun par défaut | — |
@@ -261,7 +261,7 @@ Un champ laissé tel quel est aussi ce que **Claude** peut rédiger, par l'outil
 
 - **Seuls les champs laissés tels quels reviennent à Claude.** Les champs automatiques sont remplis par l'application à partir du dossier et de ses parties (un bloc qui porte le nom de l'un d'eux est refusé : il ne le remplace jamais); les champs à saisir se fournissent par leur propre liste, où leurs choix sont imposés. Les noms sont comparés **à l'identique**, tels que `list_templates` les rapporte : ici, les majuscules comptent.
 - **Les paragraphes d'un bloc sont séparés par une LIGNE VIDE**; un simple saut de ligne devient une espace. Chaque paragraphe est une copie du paragraphe hôte : un `{{FAITS}}` seul dans un paragraphe **numéroté** donne de vrais numéros Word, continus — c'est pourquoi un bloc ne doit porter **aucune numérotation propre**.
-- **`markdown: true`** fait passer un bloc par la conversion en mise en forme Word de la section 7 (la numérotation propre du paragraphe hôte étant neutralisée). Il lui faut le même hôte que `{{note.contenu}}` : seul dans son paragraphe, dans le corps du document. Sinon, il s'imprime en texte brut, symboles Markdown visibles, et l'outil le signale (`blocs_demoted`).
+- **`markdown: true`** fait passer un bloc par la conversion en mise en forme Word de la section 8 (la numérotation propre du paragraphe hôte étant neutralisée). Il lui faut le même hôte que `{{note.contenu}}` : seul dans son paragraphe, dans le corps du document. Sinon, il s'imprime en texte brut, symboles Markdown visibles, et l'outil le signale (`blocs_demoted`).
 
 **Numéros de Word ou numéros calculés — un chemin ou l'autre, jamais les deux :**
 
@@ -272,7 +272,7 @@ Un champ laissé tel quel est aussi ce que **Claude** peut rédiger, par l'outil
 | Quand vous retouchez dans Word | Les numéros se mettent à jour d'eux-mêmes et continuent la liste à laquelle appartient le paragraphe hôte | Les numéros sont du simple texte : insérer ou retirer un élément ne renumérote PAS les autres, et chaque liste Markdown est numérotée séparément |
 | À utiliser pour | Allégations numérotées, conclusions — tout ce que vous aurez à renuméroter | Structure interne : titres, gras, liste à puces, tableau |
 
-Un « 1. » écrit à la main dans un bloc simple placé dans un paragraphe numéroté imprime le numéro DEUX FOIS (celui de Word, puis celui du texte). Une limite, commune avec la section 7 : la numérotation portée par le seul STYLE Word du paragraphe (« Liste numérotée » / « List Number », sans numéro appliqué au paragraphe lui-même) est encore héritée par un bloc `markdown: true` — donnez à ce paragraphe un style ordinaire.
+Un « 1. » écrit à la main dans un bloc simple placé dans un paragraphe numéroté imprime le numéro DEUX FOIS (celui de Word, puis celui du texte). Une limite, commune avec la section 8 : la numérotation portée par le seul STYLE Word du paragraphe (« Liste numérotée » / « List Number », sans numéro appliqué au paragraphe lui-même) est encore héritée par un bloc `markdown: true` — donnez à ce paragraphe un style ordinaire.
 
 - **Un bloc ou la valeur d'un champ à saisir ne peut jamais contenir `{{` ni `}}`** — l'application lirait un `{{dossier.demandeur}}` qui s'y trouverait comme un champ et y imprimerait les données du dossier. Un tel texte est refusé, et non neutralisé. Un bloc **Markdown** (comme le Markdown de `create_document`) est aussi jugé une fois MIS EN FORME : un échappement `\{` ou une référence de caractère `&#123;` / `&lbrace;` imprime une accolade, si bien qu'un texte qui imprimerait `{{…}}` est refusé lui aussi.
 - Un bloc que Claude ne rédige pas reste `{{name}}` dans le document, à compléter dans Word, et le résultat dit lesquels (`blocs_left_verbatim`, relu dans le fichier produit — un champ fragmenté par Word y figure aussi).
@@ -346,7 +346,7 @@ Encadrez le tableau de chaque section entre les marqueurs de sa condition : une 
 La rangée répétée des paiements énumère ce qui a été payé — ou radié — sur la facture **au moment où la note est générée**. Une note générée à l'émission ne montre aucun paiement : générez-la de nouveau après un paiement ou une radiation. Le bouton de la facture enregistre une nouvelle note à chaque clic, et le connecteur en enregistre une nouvelle dès que les paiements ont changé.
 
 - **Les rangées.** La provision d'une facture importée vient en premier (les « Avances en fidéicommis » déduites à son émission), datée du jour de la facture, avec la source « Fidéicommis ». Suivent les encaissements imputés à la facture dans le registre de l'administration, du plus ancien au plus récent. Un paiement d'honoraires tiré du fidéicommis en fait partie, puisqu'il est aussi inscrit à ce registre. Un encaissement contre-passé ou annulé n'est jamais imprimé.
-- **La radiation.** La radiation du solde d'une facture en retard est une réduction du prix que la note **montre** au client, documentée par une note de crédit numérotée (« 2026-NC001 », une série par année, jamais réutilisée) : chaque radiation en vigueur occupe une rangée, datée du jour où elle a été inscrite, avec la source « Note de crédit » suivie de son numéro, et son montant, taxes comprises. Elle suit les encaissements de son jour et mène le solde restant à zéro. Une radiation annulée n'est jamais imprimée, ni son annulation : sa note de crédit garde son numéro, annulée. La rangée est celle de votre gabarit : rien à y ajouter.
+- **La radiation.** La radiation du solde d'une facture en retard est une réduction du prix que la note **montre** au client, documentée par une note de crédit numérotée (« 2026-NC001 », une série par année, jamais réutilisée; son document Word se génère depuis la fiche de la facture, voir la section 7) : chaque radiation en vigueur occupe une rangée, datée du jour où elle a été inscrite, avec la source « Note de crédit » suivie de son numéro, et son montant, taxes comprises. Elle suit les encaissements de son jour et mène le solde restant à zéro. Une radiation annulée n'est jamais imprimée, ni son annulation : sa note de crédit garde son numéro, annulée. La rangée est celle de votre gabarit : rien à y ajouter.
 - **`{{p.date}}`** — la date de l'encaissement au registre (celle qu'affiche la page de la facture), écrite au long; pour une radiation, le jour où elle a été inscrite.
 - **`{{p.source}}`** — « Fidéicommis » pour un paiement tiré du fidéicommis, « Note de crédit 2026-NC001 » (son numéro) pour une radiation du solde. Sinon, le mode de paiement inscrit : Chèque, Virement, Prélèvement, Dépôt direct, Carte, Comptant, et « Paiement » pour « Autre ».
 - **`{{p.montant}}`** — entre parenthèses, sous la même forme de déduction que `{{facture.avances_fideicommis}}` : « (500,00) $ ».
@@ -379,7 +379,52 @@ Le solde détenu en fidéicommis pour le client de la facture **dans le dossier 
 
 ---
 
-## 7. Impression d'une note seulement (type « Note (impression) »)
+## 7. Note de crédit seulement (type « Note de crédit (radiation) »)
+
+La radiation du solde d'une facture en retard est une réduction du prix que le client reçoit documentée par une **note de crédit**, numérotée à l'inscription de la radiation (« 2026-NC001 », une série par année, jamais réutilisée). Sur la fiche de la facture, chaque radiation en vigueur offre le bouton « Générer la note de crédit » : il remplit le gabarit de ce type que vous avez **désigné comme actif** sur sa page (« Désigner comme gabarit actif »), jamais simplement le plus récent. Si aucun gabarit n'est désigné, la génération est refusée et le message l'indique. Le connecteur, lui, ne génère aucune note de crédit.
+
+La note de crédit est enregistrée comme NOUVEAU document du dossier de la facture, au même endroit que la note d'honoraires : dans « Mandat › Factures ». Son nom suit celui de la note d'honoraires : « … Projet », le nom du gabarit, puis le numéro de la note de crédit. Un nouveau clic, tant que rien de ce qu'elle imprime n'a changé, rend la note de crédit déjà versée au lieu d'en verser une seconde; une nouvelle version du gabarit en verse une nouvelle.
+
+Une radiation annulée ne génère plus de note de crédit : sa note de crédit garde son numéro, annulée, et un document déjà versé pour elle reste au dossier.
+
+Un gabarit de note de crédit peut utiliser tout ce qui précède pour son en-tête (`dossier.*`, `destinataire.*`, `cabinet.*`, `date.*` et leurs alias courts — le créneau destinataire y est le client de la facture, comme pour la note d'honoraires), **plus** les champs qui suivent, mis en forme comme ceux de la note d'honoraires. Aucune rangée répétée ni condition ne s'y remplit, ni aucun autre champ `facture.*` : laissés dans le gabarit, ils restent tels quels.
+
+### Champs `nc.*`
+
+| Champ | Valeur |
+|---|---|
+| `{{nc.numero}}` | Numéro de la note de crédit (« 2026-NC001 ») |
+| `{{nc.date}}` | Date de la radiation, soit le jour où elle a été inscrite (date au long) |
+| `{{nc.motif}}` | Le motif inscrit à la radiation, tel quel; sans motif, rien ne s'imprime. Ne le placez que si ce motif peut être lu par le client |
+| `{{nc.montant_avant_taxes}}` | Montant de la réduction avant taxes : le total radié, moins la TPS et la TVQ |
+| `{{nc.tps}}` | La TPS comprise dans le total radié — « 0,00 $ » quand la radiation ne réclame pas la TPS/TVQ : le montant avant taxes est alors le total radié |
+| `{{nc.tvq}}` | La TVQ comprise dans le total radié, selon la même règle |
+| `{{nc.total}}` | Le total radié, taxes comprises |
+
+### Champs de la facture
+
+| Champ | Valeur |
+|---|---|
+| `{{facture.numero}}` | Numéro de la facture que la note de crédit réduit |
+| `{{facture.date}}` | Date de cette facture (date au long) |
+| `{{facture.tps_numero}}` / `{{facture.tvq_numero}}` | Les numéros d'inscription à la TPS et à la TVQ, tels qu'ils figurent sur la facture |
+| `{{facture.solde_restant}}` | Le solde de la facture après la note de crédit : zéro, la radiation soldant la facture |
+
+Exemple de mise en page :
+
+| | |
+|---|---|
+| `NOTE DE CRÉDIT {{nc.numero}}` | `{{nc.date}}` |
+| `Facture {{facture.numero}} du {{facture.date}}` | |
+| `Réduction avant taxes` | `{{nc.montant_avant_taxes}}` |
+| `TPS` | `{{nc.tps}}` |
+| `TVQ` | `{{nc.tvq}}` |
+| `TOTAL DU CRÉDIT` | `{{nc.total}}` |
+| `SOLDE DE LA FACTURE` | `{{facture.solde_restant}}` |
+
+---
+
+## 8. Impression d'une note seulement (type « Note (impression) »)
 
 Le gabarit d'**impression d'une note** est le fichier `.docx` que remplit le bouton « Imprimer (Word) » de la page d'une note (et de l'onglet Analyse); le résultat vous est remis en **téléchargement direct** et n'est jamais enregistré parmi les documents du dossier. Téléversez-le dans « Gabarits » avec le type **« Note (impression) »**, puis **désignez-le** sur sa page (« Désigner comme gabarit actif ») : c'est le gabarit DÉSIGNÉ de ce type qui sert, jamais simplement le plus récemment modifié, et s'il n'y en a aucun, l'impression est refusée avec un message qui indique comment y remédier. Ce gabarit peut employer tous les champs qui précèdent (`dossier.*`, `cabinet.*`, `date.*`, alias courts — mais aucun créneau destinataire), **et, en plus, ceux-ci :**
 
@@ -408,7 +453,7 @@ La conversion reproduit le rendu À L'ÉCRAN (même traitement du Markdown) : le
 
 ---
 
-## 8. Transformer une lettre en gabarit (par le connecteur)
+## 9. Transformer une lettre en gabarit (par le connecteur)
 
 Une lettre déjà rédigée pour UN dossier peut devenir un gabarit du cabinet : chaque texte propre à ce dossier — un nom, un numéro de dossier, une adresse — est remplacé par le champ qui le remplira pour chaque dossier à venir. Claude y procède en deux appels au connecteur, et rien n'est écrit avant le second.
 
@@ -439,4 +484,4 @@ Une lettre qui n'est pas encore dans Athena est d'abord **versée comme document
 - Les noms de champs sont reconnus **sans égard aux majuscules**; un nom EN MAJUSCULES **met la valeur en majuscules**.
 - Les champs inconnus sont **sans risque** : ils restent tels quels, et la génération n'échoue jamais.
 - Champ automatique vide → `[CHAMP MANQUANT : …]`; champ à saisir vide → `[À COMPLÉTER : …]`; champ laissé tel quel → `{{name}}` brut.
-- La transformation d'une lettre en gabarit (voir la section 8) **tient compte des majuscules**, ne remplace que des mots entiers, se fait en tout ou rien, et est refusée tant qu'il reste quoi que ce soit du dossier d'origine.
+- La transformation d'une lettre en gabarit (voir la section 9) **tient compte des majuscules**, ne remplace que des mots entiers, se fait en tout ou rien, et est refusée tant qu'il reste quoi que ce soit du dossier d'origine.

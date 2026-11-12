@@ -7,8 +7,10 @@ T3 the application reads ONLY the template the lawyer designated
 (``active_for``), with no recency fallback — so a kind with no designation
 refuses to generate.
 
-This script designates, for each special kind that has no designation
-yet, the template production is using TODAY: the recency winner, by the
+This script designates, for each of those two special kinds
+(:data:`LEGACY_KINDS` — never one added since, such as lot 3d's credit
+note) that has no designation yet, the template production is using
+TODAY: the recency winner, by the
 exact rule the old code applies. It therefore changes nothing a user can
 see — which is why it must run BEFORE the T3 code is deployed: the old
 code ignores the new field, and the new code finds the designation already
@@ -43,6 +45,14 @@ from models import doc_template as tpl
 #: What the designation records as its author.
 PAR = "migration (gabarit le plus récent, lot 2A)"
 
+#: The special kinds this script knows: the two whose template production
+#: selected by RECENCY before T3. A kind added since — « note_credit », lot
+#: 3d of « Factures : retard, radiation, intérêts » — never had a recency
+#: rule, hence no template « production is using today »: only the lawyer
+#: designates it (CLAUDE.md « Documents and gabarits »), so the script
+#: never even reads it, whatever ``tpl.SPECIAL_KINDS`` grows to.
+LEGACY_KINDS = ("note_honoraires", "note")
+
 
 def _label(t: dict) -> str:
     return f"« {t.get('name') or '(sans nom)'} » ({t.get('id', '')})"
@@ -53,9 +63,10 @@ def _read_all() -> list[dict]:
 
 
 def plan(templates: list[dict]) -> list[dict]:
-    """One line per special kind: what exists, and what to do (pure)."""
+    """One line per legacy special kind (:data:`LEGACY_KINDS`): what
+    exists, and what to do (pure)."""
     lines = []
-    for kind in tpl.SPECIAL_KINDS:
+    for kind in LEGACY_KINDS:
         holders = [t for t in templates
                    if t.get("active_for") == kind
                    and (t.get("kind") or "gabarit") == kind]

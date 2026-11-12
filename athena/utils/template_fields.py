@@ -1199,3 +1199,57 @@ def resolve_values(
         if value:
             resolved[name] = value.upper() if is_uppercase_name(name) else value
     return resolved
+
+
+# ── The special kinds' own fields (« flow » fields) ──────────────────────
+#
+# A SPECIAL template kind (``models.doc_template.SPECIAL_KINDS`` — the keys
+# below are that vocabulary, pinned by tests/test_mcp_template_reads.py) is
+# filled by its OWN flow, which fills fields of its own beside the catalog's:
+# « note » — utils/note_docx (note.*); « note_honoraires » —
+# utils/invoice_docx.build_invoice_context (facture.*, and the h./d./p.
+# fields of its repeated rows); « note_credit » (lot 3d of « Factures :
+# retard, radiation, intérêts ») — utils/invoice_docx
+# .build_credit_note_context (nc.*, and a few of the invoice's own). They
+# are NOT in CATALOG, deliberately: an ordinary gabarit never fills them (in
+# the catalog they would print « [CHAMP MANQUANT : …] » there), and
+# :func:`classify_placeholders` files them under passthrough. The gabarit
+# page and the connector's list_templates name them apart through
+# :func:`is_flow_field`; tests/test_mcp_template_reads.py pins both tables
+# against the builders, and no catalog field lives in a flow namespace.
+
+#: The namespaces each special kind's own flow fills.
+FLOW_PREFIXES: dict[str, tuple[str, ...]] = {
+    "note_honoraires": ("facture.", "h.", "d.", "p."),
+    "note_credit": ("nc.",),
+    "note": ("note.",),
+}
+
+#: The invoice fields the credit note prints beside its own nc.* (lot 3d) —
+#: read from the invoice by the note d'honoraires' own reader, never
+#: restated — and the invoice's balance after the credit. A credit note
+#: prints no other facture.* field: one left in its gabarit stays as typed.
+CREDIT_NOTE_INVOICE_FIELDS = (
+    "facture.numero",
+    "facture.date",
+    "facture.tps_numero",
+    "facture.tvq_numero",
+    "facture.solde_restant",
+)
+
+#: The single fields a flow fills OUTSIDE its namespaces.
+FLOW_NAMES: dict[str, tuple[str, ...]] = {
+    "note_credit": CREDIT_NOTE_INVOICE_FIELDS,
+}
+
+
+def is_flow_field(name: str, kind: str) -> bool:
+    """True when the special *kind*'s own flow fills *name* — its
+    namespaces (:data:`FLOW_PREFIXES`) or its single fields
+    (:data:`FLOW_NAMES`), matched case-insensitively as they always were
+    (note_docx lowers its lookups). Always False for an ordinary gabarit or
+    a modèle."""
+    lowered = name.lower()
+    if lowered.startswith(FLOW_PREFIXES.get(kind, ())):
+        return True
+    return lowered in {single.lower() for single in FLOW_NAMES.get(kind, ())}

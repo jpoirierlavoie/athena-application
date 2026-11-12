@@ -1042,7 +1042,7 @@ _DOCUMENT_CATEGORIES = [
 # documents one above. tests/test_mcp_template_reads.py pins both pairs; a
 # literal, not an import, because importing models.* runs firestore.Client()
 # at load.
-_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note", "modele"]
+_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note_credit", "note", "modele"]
 _TEMPLATE_CATEGORIES = ["procédure", "correspondance", "autre"]
 # How many folders list_documents(include_folders) returns — a dossier holds
 # tens; the cap only bounds a pathological tree (folders_truncated says so).
@@ -2440,9 +2440,9 @@ TOOLS: dict[str, dict] = {
             "fields resolve on that file: an unresolved one prints "
             "« [CHAMP MANQUANT : name] », a data gap to report, not to "
             "write around. Values are NEVER returned — read get_dossier or "
-            "get_partie for the data. Kinds note_honoraires and note are "
-            "filled by their own flow (their fields: flow_fields); at most "
-            "ONE of each is active, designated by the lawyer in the "
+            "get_partie for the data. Kinds note_honoraires, note_credit and "
+            "note are filled by their own flow (their fields: flow_fields); "
+            "at most ONE of each is active, designated by the lawyer in the "
             "application — none designated, that flow refuses; nothing "
             "here changes it. Kind modele: the lawyer's contract models "
             "(« Modèles »), Word files he adapts by hand — never filled, "
@@ -2460,9 +2460,10 @@ TOOLS: dict[str, dict] = {
                     "enum": _TEMPLATE_KINDS,
                     "description": (
                         "List only: « gabarit » (letters, procedures), "
-                        "« note_honoraires » (the invoice note), « note » "
-                        "(the note print), « modele » (contract models, "
-                        "never filled)."
+                        "« note_honoraires » (the invoice note), "
+                        "« note_credit » (a write-off's credit note), "
+                        "« note » (the note print), « modele » (contract "
+                        "models, never filled)."
                     ),
                 },
                 "category": {
@@ -2484,17 +2485,20 @@ TOOLS: dict[str, dict] = {
                     "With template_id: the dossier's client filling the "
                     "« client » slot. Needed when the dossier has several "
                     "and the template uses the slot. Refused for kinds "
-                    "note / note_honoraires (their flow never fills it)."
+                    "note / note_honoraires / note_credit (their flow never "
+                    "fills it)."
                 ),
                 "adverse_id": _id(
                     "With template_id: the dossier's opposing party filling "
                     "the « adverse » slot. Needed when it has several. "
-                    "Refused for kinds note / note_honoraires."
+                    "Refused for kinds note / note_honoraires / "
+                    "note_credit."
                 ),
                 "destinataire_id": _id(
                     "With template_id: the addressee contact of the "
-                    "« destinataire » slot. No default. note_honoraires: "
-                    "the invoice's client. Refused for kind note."
+                    "« destinataire » slot. No default. note_honoraires, "
+                    "note_credit: the invoice's client. Refused for kind "
+                    "note."
                 ),
                 "offset": _offset(),
                 "limit": _limit(20),
@@ -6662,8 +6666,9 @@ TOOLS: dict[str, dict] = {
             "included too) still carries the source dossier's names, numbers "
             "or addresses: each residue is named; list it in accept_residual "
             "ONLY on the lawyer's word, and every accepted one is echoed "
-            "back. A special kind (note_honoraires, note) is created NOT "
-            "active: only the lawyer designates the active one, in the "
+            "back. A special kind (note_honoraires, note_credit, note) is "
+            "created NOT active: only the lawyer designates the active one, "
+            "in the "
             "application. The source document is never modified. Fields "
             "Word fragmented come back in entity.validation_warnings. An "
             "OUTSIDE .docx is templatized only once filed as a document of "

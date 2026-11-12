@@ -43,6 +43,21 @@ So does the client's trust balance, ``facture.solde_fideicommis``
 (:func:`prints_trust_balance`), computed by the trust model
 (``models.trust.client_book_balance``), formatted here.
 
+THE CREDIT NOTE (lot 3d — the lawyer's decision 8 of 2026-11-12): the Word
+document of one standing radiation, filled from the « actif » gabarit of
+kind « note_credit » (``services/note_credit``).
+:func:`build_credit_note_context` gives it the SAME header fields as the
+note d'honoraires (``dossier.*``, ``destinataire.*`` — the invoice's
+client —, ``cabinet.*``, ``date.*`` and their flat aliases: one resolution,
+:func:`_header_values`), its own ``nc.*`` (:data:`CREDIT_NOTE_FIELDS`) read
+from the event, and a few of the invoice's fields
+(``utils.template_fields.CREDIT_NOTE_INVOICE_FIELDS``): those the note
+d'honoraires reads from the invoice alone (:func:`_facture_values`), and
+the balance after the credit, which arrives computed
+(``models.invoice.balance_of``). No row, no condition. Its one arithmetic,
+the amount before taxes, is the exact integer subtraction W − TPS − TVQ of
+the event's own stored figures — no tax is computed here either.
+
 Declared exception to « one source per list »: :data:`PAYMENT_SOURCE_LABELS`
 words ``models.admin_ledger.VALID_METHODS`` for a CLIENT document (the
 register's « Autre » reads « Paiement » there). Its keys are that
@@ -61,7 +76,12 @@ from utils.format_fr import (
     format_hours_fr,
     format_rate_fr,
 )
-from utils.template_fields import CATALOG, FLAT_ALIASES, resolve_values
+from utils.template_fields import (
+    CATALOG,
+    CREDIT_NOTE_INVOICE_FIELDS,
+    FLAT_ALIASES,
+    resolve_values,
+)
 
 # The invoice stores GST ×100 and QST ×1000 (models.invoice) — see
 # utils.format_fr.format_rate_fr.
@@ -74,11 +94,14 @@ PAYMENT_FLAG = "si_paiements"
 #: The row-scoped fields of ``ligne_paiement`` — exactly the keys of every
 #: row :func:`_payment_rows` emits (pinned by tests/test_invoice_docx.py).
 PAYMENT_ROW_FIELDS = ("p.date", "p.source", "p.montant")
+#: The invoice's live balance, as printed — on the note d'honoraires after
+#: its payment rows, on the credit note (lot 3d) after the credit.
+BALANCE_FIELD = "facture.solde_restant"
 #: The fields whose presence in a template's placeholder inventory makes
 #: the note read and print the payments (:func:`prints_payments`). The
 #: markers ``{{#ligne_paiement}}`` and ``{{?si_paiements}}`` never enter the
 #: inventory (``docx_fill.PLACEHOLDER_RE`` excludes them): the fields do.
-PAYMENT_FIELDS = PAYMENT_ROW_FIELDS + ("facture.solde_restant",)
+PAYMENT_FIELDS = PAYMENT_ROW_FIELDS + (BALANCE_FIELD,)
 #: ``p.source`` of a payment drawn from trust — a fee payment's encaissement
 #: (``trust_transaction_id`` set) — and of an imported invoice's provision.
 PAYMENT_SOURCE_TRUST = "Fidéicommis"
@@ -104,6 +127,20 @@ PAYMENT_SOURCE_LABELS = {
 #: given, hence printable, only when a template names it
 #: (:func:`prints_trust_balance`).
 TRUST_BALANCE_FIELD = "facture.solde_fideicommis"
+
+# ── The credit note (lot 3d) ───────────────────────────────────────────────
+#: The credit note's own fields — exactly the nc.* keys
+#: :func:`build_credit_note_context` emits (pinned against the guide by
+#: tests/test_gabarits_placeholders_doc.py).
+CREDIT_NOTE_FIELDS = (
+    "nc.numero",
+    "nc.date",
+    "nc.motif",
+    "nc.montant_avant_taxes",
+    "nc.tps",
+    "nc.tvq",
+    "nc.total",
+)
 
 
 @dataclass
@@ -306,6 +343,37 @@ def _payment_rows(
     ]
 
 
+def _header_values(
+    invoice: dict,
+    *,
+    firm: dict,
+    destinataire: Optional[dict],
+    dossier: Optional[dict],
+    today: date,
+) -> dict[str, str]:
+    """The header fields of a document an invoice fills — the note
+    d'honoraires and, since lot 3d, the credit note: ONE resolution.
+
+    ``destinataire`` is the client partie; when ``None`` (partie deleted) the
+    billing_address snapshot is used so generation never fails (§6.6). Header
+    namespaces via the Phase H catalog — both CANONICAL names and the flat
+    ALIASES the procedures/letters gabarits use, so a note template can use
+    the identical placeholders ({{numero_dossier}} as well as
+    {{dossier.numero_cour}}). Resolving the whole set is cheap and pure;
+    unused fields are ignored by the fill engine.
+    """
+    dest = destinataire or _partie_from_billing_address(invoice.get("billing_address") or {})
+    return resolve_values(
+        list(CATALOG) + list(FLAT_ALIASES),
+        dossier=dossier,
+        client=None,
+        adverse=None,
+        destinataire=dest,
+        firm=firm or {},
+        today=today,
+    )
+
+
 def build_invoice_context(
     invoice: dict,
     line_items: list[dict],
@@ -319,30 +387,15 @@ def build_invoice_context(
 ) -> InvoiceContext:
     """Build the note-d'honoraires context from a stored invoice (§6).
 
-    ``destinataire`` is the client partie; when ``None`` (partie deleted) the
-    billing_address snapshot is used so generation never fails (§6.6). Header
+    ``destinataire`` is the client partie (:func:`_header_values`). Header
     fields are resolved through the Phase H catalog by canonical name.
     ``payments`` adds the payment region, its flag and
     ``facture.solde_restant``; ``trust_balance_cents`` adds
     ``facture.solde_fideicommis`` (module docstring). Left ``None``, each
     leaves the context exactly as it was before it.
     """
-    dest = destinataire or _partie_from_billing_address(invoice.get("billing_address") or {})
-
-    # Header namespaces via the Phase H catalog — both CANONICAL names and the
-    # flat ALIASES the procedures/letters gabarits use, so a note template can
-    # use the identical placeholders ({{numero_dossier}} as well as
-    # {{dossier.numero_cour}}). Resolving the whole set is cheap and pure;
-    # unused fields are ignored by the fill engine.
-    values = resolve_values(
-        list(CATALOG) + list(FLAT_ALIASES),
-        dossier=dossier,
-        client=None,
-        adverse=None,
-        destinataire=dest,
-        firm=firm or {},
-        today=today,
-    )
+    values = _header_values(invoice, firm=firm, destinataire=destinataire,
+                            dossier=dossier, today=today)
     values.update(_facture_values(invoice, line_items))
 
     # Hourly rate: prefer the uniform billed rate; when the line items are
@@ -358,10 +411,56 @@ def build_invoice_context(
         "si_debours_ntx": bool(rows["ligne_debours_ntx"]),
     }
     if payments is not None:
-        values["facture.solde_restant"] = format_cents_fr(payments.balance_cents)
+        values[BALANCE_FIELD] = format_cents_fr(payments.balance_cents)
         rows[PAYMENT_REGION] = _payment_rows(invoice, payments.receipts,
                                              payments.write_offs)
         conditions[PAYMENT_FLAG] = bool(rows[PAYMENT_REGION])
     if trust_balance_cents is not None:
         values[TRUST_BALANCE_FIELD] = format_cents_fr(trust_balance_cents)
     return InvoiceContext(values=values, rows=rows, conditions=conditions)
+
+
+def build_credit_note_context(
+    invoice: dict,
+    write_off: dict,
+    *,
+    firm: dict,
+    destinataire: Optional[dict],
+    dossier: Optional[dict],
+    today: date,
+    balance_cents: int,
+) -> InvoiceContext:
+    """Build the credit note's context (lot 3d, module docstring) for one
+    radiation *write_off* of *invoice* — an event the model validated
+    (``models.invoice.write_off_events``), standing.
+
+    The header fields of the note d'honoraires (:func:`_header_values`);
+    the credit note's own :data:`CREDIT_NOTE_FIELDS` — its number, its date
+    (the radiation's, a date-only value: its UTC calendar day, never
+    ``to_mtl``), its reason as recorded ('' prints nothing), the amount
+    before taxes (W − TPS − TVQ), the TPS and the TVQ it carries (0 when the
+    radiation claims none) and its total W, taxes included —; and the
+    invoice's ``CREDIT_NOTE_INVOICE_FIELDS``: those read from the invoice
+    alone by :func:`_facture_values`, never restated, and *balance_cents*,
+    its balance after the credit (``models.invoice.balance_of``). No row and
+    no condition: the note d'honoraires' tables are not the credit note's.
+    """
+    values = _header_values(invoice, firm=firm, destinataire=destinataire,
+                            dossier=dossier, today=today)
+    from_invoice = _facture_values(invoice, [])
+    values.update({name: from_invoice[name]
+                   for name in CREDIT_NOTE_INVOICE_FIELDS if name in from_invoice})
+    values[BALANCE_FIELD] = format_cents_fr(balance_cents)
+    amount = int(write_off["amount"])
+    gst = int(write_off["gst_amount"])
+    qst = int(write_off["qst_amount"])
+    values.update({
+        "nc.numero": str(write_off["credit_note_number"]),
+        "nc.date": _date_str(write_off.get("date")),
+        "nc.motif": str(write_off.get("reason") or ""),
+        "nc.montant_avant_taxes": format_cents_fr(amount - gst - qst),
+        "nc.tps": format_cents_fr(gst),
+        "nc.tvq": format_cents_fr(qst),
+        "nc.total": format_cents_fr(amount),
+    })
+    return InvoiceContext(values=values, rows={}, conditions={})

@@ -533,6 +533,26 @@
       {% if r.reason %}
       <p class="mt-2 text-sm text-gray-700 whitespace-pre-line wrap-anywhere">{{ r.reason }}</p>
       {% endif %}
+      {# « Générer la note de crédit » (lot 3d) : le document Word de cette
+         radiation, tiré du gabarit « Note de crédit » désigné actif et versé
+         sous « Mandat › Factures », comme la note d'honoraires ; un clic qui
+         le retrouve inchangé rend celui qui est déjà versé. htmx reçoit le
+         fragment (un refus à 200, règle 8) ; sans JavaScript, le document
+         s'ouvre, ou la fiche revient avec ?erreur=. 44 px (py-3, règle 9). #}
+      {% if r.can_generate %}
+      <form method="post" class="mt-3"
+            action="{{ url_for('invoices.invoice_credit_note_docx', invoice_id=invoice.id, event_id=r.id) }}"
+            hx-post="{{ url_for('invoices.invoice_credit_note_docx', invoice_id=invoice.id, event_id=r.id) }}"
+            hx-target="#note-credit-{{ loop.index }}"
+            hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                class="px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Générer la note de crédit
+        </button>
+      </form>
+      <div id="note-credit-{{ loop.index }}"></div>
+      {% endif %}
       {% if r.can_cancel %}
       <form method="post" action="{{ url_for('invoices.invoice_write_off_reversal', invoice_id=invoice.id, event_id=r.id) }}" class="mt-3"
             data-confirm="Annuler la radiation de {{ r.amount | cents_fr }} ? La note de crédit {{ r.credit_note_number }} gardera son numéro, annulée ; la facture redeviendra en retard, et son solde dû.">
