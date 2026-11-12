@@ -19,10 +19,11 @@ from google.cloud.exceptions import NotFound
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
 from werkzeug.utils import secure_filename
-from models import concurrency, db, provenance
+from models import aggregation_values, concurrency, db, provenance
 # Re-exported: ``document.is_addressable_id`` is the name the house rules
 # and the callers use; it lives in models/record_ids, which imports nothing.
 from models.record_ids import is_addressable_id
+from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
 from utils import storage_identity
@@ -1784,6 +1785,140 @@ def list_documents(
         return results
     except Exception:
         return []
+
+
+# ── The cross-dossier list, one page at a time (2026-11-12) ────────────────
+#
+# The Documents landing (no dossier chosen — the Bibliothèque tab) used
+# :func:`list_documents`: every document of the firm streamed and sorted in
+# Python to show fifteen (p50 4.2 s on 2026-11-11, 2,267 documents). These
+# readers read the page shown, newest first, from Firestore's own order.
+# :func:`list_documents` stays as it is for the connector, the zip builder
+# and the dossier tab — and for this list's search box and its name / size
+# sorts, which keep the whole read (Python-side filter and sort; rare: none
+# was used in the 26 days measured).
+
+
+def _landing_query(category: Optional[str] = None) -> "firestore.Query":
+    """Every document, newest first: ``(created_at DESC, __name__ DESC)``,
+    optionally one STORED category (a legacy key surfaces under its live
+    one only once migrated — :func:`list_documents`' rule).
+
+    ONE builder shared by :func:`list_documents_page` and
+    :func:`count_documents_page`, so the page read and its total ride the
+    same index. Unfiltered, the order is served by Firestore's automatic
+    single-field index on ``created_at`` (the document name is its
+    tiebreak, in the same direction); a category needs the composite
+    ``(category ASC, created_at DESC)`` of ``firestore.indexes.json``,
+    deployed BEFORE this code (Change Impact item 7). The tiebreak is the
+    document NAME, never the stored ``id`` field: every document has a
+    name, and an order excludes a document that lacks the ordered field.
+    """
+    query = db.collection(COLLECTION)
+    if category and category in VALID_CATEGORIES:
+        query = query.where(filter=FieldFilter("category", "==", category))
+    return query.order_by(
+        "created_at", direction=firestore.Query.DESCENDING
+    ).order_by("__name__", direction=firestore.Query.DESCENDING)
+
+
+def count_documents_page(category: Optional[str] = None) -> Optional[int]:
+    """Documents in the ordered set, or None when the count could not be
+    read — NEVER 0 (« Page 7 / 0 » is a confident lie).
+
+    Runs on the SAME query object as the page read, order_by included, so
+    the same index serves both. Fails OPEN beside a page read that fails
+    CLOSED (the ``trust.count_journal_page`` asymmetry): a lost total costs
+    the « Fin » and « ±10 » controls, never a row.
+    """
+    try:
+        values = aggregation_values(
+            _landing_query(category).count(alias="n").get())
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_documents_page: aggregation failed: %s",
+                       type(exc).__name__)
+        return None
+
+
+def count_documents_unordered(category: Optional[str] = None) -> Optional[int]:
+    """The same set WITHOUT the order — the landing's completeness check.
+
+    An order excludes a document that lacks ``created_at``. Every writer of
+    this model stamps it at creation (``provenance.stamp_create``) and no
+    update removes it, so only a write made outside the model can leave a
+    record without one — and the list must then SAY that documents are
+    missing from it rather than lose them in silence (CLAUDE.md « Nor does
+    a capped read pass for complete »). The page compares this count with
+    :func:`count_documents_page`. None on failure: the check then shows
+    nothing, as the page read beside it fails on the same outage.
+    """
+    try:
+        query = db.collection(COLLECTION)
+        if category and category in VALID_CATEGORIES:
+            query = query.where(filter=FieldFilter("category", "==", category))
+        values = aggregation_values(query.count(alias="n").get())
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_documents_unordered: aggregation failed: %s",
+                       type(exc).__name__)
+        return None
+
+
+def list_documents_page(
+    category: Optional[str] = None,
+    limit: int = PAGE_SIZE,
+    cursor: Optional[str] = None,
+    offset: int = 0,
+) -> tuple[list[dict], Optional[str]]:
+    """One page of every document, newest first — STRICT.
+
+    Returns ``(rows, next_cursor)``; ``next_cursor`` is None on the last
+    page, and a malformed cursor reads page 1. Reads ``limit + 1`` documents
+    (the extra one says whether a next page exists) instead of the whole
+    collection.
+
+    Fails CLOSED: a read error — an outage, or the category's composite
+    index missing or still building (FAILED_PRECONDITION) — PROPAGATES, and
+    the route says in French that the list could not be read. The fail-open
+    :func:`list_documents` answered ``[]`` there, which the page rendered as
+    « Aucun document pour le moment » (CLAUDE.md « A failed read never
+    passes for absence »).
+
+    Each row's ``id`` is the document's own name, whatever a stored ``id``
+    says, and the read-time category migration applies.
+    """
+    # Before any read: naming the position twice is a programming error, and
+    # it must surface rather than read some page.
+    if offset and cursor:
+        raise ValueError("cursor et offset s'excluent — chacun nomme une position")
+    query = _landing_query(category)
+    if offset:
+        # An ABSOLUTE page read, for a « Fin » / « ±N » leap: same order,
+        # same index. offset() bills every skipped document, which is why
+        # the route clamps the page against the total first.
+        query = query.offset(offset)
+    else:
+        values = decode_cursor(cursor)
+        # [created_at, document name] — the order's two keys, in order. A
+        # token that does not decode to that shape, or whose name no
+        # document can carry (the client turns the str into a reference, so
+        # a slash would name a deeper path), reads page 1, never an error.
+        if (values and len(values) == 2 and isinstance(values[1], str)
+                and is_addressable_id(values[1])):
+            query = query.start_after(
+                {"created_at": values[0], "__name__": values[1]})
+    rows = []
+    for snap in query.limit(limit + 1).stream():
+        rows.append(_migrate_category({**(snap.to_dict() or {}), "id": snap.id}))
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = encode_cursor([last.get("created_at"), last["id"]])
+    return rows, next_cursor
 
 
 def _resolve_category_source(source: Optional[str]) -> tuple[str, list[str]]:

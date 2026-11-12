@@ -111,8 +111,26 @@
 </div>
 {% endif %}
 
+{# ── La liste de tous les documents, lue page par page (2026-11-12) : un
+   document sans date de création échappe à ce tri — on le dit, au lieu de
+   le perdre en silence (models.document.count_documents_unordered). #}
+{% if sans_date %}
+<div class="text-gray-600 text-sm mb-4 wrap-anywhere">{% if sans_date == 1 %}1 document sans date de création n'apparaît pas dans ce classement — le tri « Nom » le montre.{% else %}{{ sans_date }} documents sans date de création n'apparaissent pas dans ce classement — le tri « Nom » les montre.{% endif %}</div>
+{% endif %}
+
 {# ── Content: folders then documents ──────────────────────── #}
-{% if folders or documents %}
+{# Une lecture échouée n'est jamais « aucun document » : la page le dit, à
+   200 (htmx n'échange que les réponses 2xx), et offre de réessayer. #}
+{% if lecture_impossible %}
+<div class="flex flex-col items-center justify-center py-16 text-center" role="alert">
+  {{ ms('error', 48, 'text-gray-300 mb-4') }}
+  <p class="text-red-600 text-sm mb-4">La liste des documents n'a pas pu être lue. Réessayez dans un instant.</p>
+  <a href="{{ retry_url }}"
+     class="inline-flex items-center gap-1.5 py-3 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    Réessayer
+  </a>
+</div>
+{% elif folders or documents %}
 <div class="flex flex-col gap-2">
 
   {# ── Folders ─────────────────────────────────────────────── #}

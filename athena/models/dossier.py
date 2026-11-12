@@ -1462,6 +1462,50 @@ def list_dossiers_page(
         return [], None
 
 
+#: What the documents browser's dossier <select> prints and sorts by — the
+#: projection of :func:`list_dossiers_for_picker`.
+PICKER_FIELDS = ("file_number", "title", "opened_date", "created_at")
+
+
+def list_dossiers_for_picker() -> list[dict]:
+    """Every dossier as the documents browser's <select> shows it (2026-11-12):
+    ``id``, ``file_number`` and ``title``, newest opened first, same-day
+    ties by creation — :func:`list_dossiers`' default order.
+
+    A PROJECTION, for a DISPLAY-only list: it reads four small fields where
+    :func:`list_dossiers` streamed every dossier whole (party arrays,
+    registers, prescription events) to print two of them. A projection is
+    safe here because the picker prints exactly what it selects — unlike a
+    figure computed from a projection, where a forgotten field would read
+    as zero (``models/full_reads``).
+
+    STRICT: a read error PROPAGATES. The route then shows the list as
+    unavailable instead of a select that silently offers no dossier.
+    """
+    rows = []
+    for snap in db.collection(COLLECTION).select(list(PICKER_FIELDS)).stream():
+        data = snap.to_dict() or {}
+        rows.append({
+            "id": snap.id,
+            "file_number": data.get("file_number") or "",
+            "title": data.get("title") or "",
+            "opened_date": data.get("opened_date"),
+            "created_at": data.get("created_at"),
+        })
+
+    def _key(dossier: dict) -> tuple:
+        # A stored opened_date that is not an aware datetime (a write made
+        # outside the model) sorts as the oldest instead of raising in the
+        # sort — list_dossiers_by_status_strict's rule.
+        opened, tie = _newest_opened_first_key(dossier)
+        if not isinstance(opened, datetime) or opened.tzinfo is None:
+            opened = datetime.min.replace(tzinfo=timezone.utc)
+        return opened, tie
+
+    rows.sort(key=_key, reverse=True)
+    return rows
+
+
 def update_dossier(
     dossier_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:

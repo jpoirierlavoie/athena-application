@@ -26,6 +26,7 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
+    from models import document as m_document
     from models import dossier as m_dossier
     from models import expense as m_expense
     from models import invoice as m_invoice
@@ -84,6 +85,9 @@ CAS = [
      "count_time_entries_page", {"billable_filter": "billable"}),
     (m_expense, "_filtered_query", "list_expenses_page",
      "count_expenses_page", {"billable_filter": "non_facture"}),
+    # The Documents landing (2026-11-12) — strict, like the trust journal.
+    (m_document, "_landing_query", "list_documents_page",
+     "count_documents_page", {"category": "pièce"}),
 ]
 
 IDS = [c[2] for c in CAS]
@@ -185,6 +189,18 @@ def test_trust_count_fails_open_while_the_page_read_fails_closed(monkeypatch):
     assert m_trust.count_journal_page("acc") is None       # ouvert
     with pytest.raises(RuntimeError):                       # fermé
         m_trust.list_transactions_page("acc")
+
+
+def test_documents_count_fails_open_while_the_page_read_fails_closed(monkeypatch):
+    """« Aucun document » sur une lecture échouée serait un mensonge : la
+    lecture de page propage, le compteur seul se perd en None."""
+    def boom(*a, **k):
+        raise RuntimeError("index en construction")
+
+    monkeypatch.setattr(m_document, "_landing_query", boom)
+    assert m_document.count_documents_page("pièce") is None
+    with pytest.raises(RuntimeError):
+        m_document.list_documents_page("pièce")
 
 
 def test_trust_shares_its_builder_and_offsets_like_the_others(monkeypatch):

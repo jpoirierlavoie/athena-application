@@ -5,6 +5,7 @@ Includes folder management routes for hierarchical document organization.
 
 import logging
 import uuid
+from typing import Optional
 
 from firebase_admin import storage
 from google.cloud.exceptions import NotFound
@@ -23,8 +24,20 @@ from auth import login_required
 from config import Config
 from models.audit_event import record_deletion
 from security import safe_internal_redirect, sanitize
-from pagination import paginate
-from models.dossier import get_dossier, get_dossier_strict, list_dossiers
+from pagination import (
+    PAGE_SIZE,
+    cursor_pagination,
+    paginate,
+    parse_trail,
+    resolve_page,
+    total_pages_of,
+)
+from models.dossier import (
+    get_dossier,
+    get_dossier_strict,
+    list_dossiers,
+    list_dossiers_for_picker,
+)
 from models import document as document_model
 from models.document import (
     ALLOWED_EXTENSIONS,
@@ -152,9 +165,24 @@ def document_list() -> str:
     search = request.args.get("q", "").strip()
     sort_by = request.args.get("sort", "created_at")
     page = request.args.get("page", 1, type=int)
+    # The landing's own states (2026-11-12): its page read failed, and how
+    # many documents its date order cannot list (no created_at).
+    lecture_impossible = False
+    sans_date = 0
+    pagination = None
 
-    # When a dossier is selected and not searching, filter by folder
-    if dossier_id and not search:
+    # No dossier, no search, the default date sort: the landing, read one
+    # page at a time. The search box and the name / size sorts keep the
+    # whole read below (Python-side filter and sort; rare).
+    landing = not dossier_id and not search and sort_by not in ("name", "size")
+
+    if landing:
+        documents, pagination, lecture_impossible, sans_date = _landing_page(
+            category_filter or None)
+        folders_list = []
+        breadcrumb = []
+    elif dossier_id and not search:
+        # When a dossier is selected and not searching, filter by folder
         documents = list_documents(
             dossier_id=dossier_id,
             folder_id=folder_id,
@@ -175,7 +203,8 @@ def document_list() -> str:
         folders_list = []
         breadcrumb = []
     else:
-        # No dossier selected — show all documents flat
+        # No dossier selected, searching or sorted by name / size — every
+        # document, flat (the whole read).
         documents = list_documents(
             dossier_id=None,
             category=category_filter or None,
@@ -187,11 +216,12 @@ def document_list() -> str:
 
     _attach_computed_fields(documents)
 
-    documents, pagination = paginate(documents, page)
-    pagination["url"] = url_for("documents.document_list")
-    pagination["target"] = "#browser-content"
-    if folder_id:
-        pagination["extra_vals"] = {"folder_id": folder_id}
+    if not landing:
+        documents, pagination = paginate(documents, page)
+        pagination["url"] = url_for("documents.document_list")
+        pagination["target"] = "#browser-content"
+        if folder_id:
+            pagination["extra_vals"] = {"folder_id": folder_id}
 
     ctx = {
         "documents": documents,
@@ -211,13 +241,73 @@ def document_list() -> str:
         # …et son pendant affirmatif : une suppression destructive dit ce
         # qui a disparu, sans quoi elle ne laisse aucune trace à l'écran.
         "message": sanitize(request.args.get("message", ""), max_length=300),
+        "lecture_impossible": lecture_impossible,
+        "sans_date": sans_date,
+        # « Réessayer » reloads the same list (url_for drops a None).
+        "retry_url": url_for("documents.document_list",
+                             category=category_filter or None),
     }
 
     if _is_htmx():
         return render_template("documents/_browser.html", **ctx)
 
-    ctx["dossiers"] = list_dossiers()
+    # The dossier <select>: four fields per dossier instead of every dossier
+    # whole (D3). Display-only, so a failed read says « indisponible »
+    # rather than offering an empty list as if the firm had no dossier.
+    try:
+        ctx["dossiers"] = list_dossiers_for_picker()
+    except Exception:
+        log_unexpected("document_list: dossier picker read failed")
+        ctx["dossiers"] = None
     return render_template("documents/list.html", **ctx)
+
+
+def _landing_page(category: Optional[str]) -> tuple:
+    """The landing's page: ``(documents, pagination, lecture_impossible,
+    sans_date)`` — the dossiers list's cursor discipline over
+    :func:`models.document.list_documents_page`.
+
+    The page read is STRICT; its failure (an outage, an index missing or
+    still building) is answered at 200 — htmx swaps only 2xx — with the
+    French « could not be read », never the empty state. The totals fail
+    open: a lost count hides the leap controls, nothing more.
+    """
+    cursor = request.args.get("cursor", "") or None
+    trail = parse_trail(request.args.get("trail", ""))
+    total = document_model.count_documents_page(category)
+    page_no, page_offset = resolve_page(
+        request.args.get("page", type=int),
+        total_pages_of(total),
+        has_cursor=bool(cursor),
+    )
+    if page_offset:
+        # A leap has no path back through the trail; the page number
+        # carries the position from here on.
+        cursor, trail = None, []
+    try:
+        documents, next_cursor = document_model.list_documents_page(
+            category=category, limit=PAGE_SIZE, cursor=cursor,
+            offset=page_offset)
+    except Exception:
+        log_unexpected("document_list: landing page read failed")
+        return [], None, True, 0
+    # Completeness: the date order cannot list a document without
+    # created_at (models.document.count_documents_unordered). Shown only
+    # when both counts are known.
+    everything = document_model.count_documents_unordered(category)
+    sans_date = (everything - total
+                 if total is not None and everything is not None
+                 and everything > total else 0)
+    pagination = cursor_pagination(
+        cursor=cursor,
+        trail=trail,
+        next_cursor=next_cursor,
+        url=url_for("documents.document_list"),
+        target="#browser-content",
+        page=page_no,
+        total=total,
+    )
+    return documents, pagination, False, sans_date
 
 
 # ── Detail ────────────────────────────────────────────────────────────────
