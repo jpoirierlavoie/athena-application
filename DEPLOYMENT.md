@@ -5731,8 +5731,10 @@ Notes:
   three write inputs narrowed (`update_invoice`'s description no longer
   names the field) and one read key removed; no disclosure promise and no
   consent text moved; the registry fingerprint moved (`6f136c95b8ec` →
-  `45319ee6ddf9`), so the plugin goes to 1.9.1 — only its generated version
-  line changes — delivered on the lawyer's « go » (step 5).
+  `45319ee6ddf9` on lot 1's own base; `f38e98b4dbf7` once merged with the
+  suppliers' release, which took 1.9.1 first), so the plugin goes to
+  1.9.2 — only its generated version line changes — delivered on the
+  lawyer's « go » (step 5).
   **`validate_args` runs before the idempotency replay**: a same-key retry
   of a call made before the deploy that carried `payment_terms` is refused
   instead of replayed — hence step 1. Item 2 — not touched (invoices are
@@ -5760,11 +5762,12 @@ Notes:
      now the only terms a client reads: keep them, or correct them in a new
      version designated « actif ». If it prints none and the client should
      read some, add them there.
-  5. *Plugin 1.9.1*, on the lawyer's « go »: rebuild it, unpack it into the
-     mirror `athena-plugin` (the old copy removed first), bump the mirror's
-     marketplace.json, commit and push it the same day. It follows 1.9.0;
-     until then, `exporter_plugin_athena --check` reports the drift.
-  A rollback is the code alone, with plugin 1.9.0: the old code reads a
+  5. *Plugin 1.9.2*, on the lawyer's « go », once the suppliers' 1.9.1 is
+     in the mirror: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day. It follows 1.9.1; until then,
+     `exporter_plugin_athena --check` reports the drift.
+  A rollback is the code alone, with plugin 1.9.1: the old code reads a
   missing key as empty — `get_invoice` answers `""`, the sheet shows no
   « Conditions » row, and a brouillon's correction form shows an empty box
   whose unchanged value saves.
@@ -5833,9 +5836,9 @@ Notes:
   whose every move the handler refuses before the model, as before the
   lot; two keys REQUIRED in three READ outputs, none in a
   write's; no tool, input schema, disclosure promise or consent text
-  moved; the registry fingerprint is unchanged
-  (`45319ee6ddf9`) and the plugin's build with it — no new version (1.9.1
-  still waits for its « go », lot 1). Item 2 — not touched (invoices are
+  moved; lot 2 leaves the registry fingerprint and the plugin's build
+  unchanged — no version beyond lot 1's 1.9.2, which waits for its
+  « go ». Item 2 — not touched (invoices are
   not DAV-exposed). Item 3 — not touched. Item 4 — one new event,
   `invoice_overdue_sweep` (its own helper, `log_invoice_overdue_sweep`);
   `invoice_status_changed` gains `cause` (`manuel` | `echeance`) and
