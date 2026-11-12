@@ -353,11 +353,14 @@ def days_overdue(invoice: dict, *, today: date) -> int:
 
 
 def _payment_recorded(invoice: dict) -> bool:
-    """Whether a payment is RECORDED on *invoice* (``amount_paid`` > 0) — the
-    reading of :func:`available_transitions`, on every status: an absent,
-    None, empty or zero amount is none (what a « payée » set by hand before
-    2026-08-17 may carry). Raises on a stored amount ``int()`` cannot read,
-    which :func:`unreadable_transition_field` names beforehand."""
+    """Whether a payment is RECORDED on *invoice* (``amount_paid`` > 0) —
+    how :func:`available_transitions` reads it to that end, on every status:
+    an absent, None, empty or zero amount is none (what a « payée » set by
+    hand before 2026-08-17 may carry). Not its only reading: an issued
+    invoice's lateness reads ``amount_paid`` through :func:`balance_of`,
+    strictly, where a None or empty one is unreadable (third review of
+    lot 2). Raises on a stored amount ``int()`` cannot read, which
+    :func:`unreadable_transition_field` names beforehand."""
     return int(invoice.get("amount_paid", 0) or 0) > 0
 
 
@@ -2087,12 +2090,14 @@ def unreadable_transition_field(invoice: dict) -> Optional[str]:
     every status and every type a Firestore field can hold
     (``tests/test_invoice_lateness`` pins the two together).
 
-    An issued invoice's lateness reads its balance
-    (:func:`unreadable_balance_field`: ``amount_due``, then ``amount_paid``);
-    every invoice's transitions read whether a payment is recorded
-    (:func:`_payment_recorded`: ``amount_paid``, an absent, None or empty one
-    read as none). No transition reads the ``amount_due`` of a brouillon, a
-    payée or an annulée, so an unreadable one locks none of theirs. What
+    An issued invoice's lateness reads its balance, strictly
+    (:func:`unreadable_balance_field`: ``amount_due``, then ``amount_paid`` —
+    a None or empty one is unreadable there); every invoice's transitions
+    read whether a payment is recorded (:func:`_payment_recorded`:
+    ``amount_paid``, an absent, None or empty one read as none — which, on
+    an issued invoice, the strict balance read has already refused). No
+    transition reads the ``amount_due`` of a brouillon, a payée or an
+    annulée, so an unreadable one locks none of theirs. What
     :func:`update_status_report` refuses by name (``montant_illisible``)
     rather than fail generically, its traceback quoting the value (second
     review of lot 2)."""
@@ -2444,17 +2449,24 @@ def update_status_report(
 
     Every transition reads stored amounts through
     :func:`available_transitions`: whether a payment is recorded
-    (``amount_paid``, on every status) and, for an issued invoice's
-    lateness, its balance (:func:`balance_of`). An amount it cannot read
+    (``amount_paid``, on every status — :func:`_payment_recorded`, which
+    reads an absent, None or empty one as none) and, for an issued
+    invoice's lateness, its balance (:func:`balance_of`, which reads both
+    amounts strictly). An amount it cannot read
     (:func:`unreadable_transition_field`) is refused by NAME (reason
     ``montant_illisible``, the field in French), never judged — and never
     the generic failure, whose traceback quoted the value (reviews of
     lot 2; the second found every status's ``amount_paid`` still read
     there, a read older than the lot). Nothing more is refused: no
     transition reads a brouillon's ``amount_due``, so an unreadable one
-    locks none (« brouillon → envoyée » proceeds, as before lot 2), and an
-    absent, None or empty ``amount_paid`` reads as no payment, as it always
-    did.
+    locks none (« brouillon → envoyée » proceeds, as before lot 2), and the
+    absent, None or empty ``amount_paid`` of a brouillon, a payée or an
+    annulée reads as no payment, as it always did — a « payée » set by hand
+    reopens. An ISSUED invoice's None or empty ``amount_paid`` is refused,
+    by contrast (an absent one reads as 0): its balance cannot be read, so
+    neither « envoyée → en_retard » nor « en_retard → envoyée », which went
+    through on it before lot 2, can be judged (third review of lot 2: this
+    docstring said every None or empty one read as no payment).
     """
     if cause not in STATUS_CAUSES:
         raise ValueError(f"cause inconnue : {cause!r}")

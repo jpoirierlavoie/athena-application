@@ -41,6 +41,7 @@ import inspect
 import io
 import itertools
 import json
+import logging
 import os
 import pathlib
 import sys
@@ -723,6 +724,76 @@ def test_an_unreadable_amount_paid_reaches_the_caller_by_name(world):
                                  "expected_etag": before["etag"]})
     assert refused.value.reason == "invoice_refused"
     assert world.peek(f"invoices/{iid}") == before and world.commits == []
+
+
+@pytest.mark.parametrize("target", ["envoyée", "en_retard", "annulée"])
+@pytest.mark.parametrize("value", ["150,00 $", float("inf")],
+                         ids=["text", "infinite"])
+def test_a_payee_never_reaches_the_models_amount_refusal(
+        world, monkeypatch, caplog, target, value):
+    """THIRD review of lot 2. The Impact paragraph of 9a21512 said
+    update_invoice received montant_illisible on a « payée » whose stored
+    amount_paid cannot be read. It never does: the connector refuses every
+    move out of « payée » BEFORE the model — no (payée, …) pair in
+    _CONNECTOR_STATUS_MOVES, and the void refuses a payée first —, as it did
+    before lot 2. Only a brouillon, an envoyée or an en_retard reaches the
+    model's by-name refusal (DEPLOYMENT.md §15, lot 2, Change Impact item
+    1). Pinned with a spy on both model doors: neither is called."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    world.external_write(f"invoices/{iid}", {
+        **world.peek(f"invoices/{iid}"), "status": "payée",
+        "amount_paid": value})
+    calls: list[str] = []
+    status_door = invoice_model.update_status_report
+    void_door = invoice_model.void_invoice_report
+
+    def _status_spy(*args, **kwargs):
+        calls.append("update_status_report")
+        return status_door(*args, **kwargs)
+
+    def _void_spy(*args, **kwargs):
+        calls.append("void_invoice_report")
+        return void_door(*args, **kwargs)
+
+    monkeypatch.setattr(invoice_model, "update_status_report", _status_spy)
+    monkeypatch.setattr(invoice_model, "void_invoice_report", _void_spy)
+    before = world.peek(f"invoices/{iid}")
+    args = {"invoice_id": iid, "status": target,
+            "expected_etag": before["etag"]}
+    if target == "annulée":
+        args["void_reason"] = "Facture émise par erreur."
+    world.reset_logs()
+    with caplog.at_level(logging.INFO), pytest.raises(
+            tools.ToolArgumentError) as refused:
+        handlers.update_invoice(args)
+    assert refused.value.reason == "invoice_refused"
+    assert "payée" in str(refused.value)
+    assert "illisible" not in str(refused.value)
+    assert calls == []
+    assert not [r for r in caplog.records if r.name == "pallas.invoice"]
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert world.peek(f"invoices/{iid}") == before and world.commits == []
+
+
+def test_the_runbook_says_where_the_connector_meets_montant_illisible():
+    """THIRD review of lot 2. 9a21512's commit message, which cannot change,
+    said update_invoice received montant_illisible on a « payée »; the lot 2
+    entry of DEPLOYMENT.md §15, which can, now says where it does — the
+    statuses the connector moves out of, read from _CONNECTOR_STATUS_MOVES
+    — and that a « payée » never reaches the model
+    (test_a_payee_never_reaches_the_models_amount_refusal)."""
+    text = " ".join((_ATHENA.parent / "DEPLOYMENT.md").read_text(
+        encoding="utf-8").split())
+    entry = text[text.index(
+        "**Invoices: lateness follows the due date (2026-11-11).**"):]
+    item1 = entry[entry.index("Change Impact: item 1"):entry.index("Item 2 —")]
+    assert ("(`montant_illisible`, under `invoice_refused`) on a brouillon, an "
+            "envoyée or an en_retard, the statuses the connector moves out of "
+            "— never on a « payée », whose every move the handler refuses "
+            "before the model") in item1
+    assert {current for current, _target in handlers._CONNECTOR_STATUS_MOVES
+            } == {"brouillon", "envoyée", "en_retard"}
 
 
 def test_the_connector_refusal_row_states_the_models_lateness_rule():

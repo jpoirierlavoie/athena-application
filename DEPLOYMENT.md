@@ -5502,9 +5502,14 @@ Notes:
   `get_billing_snapshot.outstanding_invoices` gain `is_overdue` and
   `days_overdue`. Change Impact: item 1 — touched: a write narrowed in
   place, never widened (« en_retard » now waits for the prorogued due date,
-  and « envoyée » back is closed once overdue); two keys REQUIRED in three
-  READ outputs, none in a write's; no tool, input schema, disclosure
-  promise or consent text moved; the registry fingerprint is unchanged
+  and « envoyée » back is closed once overdue); a status move over a stored
+  amount the model cannot read answers `update_invoice` by name
+  (`montant_illisible`, under `invoice_refused`) on a brouillon, an
+  envoyée or an en_retard, the statuses the connector moves out of — never
+  on a « payée », whose every move the handler refuses before the model,
+  as before the lot; two keys REQUIRED in three READ outputs, none in a
+  write's; no tool, input schema, disclosure promise or consent text
+  moved; the registry fingerprint is unchanged
   (`45319ee6ddf9`) and the plugin's build with it — no new version (1.9.1
   still waits for its « go », lot 1). Item 2 — not touched (invoices are
   not DAV-exposed). Item 3 — not touched. Item 4 — one new event,
@@ -5544,29 +5549,50 @@ Notes:
      On the phone (375 px) and the desktop: the invoice list shows
      « Échue · N j » under each overdue balance, an overdue invoice's sheet
      its « Retard » line.
-  3. *The preview*, from `athena/`, ON THE DAY the switch commit is pushed
-     (again if the push slips to a later day):
+  3. *The preview*, from `athena/`, the day the switch commit is pushed and
+     AFTER 00:20 — never between midnight and 00:20, when the run it names
+     is minutes away (the report then says so):
      `python -m scripts.apercu_factures_echues` — READ-ONLY, it reads
      production through ADC and writes nothing. It judges the night of the
-     next run, which it names (« la nuit du AAAA-MM-JJ, à 00 h 20 »), never
-     its own day: an invoice payable all that day is late by the night, and
-     listed (« Dont N payable(s) jusqu'au … »). The lawyer reviews its list:
-     number, due date, prorogued due date, days late that night, balance,
-     imported flag — what that night would mark (at most 100, the rest the
-     following nights) if the switch is on by then. An invoice whose
-     lateness could not be judged (a stored amount it cannot read) is
-     listed apart, by id: the sweep would count it in `errors` every night
-     and never mark it, so it is repaired first.
+     next run, which it names (« la nuit du AAAA-MM-JJ au AAAA-MM-JJ, à
+     00 h 20 »), never its own day: an invoice payable all that day is late
+     by the night, and listed (« Dont N payable(s) jusqu'au … »). The lawyer
+     reviews its list: number, due date, prorogued due date, days late that
+     night, balance, imported flag — what that night would mark (at most
+     100, the rest the following nights) if the switch SERVES by its 00:20
+     (step 4). An invoice whose lateness could not be judged (a stored
+     amount it cannot read) is listed apart, by id: the sweep would count it
+     in `errors` every night and never mark it, so it is repaired first,
+     then the preview run again — a repaired invoice that is late joins its
+     list. An invoice that turns « envoyée » before the night joins it too
+     (a brouillon sent, an invoice reopened, an early mark withdrawn by
+     « Retirer le retard »): late that night, it would be marked without
+     ever being listed, so the preview is run again after any such change.
+     Its LAST run before the night is the list step 5 checks.
   4. *The switch on*: a one-line commit sets `FACTURES_RETARD_ACTIF: "true"`
-     in `athena/app.yaml`, pushed on his « push » — that line alone: the
-     suite checks its form, never its value
+     in `athena/app.yaml`, pushed on his « push » the same day, early enough
+     to SERVE before the 00:20 the preview named: Cloud Build runs the whole
+     suite before it deploys, about a quarter of an hour from push to
+     serving, so never late in the evening. It serves once
+     `gcloud app versions list --service=default` shows the commit's short
+     SHA at 1.00. If it does not serve by then (a late push, a slow or
+     failed build), its first run is a later night's, which also marks the
+     invoices fallen due in between: run the preview again after that 00:20
+     (step 3) and review its list before the night it names. That line
+     alone: the suite checks its form, never its value
      (`tests/test_taches_factures.py`), so Cloud Build's test step passes.
-  5. *The next morning*, the `invoice_overdue_sweep` line:
+  5. *The morning after the night the preview named*, the
+     `invoice_overdue_sweep` line:
      `gcloud logging read 'jsonPayload.event="invoice_overdue_sweep"' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.outcome,jsonPayload.marked,jsonPayload.refused,jsonPayload.errors,jsonPayload.remaining)"`
-     — `success`, `marked` the preview's count when the switch took effect
-     on the night the preview named (capped at 100, `remaining` the rest):
-     more if it took effect a later night, by the invoices fallen due in
-     between, and less by those paid since; `refused` and `errors` 0. A
+     — `success`, `marked` the count of the preview's last run before that
+     night (capped at 100, `remaining` the rest), give or take the invoices
+     whose state changed since that run: less by those paid or voided, more
+     by any sent, reopened, unmarked or repaired (step 3 runs the preview
+     again after each); `refused` and `errors` 0. NO line at all: the switch
+     was not serving yet at that 00:20 — a run with the switch off answers
+     `{"actif": false}` and logs nothing (step 2) —, so its first run is a
+     later night's: check the serving version (step 4), run the preview
+     again and read this line the morning after the night it names. A
      `failure` (`reason` `lecture`) wrote nothing; the next night retries. A
      non-zero `errors` names its invoices, one `unexpected` line each with
      its `invoice_id`:

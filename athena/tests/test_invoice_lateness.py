@@ -317,8 +317,10 @@ def test_the_status_door_names_a_field_exactly_when_the_transitions_cannot_read(
     the door then consults, cannot read the invoice: on every status and
     every pair of stored amounts, an absent key included. An issued
     invoice's lateness reads its balance (the first field balance_of cannot
-    read); every status reads whether a payment is recorded (amount_paid —
-    absent, None or empty read as none). So nothing falls into the door's
+    read — strictly: a None or empty amount_paid is unreadable there); every
+    status reads whether a payment is recorded (amount_paid — absent, None
+    or empty read as none, where the balance read has not already refused
+    it: third review of lot 2). So nothing falls into the door's
     generic failure, whose traceback quoted the stored value, and nothing
     more is refused: a brouillon's amount_due, read by no transition, locks
     none (second review of lot 2)."""
@@ -549,11 +551,16 @@ def test_an_unreadable_amount_paid_refuses_any_status_write_by_name(
                          ids=["absent", "none", "empty", "zero"])
 def test_a_hand_set_payee_reopens_whatever_reads_as_no_payment(
         fake, monkeypatch, paid):
-    """The by-name refusal reads amount_paid as available_transitions does:
-    absent, None, empty or zero is NO recorded payment — what a « payée »
-    set by hand before 2026-08-17 may carry —, so « Rouvrir la facture »
-    still reopens it (second review of lot 2: refuse what cannot be read,
-    never lock what always could)."""
+    """The by-name refusal reads a payée's amount_paid as
+    available_transitions does: absent, None, empty or zero is NO recorded
+    payment — what a « payée » set by hand before 2026-08-17 may carry —, so
+    « Rouvrir la facture » still reopens it (second review of lot 2: refuse
+    what cannot be read). Reopened, it is « envoyée » with that same amount,
+    and there lateness reads it through balance_of, strictly: a None or
+    empty one is refused by name
+    (test_an_issued_invoices_none_or_empty_amount_paid_is_refused_by_name —
+    third review of lot 2: this docstring said nothing that always could
+    was locked)."""
     doc = _invoice(status="payée")
     if paid == "absent":
         del doc["amount_paid"]
@@ -580,6 +587,70 @@ def test_a_brouillon_is_sent_whatever_its_amount_due_reads(fake, monkeypatch):
     assert invoice_model.update_status(INV, "envoyée", expected_etag=ETAG) == (
         True, "")
     assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
+
+
+@pytest.mark.parametrize("status,target,due", [
+    ("envoyée", "en_retard", date(2031, 3, 1)),     # overdue: the mark
+    ("en_retard", "envoyée", date(2031, 4, 1)),     # an early mark: its correction
+], ids=["mark", "unmark"])
+@pytest.mark.parametrize("paid", [None, ""], ids=["none", "empty"])
+def test_an_issued_invoices_none_or_empty_amount_paid_is_refused_by_name(
+        fake, monkeypatch, caplog, status, target, due, paid):
+    """THIRD review of lot 2. update_status_report's docstring said an
+    absent, None or empty amount_paid « reads as no payment, as it always
+    did » — on every status. Only a brouillon's, a payée's or an annulée's
+    does: an issued invoice's lateness reads it through balance_of,
+    strictly, so a None or empty one is refused montant_illisible on both
+    moves between « envoyée » and « en_retard », which went through on it
+    before lot 2 — where a « payée » set by hand and reopened with
+    amount_paid None lands. An ABSENT one reads as 0 there too: the same
+    move is judged. The behaviour dates from the lot; this pins it, and the
+    texts now say so (test_the_texts_say_where_an_empty_amount_paid_is_refused)."""
+    fake.seed(f"invoices/{INV}", _invoice(status=status, due=due,
+                                          amount_paid=paid))
+    _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
+    before = fake.peek(f"invoices/{INV}")
+    fake.reset_logs()
+    with caplog.at_level(logging.INFO):
+        written, errors = invoice_model.update_status_report(
+            INV, target, expected_etag=ETAG)
+    assert written is None
+    assert errors == [
+        "Le montant payé enregistré sur cette facture est illisible : son "
+        "retard ne peut pas être jugé, et rien n'a été écrit. La facture doit "
+        "d'abord être réparée."]
+    assert fake.peek(f"invoices/{INV}") == before and fake.commits == []
+    (line,) = [r.json_fields for r in caplog.records if r.name == "pallas.invoice"]
+    assert (line["event"], line["invoice_id"], line["reason"]) == (
+        "invoice_refused", INV, "montant_illisible")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    # The key absent: read as 0, the move is judged — and allowed here.
+    absent = _invoice(status=status, due=due)
+    del absent["amount_paid"]
+    fake.seed(f"invoices/{INV}", absent)
+    written, errors = invoice_model.update_status_report(
+        INV, target, expected_etag=ETAG)
+    assert errors == [] and written["status"] == target
+
+
+def test_the_texts_say_where_an_empty_amount_paid_is_refused():
+    """THIRD review of lot 2. update_status_report's docstring said, of every
+    status, that an absent, None or empty amount_paid « reads as no payment,
+    as it always did »; on an issued invoice a None or empty one is refused
+    montant_illisible (test_an_issued_invoices_none_or_empty_amount_paid_is_
+    refused_by_name). The docstring and OBSERVABILITY.md's invoice_refused
+    row now say which statuses read it as none, and where it is refused."""
+    doc = " ".join(invoice_model.update_status_report.__doc__.split())
+    assert ("the absent, None or empty ``amount_paid`` of a brouillon, a payée "
+            "or an annulée reads as no payment") in doc
+    assert ("An ISSUED invoice's None or empty ``amount_paid`` is refused, by "
+            "contrast (an absent one reads as 0)") in doc
+    rows = (_ATHENA / "OBSERVABILITY.md").read_text(encoding="utf-8")
+    (row,) = [line for line in rows.splitlines()
+              if line.startswith("| `invoice_refused` |")]
+    assert ("which `balance_of` reads strictly for its lateness — a None or "
+            "empty `amount_paid` is unreadable there") in row
+    assert "or the `amount_paid` of any other status" in row
 
 
 @pytest.mark.parametrize("status,cause", [
