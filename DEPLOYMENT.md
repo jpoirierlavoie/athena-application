@@ -962,7 +962,7 @@ done
 # `X-Origin-Auth` on the portal host — arming first would 403 every client.
 # New instances arm; running ones keep the value they read at startup.
 # (Granted on the original deployment 2026-09-30, after the tracer proof.)
-# Both services read the secret ONCE per gunicorn worker (two per
+# Both services read the secret ONCE per gunicorn worker (one per
 # instance), when the worker starts, so a ROTATION is three steps chained
 # without a pause: a new version of the secret (the recipe above), the SAME
 # value in the Cloudflare Transform Rule that injects `X-Origin-Auth`
@@ -5393,6 +5393,20 @@ Notes:
   policy in a background pass about once a day. A deleted image cannot be
   restored; a version whose image is gone
   is redeployed from its commit.
+
+  **The instances** (same release): both services run ONE gunicorn worker
+  × 8 threads (`app.yaml`, `portail.yaml`; 2 × 4 before) — the same eight
+  concurrent requests, one copy of the app to start instead of two booting
+  together on one CPU share, about half the memory, and every per-process
+  cache shared: the in-memory rate limits now count once per instance,
+  where two workers each kept their own count — they become exact. If that
+  process dies, the requests in flight fail and gunicorn starts it again;
+  no worker died in the 30 days before. The default service's
+  `target_cpu_utilization` rises from 0.65 to 0.9: a second instance
+  starts later — a saving, never a speed-up. To check after the push: the
+  request log's `/_ah/warmup` latency (7.5–9.4 s over the five deploys
+  before) and, over the next days, the requests' `pendingTime` and the
+  instance count. A rollback is the two yaml files.
 
 ## 16. Troubleshooting
 

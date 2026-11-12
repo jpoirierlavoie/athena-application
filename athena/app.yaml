@@ -3,8 +3,9 @@ instance_class: F2
 automatic_scaling:
   # min_instances: 0 — an instance stops after about 15 idle minutes, and
   # the first request after that waits while a new one starts (about 8 s
-  # measured in November 2026: two gunicorn workers importing Flask,
-  # firebase_admin and OTel, the secrets, the Firestore clients). Until
+  # measured in November 2026, when two gunicorn workers booted together:
+  # Flask, firebase_admin and OTel imports, the secrets, the Firestore
+  # clients). Until
   # 2026-11-12 the crons, every 10 to 15 minutes, kept one instance up
   # around the clock, so this saved nothing; they now run from 9 h to
   # 17 h only (cron.yaml): warm during office hours, asleep outside them
@@ -13,7 +14,12 @@ automatic_scaling:
   # (DEPLOYMENT.md §3).
   min_instances: 0
   max_instances: 2
-  target_cpu_utilization: 0.65
+  # 0.9 since 2026-11-12 (0.65 before; the lawyer's choice): a second
+  # instance starts later. It is billed at least 15 minutes and is ready
+  # only after a start, usually once the heavy request that triggered it
+  # (Finances, a PDF) has finished — a saving, never a speed-up. Measure
+  # it by the request log's pendingTime and instance count.
+  target_cpu_utilization: 0.9
 
 # Ask App Engine to send /_ah/warmup to an instance it starts AHEAD of
 # traffic — a deploy, a second instance (handled in main.py: both
@@ -26,7 +32,14 @@ inbound_services:
 # Explicit worker/thread/timeout sizing: gunicorn's defaults (1 sync worker,
 # 30 s timeout) cap the whole app at ~2 concurrent requests across instances
 # and SIGKILL slow DAV/dashboard requests. Threads overlap Firestore I/O.
-entrypoint: gunicorn -b :$PORT --workers 2 --threads 4 --timeout 60 --graceful-timeout 30 main:app
+# ONE worker × 8 threads since 2026-11-12 (2 × 4 before): the same 8
+# concurrent requests, one copy of the app to start on F2's CPU share —
+# two used to boot together, most of an instance's ~8 s start —, about
+# half the memory, and every per-process cache (rate limits, Réception
+# badge, bearer tokens, App Check keys) shared by all requests; the
+# warmup reaches the only worker. If that process dies, the requests in
+# flight fail and gunicorn starts it again.
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 8 --timeout 60 --graceful-timeout 30 main:app
 
 env_variables:
   ENV: "production"
