@@ -30,7 +30,10 @@ automatic_scaling:
 # lecture du bucket.
 service_account: portail-svc@athena-pallas.iam.gserviceaccount.com
 
-entrypoint: gunicorn -b :$PORT --workers 2 --threads 4 --timeout 60 --graceful-timeout 30 client.wsgi:app
+# ONE worker × 8 threads since 2026-11-12, as the default service (see
+# app.yaml): the same 8 concurrent requests, one copy to start, half the
+# memory.
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 8 --timeout 60 --graceful-timeout 30 client.wsgi:app
 
 env_variables:
   ENV: "production"

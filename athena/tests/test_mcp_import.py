@@ -351,6 +351,10 @@ def contacts(monkeypatch):
                         lambda i: world["existing"])
     monkeypatch.setattr(handlers, "bump_ctag",
                         lambda name: world["bumps"].append(name))
+    # A contact write signals the address book through its one door
+    # (services/carnet.py), which bumps « parties ».
+    monkeypatch.setattr(handlers.carnet, "apres_ecriture_contact",
+                        lambda *parties: world["bumps"].append("parties"))
     monkeypatch.setattr(models, "find_by_legacy_ref",
                         lambda c, r, limit=5: list(world["legacy"].get(r, [])))
     return world
@@ -373,10 +377,10 @@ def test_create_partie_bumpe_exactement_le_carnet_d_adresses(contacts):
 def test_un_bump_rate_ne_fait_pas_reessayer(contacts, monkeypatch):
     """Le contact est DÉJÀ écrit. Laisser filer l'exception le rapporterait
     comme un échec, et le modèle réessaierait — un doublon."""
-    def _boom(name):
+    def _boom(*_args):
         raise RuntimeError("firestore down")
 
-    monkeypatch.setattr(handlers, "bump_ctag", _boom)
+    monkeypatch.setattr(handlers.carnet, "apres_ecriture_contact", _boom)
     payload = handlers.create_partie(dict(_INDIV))
     assert payload["created"] is True
     assert payload["ctag_bumped"] is False

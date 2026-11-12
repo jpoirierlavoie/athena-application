@@ -4,7 +4,8 @@ MACHINE blueprint — no @login_required, CSRF-exempt (main.py), reachable only
 by App Engine cron: the ``X-Appengine-Cron: true`` header is STRIPPED from all
 external traffic, so the in-handler guard is proof of origin.
 
-Every 10 minutes it reconciles the confirmed hearings against the mirrored
+Every 10 minutes during office hours (cron.yaml) it reconciles the confirmed
+hearings against the mirrored
 events in the juriste's DEFAULT Outlook calendar (create / patch / delete by
 diff). One-way: Athéna is authoritative, an Outlook-side edit is stomped back
 (user decision 2026-07-29). The sweep is READ-ONLY on Firestore — the mapping
@@ -55,7 +56,7 @@ _LIMITE_FENETRE = 1500
 # activation, rattrapage, série volumineuse — franchissaient le mur et le
 # worker était SIGKILLé en plein balayage, sans compteurs ni journal. Le
 # balayage étant incrémental et idempotent (dédup par marqueur), le reste
-# part au cycle suivant, 10 minutes plus tard ; le reliquat est compté
+# part au passage suivant (cron.yaml) ; le reliquat est compté
 # (`restants`) et journalisé, jamais tu.
 _PLAFOND_MUTATIONS = 80
 
@@ -114,7 +115,7 @@ def _synchroniser(integ: dict) -> dict | None:
     )
     if not fenetre.ok:
         # Jeu désiré non fiable : ne rien créer, ne rien corriger, ne rien
-        # supprimer. Le cycle suivant reprendra dans 10 minutes.
+        # supprimer. Le passage suivant reprendra (cron.yaml).
         log_bookings_event(
             "miroir_outlook_erreur_graph", "failure", reason="lecture_firestore"
         )
@@ -205,7 +206,7 @@ def _synchroniser(integ: dict) -> dict | None:
 
     # Le reliquat au-delà du plafond voyage dans la ligne de compteurs
     # (`restants` dans miroir_outlook_execute) : rien de perdu — le balayage
-    # est idempotent et le cycle suivant reprend dans 10 minutes — et jamais
+    # est idempotent et le passage suivant reprend (cron.yaml) — et jamais
     # muet, un arriéré qui ne se résorbe pas se lit à chaque cycle.
 
     if fenetre_pleine:
@@ -255,8 +256,8 @@ def sync():
     try:
         counters = _synchroniser(get_integrations())
     except (GraphError, GraphNotConfigured):
-        # A Graph outage is transient — log and return 200 (the next 10-min
-        # cycle retries); a 500 would only spawn a cron retry storm.
+        # A Graph outage is transient — log and return 200 (the next run
+        # retries); a 500 would only spawn a cron retry storm.
         logger.exception("outlook mirror graph call failed")
         log_bookings_event(
             "miroir_outlook_erreur_graph", "failure", reason="graph_error"

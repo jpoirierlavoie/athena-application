@@ -326,7 +326,9 @@ def _partie_write_result(
             "such warning means nothing was written (a no-op)."
         ),
         "dav_synced": _bool(
-            "The contact will reach the phone; false on a no-op."),
+            "ctag_bumped AND the contact is in the phone's address book: "
+            "false for a « fournisseur » (the address book never carries "
+            "one) and on a no-op."),
         "warnings": _arr(_str("French; empty when nothing is amiss.")),
         **_write_protocol_keys(),
         **(extra or {}),
@@ -3943,10 +3945,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "enum": ["follows", "removed", "not_mirrored", "unchanged"],
                 "description": (
-                    "What the 10-minute Outlook mirror of confirmed events "
-                    "(when active; events 30 days back to 365 ahead) does "
-                    "with this write: follows = its copy is created or "
-                    "updated at the next cycle; removed = status annulée, "
+                    "What the Outlook mirror of confirmed events (when "
+                    "active; it runs during office hours; events 30 days "
+                    "back to 365 "
+                    "ahead) does with this write: follows = its copy is "
+                    "created or updated at its next run; removed = status "
+                    "annulée, "
                     "the copy is deleted; not_mirrored = a Bookings "
                     "rendez-vous, of which only the dossier or the notes "
                     "changed — neither is on its Outlook meeting (the "

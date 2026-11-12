@@ -32,7 +32,7 @@ _SELECT = (
 # ── Marqueur anti-boucle du miroir Outlook ───────────────────────────────
 # Le miroir (utils/graph_miroir.py) écrit les audiences d'Athéna dans le
 # calendrier PRINCIPAL du juriste — celui-là même que lister_reservations
-# interroge toutes les 10 minutes. Sans marqueur, un événement miroir dont le
+# interroge à chaque passage. Sans marqueur, un événement miroir dont le
 # sujet se termine par « - Consultation » satisferait le prédicat (le juriste
 # est l'organisateur de tout événement créé par l'application) et serait
 # ré-importé comme une fausse réservation à confirmer. Chaque miroir porte

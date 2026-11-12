@@ -497,7 +497,7 @@ def test_intake_rejoue_n_envoie_pas_un_second_courriel(web, monkeypatch):
 
 def test_intake_malformee_pose_quand_meme_les_deux_marqueurs(web, monkeypatch):
     """Sans soumissions[] ET accuses[batch], la réconciliation ré-enfilerait ce
-    lot toutes les 15 minutes à perpétuité. On consigne fort, on ne confirme
+    lot à chaque passage, à perpétuité. On consigne fort, on ne confirme
     rien au client, mais on fait converger."""
     bucket = _bucket_intake({"type": "intake", "donnees": "pas un objet"})
     reponse, envoyer, ajouts = _traiter_intake(

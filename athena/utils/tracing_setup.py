@@ -25,7 +25,7 @@ Sampling defaults to 10% in production and in dev alike
 session (in dev that switches to ``AlwaysOn``, so every local request
 reaches the console exporter), ``"0.0"`` to disable.
 
-Memory note: F2 = 256MB.  ``BatchSpanProcessor`` uses a bounded queue
+Memory note: F2 has 768 MB.  ``BatchSpanProcessor`` uses a bounded queue
 (default max 2048).  Tune via ``OTEL_BSP_MAX_QUEUE_SIZE`` if instance
 memory pressure shows up post-deploy.
 """

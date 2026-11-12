@@ -24,9 +24,10 @@ day an edit shipped.
 Notes, tasks and hearings are DAV-exposed per dossier, and parties through
 the CardDAV addressbook; the models never bump a CTag — bumping lives in the
 caller. **Every DAV-exposed write on a tool path MUST call
-``bump_ctag(collection_for(dossier_id))``, or ``bump_ctag("parties")`` for a
-contact**, or the item lands in Firestore, shows up in the web UI, and DavX5
-silently never re-syncs it. All writes run through
+``bump_ctag(collection_for(dossier_id))``, or, for a contact, the address
+book's one door ``services/carnet.apres_ecriture_contact``**, or the item
+lands in Firestore, shows up in the web UI, and DavX5 silently never
+re-syncs it. All writes run through
 ``mcp/write_support.run_write`` (``idempotency_key``).
 
 **No kill switch.** ``MCP_ENABLED``, ``MCP_WRITE_ENABLED`` and

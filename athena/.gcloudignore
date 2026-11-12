@@ -13,8 +13,11 @@
 .git
 .gitignore
 
-# Python pycache:
-__pycache__/
+# Python bytecode SHIPS since 2026-11-12: cloudbuild.yaml compiles it
+# (checked-hash) once the tests pass, and the runtime's read-only disk
+# could never cache it. A hand deploy from a checkout ships whatever
+# __pycache__ it holds: timestamp-based files, which Python uses only
+# while their source's recorded time and size still match.
 # Ignored by the build system
 /setup.cfg
 
@@ -26,7 +29,6 @@ venv/
 .venv/
 tests/
 .pytest_cache/
-*.pyc
 **/service-account*.json
 **/*-adminsdk-*.json
 

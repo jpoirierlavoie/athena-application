@@ -69,7 +69,8 @@ Firestore     Firestore      Firebase Storage  Firebase Auth  Secret Manager
 
 **There are TWO App Engine services, not one**, plus a `dispatch.yaml` that
 routes the portal host to the second and a `cron.yaml` carrying the scheduled
-jobs (that file is their one list).
+jobs, during office hours (that file is their one list;
+`athena/utils/cron_schedule.py` holds their hours).
 This diagram showed one until 2026-09-12, which is how an adopter learns the
 `portail` service exists only when their first CI build fails deploying it.
 Its infrastructure — the least-privilege service account, the quarantine
@@ -107,14 +108,15 @@ grants — is §6.9.
 
 | Component | Ballpark |
 |---|---|
-| App Engine F2, `min_instances: 0` | a few $/mo (pay-per-request; cold starts) |
-| App Engine F2, `min_instances: 1` | ~US$40–50/mo (one always-on instance, no cold starts) |
+| App Engine F2, `min_instances: 0` (as deployed) | Billed per **instance-hour** while an instance is up — until about 15 minutes after its last request —, never per request. The free tier is 28 F1-hours a day for both services together; an F2 hour counts as two. Until 2026-11-12 the crons, every 10–15 minutes, kept one instance up around the clock (about 24 F2-hours a day, measured): about US$30–42/mo after the free tier (estimate). They now run only from 9 h to 17 h (`cron.yaml`): about 14 F2-hours a day (estimated from a week of request logs), at the edge of the free tier, warm during office hours and with cold starts (about 8 s) only outside them. The exact figure: Billing → Reports |
+| App Engine F2, `min_instances: 1` | one always-on instance, no cold starts: about US$30–42/mo after the free tier (estimate) |
 | App Engine F1 — the **`portail` service** | a few $/mo (also `min_instances: 0`; it only moves JSON, never file bytes) |
 | Firestore (native) — **two databases** | cents–low $/mo at single-user volume |
 | Cloud Tasks + Cloud Scheduler | the free tier covers the queue and three Cloud Scheduler jobs per billing account; each `cron.yaml` job beyond them costs about US$0.10/mo — count its entries |
 | Quarantine bucket (client uploads) | pennies/mo + egress; lifecycle purges at 90 / 365 days |
 | Firebase Storage | pennies/mo + egress |
 | Secret Manager | negligible |
+| Artifact Registry — the deploy images (`gae-standard`) | US$0.10 per GB-month beyond 0.5 GB free. App Engine stores one image per service per deploy and never deletes them: 21.3 GB on 2026-11-12 (about US$2/mo, growing about 2.7 GB a month), until the cleanup policy of §15 (« Office-hours crons… ») keeps only the ten newest of each package |
 | reCAPTCHA Enterprise | free tier is generous for one user |
 | **Cloudflare Pro** | **~US$25/mo (required)** |
 | Domain | ~US$10–20/yr |
@@ -235,7 +237,7 @@ above and must be set **again** there.
 | `PORTAIL_SECRET_KEY` → secret `portail-secret-key` | ✔ **hard** (portal) | — | The portal's session key, **distinct** from the main one. The service does not boot without it |
 | `PORTAIL_HOST` | ○ | ⚠ `portail.poirierlavoie.ca` — the **original owner's** host | Used to build the fallback link in every invitation email |
 | `PORTAIL_BUCKET` | ○ | `{FIREBASE_PROJECT_ID}-portail-quarantaine` | Derived, so it follows your project id by itself |
-| `TASKS_LOCATION` | ○ | ⚠ `northamerica-northeast1` (Montréal) | **Must equal your App Engine region** (`gcloud app describe`). It is not derived: deploy elsewhere and leave it, and every `signaler()` raises `NOT_FOUND` at finalization — a failure the portal swallows **by design** (the envelope is the durable truth), so the only symptom is lots arriving in Réception ~15 minutes late via the reconciliation cron |
+| `TASKS_LOCATION` | ○ | ⚠ `northamerica-northeast1` (Montréal) | **Must equal your App Engine region** (`gcloud app describe`). It is not derived: deploy elsewhere and leave it, and every `signaler()` raises `NOT_FOUND` at finalization — a failure the portal swallows **by design** (the envelope is the durable truth), so the only symptom is lots arriving in Réception late, at the next run of the reconciliation cron (every 15 minutes during office hours, `cron.yaml`) |
 
 ### 4.2 The six Secret Manager secrets (production)
 
@@ -967,7 +969,7 @@ done
 # `X-Origin-Auth` on the portal host — arming first would 403 every client.
 # New instances arm; running ones keep the value they read at startup.
 # (Granted on the original deployment 2026-09-30, after the tracer proof.)
-# Both services read the secret ONCE per gunicorn worker (two per
+# Both services read the secret ONCE per gunicorn worker (one per
 # instance), when the worker starts, so a ROTATION is three steps chained
 # without a pause: a new version of the secret (the recipe above), the SAME
 # value in the Cloudflare Transform Rule that injects `X-Origin-Auth`
@@ -2118,8 +2120,9 @@ Notes:
       stays « Reportée »).
   11. *The Outlook mirror*: « Lot 1b », C1, on a scratch event of a test
       dossier — a reschedule through `update_hearing` moves its Outlook
-      copy within 10 minutes (`outlook_mirror: "follows"`), a cancellation
-      removes it.
+      copy at the mirror's next run (`outlook_mirror: "follows"`; Cloud
+      Scheduler's « Force run » on an `outlook` job runs it at once), a
+      cancellation removes it.
   12. *Word opens every generated document WITHOUT repair* (Change Impact
       item 3 — no test sees Word's prompt): the « Lot 2A » step 9 list, on
       a test dossier; a document drawn from a SCRATCH template whose first
@@ -5323,6 +5326,322 @@ Notes:
   gabarit); saving its form there turns it into a gabarit, and its other
   edits (« Rétablir », Claude's rename or new file) are refused « Type de
   gabarit invalide ».
+
+- **Office-hours crons, one Secret Manager client, a fuller warmup
+  (2026-11-12).** The lawyer's decision: the portal reconciliation (every
+  15 minutes), the Bookings sync and the Outlook mirror (every 10 minutes)
+  run from 9 h to 17 h, Montréal time, only (`cron.yaml`, `timezone:
+  America/Toronto`) — no longer around the clock, which kept one F2
+  instance up day and night. Their runs keep the instance warm during
+  office hours; outside them only real use wakes it. App Engine's cron
+  syntax cannot limit an interval to weekdays, so weekends keep the same
+  hours. Measured over 5–12 November and simulated with the new window:
+  about 14 instance-hours a day instead of 24, and about 13 cold starts a
+  day of about 8 s — about 4 of them the lawyer's own first page, before
+  9 h or after 17 h, about 5 DAVx5 syncs and 3 connector calls; inside
+  office hours, only a deploy's. The cadences live in
+  `utils/cron_schedule.py`, which every text promising a delay quotes —
+  Réception's footnote and refusal, three connector messages,
+  `update_hearing`'s description — and `tests/test_cron_schedule.py` pins
+  `cron.yaml` to it. Outside office hours, what waits until 9 h: a
+  « Bookings with me » reservation's arrival in Réception; a hearing
+  created, moved or cancelled in Athéna reaching the Outlook calendar — so
+  a client can book over a court date entered after 17 h until the next
+  morning's first run; a client's cancellation reaching Athéna; a portal
+  batch whose Cloud Task failed. Beside it, `config.py` and
+  `client/config.py` read every secret through ONE Secret Manager client
+  per process (five clients per worker before), and `/_ah/warmup` — sent
+  only when App Engine starts an instance ahead of traffic, never on a
+  wake from zero — also opens the « portail » Firestore channel without
+  reading an invitation, imports the two Firebase modules loaded on first
+  use and compiles `base.html` and the dashboard. Change Impact: item 1
+  lightly (texts only — the registry's fingerprint covers names and input
+  schemas, unchanged, so plugin 1.9.0 stays current); item 2 not touched
+  in what syncs (DAVx5 pulls, and what the crons write is invisible to DAV
+  until confirmed), but a sync that wakes the instance waits for its
+  start; item 4 not touched (no event; the cadence's mentions in
+  `athena/OBSERVABILITY.md` corrected); item 5 lightly (how the same five
+  secrets are fetched, with the same failure policy); items 3, 6 and 7 not
+  touched.
+  In order:
+  1. *The push* — Cloud Build deploys `cron.yaml`, which replaces the whole
+     table. App Engine's cron jobs are not Cloud Scheduler API jobs
+     (`gcloud scheduler jobs list` shows none): the console's App Engine →
+     Cron jobs page lists the three, with their window.
+  2. *The first day*: the request log shows `/taches/` only from 9 h to
+     17 h — and whether 17:00 itself has a run, which the documentation
+     does not say:
+     `gcloud logging read 'resource.type="gae_app" AND protoPayload.resource:"/taches/"' --project=$PROJECT --freshness=1d --format='value(protoPayload.startTime,protoPayload.resource,protoPayload.status)'`.
+  3. *The sleep*: `protoPayload.wasLoadingRequest=true` on ordinary
+     requests before 9 h or after 17 h — the instance stopped and started
+     again.
+  4. *On the phone*, before 9 h or late in the evening: pull to refresh in
+     DAVx5 — the sync completes, its first request about 10 s slower than
+     during the day.
+  5. *A week later*: Billing → Reports, App Engine instance hours.
+  A rollback is `cron.yaml`'s old schedules (`every 15 minutes`,
+  `every 10 minutes`, `every 10 minutes`, no timezone) with the code.
+
+  **The deploy images** (same day, by `gcloud`, not by the push): App
+  Engine keeps every build's image in Artifact Registry (`gae-standard`,
+  `northamerica-northeast1`) — 436 for `app/default`, 202 for
+  `app/portail`, 40 for `app/chat` (the service deleted 2026-09-02). A
+  cleanup policy keeps the ten newest images of each package — the four
+  versions per service that `cloudbuild.yaml`'s cleanup leaves, rollback
+  included, plus margin — and deletes the rest once a day:
+  `gcloud artifacts repositories set-cleanup-policies gae-standard --location=northamerica-northeast1 --project=$PROJECT --policy=<file> --dry-run`
+  with the two rules `{"name": "garder-les-10-plus-recentes", "action":
+  {"type": "Keep"}, "mostRecentVersions": {"keepCount": 10}}` and
+  `{"name": "supprimer-anciennes-images", "action": {"type": "Delete"},
+  "condition": {"tagState": "any", "olderThan": "86400s"}}` — a Keep rule
+  always wins over a Delete rule. It was set in dry-run on 2026-11-12,
+  then ENFORCED on the lawyer's go the same day — the same command with
+  `--no-dry-run` —, and
+  `gcloud artifacts packages delete app/chat --repository=gae-standard --location=northamerica-northeast1 --project=$PROJECT`
+  removed the deleted service's 40 images. Artifact Registry applies the
+  policy in a background pass about once a day. A deleted image cannot be
+  restored; a version whose image is gone
+  is redeployed from its commit.
+
+  **The instances** (same release): both services run ONE gunicorn worker
+  × 8 threads (`app.yaml`, `portail.yaml`; 2 × 4 before) — the same eight
+  concurrent requests, one copy of the app to start instead of two booting
+  together on one CPU share, about half the memory, and every per-process
+  cache shared: the in-memory rate limits now count once per instance,
+  where two workers each kept their own count — they become exact. If that
+  process dies, the requests in flight fail and gunicorn starts it again;
+  no worker died in the 30 days before. The default service's
+  `target_cpu_utilization` rises from 0.65 to 0.9: a second instance
+  starts later — a saving, never a speed-up. To check after the push: the
+  request log's `/_ah/warmup` latency (7.5–9.4 s over the five deploys
+  before) and, over the next days, the requests' `pendingTime` and the
+  instance count. A rollback is the two yaml files.
+
+  **The bytecode** (same release): App Engine's disk is read-only and the
+  upload excluded `__pycache__/` and `*.pyc`, so every worker recompiled
+  the app's own source (about 5.8 MB) at every start — 0.66 s per
+  process on the development machine, more on F2. Cloud Build's test
+  step now compiles it once the tests pass (`python -m compileall -q -f
+  --invalidation-mode checked-hash -x '/tests/' .`, Python 3.13 as the
+  runtime), and `.gcloudignore` lets it ship. checked-hash: each file is
+  checked against its source's hash before use, so a stale one never
+  runs, whatever the upload does to file times. The one exception to
+  « no deploy-time build » (CLAUDE.md), by the lawyer's decision. A hand
+  deploy from a checkout ships the timestamp-based files Python wrote
+  there, which Python uses only while their source's recorded time and
+  size still match; a clean checkout ships none — as before. Its effect shows in the same
+  `/_ah/warmup` latency.
+
+- **The Documents landing reads the page it shows (2026-11-12).** The
+  Bibliothèque's Documents tab with no dossier chosen streamed every
+  document of the firm — 2,267 — and sorted them in Python to show
+  fifteen: p50 4.2 s on 2026-11-11. It now reads one page, newest first,
+  in Firestore's own order (`models/document.list_documents_page`, STRICT,
+  cursor-paged like the dossiers list), with its COUNT
+  (`count_documents_page`, fail-open) and a completeness count that says
+  how many documents the date order cannot list — none on 2026-11-12, the
+  ordered and unordered counts both 2,267. A failed read — an outage, an
+  index missing or still building — answers at 200 « La liste des
+  documents n'a pas pu être lue », never « Aucun document ». The search box
+  and the « Nom » and « Taille » sorts keep the whole read. The dossier
+  picker reads four fields per dossier
+  (`models/dossier.list_dossiers_for_picker`) and says « indisponible » if
+  its read fails; the search box gains `hx-sync`. Change Impact: item 7 —
+  the composite `(category ASC, created_at DESC)` on `documents`, for the
+  category filter, created in production BEFORE the code by `gcloud
+  firestore indexes composite create` (READY in about four minutes); the
+  unfiltered order rides the automatic `created_at` index, proved by its
+  COUNT run in production; item 4 — two `log_unexpected` lines,
+  registered; `list_documents` is unchanged, so the connector (item 1),
+  the zip builder and the dossier tab read as before; items 2, 3, 5 and 6
+  not touched (classes already compiled, the `error` glyph already in the
+  subset).
+  In order:
+  1. *The index*, before the push — done: `gcloud firestore indexes
+     composite list --project=$PROJECT` shows 38 READY.
+  2. *The push.*
+  3. *On the desktop and the phone (375 px)*: Bibliothèque → Documents
+     opens fast, newest first, « Page 1 / N »; the category filter pages;
+     « Nom » and « Taille » still sort every document; a search still
+     finds.
+  4. *The request log*: `/documents/` without `dossier_id`, its p50
+     against 4.2 s.
+  A rollback is the code alone; the index can stay.
+
+- **Suppliers and stenographers among the contacts, suppliers kept off the
+  phone (2026-11-11).** Two contact roles join « Impliqués »: « Fournisseur »
+  (a supplier the firm pays) and « Sténographe ». The roles have one source,
+  `utils/contact_roles.py`; the contact model, the connector's three enums
+  (`list_parties`, `create_partie`, `update_partie`), the generated
+  documents' work-address rule (both new roles are written to at their work
+  address) and the vCard CATEGORIES label — the role's wire format to DavX5
+  — read it, and tests pin each copy. DavX5's address book carries every
+  contact EXCEPT the suppliers (the lawyer's decision). Every contact write
+  passes through one door, `services/carnet.apres_ecriture_contact`, which
+  bumps the « parties » CTag in the same commit as the contact's tombstone
+  (a supplier: the next sync deletes it from the phone) or as its removal
+  (a contact that returns); a delete goes through `apres_suppression_contact`,
+  and a sweep refuses any address-book signal outside the door. The CardDAV
+  handlers never list or serve a supplier (404, the tombstone's answer; a
+  phone DELETE of a stale copy never reaches it), report every supplier as
+  deleted at each full sync — from the same read, so a supplier leaves the
+  phone even if its tombstone never landed or was pruned — and refuse a
+  phone card naming « Fournisseur » (422 « Un fournisseur s'inscrit dans
+  Athena, jamais depuis le téléphone. ») or a stale copy of one (412). Also: the
+  contact list's `?role=` is checked against the vocabulary (an unknown
+  value listed every contact under « Client »), the role menu marks the
+  stored role `selected` on the server, and an edit posted without a role
+  keeps it (it became « client »). Change Impact: item 1 touched (three
+  enums grow, opt-in, so no existing call matches or defaults differently;
+  two descriptions; the outputs keep their keys, but `dav_synced` reads
+  false after a supplier write — the contact is not in the address book —
+  and its description says so; plugin 1.9.1 — the registry changed, and its
+  skill now says the phone carries every contact but the suppliers) —
+  without the §11 train: no new kind of data, no consent text;
+  item 2 (the exclusion, the tombstones, the one door — curl below, then
+  the phone); item 3 lightly (the work-address rule names the two roles and
+  the gabarits guide says so; no contact holds them yet); item 5 lightly
+  (the role filter checked); item 6 (one badge colour, teal, already
+  compiled with its dark value); items 4 and 7 not touched.
+  In order:
+  1. *The push.*
+  2. *On the web*: switch one contact that really is a supplier (an
+     « Autre » one, say) to « Fournisseur » — its badge turns teal, it gets
+     no « Conformité » card.
+  3. *curl* (§15-16, with the DAV credentials): `PROPFIND
+     /dav/addressbook/` Depth 1 no longer lists that contact's href, `GET`
+     of it answers 404, and a `sync-collection` REPORT with an empty token
+     reports it with a 404 status.
+  4. *On the phone*: at DavX5's next sync the contact leaves the address
+     book; the other contacts are untouched. Switch it back to « Autre »
+     once to see it return, then to « Fournisseur » again.
+  5. *Plugin 1.9.1*: rebuild it, unpack it into the mirror `athena-plugin`
+     (the old copy removed first), bump the mirror's marketplace.json,
+     commit and push it the same day.
+  6. *In claude.ai*, after reloading the connector's tools: `list_parties`
+     with `contact_role="fournisseur"` lists the suppliers.
+  Never roll back below this release once a supplier or a stenographer
+  exists. The older code knows neither role: its web form shows such a
+  contact as « Client » and a save silently stores « client » (with the
+  identity-check dot); its phone sync serves them labelled « Autre » —
+  suppliers back on the phone — and a phone edit stores « autre »; its
+  connector and mandataire writes refuse them (« Rôle de contact
+  invalide »), and its compliance tool refuses a non-client. If a rollback
+  is forced, edit no such contact anywhere until the roll-forward, redeliver
+  plugin 1.9.0, and after the roll-forward check the role of every supplier
+  and stenographer.
+
+- **The supplier record (2026-11-11).** A supplier's or a professional's
+  contact (`utils/contact_roles.PAYEE_ROLES`) holds, under « Informations de
+  fournisseur », its TPS and TVQ numbers (stored without spaces, shown
+  « 123456789 RT 0001 », any other shape refused — ASCII digits only), its
+  usual expense
+  category (a key of `admin_ledger.ADMIN_EXPENSE_CATEGORIES`) and the firm's
+  account number there (at most 100 characters, refused — never trimmed —
+  past that or when the sanitizer would alter it); the address its invoices
+  print is the contact's business block, and an empty row reads « — »
+  (never « Non inscrit », which would mean « not a registrant »). Another
+  role refuses a filled field the write CHANGES, and the form disables the
+  section for it — on the server too — so a record kept from a former role
+  stays dormant and never locks the contact; a refused save redisplays it
+  as stored, so a switch back to a payee keeps it
+  (`models/partie._supplier_record_errors` judges only the fields a write
+  carries). Never on the vCard (a professional's phone edit keeps it, merge
+  by presence) nor in the connector (the lawyer's decision). Change Impact:
+  item 1 touched in name only (the contact model its tools reach: no tool
+  sends the fields — the `_PARTIE_TEXT_FIELDS` whitelist — and `get_partie`
+  builds its card key by key; tested); item 2 lightly (never serialized; a
+  PUT keeps it — tested); item 6 (compiled classes only); items 3, 4, 5 and
+  7 not touched.
+  In order:
+  1. *The push.*
+  2. *On the web*: a supplier's fiche — « Modifier », fill its TPS and TVQ
+     numbers with or without spaces, its usual category and the account
+     number; the fiche shows them spaced. A client's form shows no such
+     section.
+  A rollback is the code alone: the older code keeps the four fields through
+  its merge, without showing them.
+
+- **The past payees, read-only (2026-11-11).** `scripts/rapport_contreparties.py`
+  helps the lawyer add his suppliers by hand: it lists the payees his past
+  entries name (administration dépense and remboursement, trust déboursé à
+  un tiers), grouped by folded name with their spellings, their counts
+  (reversed entries apart, corrections left out), main category and first
+  and last dates, and whether a contact already matches — by name, legal
+  name or trade name, one leading title (« Me », « L'hon. »…) aside —,
+  flagging a match whose role the forms will not suggest
+  (`contact_roles.PAYEE_ROLES`); an entry whose name holds no letter or
+  digit is left out and counted. A second file lists the spellings used on
+  drawings, contributions, TPS/TVQ remittances and refunds, and internal
+  transfers. Both are semicolon-separated with every cell quoted, UTF-8
+  with a BOM: a double-click opens them in French Excel. One read-only
+  transaction: a failed or truncated read writes nothing; a path inside the
+  repository (public) is refused; the terminal prints counts and sha256
+  only. It writes nothing in Athena. Change Impact: item 7 (strict whole-collection reads, run
+  locally); nothing deployed reads it; items 1 to 6 not touched.
+  In order:
+  1. *Run it* from `athena/` against production (§4, the variables
+     inline), `--sortie` outside the repository.
+  2. *Open the CSV* in Excel: add the suppliers by hand in « Impliqués » and
+     change the role of each flagged contact.
+  3. *Delete both files* once done: they hold names.
+
+- **The entry forms read the declared tables; three dead handlers revived
+  (2026-11-11).** First a fix outside the suppliers request, in its own
+  commit: the administration entry form's three Alpine handlers opened with
+  `var` and never ran since the form was created (Alpine compiles a
+  directive into an assignment, where `var` is a syntax error) — a dossier
+  picked set nothing, a chosen invoice never filled its balance, and a page
+  arriving on the card account never disabled « Encaissement ». They open
+  with `let` now, and `tests/test_alpine_expressions.py` refuses a
+  statement-led Alpine expression in every template; a read-only census
+  found no stored dossier lost. Then the forms read lot 4's tables
+  (`admin_ledger.ENTRY_TYPES`, `trust.PURPOSE_TYPES`): the « Type » menus
+  (create, edit and the journal's filter) and the trust « Objet » are
+  grouped by family; the counterparty's label and example follow the type
+  (« Fournisseur », « Reçu de », « Versé à », « Compte de contrepartie »,
+  « Administration fiscale ») or, in trust, the direction (« Somme reçue
+  de », « Bénéficiaire du débours »); a NEW entry's field starts with its
+  type's pre-fill — the lawyer's name as the firm profile spells it (its
+  « nom », never the firm) on a drawing or a contribution, « Revenu
+  Québec » on a TPS/TVQ remittance or refund, the chosen invoice's client on
+  an encaissement, the chosen client on a trust advance, deposit or
+  remittance, the account's bank on trust interest or fees — only while the
+  field is empty or still holds the last pre-fill, never on an edit, a
+  refused submission or a name the page arrives with (D6). The pickers now
+  come before the field (D7). The supplier's invoice number shows and posts
+  only for a dépense, its refund and an « Autre recette »: a create of any
+  other kind stores none, and an edit keeps the stored number whatever the
+  kind becomes. Each entry page names its counterparty by its type (a
+  correction, its original's) and shows the TPS/TVQ split of a dépense, a
+  refund and their corrections, whatever the direction. On the trust form
+  the dossier's hint follows the purpose, a refused submission keeps its
+  client selected, and a new dossier search drops the old client. Change
+  Impact: item 1 lightly (`models/fee_payment` and `services/comptabilite`
+  gain a display-only reader of the lawyer's name; `fee_payees` unchanged;
+  no tool, schema or registry change); item 5 (two JSON data blocks,
+  executed by nothing, so no nonce; no posted value reaches an x-data raw);
+  item 6 (native `<optgroup>`, compiled classes only); item 7 (the
+  administration create form reads the firm profile once — one keyed get);
+  items 2, 3 and 4 not touched.
+  In order:
+  1. *The push.*
+  2. *Administration, a new entry* (desktop, then the phone at 375 px): the
+     « Type » menu shows its families; « Prélèvement de l'avocat » fills
+     « Versé à » with the lawyer's name, « Dépense » empties it again; a
+     name typed survives every change of type; « Remise de TPS/TVQ » fills
+     « Revenu Québec »; « Encaissement de facture » then an invoice fills
+     its client and its balance; the card account switches back to
+     « Dépense » and empties the client's name.
+  3. *The dossier picker*: on a new dépense, search a dossier and pick it —
+     the field shows it, and the saved entry carries it.
+  4. *An edit*: change an entry's type — the label follows, the name stays.
+  5. *Fidéicommis, a new entry*: pick a dossier and its client — « Somme
+     reçue de » fills with the client; « Intérêts » fills the bank, and the
+     dossier's hint says it may stay empty.
+  6. *An entry page*: a refund shows its TPS/TVQ; a correction reads its
+     original's label.
+  A rollback is the code alone: nothing stored changes shape.
 
 - **One invoice balance, and the « Factures impayées » tile
   (2026-11-11).** Lot 0 of the lawyer's plan « Factures : retard,

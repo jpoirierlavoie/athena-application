@@ -1370,3 +1370,52 @@ def test_a_mark_that_cannot_be_read_leaves_the_points_list_incomplete():
     labels = [r["label"] for r in fs.present(st)["points"]["rows"]]
     assert labels[0].startswith("Liste incomplète — Montant illisible (amount)")
     assert "Aucun point à vérifier." not in labels
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 12. The payments index (2026-11-11) — faster, never another figure
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class _NoScan(tuple):
+    """A payments tuple a receipts question must never walk."""
+
+    def __iter__(self):
+        raise AssertionError("receipts() scanned every payment")
+
+
+def test_receipts_come_from_the_index_and_equal_a_scan_of_every_payment():
+    rng = random.Random(20311111)
+    days = [date(2031, 1, 1) + timedelta(days=i) for i in range(0, 120, 7)]
+    # [] and {} — ids written outside the model — never match, and never raise.
+    payments = tuple(
+        fs._Payment(rng.choice(["i001", "i002", "i003", None, [], {}]), rng.choice(days),
+                    rng.choice([2500, -2500, 100, 31415]),
+                    rng.choice(["encaissement", fs.ATTRIBUTED]), f"p{n:03d}")
+        for n in range(200))
+    world = fs._World(admin=None, invoices=None, attribution={}, payments=payments)
+    world.payments = _NoScan()
+    for iid in ("i001", "i002", "i003", None, "absent"):
+        for source in ("encaissement", fs.ATTRIBUTED):
+            for until in (None, date(2030, 12, 31), *days, date(2031, 12, 31)):
+                scan = sum(p.amount for p in payments
+                           if p.invoice_id == iid and p.source == source
+                           and (until is None or p.day <= until))
+                assert world.receipts(iid, until, source) == scan, (iid, source, until)
+
+
+def test_the_world_compute_builds_holds_its_payments_in_a_tuple(monkeypatch):
+    """The index is built once, at construction: a payment appended later
+    would be missed by every receipts question — a tuple refuses it."""
+    built = []
+    real = fs._world
+
+    def spy(*args):
+        built.append(real(*args))
+        return built[-1]
+
+    monkeypatch.setattr(fs, "_world", spy)
+    st = _compute(_random_world(random.Random(20311111)), "2031")
+    assert st.unavailable == {} and built
+    assert all(isinstance(w.payments, tuple) for w in built)
+    assert any(w.payments for w in built)

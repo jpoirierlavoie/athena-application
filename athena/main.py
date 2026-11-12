@@ -269,16 +269,42 @@ def create_app() -> Flask:
             abort(403)
 
     # ── App Engine warmup (inbound_services: warmup in app.yaml) ──────
-    # Fired before a new instance receives live traffic; priming the
-    # Firestore channel here moves connection setup off the first user
-    # request and softens cold starts (min_instances stays 0).
+    # Fired when App Engine starts an instance AHEAD of traffic (a deploy, a
+    # second instance) — never when the service wakes from zero: then the
+    # first request itself waits for the start. It reaches one gunicorn
+    # worker. Each step primes what that worker's first page would
+    # otherwise pay for (2026-11-12): the two Firestore channels (the
+    # default database, and « portail », which every page's Réception badge
+    # reads), the two Firebase modules imported on first use, and the two
+    # templates every first page renders. Each step is optional: a warmup
+    # never fails loudly.
     @app.route("/_ah/warmup")
     def warmup() -> tuple[str, int]:
-        try:
+        def _prime(step) -> None:
+            try:
+                step()
+            except Exception:  # pragma: no cover — warmup must never fail loudly
+                pass
+
+        def _firestore() -> None:
             from models import db
             db.collection("dav_sync").document("parties").get()
-        except Exception:  # pragma: no cover — warmup must never fail loudly
-            pass
+
+        def _portail() -> None:
+            # A document that never exists: the channel opens, no
+            # invitation is read.
+            from models import portail_invitation
+            portail_invitation._col().document("_warmup").get()
+
+        def _firebase_modules() -> None:
+            from firebase_admin import app_check, auth  # noqa: F401
+
+        def _templates() -> None:
+            for name in ("base.html", "dashboard/index.html"):
+                app.jinja_env.get_template(name)
+
+        for step in (_firestore, _portail, _firebase_modules, _templates):
+            _prime(step)
         return "", 200
 
     # ── Offline fallback (PWA) ─────────────────────────────────────────

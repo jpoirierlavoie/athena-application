@@ -436,18 +436,35 @@ class _Payment:
 
 @dataclass
 class _World:
-    """Everything a position at a day is computed from."""
+    """Everything a position at a day is computed from.
+
+    ``payments`` is a tuple, indexed once by (invoice, source): a position
+    asks each invoice's receipts, and a scan of every payment per question
+    grew with invoices × payments (2026-11-11). The tuple keeps the index
+    whole — nothing can append a payment it would miss."""
 
     admin: _Admin
     invoices: _Invoices
     attribution: dict
-    payments: list
+    payments: tuple
     settled: dict = field(default_factory=dict)   # invoice id -> shortfall
+    _by_invoice: dict = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        index: dict = {}
+        for p in self.payments:
+            try:
+                bucket = index.setdefault((p.invoice_id, p.source), [])
+            except TypeError:
+                # An id no question can name (an array or a map written
+                # outside the model): the scan never matched it either.
+                continue
+            bucket.append((p.day, p.amount))
+        self._by_invoice = index
 
     def receipts(self, iid: str, until: Optional[date], source: str) -> int:
-        return sum(p.amount for p in self.payments
-                   if p.invoice_id == iid and p.source == source
-                   and (until is None or p.day <= until))
+        return sum(amount for day, amount in self._by_invoice.get((iid, source), ())
+                   if until is None or day <= until)
 
     def provision_part(self, iid: str, until: Optional[date]) -> int:
         """The part of the attributed transfers that covers the invoice's
@@ -485,7 +502,7 @@ def _world(admin: _Admin, invoices: _Invoices, trust_rows: Optional[list]) -> _W
         elif _is_attributed(attribution, r):
             payments.append(_Payment(attribution[r["id"]][1], r["_day"], _signed(r),
                                      ATTRIBUTED, r["id"]))
-    world = _World(admin, invoices, attribution, payments)
+    world = _World(admin, invoices, attribution, tuple(payments))
     for iid, inv in invoices.by_id.items():
         if inv.get("status") == "payée":
             shortfall = _amount_due(inv) - world.paid(iid, None)

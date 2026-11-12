@@ -1,0 +1,12 @@
+{# The contact-role badge's colours — one list, imported by the contact list
+   rows and the fiche (they kept two copies until 2026-11-11). Palette
+   utilities only, each already compiled with its dark value (Rule 10); a
+   role absent here is grey. Each caller keeps its own padding. #}
+{% macro role_badge_class(role) -%}
+{{ {
+  'client': 'bg-indigo-100 text-indigo-700',
+  'avocat_adverse': 'bg-amber-100 text-amber-700',
+  'partie_adverse': 'bg-red-100 text-red-700',
+  'fournisseur': 'bg-teal-100 text-teal-700',
+}.get(role, 'bg-gray-100 text-gray-600') }}
+{%- endmacro %}

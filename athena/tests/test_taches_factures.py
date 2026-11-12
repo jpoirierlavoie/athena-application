@@ -576,8 +576,12 @@ def test_cron_yaml_schedules_the_sweep_at_nine_montreal_time():
     zone, America/Montreal being only its backward alias."""
     (job,) = [j for j in _cron_jobs() if j.get("url") == URL]
     assert job["schedule"] == "every day 09:00"
-    # The preview counts its run from the same hour, restated there for
-    # the computation (second review of lot 2): one source, pinned.
+    # The preview counts its run from the same hour, read from
+    # utils.cron_schedule, the one source of the schedules.
+    from utils import cron_schedule
+    assert job["schedule"] == cron_schedule.daily_en("factures")
+    assert cron_schedule.DAILY_JOBS["factures"] == URL
+    assert apercu.SWEEP_TIME == cron_schedule.daily_time()
     assert job["schedule"] == f"every day {apercu.SWEEP_TIME:%H:%M}"
     assert job["timezone"] == "America/Toronto"
     assert job["timezone"] == TORONTO.key

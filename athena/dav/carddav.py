@@ -13,12 +13,9 @@ from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
 from dav.sync import (
-    bump_ctag,
     get_ctag,
     get_sync_token,
     get_tombstones_strict,
-    record_tombstone,
-    remove_tombstone,
 )
 from dav.xml_utils import (
     add_propstat,
@@ -50,6 +47,8 @@ from models.partie import (
     update_partie,
     vcard_to_partie,
 )
+from services.carnet import apres_ecriture_contact, apres_suppression_contact
+from utils.contact_roles import in_address_book
 from utils.logging_setup import log_dav_operation, log_unexpected, sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span
 
@@ -58,6 +57,11 @@ logger = logging.getLogger(__name__)
 carddav_bp = Blueprint("carddav", __name__)
 
 COLLECTION_NAME = "parties"
+
+# A phone card naming a role the address book never carries (2026-11-11).
+SUPPLIER_FROM_PHONE_REFUSED = (
+    "Un fournisseur s'inscrit dans Athena, jamais depuis le téléphone."
+)
 
 # What DavX5 shows in its collection list. Short on purpose — the label
 # is truncated mid-word there and in the Android contacts account.
@@ -92,25 +96,42 @@ def _contact(partie_id: str) -> dict | None:
     GET / multiget / DELETE (« deleted » to the client — on DELETE it drops
     its copy while the contact stays) and, on a phone EDIT sent with
     If-Match, into a 412 « conflict ». A name the store itself refuses can
-    hold no contact: its failed read is « absent »."""
+    hold no contact: its failed read is « absent ».
+
+    A contact the address book does not carry (a supplier,
+    ``utils/contact_roles.in_address_book``) is « absent » too: GET,
+    multiget and PROPFIND answer 404 — the tombstone's own answer — and a
+    phone DELETE of a stale copy never reaches the contact."""
     try:
-        return get_partie_strict(partie_id)
+        partie = get_partie_strict(partie_id)
     except Exception as exc:
         if not valid_resource_id(partie_id):
             return None
         log_unexpected("carddav addressbook read failed", check="resource")
         raise _ReadUnavailable() from exc
+    return partie if partie and in_address_book(partie) else None
 
 
-def _members() -> list[dict]:
-    """Every contact of the address book — STRICT, raising
-    :class:`_ReadUnavailable` on a failed read (the traceback logged)."""
+def _address_book() -> tuple[list[dict], list[str]]:
+    """The address book's members, and the ids of the contacts it leaves out
+    (the suppliers, ``utils/contact_roles.in_address_book``) — ONE strict
+    read, raising :class:`_ReadUnavailable` on a failed one (the traceback
+    logged). Suppliers are never members: the lawyer's decision of
+    2026-11-11 keeps them off the phone."""
     try:
         with firestore_span("query", COLLECTION_NAME):
-            return list_parties_strict()
+            contacts = list_parties_strict()
     except Exception as exc:
         log_unexpected("carddav addressbook read failed", check="members")
         raise _ReadUnavailable() from exc
+    members = [p for p in contacts if in_address_book(p)]
+    left_out = [p["id"] for p in contacts if p.get("id") and not in_address_book(p)]
+    return members, left_out
+
+
+def _members() -> list[dict]:
+    """Every contact of the address book (:func:`_address_book`)."""
+    return _address_book()[0]
 
 
 # ── OPTIONS ────────────────────────────────────────────────────────────────
@@ -300,7 +321,7 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
     if not client_token or client_token != current_token:
         # Full sync — return all current resources
         try:
-            parties = _members()
+            parties, left_out = _address_book()
         except _ReadUnavailable:
             return _unavailable("sync_collection", "members")
         live_ids: set[str] = set()
@@ -320,12 +341,29 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
         except Exception:
             log_unexpected("carddav addressbook read failed", check="tombstones")
             return _unavailable("sync_collection", "tombstones")
+        reported: set[str] = set()
         for ts in tombstones:
             if ts["id"] in live_ids:
                 continue
+            reported.add(ts["id"])
             add_status_response(
                 multistatus,
                 f"/dav/addressbook/{ts['id']}.vcf",
+                404,
+                "Not Found",
+            )
+        # The contacts the address book leaves out (the suppliers) are
+        # reported deleted at EVERY full sync, from the same read: whatever
+        # became of a supplier's tombstone — the door's commit failed after
+        # the contact's own, or the tombstone was pruned after
+        # TOMBSTONE_TTL_DAYS — a phone still holding its card drops it. A
+        # resource that merely stops being listed stays on the phone.
+        for partie_id in left_out:
+            if partie_id in live_ids or partie_id in reported:
+                continue
+            add_status_response(
+                multistatus,
+                f"/dav/addressbook/{partie_id}.vcf",
                 404,
                 "Not Found",
             )
@@ -461,13 +499,19 @@ def put_resource(partie_id: str) -> Response:
     except Exception:
         return Response("Bad Request — invalid vCard", status=400)
 
+    # A card whose CATEGORIES names a role the address book never carries
+    # (« Fournisseur ») would leave the phone at the next sync: refused —
+    # a supplier is entered in Athena, never from the phone.
+    if not in_address_book(data):
+        return _refused(partie_id, [SUPPLIER_FROM_PHONE_REFUSED])
+
     if existing:
         # Update. The parser hands over the card's UID: the model drops it
         # (Rule 11 — a contact's UID never changes after creation).
         updated, errors = update_partie(partie_id, data)
         if errors:
             return _refused(partie_id, errors)
-        bump_ctag(COLLECTION_NAME)
+        apres_ecriture_contact(updated)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
@@ -490,9 +534,9 @@ def put_resource(partie_id: str) -> Response:
             )
         if errors:
             return _refused(partie_id, errors)
-        # Resource (re)enters the collection — drop any stale tombstone
-        remove_tombstone(COLLECTION_NAME, partie_id)
-        bump_ctag(COLLECTION_NAME)
+        # Resource (re)enters the collection — any stale tombstone dropped
+        # and the CTag bumped in one commit (services/carnet.py).
+        apres_ecriture_contact(created)
         resp = Response("", status=201)
         resp.headers["ETag"] = f'"{created.get("etag", "")}"'
 
@@ -561,8 +605,7 @@ def delete_resource(partie_id: str) -> Response:
     if not success:
         return _delete_refused(error)
 
-    record_tombstone(COLLECTION_NAME, partie_id)
-    bump_ctag(COLLECTION_NAME)
+    apres_suppression_contact(partie_id)
     # Append-only deletion trail (PA-G06) — a phone-side contact delete
     # must leave the same trace as a web one.
     record_deletion(

@@ -307,7 +307,11 @@ def test_the_create_form_offers_the_models_natures_and_the_sens(client, fake):
             ".split(','),") in page
 
     text = html.unescape(page)
-    assert ">Payeur / Fournisseur</label>" in text
+    # The counterparty's label follows the type (admin_ledger.ENTRY_TYPES,
+    # 2026-11-11): « Fournisseur » for the first choice, a dépense — no
+    # more « Payeur / Fournisseur » for every type.
+    assert ">Fournisseur</label>" in text
+    assert ">Payeur / Fournisseur</label>" not in text
     # The TPS/TVQ help line, true of both directions (final review of
     # lot A: it sent a refund's interest to « dépense »).
     assert ("Ce que le cabinet verse à l'administration fiscale au titre de "
@@ -331,7 +335,13 @@ def test_the_forms_alpine_codes_are_the_models():
     virement = al.INTERNAL_TRANSFER_FORM_KIND
     assert f"x-show=\"kind === '{virement}'\"" in src
     assert f":disabled=\"kind !== '{virement}'\"" in src
-    assert f"kind === '{virement}' ? 'Compte de contrepartie'" in src
+    # The counterparty's label and example come from each type's profile
+    # (the route's JSON block, admin_ledger.ENTRY_TYPES, 2026-11-11): no
+    # label is restated in the template any more.
+    assert 'x-text="profile(kind).payee_label' in src
+    assert ':placeholder="profile(kind).placeholder' in src
+    assert "'Payeur / Fournisseur'" not in src
+    assert "'Compte de contrepartie'" not in src
     assert "noDossierKinds: {{ no_dossier_kinds | join(',') | jsattr }}.split(',')," in src
     assert "salesTaxKinds: {{ sales_tax_kinds | join(',') | jsattr }}.split(',')," in src
     # Since 2026-11-08 the category kinds (a dépense and its refund), the
@@ -362,14 +372,18 @@ def test_the_forms_alpine_codes_are_the_models():
     help_at = src.index('x-show="salesTaxKinds.includes(kind)"')
     assert src.index('name="amount"') < help_at < src.index('name="sens_virement"')
     # Disabled outside a dépense and its refund: the category and the
-    # split's fieldset — NOT the supplier's invoice number (the route always
-    # sends its key: a disabled, hence empty, field would erase the stored
-    # one).
+    # split's fieldset.
     assert '<select name="category" :disabled="!categoryKinds.includes(kind)"' in src
     assert '<fieldset class="min-w-0" :disabled="!categoryKinds.includes(kind)">' in src
     assert 'x-show="categoryKinds.includes(kind)"' in src
+    # The supplier's invoice number since 2026-11-11: shown and posted only
+    # for the kinds that carry one (admin_ledger.SUPPLIER_REF_KINDS, « Autre
+    # recette » included). Disabling it is safe now: the route sends its
+    # key only when posted, so an edit to another kind keeps the stored one
+    # (tests/test_entry_forms.py).
+    assert "supplierRefKinds: {{ supplier_ref_kinds | join(',') | jsattr }}.split(',')," in src
     line = next(l for l in src.splitlines() if 'name="supplier_invoice_ref"' in l)
-    assert "disabled" not in line
+    assert ':disabled="!supplierRefKinds.includes(kind)"' in line
     assert ('<select name="invoice_id" :disabled="kind !== \'encaissement_facture\'"'
             in src)
 
@@ -460,11 +474,12 @@ def test_a_refused_edit_keeps_the_nature_the_sens_and_the_submitted_etag(client,
     assert _etags(page) == [before["etag"]]          # the original protects the retry
     assert fake.peek(_path(entry)) == before
     # The passages of the kind on file (an autre recette), not of the
-    # virement the refused POST named.
+    # virement the refused POST named — in the families' order since
+    # 2026-11-11 (admin_ledger.FORM_KINDS).
     selects = _selects(page)
     assert _values(selects["kind"]) == [
-        "dépense", "recette_autre", "remboursement_depense", "apport",
-        "virement_interne", "avance_honoraires", "remboursement_tps_tvq"]
+        "dépense", "remboursement_depense", "recette_autre", "avance_honoraires",
+        "apport", "virement_interne", "remboursement_tps_tvq"]
     assert _selected(selects["kind"]) == ["virement_interne"]
     assert _selected(selects["sens_virement"]) == ["entrant"]
 
@@ -478,9 +493,14 @@ def test_the_x_data_never_echoes_a_posted_value_raw(client, fake):
     resp = client.post("/administration/", data=_form(hostile, category="loyer"))
     assert resp.status_code == 400
     page = resp.get_data(as_text=True)
-    # A kind the form never offered never reaches the select.
+    # A kind the form never offered never reaches the select — nor the
+    # ENTRY form's x-data (the page's first x-data is base.html's offline
+    # banner, which this slice read until 2026-11-11: a vacuous guard).
     assert "kind: &#34;dépense&#34;," in page
-    assert "alert(1)" not in page.split("x-init", 1)[0].split("x-data", 1)[1]
+    entry_form = page.split('id="admin-entry-types"', 1)[1]
+    x_data = entry_form.split('x-data="', 1)[1].split('x-init="', 1)[0]
+    assert "kind: &#34;" in x_data and "entryTypes:" in x_data
+    assert "alert(1)" not in x_data
 
     resp = client.post("/administration/", data=_form(
         "dépense", category="loyer", dossier_id="inconnu" + hostile))
@@ -558,7 +578,9 @@ def test_stale_hidden_fields_cause_no_refusal(client, fake):
     """Regression — a field the form hides for a nature (the category, the
     split, the invoice, a prélèvement's dossier) is still posted until
     Alpine disables it, and the model refuses it (it judges what the write
-    CARRIES). The route neutralizes it, its key kept."""
+    CARRIES). The route neutralizes it, its key kept — except the supplier's
+    invoice number, DROPPED for a kind that carries none (2026-11-11): a
+    stale number the field still held never lands on a prélèvement."""
     stale = {"category": "loyer", "net_amount": "80,00", "gst_amount": "5,00",
              "qst_amount": "15,00", "invoice_id": "facture-perimee",
              "dossier_id": "dos1", "supplier_invoice_ref": "F-9"}
@@ -582,7 +604,7 @@ def test_stale_hidden_fields_cause_no_refusal(client, fake):
         10000, 0, 0)
     assert stored["invoice_id"] is None
     assert stored["dossier_id"] is None and stored["dossier_file_number"] == ""
-    assert stored["supplier_invoice_ref"] == "F-9"   # never hidden-and-erased
+    assert stored["supplier_invoice_ref"] == ""   # a stale number never lands
 
     # A virement interne keeps its dossier — only the lawyer's own money
     # never carries one.
@@ -596,6 +618,7 @@ def test_stale_hidden_fields_cause_no_refusal(client, fake):
     assert (virement["net_amount"], virement["gst_amount"], virement["qst_amount"]) == (
         0, 0, 0)
     assert virement["dossier_id"] == "dos1"
+    assert virement["supplier_invoice_ref"] == ""
     assert virement["dossier_file_number"] == "2031-001"
     assert fake.peek("admin_accounts/ops1")["ledger_balance"] == 0  # −100 + 100
 

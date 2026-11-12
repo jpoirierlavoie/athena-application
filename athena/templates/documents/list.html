@@ -37,6 +37,7 @@
            placeholder="Rechercher…"
            hx-get="{{ url_for('documents.document_list') }}"
            hx-trigger="input changed delay:300ms, search"
+           hx-sync="this:replace"
            hx-target="#browser-content"
            hx-include="[name='category'],[name='dossier_id'],[name='sort']"
            hx-push-url="true"
@@ -50,9 +51,18 @@
             hx-push-url="true"
             class="min-w-0 max-w-full truncate px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
       <option value="">Tous les dossiers</option>
+      {% if dossiers is none %}
+      {# La lecture des dossiers a échoué : le dire, et garder le dossier
+         choisi pour que les autres filtres le conservent. #}
+      <option value="" disabled>Liste des dossiers indisponible</option>
+      {% if dossier_id %}
+      <option value="{{ dossier_id }}" selected>Dossier sélectionné</option>
+      {% endif %}
+      {% else %}
       {% for d in dossiers %}
       <option value="{{ d.id }}" {{ 'selected' if dossier_id == d.id }}>{{ d.file_number }} — {{ d.title }}</option>
       {% endfor %}
+      {% endif %}
     </select>
 
     <select name="category"

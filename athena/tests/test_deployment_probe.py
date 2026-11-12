@@ -339,7 +339,11 @@ def test_the_plan_marks_the_irreversible_steps():
 # commande en lecture seule), la verser au corpus, puis la retirer d'ici :
 # le test suivant refuse une entrée périmée.
 _CORPUS_EN_ATTENTE: set = set()
-# Vide depuis le 2026-11-08 : les ressources de la surveillance de sécurité
+# Vide depuis le 2026-11-12 : « index-composites » relevé ce jour-là sur le
+# déploiement vivant, une fois « Enabled » le 38e composite — (category ASC,
+# created_at DESC) sur `documents`, la page Documents —, par la commande en
+# lecture seule de la sonde, et versé au corpus.
+# Avant : vide du 2026-11-08 au 2026-11-12 : les ressources de la surveillance de sécurité
 # (DEPLOYMENT.md §6.10) ont été relevées ce jour-là sur le déploiement vivant
 # par les commandes en lecture seule de la sonde — les compteurs à nouveau,
 # avec leur filtre, quand la sonde s'est mise à le comparer —, et versées au

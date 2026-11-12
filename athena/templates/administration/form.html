@@ -27,6 +27,13 @@
      s'affiche vide, pour que la resoumission re-déduise du nouveau montant. #}
   {% set ventile = entry and (entry.gst_amount or entry.qst_amount or (entry.net_amount and entry.net_amount != entry.amount)) %}
 
+  {# Le profil du champ de contrepartie de chaque type, servi par la
+     route (admin_ledger.ENTRY_TYPES, décisions de l'avocat du
+     2026-11-11) : son libellé, son exemple et, sur une NOUVELLE écriture
+     seulement, son préremplissage (D6). Un bloc de données JSON, jamais
+     exécuté — sans nonce, comme ceux du formulaire du fidéicommis. #}
+  <script type="application/json" id="admin-entry-types">{{ entry_types | tojson }}</script>
+
   <form method="post"
         action="{% if mode == 'edit' %}{{ url_for('admin_ledger.entry_edit', tx_id=entry.id) }}{% else %}{{ url_for('admin_ledger.entry_create') }}{% endif %}"
         x-data="{
@@ -52,12 +59,26 @@
           categoryKinds: {{ category_kinds | join(',') | jsattr }}.split(','),
           refundKinds: {{ refund_kinds | join(',') | jsattr }}.split(','),
           advanceKinds: {{ advance_kinds | join(',') | jsattr }}.split(','),
+          {# Les types qui portent le n° de facture du fournisseur
+             (admin_ledger.SUPPLIER_REF_KINDS). #}
+          supplierRefKinds: {{ supplier_ref_kinds | join(',') | jsattr }}.split(','),
           accountType: 'opérations',
           dossierId: {{ ((entry.dossier_id if entry else '') or '') | jsattr }},
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
-          dossierOpen: false
+          dossierOpen: false,
+          {# Le champ de contrepartie (D6) : le profil de chaque type, lu
+             du bloc de données ci-dessus ; lastPrefill, la dernière valeur
+             qu'un préremplissage a posée — un nom saisi, ou arrivé avec la
+             page, n'est jamais remplacé. Aucune comparaison de code de type
+             ici : le profil dit tout. #}
+          entryTypes: JSON.parse((document.getElementById('admin-entry-types') || {}).textContent || '{}'),
+          lastPrefill: null,
+          profile: function (k) { return (this.entryTypes.kinds || {})[k] || {}; },
+          invoiceClient: function () { let s = this.$refs.invoice; let o = s ? s.selectedOptions[0] : null; return (o &amp;&amp; o.dataset.client) || ''; },
+          prefillFor: function (k) { let p = this.profile(k); return p.from_invoice ? this.invoiceClient() : (p.prefill || ''); },
+          applyPrefill: function (value) { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = value; this.lastPrefill = value; } }
         }"
-        x-init="var sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; }"
+        x-init="let sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; } $watch('kind', function (k) { applyPrefill(prefillFor(k)); }); applyPrefill(prefillFor(kind));"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% if mode == 'edit' %}{{ etag_field(entry) }}{% endif %}
@@ -88,7 +109,7 @@
            comme pour tout autre type. Aucun champ « direction » : la route
            n'en lit jamais. Les options viennent de la route (_kind_choices :
            FORM_KINDS à la création, les passages de KIND_MOVES en
-           modification). #}
+           modification), groupées par famille (admin_ledger.KIND_FAMILIES). #}
         <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
         {# Le passage à « encaissement » vide le dossier choisi : sur un
            encaissement, la FACTURE détermine le dossier (le modèle l'impose
@@ -100,8 +121,12 @@
         <select name="kind" required x-model="kind"
                 @change="if (kind === 'encaissement_facture') { dossierId = ''; dossierDisplay = ''; }"
                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-          {% for value, label in kind_choices %}
-          <option value="{{ value }}"{% if value == form_kind_value %} selected{% endif %}{% if value == 'encaissement_facture' %} :disabled="accountType === 'carte_crédit'"{% endif %}>{{ label }}</option>
+          {% for family_label, choices in kind_groups %}
+          <optgroup label="{{ family_label }}">
+            {% for value, label in choices %}
+            <option value="{{ value }}"{% if value == form_kind_value %} selected{% endif %}{% if value == 'encaissement_facture' %} :disabled="accountType === 'carte_crédit'"{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
         </select>
       </div>
@@ -173,19 +198,6 @@
       </div>
     </div>
 
-    <div>
-      {# Un virement interne nomme le COMPTE de l'autre côté, hors de ce
-         registre (le fidéicommis, un compte d'épargne) — jamais un
-         fournisseur. Le texte rendu suit le type initial ; Alpine le suit
-         ensuite. #}
-      <label class="block text-sm font-medium text-gray-700 mb-1"
-             x-text="kind === 'virement_interne' ? 'Compte de contrepartie' : 'Payeur / Fournisseur'">{% if form_kind_value == 'virement_interne' %}Compte de contrepartie{% else %}Payeur / Fournisseur{% endif %}</label>
-      <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
-             placeholder="{% if form_kind_value == 'virement_interne' %}Ex. : Compte en fidéicommis{% else %}Ex. : Bell Canada, Immeubles X, client…{% endif %}"
-             :placeholder="kind === 'virement_interne' ? 'Ex. : Compte en fidéicommis' : 'Ex. : Bell Canada, Immeubles X, client…'"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-    </div>
-
     {# ── Facture Athéna (encaissement) — sélecteur GLOBAL des factures
        impayées : une recette peut encaisser la facture de n'importe quel
        dossier, c'est la facture qui détermine le dossier. #}
@@ -193,43 +205,87 @@
     <div x-show="kind === 'encaissement_facture'" x-cloak class="p-3 border border-gray-200 rounded-xl space-y-2">
       <label class="block text-sm font-medium text-gray-700">Facture encaissée</label>
       {% if factures %}
-      <select name="invoice_id" :disabled="kind !== 'encaissement_facture'"
-              @change="var o = $event.target.selectedOptions[0]; if (o &amp;&amp; o.dataset.solde) { document.getElementById('montant-input').value = (parseInt(o.dataset.solde, 10) / 100).toFixed(2).replace('.', ','); }"
+      <select name="invoice_id" :disabled="kind !== 'encaissement_facture'" x-ref="invoice"
+              @change="let o = $event.target.selectedOptions[0]; if (o &amp;&amp; o.dataset.solde) { document.getElementById('montant-input').value = (parseInt(o.dataset.solde, 10) / 100).toFixed(2).replace('.', ','); } if (profile(kind).from_invoice) { applyPrefill(invoiceClient()); }"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         <option value="">Choisir la facture…</option>
         {% for f in factures %}
-        <option value="{{ f.id }}" data-solde="{{ f.solde_cents }}" {% if entry and entry.invoice_id == f.id %}selected{% endif %}>{{ f.invoice_number }} — {{ f.dossier }} — solde dû {{ f.solde_fmt }}</option>
+        <option value="{{ f.id }}" data-solde="{{ f.solde_cents }}" data-client="{{ f.client }}" {% if entry and entry.invoice_id == f.id %}selected{% endif %}>{{ f.invoice_number }} — {{ f.dossier }} — solde dû {{ f.solde_fmt }}</option>
         {% endfor %}
       </select>
-      <p class="text-xs text-gray-500">Le montant se préremplit avec le solde dû (modifiable — un encaissement partiel est permis). La facture sera mise à jour automatiquement.</p>
+      {# La contrepartie ne suit la facture que là où le préremplissage
+         s'applique (D6) : jamais sur une soumission refusée, qui garde le nom
+         soumis — la phrase ne le promet donc qu'alors. #}
+      <p class="text-xs text-gray-500">Le montant se préremplit avec le solde dû (modifiable — un encaissement partiel est permis){% if entry_types.prefill_on %}, et la contrepartie avec le client de la facture{% endif %}. La facture sera mise à jour automatiquement.</p>
       {% else %}
       <p class="text-sm text-gray-500">Aucune facture émise avec un solde dû.</p>
       {% endif %}
     </div>
     {% endif %}
 
+    {# ── Dossier (facultatif — un huissier se rattache à un dossier, le loyer
+       non). Pour un encaissement, le dossier vient de la facture. Les
+       natures sans dossier (noDossierKinds : l'argent de l'avocat, la
+       TPS/TVQ du cabinet) n'en portent aucun : le bloc est masqué et son
+       champ désactivé. Un virement interne peut en porter un. #}
+    <div x-show="kind !== 'encaissement_facture' &amp;&amp; !noDossierKinds.includes(kind)" x-cloak class="relative" @click.outside="dossierOpen = false">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(facultatif)</span></label>
+      <input type="hidden" name="dossier_id" :value="dossierId" :disabled="noDossierKinds.includes(kind)">
+      {# name="q" is load-bearing : hx-include="this" sérialise l'élément par
+         son nom — sans lui, dossier_search ne reçoit aucune requête. #}
+      <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
+             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''"
+             hx-get="{{ url_for('admin_ledger.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      <div id="dossier-results" x-show="dossierOpen" x-cloak
+           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; }"
+           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+      <p class="text-xs text-gray-400 mt-1">Un déboursé refacturable au client s'inscrit aussi dans Dépenses (/temps) — ce registre ne crée pas la dépense au dossier.</p>
+    </div>
+
+    <div>
+      {# Le champ de contrepartie suit le TYPE (admin_ledger.ENTRY_TYPES,
+         décisions de l'avocat du 2026-11-11) : son libellé et son exemple —
+         un virement interne nomme le COMPTE de l'autre côté, hors de ce
+         registre (le fidéicommis, un compte d'épargne), jamais un
+         fournisseur. Le texte rendu suit le type initial ; Alpine le suit
+         ensuite. Sur une NOUVELLE écriture, le champ se préremplit selon le
+         type (D6) — le nom de l'avocat, l'administration fiscale, le client
+         de la facture choisie —, seulement s'il est vide ou porte encore le
+         dernier préremplissage : jamais un nom saisi ni arrivé avec la page.
+         Pas de x-model : il écraserait la valeur rendue par le serveur. #}
+      <label class="block text-sm font-medium text-gray-700 mb-1"
+             x-text="profile(kind).payee_label || entryTypes.payee_label_fallback || ''">{{ counterparty_label }}</label>
+      <input type="text" name="counterparty" required autocomplete="off" x-ref="counterparty" value="{{ entry.counterparty if entry else '' }}"
+             placeholder="{{ counterparty_placeholder }}"
+             :placeholder="profile(kind).placeholder || ''"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+    </div>
+
+    {# ── N° de facture du fournisseur : une dépense, son remboursement et
+       une autre recette (supplierRefKinds, admin_ledger.SUPPLIER_REF_KINDS)
+       — DÉSACTIVÉ pour tout autre type, donc non soumis. La route ne
+       l'envoie que pour ces types, et seulement s'il est soumis : une
+       écriture d'un autre type n'en reçoit aucun, et une modification qui
+       change le type garde le numéro enregistré (fusion par présence). #}
+    <div x-show="supplierRefKinds.includes(kind)" x-cloak>
+      <label class="block text-sm font-medium text-gray-700 mb-1">N° facture fournisseur <span class="text-gray-400 font-normal">(facultatif)</span></label>
+      <input type="text" name="supplier_invoice_ref" :disabled="!supplierRefKinds.includes(kind)" value="{{ entry.supplier_invoice_ref if entry else '' }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+    </div>
+
     {# ── Champs propres à une dépense et à son remboursement
        (categoryKinds) — DÉSACTIVÉS pour tout autre type : non soumis, ils
        ne peuvent rien porter de périmé vers un autre type (la route les
-       neutralise aussi pour les natures hors résultats). PAS le n° de
-       facture fournisseur : la route en envoie toujours la clé, et un champ
-       désactivé — donc vide — effacerait le numéro enregistré d'une
-       écriture dont seule la nature change. #}
+       neutralise aussi pour les natures hors résultats). #}
     <div x-show="categoryKinds.includes(kind)" x-cloak class="space-y-4">
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
-          <select name="category" :disabled="!categoryKinds.includes(kind)" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-            <option value="">Choisir…</option>
-            {% for c in valid_categories %}
-            <option value="{{ c }}" {% if entry and entry.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">N° facture fournisseur <span class="text-gray-400 font-normal">(facultatif)</span></label>
-          <input type="text" name="supplier_invoice_ref" value="{{ entry.supplier_invoice_ref if entry else '' }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
+        <select name="category" :disabled="!categoryKinds.includes(kind)" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          <option value="">Choisir…</option>
+          {% for c in valid_categories %}
+          <option value="{{ c }}" {% if entry and entry.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>
+          {% endfor %}
+        </select>
       </div>
 
       <fieldset class="min-w-0" :disabled="!categoryKinds.includes(kind)">
@@ -250,26 +306,6 @@
         <p class="text-xs text-gray-500">Net + TPS + TVQ doit égaler le montant. Les champs restent modifiables — pourboires, articles exonérés et TPS partielle existent.</p>
       </div>
       </fieldset>
-    </div>
-
-    {# ── Dossier (facultatif — un huissier se rattache à un dossier, le loyer
-       non). Pour un encaissement, le dossier vient de la facture. Les
-       natures sans dossier (noDossierKinds : l'argent de l'avocat, la
-       TPS/TVQ du cabinet) n'en portent aucun : le bloc est masqué et son
-       champ désactivé. Un virement interne peut en porter un. #}
-    <div x-show="kind !== 'encaissement_facture' &amp;&amp; !noDossierKinds.includes(kind)" x-cloak class="relative" @click.outside="dossierOpen = false">
-      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(facultatif)</span></label>
-      <input type="hidden" name="dossier_id" :value="dossierId" :disabled="noDossierKinds.includes(kind)">
-      {# name="q" is load-bearing : hx-include="this" sérialise l'élément par
-         son nom — sans lui, dossier_search ne reçoit aucune requête. #}
-      <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
-             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''"
-             hx-get="{{ url_for('admin_ledger.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      <div id="dossier-results" x-show="dossierOpen" x-cloak
-           @click="var li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; }"
-           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
-      <p class="text-xs text-gray-400 mt-1">Un déboursé refacturable au client s'inscrit aussi dans Dépenses (/temps) — ce registre ne crée pas la dépense au dossier.</p>
     </div>
 
     <div>

@@ -4,9 +4,23 @@
 # cron de l'application. Toute entrée future FUSIONNE dans CE fichier et
 # redéploie le fichier COMPLET — le remplacer par une entrée unique
 # arrêterait silencieusement les autres tâches. La table ci-dessous est la
-# seule liste des tâches : aucun autre texte ne les compte ni ne les nomme
-# toutes. (Le répartiteur des tâches planifiées du clavardage est parti
+# liste des tâches, athena/utils/cron_schedule.py son miroir, et
+# tests/test_cron_schedule.py les tient ensemble : aucun autre texte ne les
+# compte ni ne les nomme toutes. (Le répartiteur des tâches planifiées du clavardage est parti
 # avec le clavardage le 2026-09-02.)
+#
+# Heures de bureau seulement (décision de l'avocat du 2026-11-12) : de 9 h
+# à 17 h, heure de Montréal, les passages tiennent l'instance éveillée —
+# elle le reste une quinzaine de minutes après une requête ; hors de ces
+# heures, seul un usage réel la réveille. Avant, toutes les 10 à 15 minutes
+# jour et nuit, ces tâches la tenaient éveillée sans arrêt. La syntaxe
+# d'App Engine ne limite pas un intervalle aux jours de semaine : la fin
+# de semaine garde les mêmes heures. Les cadences et l'heure du passage
+# quotidien sont dans athena/utils/cron_schedule.py, que les textes de
+# l'application citent ; tests/test_cron_schedule.py exige que les deux
+# concordent. `America/Toronto` est le fuseau de Montréal
+# (`America/Montreal` n'en est qu'un alias dans la base tz) ; l'heure
+# avancée suit.
 #
 # Coût : Cloud Scheduler facture environ 0,10 $ US par mois chaque tâche
 # au-delà de son palier gratuit (trois tâches par compte de facturation) :
@@ -17,22 +31,24 @@
 cron:
 - description: portail — réconciliation des soumissions (spec L1 §8.4)
   url: /taches/portail/reconciliation
-  schedule: every 15 minutes
+  schedule: every 15 minutes from 09:00 to 17:00
+  timezone: America/Toronto
   target: default
 - description: bookings — synchronisation « Bookings with me » (spec L2 §4.1)
   url: /taches/bookings/sync
-  schedule: every 10 minutes
+  schedule: every 10 minutes from 09:00 to 17:00
+  timezone: America/Toronto
   target: default
 - description: outlook — miroir des audiences vers le calendrier du juriste
   url: /taches/outlook/sync
-  schedule: every 10 minutes
+  schedule: every 10 minutes from 09:00 to 17:00
+  timezone: America/Toronto
   target: default
 # Livrée avec FACTURES_RETARD_ACTIF à "false" (app.yaml) : tant qu'il l'est,
-# la tâche répond {"actif": false} sans rien lire ni écrire. Chaque jour à
-# 9 h, heure de Montréal (décision de l'avocat du 2026-11-12) ;
-# America/Toronto est le fuseau canonique de Montréal, dont America/Montreal
-# n'est qu'un alias. L'aperçu (scripts/apercu_factures_echues) redit cette
-# heure : un test l'épingle à celle-ci.
+# la tâche répond {"actif": false} sans rien lire ni écrire. Une fois par
+# jour, au premier passage, à 9 h, heure de Montréal (décision de l'avocat
+# du 2026-11-12) : athena/utils/cron_schedule.py en tient l'heure, que
+# l'aperçu (scripts/apercu_factures_echues) lit aussi.
 - description: factures — balayage des factures échues (« en retard » suit l'échéance)
   url: /taches/factures/retards
   schedule: every day 09:00

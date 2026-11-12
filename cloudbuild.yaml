@@ -10,6 +10,13 @@ steps:
         pip install --require-hashes --no-deps -r athena/requirements.txt
         pip install -r athena/requirements-dev.txt
         cd athena && python -m pytest tests/ -q
+        # The app's own bytecode, once the tests pass — the one exception
+        # to « no deploy-time build » (CLAUDE.md). App Engine's disk is
+        # read-only, so without it every worker recompiled the source at
+        # every start. checked-hash: Python checks each file against its
+        # source's hash before using it, so a stale one never runs, whatever
+        # the upload does to file times. Same Python 3.13 as the runtime.
+        python -m compileall -q -f --invalidation-mode checked-hash -x '/tests/' .
 
   # Step 2: Deploy the default service
   - name: 'gcr.io/cloud-builders/gcloud'

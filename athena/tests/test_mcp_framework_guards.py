@@ -1098,6 +1098,13 @@ def model_self_bumping(sources: "dict | None" = None) -> set:
     return out
 
 
+# What « reaches a CTag bump » means: ``bump_ctag`` itself, or
+# ``dav.sync.update_membership`` — the address book's one door
+# (``services/carnet.py``, 2026-11-11) stages ``bump_ctag_in_batch`` in the
+# same commit as its tombstones.
+_CTAG_BUMPS = frozenset({"bump_ctag", "update_membership"})
+
+
 def dav_writer_violations(
     source: str, registry: dict, output_schemas: dict, write_tools,
     exposed: set, *, services: "dict | None" = None,
@@ -1132,7 +1139,7 @@ def dav_writer_violations(
             out.append(
                 f"{name}: writes a DAV-exposed record ({mutated}) but its "
                 "outputSchema does not declare ctag_bumped + dav_synced")
-        if mutated and "bump_ctag" not in names and not bumps_itself:
+        if mutated and not names & _CTAG_BUMPS and not bumps_itself:
             out.append(f"{name}: writes {mutated} but never reaches bump_ctag")
         if declares and not mutated:
             out.append(

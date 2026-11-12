@@ -26,6 +26,12 @@
      Choosing the objet sets the sens; the hint below says it if the sens is
      changed back. Same non-executable data-block pattern. #}
   <script type="application/json" id="trust-purpose-directions">{{ purpose_directions | tojson }}</script>
+  {# 2026-11-11 — the counterparty field: its label by direction
+     (trust.PAYEE_LABELS), the purposes whose field a NEW entry pre-fills
+     (the chosen client, the account's bank) and those whose dossier may
+     stay empty — the route's lists (_entry_form_extras), in the same
+     non-executable data-block pattern. #}
+  <script type="application/json" id="trust-entry-types">{{ entry_types | tojson }}</script>
 
   <form method="post" action="{{ url_for('trust.entry_create') }}"
         x-data="{
@@ -46,18 +52,28 @@
              re-render echoes what the form POSTED, never raw into JS. #}
           direction: {{ (entry.direction if entry and entry.direction else valid_directions[0]) | jsattr }},
           method: {{ (entry.method if entry and entry.method else valid_methods[0]) | jsattr }},
+          {# The counterparty (D6, 2026-11-11): the data block above; the
+             account's bank (read at load and on a change of account);
+             lastPrefill, the last value a pre-fill set — a name typed,
+             or arriving with the page, is never replaced. #}
+          entryTypes: JSON.parse((document.getElementById('trust-entry-types') || {}).textContent || '{}'),
+          institution: '', lastPrefill: null,
+          prefillFor: function (p) { let t = this.entryTypes; if ((t.client_prefill || []).includes(p)) { let id = this.clientId; let c = this.clients.find(function (x) { return x.id === id; }); return c ? (c.name || '') : ''; } if ((t.bank_prefill || []).includes(p)) { return this.institution || ''; } return ''; },
+          applyPrefill: function () { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } let v = this.prefillFor(this.purpose); if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = v; this.lastPrefill = v; } },
           dossierOpen: false, cpOpen: false
         }"
-        x-init="$watch('purpose', function (p) { if (implied[p]) { direction = implied[p]; } })"
+        x-init="$watch('purpose', function (p) { if (implied[p]) { direction = implied[p]; } applyPrefill(); }); $watch('clientId', function () { applyPrefill(); }); institution = ($refs.account && $refs.account.selectedOptions.length) ? ($refs.account.selectedOptions[0].dataset.institution || '') : ''; applyPrefill();"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     {% if locked %}<input type="hidden" name="locked" value="1">{% endif %}
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Compte</label>
-      <select name="account_id" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      <select name="account_id" required x-ref="account"
+              @change="institution = $event.target.selectedOptions.length ? ($event.target.selectedOptions[0].dataset.institution || '') : ''; applyPrefill()"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for a in accounts %}
-        <option value="{{ a.id }}" {% if entry and entry.account_id == a.id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
+        <option value="{{ a.id }}" data-institution="{{ a.institution or '' }}" {% if entry and entry.account_id == a.id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
         {% endfor %}
       </select>
     </div>
@@ -84,10 +100,15 @@
         <label class="block text-sm font-medium text-gray-700 mb-1">Objet</label>
         {# « Correction » and — since D24 — « Virement inter-dossiers » are
            the model's: a reversal mints the first, the two-leg transfer
-           screen writes the second (routes/trust.ENTRY_FORM_PURPOSES). #}
+           screen writes the second (routes/trust.ENTRY_FORM_PURPOSES),
+           grouped by family (trust.PURPOSE_FAMILIES, 2026-11-11). #}
         <select name="purpose" required x-model="purpose" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-          {% for p in entry_purposes %}
-          <option value="{{ p }}">{{ purpose_labels[p] }}</option>
+          {% for family_label, choices in entry_purpose_groups %}
+          <optgroup label="{{ family_label }}">
+            {% for p, label in choices %}
+            <option value="{{ p }}">{{ label }}</option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
         </select>
       </div>
@@ -125,16 +146,65 @@
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
     </div>
 
+    {# Dossier — @click.outside on the WRAPPER (see the contrepartie note
+       below). Its hint follows the purpose (2026-11-11): only interest and
+       bank fees (trust.NO_DOSSIER_PURPOSES, the route's list) may leave it
+       empty; every other purpose needs it, with its client. The server
+       renders the hint of the purpose shown. #}
+    <div class="relative" @click.outside="dossierOpen = false">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier{% if not (locked and dossier) %} <span class="text-gray-400 font-normal" x-show="(entryTypes.optional_dossier || []).includes(purpose)"{% if not dossier_optional %} x-cloak{% endif %}>(laisser vide pour intérêts / frais bancaires)</span><span class="text-gray-400 font-normal" x-show="!(entryTypes.optional_dossier || []).includes(purpose)"{% if dossier_optional %} x-cloak{% endif %}>(obligatoire, avec son client)</span>{% endif %}</label>
+      <input type="hidden" name="dossier_id" :value="dossierId">
+      {% if locked and dossier %}
+      <input type="text" disabled value="{{ dossier.file_number }} — {{ dossier.title }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
+      {% else %}
+      {# name="q" is load-bearing: hx-include="this" serializes the element by
+         its name, so without it dossier_search never receives a query. #}
+      <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
+             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''; clientId = ''; $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); })"
+             hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      {# Picking a dossier also loads ITS clients into the select below, straight
+         off the row — no second request, nothing to race. #}
+      <div id="dossier-results" x-show="dossierOpen" x-cloak
+           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; clientId = ''; clients = JSON.parse(li.dataset.clients || '[]'); $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); }); }"
+           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+      {% endif %}
+    </div>
+
+    {# Client (§4.3: funds are held for a client OF THIS DOSSIER — a closed set of
+       one or two people). A native select, deliberately NOT an autocomplete:
+       there is nothing to type and nothing to race, and an unlisted client
+       cannot be submitted. #}
+    <div x-show="dossierId" x-cloak>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Client pour qui la somme est reçue / le débours effectué</label>
+      <select name="client_id" x-model="clientId"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <option value="">Choisir le client…</option>
+        <template x-for="c in clients" :key="c.id">
+          <option :value="c.id" x-text="c.name" :selected="c.id === clientId"></option>
+        </template>
+      </select>
+      <p x-show="dossierId && clients.length === 0" x-cloak class="text-xs text-amber-600 mt-1">
+        Aucun client n'est rattaché à ce dossier. Ajoutez-en un au dossier d'abord.
+      </p>
+    </div>
+
     {# Contrepartie (texte libre, jamais un FK).
        @click.outside lives on the WRAPPER, not on the results div: the click
        that focuses the input is outside the results div, so it would close the
        dropdown in the same click it opened it.
        D23 (2026-09-29, art. 58) : sur un paiement d'honoraires, ce champ
        libre est DÉSACTIVÉ (ni soumis ni exigé) et le sélecteur ci-dessous le
-       remplace — un seul des deux champs « counterparty » est soumis. #}
+       remplace — un seul des deux champs « counterparty » est soumis ; ce
+       champ libre reste AVANT lui (le choix d'une suggestion et la route
+       prennent le premier). Son libellé suit le sens (trust.PAYEE_LABELS) ;
+       sur une NOUVELLE écriture, il se préremplit du client choisi (avance,
+       dépôt, remise) ou de la banque du compte (intérêts, frais bancaires),
+       seulement s'il est vide ou porte encore le dernier préremplissage (D6,
+       2026-11-11). #}
     <div class="relative" @click.outside="cpOpen = false" x-show="purpose !== 'virement_honoraires'">
-      <label class="block text-sm font-medium text-gray-700 mb-1">Somme reçue de / Bénéficiaire du débours</label>
-      <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
+      <label class="block text-sm font-medium text-gray-700 mb-1" x-text="(entryTypes.payee_labels || {})[direction] || entryTypes.payee_label_fallback || ''">{{ payee_label }}</label>
+      <input type="text" name="counterparty" required autocomplete="off" x-ref="counterparty" value="{{ entry.counterparty if entry else '' }}"
              :disabled="purpose === 'virement_honoraires'"
              @focus="cpOpen = true" @input="cpOpen = true"
              hx-get="{{ url_for('trust.counterparty_suggest') }}" hx-trigger="focus, input changed delay:300ms"
@@ -165,45 +235,6 @@
       {% else %}
       <p class="text-xs text-amber-600">Le profil du cabinet (Paramètres) ne nomme ni l'avocat ni le cabinet : un paiement d'honoraires, qui ne se fait qu'au profit de l'un ou de l'autre (art. 58), ne peut pas s'inscrire avant qu'il soit complété.</p>
       {% endif %}
-    </div>
-
-    {# Dossier — @click.outside on the WRAPPER (see the contrepartie note). #}
-    <div class="relative" @click.outside="dossierOpen = false">
-      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(laisser vide pour intérêts / frais bancaires)</span></label>
-      <input type="hidden" name="dossier_id" :value="dossierId">
-      {% if locked and dossier %}
-      <input type="text" disabled value="{{ dossier.file_number }} — {{ dossier.title }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
-      {% else %}
-      {# name="q" is load-bearing: hx-include="this" serializes the element by
-         its name, so without it dossier_search never receives a query. #}
-      <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
-             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''; $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); })"
-             hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      {# Picking a dossier also loads ITS clients into the select below, straight
-         off the row — no second request, nothing to race. #}
-      <div id="dossier-results" x-show="dossierOpen" x-cloak
-           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; clientId = ''; clients = JSON.parse(li.dataset.clients || '[]'); $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); }); }"
-           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
-      {% endif %}
-    </div>
-
-    {# Client (§4.3: funds are held for a client OF THIS DOSSIER — a closed set of
-       one or two people). A native select, deliberately NOT an autocomplete:
-       there is nothing to type and nothing to race, and an unlisted client
-       cannot be submitted. #}
-    <div x-show="dossierId" x-cloak>
-      <label class="block text-sm font-medium text-gray-700 mb-1">Client pour qui la somme est reçue / le débours effectué</label>
-      <select name="client_id" x-model="clientId"
-              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <option value="">Choisir le client…</option>
-        <template x-for="c in clients" :key="c.id">
-          <option :value="c.id" x-text="c.name"></option>
-        </template>
-      </select>
-      <p x-show="dossierId && clients.length === 0" x-cloak class="text-xs text-amber-600 mt-1">
-        Aucun client n'est rattaché à ce dossier. Ajoutez-en un au dossier d'abord.
-      </p>
     </div>
 
     <div>

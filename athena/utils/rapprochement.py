@@ -52,6 +52,14 @@ def _plier(texte: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", sans_accent.lower()).strip()
 
 
+def plier_contrepartie(texte: str) -> str:
+    """Le pli de :func:`_plier` (minuscules, sans accents, ponctuation en
+    espaces), public pour comparer un nom ailleurs : le rapport des
+    bénéficiaires passés (``scripts/rapport_contreparties.py``). Distinct
+    de ``utils/integrations_defaults.plier``, un autre pli."""
+    return _plier(texte)
+
+
 _MOTS_VIDES |= {
     jeton for titre in civilite.PREFIXES for jeton in _plier(titre).split()
 }

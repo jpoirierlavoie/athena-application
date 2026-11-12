@@ -286,6 +286,14 @@ def beneficiaires_honoraires() -> list[str]:
     return fee_payment.fee_payees()
 
 
+def nom_avocat() -> str:
+    """The lawyer's name as the firm profile spells it, "" when it names
+    none — never the firm (``models/fee_payment.lawyer_name``): the
+    pre-fill of the lawyer's drawings and contributions on the
+    administration entry form. Display only."""
+    return fee_payment.lawyer_name()
+
+
 def beneficiaire_honoraires_par_defaut(method: str) -> Optional[str]:
     """The payee a fee payment takes when none is named: the lawyer on a
     cheque (art. 58 — « chèque tiré à l'ordre de l'avocat »), the firm on a

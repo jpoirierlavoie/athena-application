@@ -19,13 +19,13 @@ from flask import (
 from auth import login_required
 from config import Config
 from utils.cabinet import cabinet_dict
-from dav.sync import bump_ctag, record_tombstone
+from services.carnet import apres_ecriture_contact, apres_suppression_contact
 from models import concurrency
 from models import piece_identite
 from models.audit_event import record_deletion
 from models.document import format_file_size, get_file_icon
 from tz import to_mtl
-from utils import civilite, kyc, occupations, storage_identity
+from utils import civilite, contact_roles, kyc, occupations, storage_identity
 from utils.format_fr import format_date_fr
 from utils.logging_setup import (
     log_partie_event,
@@ -42,10 +42,12 @@ from pagination import (
     total_pages_of,
 )
 from security import sanitize
+from models.admin_ledger import ADMIN_CATEGORY_LABELS, ADMIN_EXPENSE_CATEGORIES
 from models.partie import (
     MANDATAIRE_KIND_LABELS,
     PARTIE_NOT_FOUND,
     ROLE_LABELS,
+    SUPPLIER_RECORD_FIELDS,
     VALID_CONTACT_ROLES,
     count_parties_page,
     confirm_kyc_status,
@@ -53,6 +55,7 @@ from models.partie import (
     delete_partie,
     display_name,
     fold_job_role,
+    format_tax_number,
     formal_name,
     get_partie,
     list_parties,
@@ -78,9 +81,8 @@ _is_htmx = is_htmx
 def _form_data() -> dict:
     """Extract partie fields from the submitted form."""
     f = request.form
-    return {
+    data = {
         "type": f.get("type", "individual"),
-        "contact_role": f.get("contact_role", "client"),
         # Individual
         "prefix": f.get("prefix", ""),
         "first_name": f.get("first_name", "").strip(),
@@ -137,6 +139,20 @@ def _form_data() -> dict:
         # Notes
         "notes": f.get("notes", "").strip(),
     }
+    # The role travels only when posted (merge by presence): an edit posted
+    # without it keeps the stored role. Defaulting it to « client » turned
+    # any contact saved from a page whose role menu did not post — a
+    # supplier included — into a client. A create without it still gets
+    # the model's default, « client ».
+    if "contact_role" in f:
+        data["contact_role"] = f["contact_role"]
+    # The supplier record (2026-11-11): only the fields posted — the form
+    # disables them on a role that holds no record, so such a save leaves a
+    # record kept from a former role dormant, never erased.
+    for key in SUPPLIER_RECORD_FIELDS:
+        if key in f:
+            data[key] = f[key].strip()
+    return data
 
 
 def _form_context(partie: Optional[dict]) -> dict[str, Any]:
@@ -176,6 +192,15 @@ def _form_context(partie: Optional[dict]) -> dict[str, Any]:
             if value not in kyc.STATUSES[f]
         },
         "kyc_todo": kyc.NON_VERIFIE,
+        # The supplier record's section: the roles that hold one, and the
+        # expense categories its usual category is chosen among.
+        "payee_roles": list(contact_roles.PAYEE_ROLES),
+        # Shown as read (« 123456789 RT 0001 »); the model drops the spaces.
+        "tax_numbers": {
+            f: format_tax_number((partie or {}).get(f, "") or "")
+            for f in ("numero_tps", "numero_tvq")},
+        "expense_categories": [
+            (c, ADMIN_CATEGORY_LABELS[c]) for c in ADMIN_EXPENSE_CATEGORIES],
     }
 
 
@@ -243,12 +268,25 @@ def _hydrate_mandataires(entries: Optional[list]) -> list[dict[str, Any]]:
 
 # ── List ──────────────────────────────────────────────────────────────────
 
+# The list's « every role » value of ?role=.
+ALL_ROLES = "tous"
+
+
+def _role_filter() -> str:
+    """The ``?role=`` filter, checked against its vocabulary (Security
+    Rules): a role, « tous », or « client » — the default view — for
+    anything else. Unchecked, an unknown role reached the model, which
+    reads it as NO filter: every contact listed under a menu reading
+    « Client »."""
+    role = request.args.get("role", "client")
+    return role if role == ALL_ROLES or role in VALID_CONTACT_ROLES else "client"
+
 
 @parties_bp.route("/")
 @login_required
 def partie_list() -> str:
     """Render the partie list with optional filters."""
-    role_filter = request.args.get("role", "client")
+    role_filter = _role_filter()
     search = request.args.get("q", "").strip()
 
     if search:
@@ -258,7 +296,7 @@ def partie_list() -> str:
         # default browse path below costs ~PAGE_SIZE reads per page.
         page = request.args.get("page", 1, type=int)
         parties = list_parties(
-            role_filter=role_filter if role_filter != "tous" else None,
+            role_filter=role_filter if role_filter != ALL_ROLES else None,
             search=search,
         )
         parties, pagination = paginate(parties, page)
@@ -267,7 +305,7 @@ def partie_list() -> str:
     else:
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
-        effective_role = role_filter if role_filter != "tous" else None
+        effective_role = role_filter if role_filter != ALL_ROLES else None
         # The count is issued on the CURSOR branch only. It rides the same
         # query builder as the page read, so the same index serves both,
         # and it fails to None (never 0) — which HIDES the leap controls
@@ -543,9 +581,23 @@ def partie_detail(partie_id: str) -> str:
     # filter is checked against its vocabulary), and only where the block
     # shows at all.
     preuves["ouvert"] = preuves["visible"] and request.args.get("gerer") == "1"
+    # The supplier record of a supplier or a professional, as read (the
+    # template owns no vocabulary); none for another role, even a dormant one.
+    fiche_fournisseur = None
+    if partie.get("contact_role") in contact_roles.PAYEE_ROLES:
+        categorie = partie.get("categorie_depense_defaut") or ""
+        fiche_fournisseur = [
+            ("N° de TPS", format_tax_number(partie.get("numero_tps", ""))),
+            ("N° de TVQ", format_tax_number(partie.get("numero_tvq", ""))),
+            ("Catégorie de dépense habituelle",
+             ADMIN_CATEGORY_LABELS.get(categorie, categorie)),
+            ("N° de compte du cabinet",
+             partie.get("numero_compte_fournisseur", "")),
+        ]
     return render_template(
         "parties/detail.html",
         partie=partie,
+        fiche_fournisseur=fiche_fournisseur,
         conformite_kyc=conformite_kyc,
         preuves=preuves,
         preuves_config=_id_proofs_config(partie_id, preuves["ouvert"]),
@@ -617,7 +669,9 @@ def partie_create() -> str:
             **_form_context(data),
         )
 
-    bump_ctag("parties")
+    # The phone's address book: the card, or its tombstone for a role it
+    # never carries (services/carnet.py, Change Impact item 2).
+    apres_ecriture_contact(partie)
 
     return redirect_after_post(
         url_for("parties.partie_detail", partie_id=partie["id"]))
@@ -668,6 +722,17 @@ def partie_update(partie_id: str) -> str:
             compare_url=url_for("parties.partie_detail", partie_id=partie_id),
         )
         data["id"] = partie_id
+        stored = get_partie(partie_id)
+        if "contact_role" not in data:
+            # Not posted, so not changed: the page shows the stored role —
+            # never « client », which a resubmission would then save.
+            data["contact_role"] = (stored or {}).get("contact_role", "")
+        for key in SUPPLIER_RECORD_FIELDS:
+            # Not posted (its fieldset was disabled): shown as stored —
+            # never blank, which a switch back to a payee role would then
+            # post, erasing the record.
+            if key not in data:
+                data[key] = (stored or {}).get(key, "")
         return render_template(
             "parties/form.html",
             partie=data,
@@ -676,12 +741,14 @@ def partie_update(partie_id: str) -> str:
             role_labels=ROLE_LABELS,
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
-            kyc_presumed=_kyc_presumed(get_partie(partie_id)),
+            kyc_presumed=_kyc_presumed(stored),
             is_dossier_client=_is_dossier_client(partie_id),
             **_form_context(data),
         )
 
-    bump_ctag("parties")
+    # A role change in or out of the phone's address book moves the card
+    # (services/carnet.py, Change Impact item 2).
+    apres_ecriture_contact(partie)
 
     return redirect_after_post(
         url_for("parties.partie_detail", partie_id=partie_id))
@@ -720,7 +787,7 @@ def kyc_confirm(partie_id: str, check: str) -> Response:
         target = url_for("parties.partie_detail", partie_id=partie_id,
                          erreur=erreur)
     else:
-        bump_ctag("parties")
+        apres_ecriture_contact(_doc)
         log_partie_event("kyc_confirmed", partie_id, field=field)
         target = url_for("parties.partie_detail", partie_id=partie_id,
                          message="Vérification confirmée.")
@@ -738,8 +805,7 @@ def partie_delete(partie_id: str) -> str:
     success, error = delete_partie(partie_id)
 
     if success:
-        record_tombstone("parties", partie_id)
-        bump_ctag("parties")
+        apres_suppression_contact(partie_id)
         # Append-only deletion trail (PA-G06).
         record_deletion(
             "partie", partie_id,
@@ -792,11 +858,11 @@ _EXPORT_COLUMNS_PDF = [
 
 def _get_export_parties() -> list[dict]:
     """Fetch and pre-process parties for export, respecting current filters."""
-    role_filter = request.args.get("role", "client")
+    role_filter = _role_filter()
     search = request.args.get("q", "").strip()
 
     parties = list_parties(
-        role_filter=role_filter if role_filter != "tous" else None,
+        role_filter=role_filter if role_filter != ALL_ROLES else None,
         search=search or None,
     )
     for p in parties:

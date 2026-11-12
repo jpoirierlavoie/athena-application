@@ -55,18 +55,19 @@ one-line commit then turns the switch on (DEPLOYMENT.md §15).
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from tz import to_mtl
+from utils import cron_schedule
 
 #: The hour of the sweep's job — cron.yaml's ``every day 09:00``,
 #: America/Toronto: Montréal's canonical tz zone, of which America/Montreal,
 #: the name ``tz.MTL`` reads, is only a backward alias — from which
-#: :func:`next_sweep_day` counts. 09:00 since the lawyer's decision of
-#: 2026-11-12. Restated for the computation; tests/test_taches_factures pins
-#: it to cron.yaml.
-SWEEP_TIME = time(9, 0)
+#: :func:`next_sweep_day` counts: the day's first pass since the lawyer's
+#: decision of 2026-11-12, read from ``utils.cron_schedule``, the one source
+#: that tests/test_cron_schedule pins to cron.yaml.
+SWEEP_TIME = cron_schedule.daily_time()
 
 
 def next_run_is_today(now: datetime) -> bool:

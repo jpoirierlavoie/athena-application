@@ -55,8 +55,15 @@
         <select name="kind" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
                 class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
           <option value="">Tous</option>
-          {% for k in valid_kinds %}
-          <option value="{{ k }}" {% if filters.kind == k %}selected{% endif %}>{{ kind_labels[k] }}</option>
+          {# Chaque type enregistré, groupé par famille (admin_ledger
+             .KIND_FAMILIES) — les deux virements à part, le paiement de
+             carte et la correction parmi les écritures particulières. #}
+          {% for family_label, kinds in kind_filter_groups %}
+          <optgroup label="{{ family_label }}">
+            {% for k in kinds %}
+            <option value="{{ k }}" {% if filters.kind == k %}selected{% endif %}>{{ kind_labels[k] }}</option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
         </select>
       </div>
