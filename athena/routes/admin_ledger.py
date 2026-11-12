@@ -104,6 +104,7 @@ from routes._helpers import (
     dossier_search_fragment,
     is_htmx,
     no_counterparty_suggestions,
+    types_ecritures_url,
     parse_date_input,
     redirect_after_post,
 )
@@ -541,6 +542,8 @@ def _form_context(entry, errors: list[str], mode: str = "create",
         counterparty_placeholder=initial.get("placeholder", ""),
         # The kinds that carry the supplier's invoice number.
         supplier_ref_kinds=list(al.SUPPLIER_REF_KINDS),
+        # « Que fait chaque type ? » (lot 7).
+        types_url=types_ecritures_url(),
         # The kinds whose dossier block the form hides, those its TPS/TVQ
         # and advance help lines follow, and those that carry a category
         # and a split — the model's lists, never restated in the template.

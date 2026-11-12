@@ -1168,3 +1168,33 @@ def test_an_unknown_name_still_saves(client, fake):
     assert resp.status_code == 302
     (stored,) = fake.peek_collection("admin_transactions").values()
     assert stored["counterparty"] == "Nom jamais vu"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 7 (2026-11-12) — « Que fait chaque type ? » mène à la carte du type
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def client_hub(client):
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.comptabilite as rc
+    client.application.register_blueprint(rc.comptabilite_bp)
+    return client
+
+
+def test_lot7_les_formulaires_menent_a_la_carte_du_type(client_hub):
+    page = client_hub.get("/administration/nouvelle").get_data(as_text=True)
+    assert """:href="'/comptabilite/types-ecritures#type-' + kind" """.strip() in page
+    page = client_hub.get("/fideicommis/nouvelle?dossier_id=dos1").get_data(as_text=True)
+    assert (""":href="'/comptabilite/types-ecritures#type-fideicommis-' + purpose" """
+            .strip() in page)
+
+
+def test_lot7_sans_le_hub_les_formulaires_repondent_sans_lien(client):
+    """Une application sans le hub (ce banc) : le formulaire répond, sans
+    l'aide — jamais un BuildError pour un lien d'aide."""
+    for url in ("/administration/nouvelle", "/fideicommis/nouvelle?dossier_id=dos1"):
+        resp = client.get(url)
+        assert resp.status_code == 200, url
+        assert "Que fait chaque" not in resp.get_data(as_text=True), url

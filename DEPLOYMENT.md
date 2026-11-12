@@ -5984,6 +5984,26 @@ Notes:
   2. *A fee payment's page* (Fidéicommis → the entry): « Recette au compte
      d'administration : n° … » opens the recette.
   A rollback is the code alone.
+- **The « Types d'écritures » page (2026-11-12).** `/comptabilite/types-ecritures`
+  — a button on the Comptabilité hub, and « Que fait chaque type ? » under the
+  administration form's « Type » (« Que fait chaque objet ? » under the trust
+  form's « Objet »), which opens the chosen type's card in a new tab. For every
+  type of both registers, family by family: its direction, its dossier, its
+  category and split, its counterparty (label, suggestions, pre-fill), its
+  cash-flow line, where it is entered, and one sentence « Aux états
+  financiers » (`financial_statements.KIND_STATEMENT_SENTENCES`, for the
+  lawyer's accountant to review). Every card derives from the model
+  (`services/types_ecritures`); the page reads nothing from Firestore.
+  Change Impact: item 6 (compiled classes only; the `info` icon is already in
+  the subset); items 1 to 5 and 7 not touched.
+  In order:
+  1. *The push.*
+  2. *The page*, on the desktop and at 375 px: Comptabilité → « Types
+     d'écritures ».
+  3. *A form's link*: in a new administration entry, choose « Remise de
+     TPS/TVQ », then « Que fait chaque type ? » — the new tab opens on its
+     card.
+  A rollback is the code alone.
 
 ## 16. Troubleshooting
 

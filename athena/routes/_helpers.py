@@ -252,6 +252,18 @@ def _suggestion_response(body: str) -> Response:
     return resp
 
 
+def types_ecritures_url() -> str:
+    """The « Types d'écritures » page (lot 7) — "" in an app that registers
+    no accounting hub (a test's bare app): a form never fails over an aid."""
+    from flask import url_for
+    from werkzeug.routing import BuildError
+
+    try:
+        return url_for("comptabilite.types_ecritures")
+    except BuildError:
+        return ""
+
+
 def no_counterparty_suggestions() -> Response:
     """An empty list: a type whose field suggests nothing (read nothing)."""
     return _suggestion_response("")

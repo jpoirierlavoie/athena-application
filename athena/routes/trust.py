@@ -59,6 +59,7 @@ from routes._helpers import (
     dossier_search_fragment,
     is_htmx,
     no_counterparty_suggestions,
+    types_ecritures_url,
     parse_date_input,
     redirect_after_post,
     standard_dossier_row,
@@ -169,6 +170,8 @@ def _entry_form_extras(method: str = "", *, entry=None, errors=()) -> dict:
             shown.get("direction") or VALID_DIRECTIONS[0], trust.PAYEE_LABEL_FALLBACK),
         "dossier_optional": (shown.get("purpose") or ENTRY_FORM_PURPOSES[0])
                             in optional_dossier,
+        # « Que fait chaque type ? » (lot 7).
+        "types_url": types_ecritures_url(),
     }
 
 

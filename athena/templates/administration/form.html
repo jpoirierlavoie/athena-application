@@ -149,6 +149,12 @@
     <p x-show="salesTaxKinds.includes(kind)" x-cloak class="text-xs text-gray-500">Ce que le cabinet verse à l'administration fiscale au titre de la TPS/TVQ, ou en reçoit : ni une dépense, ni un revenu. Des intérêts ou des pénalités payés s'inscrivent à part, en dépense ; des intérêts reçus, à part, en autre recette.</p>
     <p x-show="advanceKinds.includes(kind)" x-cloak class="text-xs text-gray-500">L'avance d'un client reçue à ce compte plutôt qu'au fidéicommis : l'argent du client, jamais un revenu. Virez-la au fidéicommis par un virement interne sortant dont l'objet est « Avances à verser au fidéicommis ».</p>
     <p x-show="refundKinds.includes(kind)" x-cloak class="text-xs text-gray-500">Ce qu'un fournisseur rembourse d'une dépense : il réduit la catégorie de cette dépense, jamais un revenu. La ventilation est la TPS/TVQ remboursée.</p>
+    {% if types_url %}
+    {# « Que fait chaque type ? » (lot 7) : la page des types, à la carte du
+       type choisi, dans un nouvel onglet. #}
+    <a href="{{ types_url }}" :href="'{{ types_url }}#type-' + kind" target="_blank" rel="noopener"
+       class="inline-flex items-center gap-1 py-3 text-sm text-indigo-600 hover:underline">{{ ms('info', 20) }} Que fait chaque type ?</a>
+    {% endif %}
 
     {# ── Sens d'un virement interne — désactivé (donc non soumis) pour tout
        autre type. Sans sens valide, la route refuse (400) et n'écrit rien.
