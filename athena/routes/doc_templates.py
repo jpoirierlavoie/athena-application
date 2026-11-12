@@ -84,7 +84,7 @@ from utils import storage_identity
 from utils.deadlines import today_mtl
 from utils.logging_setup import log_template_event
 from utils.markdown_docx import markdown_to_safe_html
-from utils.template_fields import classify_placeholders
+from utils.template_fields import classify_placeholders, is_flow_field
 from utils.tracing_setup import add_attributes
 from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, is_htmx, redirect_after_post
@@ -119,6 +119,16 @@ def _champs_error(message: str) -> str:
         f'<div class="text-red-600 text-sm p-3">{escape(message)}</div>'
         "</div>"
     )
+
+
+# Where each special kind's own flow takes the fields it fills — the
+# gabarit page names them « Remplis depuis … » (lot 3d), never « à
+# compléter dans Word ». Keyed by SPECIAL_KINDS (pinned by test).
+FLOW_SOURCES_FR = {
+    "note_honoraires": "la facture",
+    "note_credit": "la radiation et sa facture",
+    "note": "la note",
+}
 
 
 def _template_context() -> dict:
@@ -358,12 +368,20 @@ def template_detail(template_id: str) -> Response | str:
     # uploaded before this taxonomy (stored *_fields lists may be stale).
     placeholders = template.get("placeholders", [])
     classification = classify_placeholders(placeholders)
+    # A special kind's own fields (facture.*, nc.*, note.* — lot 3d): the
+    # classifier files them under passthrough, yet the kind's flow fills
+    # them. Named apart, never « à compléter dans Word ».
+    kind = template.get("kind") or "gabarit"
+    flow = {n for n in classification.passthrough if is_flow_field(n, kind)}
     ctx = _template_context()
     ctx.update(
         template=template,
         auto_fields=[n for n in placeholders if n in classification.auto],
         manual_fields=classification.manual,
-        passthrough_fields=classification.passthrough,
+        flow_fields=[n for n in classification.passthrough if n in flow],
+        flow_source=FLOW_SOURCES_FR.get(kind, ""),
+        passthrough_fields=[n for n in classification.passthrough
+                            if n not in flow],
         versions=list_versions(template_id),
         current_version=int(template.get("version") or 1),
         erreur=sanitize(request.args.get("erreur", ""), max_length=300),

@@ -1,4 +1,4 @@
-"""The claude.ai plugin « athena » (skill 1.9.2) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 1.9.3) — the deploy gate.
 
 ``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
 source (``plugin/athena/`` at the repo root) and the tool registry.

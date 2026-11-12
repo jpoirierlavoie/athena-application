@@ -183,6 +183,17 @@
     </div>
     {% endif %}
 
+    {#- Les champs propres à un type spécial (facture.*, nc.*, note.* —
+        lot 3d) : sa génération les remplit, jamais Word. #}
+    {% if flow_fields %}
+    <p class="text-xs text-gray-500 mb-1">Remplis depuis {{ flow_source }}</p>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      {% for name in flow_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
     {% if manual_fields %}
     <p class="text-xs text-gray-500 mb-1">À saisir à la génération</p>
     <div class="flex items-center gap-2 flex-wrap mb-4">

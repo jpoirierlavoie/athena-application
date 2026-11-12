@@ -29,6 +29,14 @@ read — whether the remainder may be written off today
 (``invoice.write_off_refusal`` on ``today_mtl``), which radiation stands,
 how a « payée » was settled (``invoice.settlement_label``) — and no
 template compares a date.
+
+The credit note's Word document (lot 3d, the same decision 8): each
+standing radiation of the sheet offers « Générer la note de crédit »
+(``…/radiation/<event_id>/note-de-credit``), the request adapter of
+``services.note_credit`` — the gabarit of kind « note_credit » the lawyer
+designated « actif », filed in « Mandat › Factures » like the note
+d'honoraires, and found again rather than filed twice while nothing it
+prints has changed.
 """
 
 from datetime import datetime, timezone
@@ -113,7 +121,7 @@ from models.partie import get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
 from routes import edit_conflict
-from services import note_honoraires
+from services import note_credit, note_honoraires
 from routes._helpers import is_htmx, parse_date_input, redirect_after_post
 
 invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
@@ -506,8 +514,11 @@ def _write_off_rows(invoice: dict, *, can_cancel: bool) -> Optional[list[dict]]:
     cancels), whether that credit note is « en vigueur » or « annulée »
     (its radiation standing or not — ``invoice.standing_write_offs``), its
     reason, and ``can_cancel`` on each standing radiation when the sheet
-    offers « Annuler la radiation » at all (*can_cancel*). ``None`` when the
-    events cannot be read: the sheet then says so, never « none »."""
+    can act on the invoice at all (*can_cancel*: its amounts readable) — so
+    does ``can_generate``, « Générer la note de crédit » (lot 3d), which
+    the service would refuse on an unreadable amount and on a radiation
+    that no longer stands. ``None`` when the events cannot be read: the
+    sheet then says so, never « none »."""
     try:
         events = write_off_events(invoice)
         standing = {e["id"] for e in standing_write_offs(invoice)}
@@ -534,6 +545,7 @@ def _write_off_rows(invoice: dict, *, can_cancel: bool) -> Optional[list[dict]]:
                       if radiation else ""),
             "standing": stands,
             "can_cancel": can_cancel and stands,
+            "can_generate": can_cancel and stands,
             "reason": str(event.get("reason") or ""),
         })
     return rows
@@ -851,6 +863,48 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
     return render_template(
         "invoices/_note_generated.html",
         generated={
+            "heading": "Note d'honoraires générée",
+            "display_name": doc.get("display_name", ""),
+            "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
+            "download_url": url_for("documents.document_download", document_id=doc["id"]),
+            **_note_location(doc, note.folder),
+        },
+    )
+
+
+@invoices_bp.route("/<invoice_id>/radiation/<event_id>/note-de-credit",
+                   methods=["POST"])
+@login_required
+def invoice_credit_note_docx(invoice_id: str, event_id: str) -> Response | str:
+    """« Générer la note de crédit » (lot 3d): fill the « actif » credit note
+    gabarit from the radiation *event_id* of this invoice and file the .docx
+    in the dossier's « Mandat › Factures », as the note d'honoraires is.
+
+    A request adapter: the generation is ``services.note_credit``, which
+    refuses (and logs) before writing anything. The note is filed under the
+    SESSION's uid (``request_uid``), obtained only once it is filled. A
+    click that finds the same credit note already filed — nothing it prints
+    has changed — gets that one back, never a second copy. htmx gets the
+    fragment, a refusal at 200 (it swaps only a 2xx, Rule 8); without
+    JavaScript the success opens the document, a refusal returns to the
+    sheet with ``?erreur=``.
+    """
+    try:
+        note = note_credit.generer_note_credit(
+            invoice_id, event_id, resolve_uid=storage_identity.request_uid)
+    except note_credit.NoteRefusee as refusal:
+        if _is_htmx():
+            return _note_error(refusal.message)
+        return _back_to_detail(invoice_id, erreur=refusal.message)
+    doc = note.document
+    if not _is_htmx():
+        return redirect(url_for("documents.document_detail", document_id=doc["id"]))
+    number = str(note.write_off.get("credit_note_number") or "")
+    return render_template(
+        "invoices/_note_generated.html",
+        generated={
+            "heading": (f"Note de crédit {number} déjà versée au dossier"
+                        if note.reused else f"Note de crédit {number} générée"),
             "display_name": doc.get("display_name", ""),
             "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
             "download_url": url_for("documents.document_download", document_id=doc["id"]),

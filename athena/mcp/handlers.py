@@ -215,7 +215,9 @@ from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
 from utils.template_fields import (
     EMPTY_OPTION_VALUE,
+    FLOW_PREFIXES,
     classify_placeholders,
+    is_flow_field,
     is_uppercase_name,
     selected_address,
 )
@@ -2023,17 +2025,18 @@ _SLOT_ENTRIES_FR = {"client_id": "clients", "adverse_id": "parties adverses"}
 # The namespaces a SPECIAL kind's own flow fills: utils/note_docx for
 # « note » (note.*), utils/invoice_docx for « note_honoraires » (facture.*,
 # and the h./d./p. fields of its repeated rows — p. since 2026-11-08, the
-# payments). The gabarit classifier knows none of them and files them under
+# payments) and for « note_credit » (nc.* and a few facture.* fields, lot
+# 3d). The gabarit classifier knows none of them and files them under
 # passthrough — reported as « blocs to write » they would send a caller
-# composing the invoice total by hand.
-# tests/test_mcp_template_reads.py pins these prefixes against the builders.
-_FLOW_PREFIXES = {
-    "note": ("note.",),
-    "note_honoraires": ("facture.", "h.", "d.", "p."),
-}
+# composing the invoice total by hand. One table since lot 3d, in the field
+# catalogue's module (utils/template_fields.FLOW_PREFIXES / is_flow_field),
+# which the gabarit page reads too; tests/test_mcp_template_reads.py pins it
+# against the builders.
+_FLOW_PREFIXES = FLOW_PREFIXES
 # Each flow runs on BOTH surfaces — the application's button and the
 # connector's create_document (lot 2A: source « markdown »; lot 3b: source
-# « invoice_note ») — so neither is named alone.
+# « invoice_note ») — so neither is named alone. The credit note (lot 3d)
+# has the application's button alone: no tool generates it.
 _FLOW_SOURCES_FR = {
     "note": (
         "une note — « Imprimer (Word) » dans l'application, ou "
@@ -2045,6 +2048,12 @@ _FLOW_SOURCES_FR = {
         "d'honoraires (Word) » dans l'application : les champs facture.* et "
         "les lignes viennent de la facture, le destinataire de son client"
     ),
+    "note_credit": (
+        "une radiation de la facture — « Générer la note de crédit », sur la "
+        "fiche de la facture dans l'application, et nulle part ailleurs (aucun "
+        "outil ne la génère) : les champs nc.* viennent de la radiation, les "
+        "champs facture.* de sa facture, le destinataire de son client"
+    ),
 }
 # The party slots each SPECIAL kind's own flow fills — and no other:
 # utils/invoice_docx.build_invoice_context passes the invoice's dossier and
@@ -2053,20 +2062,22 @@ _FLOW_SOURCES_FR = {
 # preview on the gabarit resolution (first client by default) would report
 # client.* « resolved » where the flow prints « [CHAMP MANQUANT : …] », and
 # destinataire.* missing where the invoice fills it. Pinned against both
-# builders by tests/test_mcp_template_reads.py.
+# builders by tests/test_mcp_template_reads.py. The credit note (lot 3d)
+# reads the invoice's dossier and client as the note d'honoraires does.
 _FLOW_SLOTS = {
     "note": ("dossier",),
     "note_honoraires": ("dossier", "destinataire"),
+    "note_credit": ("dossier", "destinataire"),
 }
-_FLOW_ORIGIN_FR = {"note": "la note imprimée", "note_honoraires": "la facture"}
+_FLOW_ORIGIN_FR = {"note": "la note imprimée", "note_honoraires": "la facture",
+                   "note_credit": "la radiation et sa facture"}
 _SLOT_ARGS = (("client_id", "client"), ("adverse_id", "adverse"),
               ("destinataire_id", "destinataire"))
 
-
-def _is_flow_field(name: str, kind: str) -> bool:
-    """True when the special kind's own flow fills *name* (case-insensitive,
-    as that flow matches — note_docx lowers its lookups)."""
-    return name.lower().startswith(_FLOW_PREFIXES.get(kind, ()))
+# True when the special kind's own flow fills a name (case-insensitive, as
+# that flow matches — note_docx lowers its lookups): one rule, the
+# catalogue's.
+_is_flow_field = is_flow_field
 
 
 def _template_placeholders(template: dict) -> list[str]:
@@ -2342,11 +2353,13 @@ def _template_detail(args: dict) -> dict:
             "rapportés non résolus. Passez dossier_id pour les résoudre."
         )
     if "destinataire" in usable and not slots.destinataire_id:
+        # A special flow that reads the destinataire — the note d'honoraires
+        # and the credit note (lot 3d) — takes it from the invoice's client.
         warnings.append(
             "Les champs destinataire.* viennent du client de la facture (à "
             "défaut, de son adresse de facturation) : passez destinataire_id "
             "= ce client pour les voir résolus."
-            if kind == "note_honoraires" else
+            if flow_slots is not None else
             "Ce gabarit lit le créneau « destinataire » et aucun n'est "
             "retenu : ses champs s'imprimeraient « [CHAMP MANQUANT : …] »."
         )
@@ -7162,9 +7175,13 @@ def _raise_invoice_errors(errors: list[str], invoice_id: str) -> None:
 
 def _note_on_file(invoice_id: str) -> Optional[bool]:
     """Whether a note d'honoraires of this invoice is filed — None when the
-    lookup failed (a warning is then simply omitted, never guessed)."""
+    lookup failed (a warning is then simply omitted, never guessed). A
+    credit note (lot 3d) carries the same invoice link: its own tag sets it
+    apart, and every other document of the link counts, as it always did."""
     try:
-        return bool(document_model.find_generated_for_invoice(invoice_id))
+        return any(
+            document_model.CREDIT_NOTE_TAG not in (doc.get("tags") or [])
+            for doc in document_model.find_generated_for_invoice(invoice_id))
     except Exception:
         return None
 
@@ -13755,6 +13772,13 @@ _GABARIT_FLOWS_FR = {
     "note": (
         "imprime une note, dans l'application — pour mettre en forme un "
         "texte, utilisez create_document (source « markdown »)"
+    ),
+    # Lot 3d: the credit note of a write-off — the application's button
+    # alone, no tool generates it.
+    "note_credit": (
+        "se remplit depuis une radiation de la facture — « Générer la note "
+        "de crédit », sur la fiche de la facture, dans l'application "
+        "seulement"
     ),
     # Bibliothèque (2026-11-11): a contract model is never filled.
     "modele": "est un modèle, que l'avocat télécharge et adapte dans Word",

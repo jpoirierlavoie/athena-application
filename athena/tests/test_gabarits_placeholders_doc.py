@@ -26,10 +26,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
-from utils.invoice_docx import InvoicePayments, build_invoice_context
+from utils.invoice_docx import (
+    CREDIT_NOTE_FIELDS,
+    InvoicePayments,
+    build_credit_note_context,
+    build_invoice_context,
+)
 from utils.note_docx import build_note_context
 from utils.template_fields import (
     CATALOG,
+    CREDIT_NOTE_INVOICE_FIELDS,
     FLAT_ALIASES,
     MANUAL_FIELDS,
     _FEE_TYPE_LABEL,
@@ -148,6 +154,37 @@ def test_facture_fields_regions_and_conditions_match_the_builder(cited):
         assert f"?{condition}" in cited, f"condition {condition} absente de la doc"
     row_fields = {k for rows in ctx.rows.values() for row in rows for k in row}
     assert not row_fields - cited, f"champs de rangée absents : {sorted(row_fields - cited)}"
+
+
+def test_credit_note_fields_match_the_builder(doc, cited):
+    """Lot 3d — the credit note's own fields (nc.*), produced by its builder
+    and documented, both ways; the facture.* fields it prints, each one
+    documented in ITS section (section 7), which names no other; no row
+    and no condition. Fictitious year, invented amounts."""
+    write_off = {
+        "id": "rad-1", "kind": "radiation",
+        "date": datetime.datetime(2031, 3, 10, tzinfo=datetime.timezone.utc),
+        "amount": 11498, "gst_amount": 500, "qst_amount": 998,
+        "tax_claimed": True, "reason": "Motif", "reverses_id": "",
+        "credit_note_number": "2031-NC001",
+    }
+    ctx = build_credit_note_context(
+        {"invoice_number": "2031-F001",
+         "date": datetime.datetime(2031, 1, 3), "gst_number": "G",
+         "qst_number": "Q", "billing_address": {}},
+        write_off, firm={}, destinataire=None, dossier=None,
+        today=datetime.date(2031, 3, 12), balance_cents=0)
+    produced = {k for k in ctx.values if k.startswith("nc.")}
+    documented = {n for n in cited if n.startswith("nc.")}
+    assert produced == documented == set(CREDIT_NOTE_FIELDS), (
+        f"non documentés : {sorted(produced - documented)} ; "
+        f"documentés mais jamais produits : {sorted(documented - produced)}"
+    )
+    assert set(CREDIT_NOTE_INVOICE_FIELDS) <= set(ctx.values)
+    section = doc.split("## 7. Note de crédit seulement", 1)[1].split("\n## ", 1)[0]
+    in_section = {n for n in _TOKEN_RE.findall(section) if n.startswith("facture.")}
+    assert in_section == set(CREDIT_NOTE_INVOICE_FIELDS)
+    assert ctx.rows == {} and ctx.conditions == {}
 
 
 def test_note_fields_match_the_builder(cited):

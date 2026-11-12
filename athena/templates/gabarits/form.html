@@ -78,9 +78,12 @@
       </div>
       <p class="text-xs text-gray-400 mt-1.5">
         « Note d'honoraires (facture) » : rempli depuis une facture (tables des
-        honoraires, débours et paiements). « Note (impression) » : rempli depuis une note du
+        honoraires, débours et paiements). « Note de crédit (radiation) » :
+        rempli depuis une radiation, par le bouton « Générer la note de
+        crédit » de la fiche de la facture ({% raw %}{{nc.numero}}, {{nc.total}}{% endraw %}, … —
+        section 7 du guide). « Note (impression) » : rempli depuis une note du
         bloc-notes ({% raw %}{{note.titre}}, {{note.contenu}}{% endraw %}, … —
-        voir le <a href="{{ url_for('doc_templates.template_guide') }}" class="font-medium text-indigo-600 hover:text-indigo-700">guide des champs</a>, section 7). Pour chacun de ces deux types, la
+        voir le <a href="{{ url_for('doc_templates.template_guide') }}" class="font-medium text-indigo-600 hover:text-indigo-700">guide des champs</a>, section 8). Pour chacun de ces trois types, la
         génération utilise le gabarit que vous avez désigné comme actif, sur
         sa fiche — jamais simplement le plus récent. « Modèle (sans champs) » :
         un contrat que vous téléchargez et adaptez dans Word ; il est classé

@@ -1301,7 +1301,8 @@ def _protocol_sync_keys() -> dict[str, Any]:
 # package) pinned to models.doc_template.VALID_KINDS by
 # tests/test_mcp_template_reads.py — a description, never an enum: an
 # output schema never forbids growth.
-_TEMPLATE_KIND_NAMES = ("gabarit", "note_honoraires", "note", "modele")
+_TEMPLATE_KIND_NAMES = ("gabarit", "note_honoraires", "note_credit", "note",
+                        "modele")
 
 
 def _template_summary() -> dict:
@@ -1323,7 +1324,8 @@ def _template_summary() -> dict:
                      "filled."),
         "version": _int("Version of the file in force (1 = never replaced)."),
         "active": _bool(
-            "true = THE template of its kind (note_honoraires or note), "
+            "true = THE template of its kind (note_honoraires, note_credit "
+            "or note), "
             "designated by the lawyer in the application — the one the "
             "application fills. Always false for kinds « gabarit » and "
             "« modele »."),
@@ -1332,9 +1334,10 @@ def _template_summary() -> dict:
         "manual_count": _int(),
         "bloc_count": _int(),
         "flow_count": _int(
-            "note / note_honoraires only: placeholders the kind's OWN flow "
-            "fills (note.*, facture.* and the invoice rows); 0 for a "
-            "gabarit or a modèle."),
+            "note / note_honoraires / note_credit only: placeholders the "
+            "kind's OWN flow fills (note.*, facture.* and the invoice rows, "
+            "nc.* and the credit note's facture.* fields); 0 for a gabarit "
+            "or a modèle."),
         "slots_required": _arr(_str(
             "dossier | client | adverse | destinataire — what the auto "
             "fields read.")),
@@ -2543,7 +2546,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "destinataire_id": _nstr(),
                 }, description="The party ids RETAINED (an omitted client or "
                    "adverse slot takes the dossier's only one); null = "
-                   "empty slot. note / note_honoraires: only the slots their "
+                   "empty slot. note / note_honoraires / note_credit: only "
+                   "the slots their "
                    "own flow fills (client and adverse: never)."),
                 "auto_fields": _arr(_obj({
                     "name": _str("As the template spells it."),
@@ -2585,11 +2589,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "written: free content, civilité, salutations, unknown "
                     "names."),
                 "flow_fields": _arr(_str(), (
-                    "note / note_honoraires only: filled by the kind's own "
-                    "flow — create_document (source markdown for a note, "
-                    "invoice_note for an invoice note) or the application's "
-                    "own buttons — never by hand. [] for a gabarit or a "
-                    "modèle.")),
+                    "note / note_honoraires / note_credit only: filled by the "
+                    "kind's own flow — create_document (source markdown for a "
+                    "note, invoice_note for an invoice note) or the "
+                    "application's own buttons (a credit note: the "
+                    "application's alone) — never by hand. [] for a gabarit "
+                    "or a modèle.")),
                 "versions": {
                     "type": ["array", "null"],
                     "items": _obj({

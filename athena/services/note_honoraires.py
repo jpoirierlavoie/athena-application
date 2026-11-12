@@ -223,9 +223,10 @@ SAVE_UNCERTAIN = (
 
 
 class NoteRefusee(Exception):
-    """A note d'honoraires that must not be generated — nothing was written,
-    except under ``save_uncertain``, whose note MAY be filed (module
-    docstring: its sentence never invites a blind retry).
+    """A note d'honoraires — or, since lot 3d, a credit note
+    (``services.note_credit``) — that must not be generated: nothing was
+    written, except under ``save_uncertain``, whose note MAY be filed
+    (module docstring: its sentence never invites a blind retry).
 
     ``reason`` is machine-stable (the ``generation_failed`` vocabulary of
     OBSERVABILITY.md); ``message`` is French and never quotes a value.
@@ -239,7 +240,8 @@ class NoteRefusee(Exception):
 
 @dataclass
 class NoteGeneree:
-    """A note d'honoraires the call produced — or found already filed."""
+    """A note d'honoraires — or a credit note (lot 3d,
+    ``services.note_credit``) — the call produced, or found already filed."""
 
     document: dict
     template: dict
@@ -253,6 +255,9 @@ class NoteGeneree:
     #: filed document's own ``folder_id``: a note filed before the default
     #: tree stays in « Projets »).
     folder: Optional[dict] = None
+    #: A credit note's radiation, as the model validated it (lot 3d); empty
+    #: for a note d'honoraires.
+    write_off: dict = field(default_factory=dict)
 
 
 def assemble_note_values(template: dict, ctx) -> dict[str, str]:
@@ -279,7 +284,8 @@ def assemble_note_values(template: dict, ctx) -> dict[str, str]:
     return values
 
 
-def fill_fingerprint(template: dict, values: dict, ctx) -> str:
+def fill_fingerprint(template: dict, values: dict, ctx, *,
+                     subject: Optional[dict] = None) -> str:
     """The SHA-256 of what a note prints: the template's id and version,
     and every value, row and condition the fill receives.
 
@@ -289,6 +295,14 @@ def fill_fingerprint(template: dict, values: dict, ctx) -> str:
     miss (a replaced letterhead, an edited client address) and what it
     would over-report (a status change the note does not print) are both
     decided by the CONTENT here.
+
+    *subject* (lot 3d) — what a document of another kind is OF, beyond what
+    it prints: a credit note names its kind and its radiation, so that two
+    credit notes of one invoice that print the same values (a gabarit
+    without ``{{nc.numero}}``) are never each other's document, and no
+    credit note is ever a note d'honoraires'. Absent (the note
+    d'honoraires), the payload — hence every fingerprint already stored —
+    is exactly what it always was.
     """
     payload = {
         "template_id": str(template.get("id") or ""),
@@ -297,6 +311,8 @@ def fill_fingerprint(template: dict, values: dict, ctx) -> str:
         "rows": ctx.rows,
         "conditions": ctx.conditions,
     }
+    if subject is not None:
+        payload["subject"] = subject
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False,
                       separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

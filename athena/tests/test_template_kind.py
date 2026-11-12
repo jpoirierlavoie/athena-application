@@ -26,7 +26,12 @@ with mock.patch("google.cloud.firestore.Client"):
 
 def test_valid_kinds_all_labelled():
     assert set(VALID_KINDS) == set(KIND_LABELS)
-    assert VALID_KINDS == ("gabarit", "note_honoraires", "note", "modele")
+    # Lot 3d: « note_credit », the credit note of a write-off — a special
+    # kind, designated « actif » like the note d'honoraires.
+    assert VALID_KINDS == ("gabarit", "note_honoraires", "note_credit", "note",
+                           "modele")
+    assert SPECIAL_KINDS == ("note_honoraires", "note_credit", "note")
+    assert KIND_LABELS["note_credit"] == "Note de crédit (radiation)"
 
 
 def test_the_modele_kind_is_a_plain_kind_listed_apart():

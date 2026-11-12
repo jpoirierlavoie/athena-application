@@ -34,9 +34,11 @@ Three rules since T3, each closing a silent defect:
   every client's invoice note could be lost in a click.
 
 * **The « actif » designation (D11).** For each special kind — the invoice
-  note d'honoraires and the note print — ONE template is DESIGNATED by the
-  lawyer (``active_for`` = the kind, ``active_designated_at``,
-  ``active_designated_by``), through :func:`set_active_template`, whose
+  note d'honoraires, the note print and, since lot 3d of « Factures :
+  retard, radiation, intérêts », a write-off's credit note — ONE template
+  is DESIGNATED by the lawyer (``active_for`` = the kind,
+  ``active_designated_at``, ``active_designated_by``), through
+  :func:`set_active_template`, whose
   only callers are the web route and the one-shot migration script — and
   withdrawn only by him too (:func:`clear_active_template`, web only,
   fixups of lot 2A).
@@ -93,10 +95,13 @@ CATEGORY_LABELS = {
     "autre": "Autre",
 }
 
-# Discriminator (Phase H.2, extended H.3): an ordinary gabarit vs the two
+# Discriminator (Phase H.2, extended H.3): an ordinary gabarit vs the
 # purpose-bound templates — the invoice note-d'honoraires the /factures page
-# fills, and the note-print gabarit the /notes page fills (markdown body →
-# formatted Word content). Kept separate from `category` so the user's own
+# fills, the note-print gabarit the /notes page fills (markdown body →
+# formatted Word content) and, since lot 3d of « Factures : retard,
+# radiation, intérêts » (the lawyer's decision 8 of 2026-11-12), the credit
+# note the invoice sheet fills from a standing write-off
+# (``services/note_credit``). Kept separate from `category` so the user's own
 # category taxonomy stays free. For each special kind, the template the
 # LAWYER DESIGNATED is the one used (lot 2A, T3 — before, the most recently
 # updated one won, and any edit could switch it).
@@ -107,10 +112,11 @@ CATEGORY_LABELS = {
 # connector's fill_gabarit both refuse it) and never designated (not a
 # special kind); the connector sees it like any template, by his choice.
 MODELE_KIND = "modele"
-VALID_KINDS = ("gabarit", "note_honoraires", "note", MODELE_KIND)
+VALID_KINDS = ("gabarit", "note_honoraires", "note_credit", "note", MODELE_KIND)
 KIND_LABELS = {
     "gabarit": "Gabarit",
     "note_honoraires": "Note d'honoraires (facture)",
+    "note_credit": "Note de crédit (radiation)",
     "note": "Note (impression)",
     MODELE_KIND: "Modèle (sans champs)",
 }
@@ -124,12 +130,21 @@ def is_modele(template: Optional[dict]) -> bool:
     filled. A legacy record with no ``kind`` is a gabarit."""
     return (template or {}).get("kind") == MODELE_KIND
 # The kinds that carry an « actif » designation — exactly one template each.
-SPECIAL_KINDS = ("note_honoraires", "note")
+SPECIAL_KINDS = ("note_honoraires", "note_credit", "note")
 # The short name the refusals give each special kind.
 ACTIVE_KIND_NAMES = {
     "note_honoraires": "Note d'honoraires",
+    "note_credit": "Note de crédit",
     "note": "Note (impression)",
 }
+
+
+def _quoted_names_fr(names) -> str:
+    """« A », « B » et « C » — the French enumeration of quoted names."""
+    quoted = [f"« {name} »" for name in names]
+    if len(quoted) < 2:
+        return "".join(quoted)
+    return f"{', '.join(quoted[:-1])} et {quoted[-1]}"
 
 # The designation fields. Deliberately NOT in _default_doc: absent means
 # « never designated », and only set_active_template writes them (and
@@ -190,9 +205,12 @@ ACTIVE_KIND_CHANGE_ERROR = (
     "changer. Désignez d'abord un autre gabarit actif pour ce type, puis "
     "modifiez celui-ci."
 )
+# Derived from the special kinds (« one source per list »): a kind added
+# there is named here too.
 NOT_SPECIAL_ERROR = (
-    "Seuls les gabarits « Note d'honoraires » et « Note (impression) » se "
-    "désignent comme gabarit actif."
+    "Seuls les gabarits "
+    + _quoted_names_fr(ACTIVE_KIND_NAMES[kind] for kind in SPECIAL_KINDS)
+    + " se désignent comme gabarit actif."
 )
 VERSION_IN_PROGRESS_ERROR = (
     "Une autre version de ce gabarit est en cours d'enregistrement. Rien n'a "

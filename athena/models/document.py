@@ -729,6 +729,11 @@ def _portail_fields(portail: Optional[dict]) -> tuple[dict, list[str]]:
 # ``generated_from_invoice`` keyword; never a metadata key a form can post.
 GENERATION_FINGERPRINT_LENGTH = 64   # a SHA-256, lowercase hex
 _GENERATED_FROM_INVOICE_ERROR = "Provenance de génération invalide."
+#: The tag of a CREDIT NOTE (lot 3d of « Factures : retard, radiation,
+#: intérêts », ``services.note_credit``), which carries the same invoice
+#: link as a note d'honoraires: what tells the two apart (the connector's
+#: « a note d'honoraires is filed », ``mcp.handlers._note_on_file``).
+CREDIT_NOTE_TAG = "note_credit"
 
 
 def _generated_from_invoice_fields(
