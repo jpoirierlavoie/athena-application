@@ -27,6 +27,7 @@ part that touches ``db``.
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -38,6 +39,7 @@ from models import releve_conciliation
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
+from utils import contreparties as cp
 from utils.deadlines import today_mtl
 from utils.logging_setup import log_trust_event, log_unexpected, sanitize_log_value
 from utils.tracing_setup import span
@@ -63,19 +65,71 @@ VALID_ACCOUNT_STATUSES = ("actif", "fermé")
 VALID_DIRECTIONS = ("recette", "déboursé")
 VALID_TX_STATUSES = ("en_circulation", "compensée", "annulée")
 
-VALID_PURPOSES = (
-    "avance_honoraires",
-    "dépôt_client",
-    "règlement",
-    "virement_honoraires",
-    "remise_client",
-    "déboursé_tiers",
-    "virement_inter_dossiers",
-    "intérêts",
-    "frais_bancaires",
-    "correction",
-    "autre",
-)
+# THE DECLARED TABLE OF PURPOSES (2026-11-11). Each purpose is declared ONCE,
+# in ``PURPOSE_TYPES``: its label, the family the « Objet » menu and the
+# « Types d'écritures » page group it under, where its counterparty
+# suggestions come from and what a new entry's field starts with
+# (``utils/contreparties``: the lawyer's decisions of 2026-11-11).
+# ``VALID_PURPOSES`` and ``PURPOSE_LABELS`` derive from it. The rule sets
+# below stay the rules; the families restate them (pinned by
+# tests/test_entry_types.py): « Sommes reçues » and « Sommes versées » are
+# the two directions ``PURPOSE_DIRECTIONS`` implies, the fee payment (always
+# a déboursé) among the second; « Compte bancaire » holds the purposes
+# without a dossier (``NO_DOSSIER_PURPOSES``) but the correction;
+# « Écritures particulières » the two reserved purposes; « Selon le cas »
+# the two that imply no direction yet need a dossier (« règlement »,
+# « autre »). The counterparty field's label follows the direction
+# (``PAYEE_LABELS``), never the purpose.
+
+
+@dataclass(frozen=True)
+class PurposeType:
+    """One purpose's profile in ``PURPOSE_TYPES``."""
+
+    #: The French label (``PURPOSE_LABELS``).
+    label: str
+    #: A key of ``PURPOSE_FAMILIES``.
+    family: str
+    #: Where its suggestions come from, in the order they are listed
+    #: (``utils/contreparties.SOURCES``).
+    sources: tuple[str, ...] = ()
+    #: What a new entry's field starts with (``utils/contreparties.PREFILLS``),
+    #: or "".
+    prefill: str = ""
+
+
+#: The families, in the order the « Objet » menu lists them.
+PURPOSE_FAMILIES = {
+    "reçues": "Sommes reçues",
+    "versées": "Sommes versées",
+    "selon_le_cas": "Selon le cas",
+    "compte_bancaire": "Compte bancaire",
+    "particulières": "Écritures particulières",
+}
+_CLIENT_MONEY = ((cp.SOURCE_DOSSIER_CLIENTS, cp.SOURCE_CLIENTS),
+                 cp.PREFILL_CHOSEN_CLIENT)
+#: In the order ``VALID_PURPOSES`` had before the table.
+PURPOSE_TYPES = {
+    "avance_honoraires": PurposeType("Avance d'honoraires", "reçues", *_CLIENT_MONEY),
+    "dépôt_client": PurposeType("Dépôt du client", "reçues", *_CLIENT_MONEY),
+    "règlement": PurposeType("Règlement", "selon_le_cas",
+                             (cp.SOURCE_DOSSIER_PARTIES,)),
+    # The fee payment names its payee from its own list (art. 58, D23).
+    "virement_honoraires": PurposeType("Paiement d'honoraires", "versées"),
+    "remise_client": PurposeType("Remise au client", "versées", *_CLIENT_MONEY),
+    "déboursé_tiers": PurposeType(
+        "Déboursé à un tiers", "versées",
+        (cp.SOURCE_SUPPLIERS, cp.SOURCE_PROFESSIONALS)),
+    "virement_inter_dossiers": PurposeType("Virement inter-dossiers",
+                                           "particulières"),
+    "intérêts": PurposeType("Intérêts", "compte_bancaire",
+                            prefill=cp.PREFILL_BANK),
+    "frais_bancaires": PurposeType("Frais bancaires", "compte_bancaire",
+                                   prefill=cp.PREFILL_BANK),
+    "correction": PurposeType("Correction", "particulières"),
+    "autre": PurposeType("Autre", "selon_le_cas", (cp.SOURCE_DOSSIER_PARTIES,)),
+}
+VALID_PURPOSES = tuple(PURPOSE_TYPES)
 VALID_METHODS = ("chèque", "virement", "traite", "dépôt_direct", "comptant")
 
 # Purposes allowed on an entry that has NO dossier/client beneficiary
@@ -147,19 +201,13 @@ TX_STATUS_LABELS = {
     "compensée": "Compensée",
     "annulée": "Annulée",
 }
-PURPOSE_LABELS = {
-    "avance_honoraires": "Avance d'honoraires",
-    "dépôt_client": "Dépôt du client",
-    "règlement": "Règlement",
-    "virement_honoraires": "Paiement d'honoraires",
-    "remise_client": "Remise au client",
-    "déboursé_tiers": "Déboursé à un tiers",
-    "virement_inter_dossiers": "Virement inter-dossiers",
-    "intérêts": "Intérêts",
-    "frais_bancaires": "Frais bancaires",
-    "correction": "Correction",
-    "autre": "Autre",
-}
+# Declared in ``PURPOSE_TYPES``.
+PURPOSE_LABELS = {purpose: purpose_type.label
+                  for purpose, purpose_type in PURPOSE_TYPES.items()}
+# The counterparty field's label, by direction: the two halves of the
+# register's column (``BARREAU_COLUMNS``, pinned by tests/test_entry_types.py).
+# A correction takes its original's.
+PAYEE_LABELS = {"recette": "Somme reçue de", "déboursé": "Bénéficiaire du débours"}
 METHOD_LABELS = {
     "chèque": "Chèque",
     "virement": "Virement",

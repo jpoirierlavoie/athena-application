@@ -103,6 +103,7 @@ from models import invoice as invoice_model
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
 from security import sanitize
 from tz import to_mtl
+from utils import contreparties as cp
 from utils import storage_identity
 from utils.deadlines import today_mtl
 from utils.format_fr import formats_label
@@ -144,21 +145,101 @@ VALID_TX_STATUSES = ("en_circulation", "compensée", "annulée")
 # ``kind`` replaces trust's deontological ``purpose`` vocabulary. The two
 # structural kinds (``paiement_carte``, ``correction``) are minted only by
 # their dedicated write paths and refused at create/edit.
-VALID_KINDS = (
-    "encaissement_facture",
-    "recette_autre",
-    "dépense",
-    "remboursement_depense",
-    "prélèvement",
-    "apport",
-    "virement_interne_sortant",
-    "virement_interne_entrant",
-    "avance_honoraires",
-    "remise_tps_tvq",
-    "remboursement_tps_tvq",
-    "paiement_carte",
-    "correction",
-)
+#
+# THE DECLARED TABLE OF ENTRY TYPES (2026-11-11). Each kind is declared ONCE,
+# in ``ENTRY_TYPES``: its label, the family its menus and the « Types
+# d'écritures » page group it under, and its counterparty field — the label,
+# the example, where its suggestions come from and what a new entry starts
+# with (``utils/contreparties``: the lawyer's decisions of 2026-11-11).
+# ``VALID_KINDS`` and ``KIND_LABELS`` derive from it. The rule sets below
+# stay the rules; each family but the last equals one of them
+# (``CATEGORY_KINDS``, ``REVENUE_KINDS``, ``ADVANCE_KINDS``, ``OWNER_KINDS``,
+# ``INTERNAL_TRANSFER_KINDS``, ``SALES_TAX_KINDS``), and « Écritures
+# particulières » holds the two structural kinds, outside ``_SIMPLE_KINDS``
+# (pinned by tests/test_entry_types.py): a kind never changes family without
+# changing its rules.
+
+
+@dataclass(frozen=True)
+class EntryType:
+    """One kind's profile in ``ENTRY_TYPES``."""
+
+    #: The French label (``KIND_LABELS``).
+    label: str
+    #: A key of ``KIND_FAMILIES``.
+    family: str
+    #: The counterparty field's label; "" for a correction, which takes its
+    #: original's.
+    payee_label: str
+    #: The field's example; "" for a kind no entry form writes.
+    placeholder: str = ""
+    #: Where its suggestions come from, in the order they are listed
+    #: (``utils/contreparties.SOURCES``).
+    sources: tuple[str, ...] = ()
+    #: What a new entry's field starts with (``utils/contreparties.PREFILLS``),
+    #: or "".
+    prefill: str = ""
+
+
+#: The families, in the order the « Type » menus list them (« Dépense »
+#: stays the first choice).
+KIND_FAMILIES = {
+    "dépenses": "Dépenses",
+    "recettes": "Recettes du cabinet",
+    "argent_clients": "Argent des clients",
+    "argent_avocat": "Argent de l'avocat",
+    "virements": "Virements",
+    "tps_tvq": "TPS/TVQ",
+    "particulières": "Écritures particulières",
+}
+_SUPPLIERS_AND_PROFESSIONALS = (cp.SOURCE_SUPPLIERS, cp.SOURCE_PROFESSIONALS)
+_CLIENTS_DOSSIER_FIRST = (cp.SOURCE_DOSSIER_CLIENTS, cp.SOURCE_CLIENTS)
+#: In the order ``VALID_KINDS`` had before the table.
+ENTRY_TYPES = {
+    "encaissement_facture": EntryType(
+        "Encaissement de facture", "recettes", "Reçu de",
+        "Ex. : le client de la facture",
+        (cp.SOURCE_INVOICE_CLIENT,) + _CLIENTS_DOSSIER_FIRST,
+        cp.PREFILL_INVOICE_CLIENT),
+    "recette_autre": EntryType(
+        "Autre recette", "recettes", "Reçu de", "Ex. : un client, la banque",
+        _CLIENTS_DOSSIER_FIRST + _SUPPLIERS_AND_PROFESSIONALS),
+    "dépense": EntryType(
+        "Dépense", "dépenses", "Fournisseur", "Ex. : Bell Canada, Immeubles X",
+        _SUPPLIERS_AND_PROFESSIONALS),
+    "remboursement_depense": EntryType(
+        "Remboursement de dépense", "dépenses", "Fournisseur",
+        "Ex. : le fournisseur qui rembourse", _SUPPLIERS_AND_PROFESSIONALS),
+    "prélèvement": EntryType(
+        "Prélèvement de l'avocat", "argent_avocat", "Versé à",
+        "Ex. : le nom de l'avocat", prefill=cp.PREFILL_LAWYER),
+    "apport": EntryType(
+        "Apport de l'avocat", "argent_avocat", "Reçu de",
+        "Ex. : le nom de l'avocat", prefill=cp.PREFILL_LAWYER),
+    "virement_interne_sortant": EntryType(
+        "Virement interne (sortant)", "virements", "Compte de contrepartie",
+        f"Ex. : {cp.TRUST_ACCOUNT_NAME}", (cp.SOURCE_TRUST_ACCOUNT,)),
+    "virement_interne_entrant": EntryType(
+        "Virement interne (entrant)", "virements", "Compte de contrepartie",
+        f"Ex. : {cp.TRUST_ACCOUNT_NAME}", (cp.SOURCE_TRUST_ACCOUNT,)),
+    "avance_honoraires": EntryType(
+        "Avance d'honoraires", "argent_clients", "Reçu de",
+        "Ex. : le client qui verse l'avance", _CLIENTS_DOSSIER_FIRST),
+    "remise_tps_tvq": EntryType(
+        "Remise de TPS/TVQ", "tps_tvq", "Administration fiscale",
+        f"Ex. : {cp.TAX_AUTHORITIES[0]}", (cp.SOURCE_TAX_AUTHORITIES,),
+        cp.PREFILL_TAX_AUTHORITY),
+    "remboursement_tps_tvq": EntryType(
+        "Remboursement de TPS/TVQ", "tps_tvq", "Administration fiscale",
+        f"Ex. : {cp.TAX_AUTHORITIES[0]}", (cp.SOURCE_TAX_AUTHORITIES,),
+        cp.PREFILL_TAX_AUTHORITY),
+    # Its own two-leg form; each leg names the other account.
+    "paiement_carte": EntryType(
+        "Paiement de carte", "particulières", "Compte de contrepartie"),
+    # Minted by a reversal, with its original's counterparty.
+    "correction": EntryType("Correction", "particulières", ""),
+}
+VALID_KINDS = tuple(ENTRY_TYPES)
 REVERSAL_KIND = "correction"
 # The kinds outside the firm's results (module docstring): the lawyer's own
 # money, the firm's money moving to or from an account outside this
@@ -191,6 +272,13 @@ EXPENSE_KINDS = ("dépense",)
 REFUND_KINDS = ("remboursement_depense",)
 # The kinds that carry a category and a TPS/TVQ split of their own.
 CATEGORY_KINDS = EXPENSE_KINDS + REFUND_KINDS
+# The kinds the connector's create accepts the supplier's invoice number on
+# (``supplier_invoice_ref``): an expense, its refund and an « Autre
+# recette » (``mcp/handlers._ADMIN_KIND_ARGS``, pinned by
+# tests/test_entry_types.py). Not a rule of the model, which stores the
+# number on any kind: an edit that changes the kind keeps it (merge by
+# presence).
+SUPPLIER_REF_KINDS = CATEGORY_KINDS + ("recette_autre",)
 # The only kinds the create form (and an edit) may carry.
 _SIMPLE_KINDS = (("encaissement_facture", "recette_autre") + CATEGORY_KINDS
                  + NON_RESULT_KINDS)
@@ -377,21 +465,8 @@ TX_STATUS_LABELS = {
     "compensée": "Compensée",
     "annulée": "Annulée",
 }
-KIND_LABELS = {
-    "encaissement_facture": "Encaissement de facture",
-    "recette_autre": "Autre recette",
-    "dépense": "Dépense",
-    "prélèvement": "Prélèvement de l'avocat",
-    "apport": "Apport de l'avocat",
-    "remboursement_depense": "Remboursement de dépense",
-    "virement_interne_sortant": "Virement interne (sortant)",
-    "virement_interne_entrant": "Virement interne (entrant)",
-    "avance_honoraires": "Avance d'honoraires",
-    "remise_tps_tvq": "Remise de TPS/TVQ",
-    "remboursement_tps_tvq": "Remboursement de TPS/TVQ",
-    "paiement_carte": "Paiement de carte",
-    "correction": "Correction",
-}
+# Declared in ``ENTRY_TYPES``.
+KIND_LABELS = {kind: entry_type.label for kind, entry_type in ENTRY_TYPES.items()}
 METHOD_LABELS = {
     "chèque": "Chèque",
     "virement": "Virement",
