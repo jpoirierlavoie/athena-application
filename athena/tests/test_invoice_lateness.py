@@ -311,6 +311,40 @@ def test_retirer_le_retard_is_offered_only_while_not_overdue():
         "annulée",)
 
 
+def test_the_status_door_names_a_field_exactly_when_the_transitions_cannot_read():
+    """unreadable_transition_field — what update_status_report refuses by
+    name — names a field exactly when available_transitions, the authority
+    the door then consults, cannot read the invoice: on every status and
+    every pair of stored amounts, an absent key included. An issued
+    invoice's lateness reads its balance (the first field balance_of cannot
+    read); every status reads whether a payment is recorded (amount_paid —
+    absent, None or empty read as none). So nothing falls into the door's
+    generic failure, whose traceback quoted the stored value, and nothing
+    more is refused: a brouillon's amount_due, read by no transition, locks
+    none (second review of lot 2)."""
+    absent = object()
+    values = [absent, *_STORED_AMOUNTS]
+    for status in (*invoice_model.VALID_STATUSES, ""):
+        for due, paid in itertools.product(values, repeat=2):
+            inv = _invoice(status=status)
+            for key, value in (("amount_due", due), ("amount_paid", paid)):
+                if value is absent:
+                    del inv[key]
+                else:
+                    inv[key] = value
+            field = invoice_model.unreadable_transition_field(inv)
+            try:
+                invoice_model.available_transitions(inv, today=date(2031, 3, 10))
+            except Exception:
+                assert field is not None, inv
+                if status in ("envoyée", "en_retard"):
+                    assert field == invoice_model.unreadable_balance_field(inv), inv
+                else:
+                    assert field == "amount_paid", inv
+            else:
+                assert field is None, inv
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 3. The status write — on the fake store
 # ══════════════════════════════════════════════════════════════════════
@@ -474,10 +508,72 @@ def test_an_unreadable_amount_refuses_the_status_write_by_name(
                     if value in logging.Formatter().format(r)]
 
 
-def test_a_brouillon_is_sent_whatever_its_amounts_read(fake, monkeypatch):
-    """The refusal guards the transitions whose judgement reads the balance —
-    an issued invoice's — and no other: « brouillon → envoyée » reads none,
-    before lot 2 as after, so no legacy amount locks it."""
+@pytest.mark.parametrize("status,value", [
+    ("brouillon", "150,00 $"), ("payée", "1 234,56"),
+    ("brouillon", [57312]), ("payée", float("inf")),
+], ids=["brouillon-text", "payee-text", "brouillon-list", "payee-infinite"])
+def test_an_unreadable_amount_paid_refuses_any_status_write_by_name(
+        fake, monkeypatch, caplog, status, value):
+    """Every transition reads whether a payment is recorded — a brouillon's
+    and a payée's too, whose balance lateness never reads
+    (available_transitions: amount_paid). An amount_paid it could not read
+    fell into the generic « Erreur. Veuillez réessayer. », its ERROR
+    traceback quoting the stored value, though the first review's fix said
+    no legacy amount locked another transition: only amount_due's half of
+    that held (second review of lot 2; the read predates the lot). Refused
+    by NAME now, as on an issued invoice — reason montant_illisible, no
+    traceback, nothing written."""
+    fake.seed(f"invoices/{INV}", _invoice(status=status, amount_paid=value))
+    _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
+    before = fake.peek(f"invoices/{INV}")
+    fake.reset_logs()
+    with caplog.at_level(logging.INFO):
+        written, errors = invoice_model.update_status_report(
+            INV, "envoyée", expected_etag=ETAG)
+    assert written is None
+    assert errors == [
+        "Le montant payé enregistré sur cette facture est illisible : son "
+        "changement de statut ne peut pas être jugé, et rien n'a été écrit. "
+        "La facture doit d'abord être réparée."]
+    assert fake.peek(f"invoices/{INV}") == before and fake.commits == []
+    (line,) = [r.json_fields for r in caplog.records if r.name == "pallas.invoice"]
+    assert (line["event"], line["invoice_id"], line["reason"]) == (
+        "invoice_refused", INV, "montant_illisible")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    if isinstance(value, str):
+        assert not [r for r in caplog.records
+                    if value in logging.Formatter().format(r)]
+
+
+@pytest.mark.parametrize("paid", ["absent", None, "", 0],
+                         ids=["absent", "none", "empty", "zero"])
+def test_a_hand_set_payee_reopens_whatever_reads_as_no_payment(
+        fake, monkeypatch, paid):
+    """The by-name refusal reads amount_paid as available_transitions does:
+    absent, None, empty or zero is NO recorded payment — what a « payée »
+    set by hand before 2026-08-17 may carry —, so « Rouvrir la facture »
+    still reopens it (second review of lot 2: refuse what cannot be read,
+    never lock what always could)."""
+    doc = _invoice(status="payée")
+    if paid == "absent":
+        del doc["amount_paid"]
+    else:
+        doc["amount_paid"] = paid
+    fake.seed(f"invoices/{INV}", doc)
+    _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
+    assert invoice_model.update_status(INV, "envoyée", expected_etag=ETAG) == (
+        True, "")
+    assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
+
+
+def test_a_brouillon_is_sent_whatever_its_amount_due_reads(fake, monkeypatch):
+    """RENAMED and narrowed by the second review of lot 2 (it was « …whatever
+    its amounts read », which only amount_due bore out). No transition reads
+    a brouillon's amount_due — lateness reads an issued invoice's balance —,
+    so an unreadable one locks nothing: « brouillon → envoyée » proceeds,
+    before lot 2 as after. Its amount_paid is another matter: every
+    transition reads it, and an unreadable one is refused by name
+    (test_an_unreadable_amount_paid_refuses_any_status_write_by_name)."""
     fake.seed(f"invoices/{INV}", _invoice(status="brouillon",
                                           amount_due="1 234,56"))
     _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))

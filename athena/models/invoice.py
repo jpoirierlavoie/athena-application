@@ -55,7 +55,9 @@ retard » only while it is not — the correction of a mark made before the
 due date, never a waiver. Every caller names its « today »; the status
 write judges with ``today_mtl`` inside its own transaction. A stored amount
 the rule cannot read is named by its field, never judged and never quoted
-(:func:`unreadable_balance_field`).
+(:func:`unreadable_balance_field`); the status write refuses by the same
+name any amount :func:`available_transitions` cannot read, on every status
+(:func:`unreadable_transition_field`).
 """
 
 import logging
@@ -350,6 +352,15 @@ def days_overdue(invoice: dict, *, today: date) -> int:
     return (today - first_overdue_day(invoice)).days + 1
 
 
+def _payment_recorded(invoice: dict) -> bool:
+    """Whether a payment is RECORDED on *invoice* (``amount_paid`` > 0) — the
+    reading of :func:`available_transitions`, on every status: an absent,
+    None, empty or zero amount is none (what a « payée » set by hand before
+    2026-08-17 may carry). Raises on a stored amount ``int()`` cannot read,
+    which :func:`unreadable_transition_field` names beforehand."""
+    return int(invoice.get("amount_paid", 0) or 0) > 0
+
+
 def available_transitions(
     invoice: dict,
     *,
@@ -407,7 +418,7 @@ def available_transitions(
             allowed = tuple(s for s in allowed if s != "en_retard")
         if current == "en_retard" and overdue:
             allowed = tuple(s for s in allowed if s != "envoyée")
-    paid = int(invoice.get("amount_paid", 0) or 0) > 0
+    paid = _payment_recorded(invoice)
     if current == "payée" and paid:
         allowed = tuple(s for s in allowed if s != "envoyée")
     if (
@@ -2069,6 +2080,31 @@ def unreadable_balance_field(invoice: dict) -> Optional[str]:
     return None
 
 
+def unreadable_transition_field(invoice: dict) -> Optional[str]:
+    """The first stored amount :func:`available_transitions` cannot read on
+    *invoice* — its FIELD NAME — or ``None`` when it reads every amount it
+    needs. PURE; ``None`` exactly when available_transitions answers, on
+    every status and every type a Firestore field can hold
+    (``tests/test_invoice_lateness`` pins the two together).
+
+    An issued invoice's lateness reads its balance
+    (:func:`unreadable_balance_field`: ``amount_due``, then ``amount_paid``);
+    every invoice's transitions read whether a payment is recorded
+    (:func:`_payment_recorded`: ``amount_paid``, an absent, None or empty one
+    read as none). No transition reads the ``amount_due`` of a brouillon, a
+    payée or an annulée, so an unreadable one locks none of theirs. What
+    :func:`update_status_report` refuses by name (``montant_illisible``)
+    rather than fail generically, its traceback quoting the value (second
+    review of lot 2)."""
+    if invoice.get("status", "") in _ISSUED_STATUSES:
+        return unreadable_balance_field(invoice)
+    try:
+        _payment_recorded(invoice)
+    except (TypeError, ValueError, OverflowError):
+        return "amount_paid"
+    return None
+
+
 def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optional[str]:
     """Why the invoice's payments cannot be PRINTED as they stand, or ``None``.
 
@@ -2406,12 +2442,19 @@ def update_status_report(
     cause outside it, or ``echeance`` for any status but « en_retard », is a
     caller's bug and raises before anything is read.
 
-    Lateness reads an issued invoice's balance (:func:`balance_of`): a
-    stored amount it cannot read is refused by NAME (reason
+    Every transition reads stored amounts through
+    :func:`available_transitions`: whether a payment is recorded
+    (``amount_paid``, on every status) and, for an issued invoice's
+    lateness, its balance (:func:`balance_of`). An amount it cannot read
+    (:func:`unreadable_transition_field`) is refused by NAME (reason
     ``montant_illisible``, the field in French), never judged — and never
-    the generic failure, whose traceback quoted the value (review of lot 2).
-    Only there: no other transition reads the balance, so no legacy amount
-    locks one.
+    the generic failure, whose traceback quoted the value (reviews of
+    lot 2; the second found every status's ``amount_paid`` still read
+    there, a read older than the lot). Nothing more is refused: no
+    transition reads a brouillon's ``amount_due``, so an unreadable one
+    locks none (« brouillon → envoyée » proceeds, as before lot 2), and an
+    absent, None or empty ``amount_paid`` reads as no payment, as it always
+    did.
     """
     if cause not in STATUS_CAUSES:
         raise ValueError(f"cause inconnue : {cause!r}")
@@ -2434,20 +2477,23 @@ def update_status_report(
             raise concurrency.StaleWrite()
 
         current = invoice.get("status", "")
-        if current in _ISSUED_STATUSES:
-            # Lateness reads THIS invoice's balance (is_overdue → balance_of).
-            # An amount it cannot read is refused by name, never judged:
-            # int()'s error quotes the stored value, and the catch-all below
-            # would log it in its traceback.
-            unreadable = unreadable_balance_field(invoice)
-            if unreadable is not None:
-                label = ("montant dû" if unreadable == "amount_due"
-                         else "montant payé")
-                raise _StatusRefused(
-                    f"Le {label} enregistré sur cette facture est illisible : "
-                    "son retard ne peut pas être jugé, et rien n'a été écrit. "
-                    "La facture doit d'abord être réparée.",
-                    "montant_illisible")
+        # available_transitions reads THIS invoice's stored amounts: whether
+        # a payment is recorded, on every status, and an issued invoice's
+        # balance for its lateness (is_overdue → balance_of). An amount it
+        # cannot read is refused by name, never judged: int()'s error quotes
+        # the stored value, and the catch-all below would log it in its
+        # traceback.
+        unreadable = unreadable_transition_field(invoice)
+        if unreadable is not None:
+            label = ("montant dû" if unreadable == "amount_due"
+                     else "montant payé")
+            judged = ("son retard" if current in _ISSUED_STATUSES
+                      else "son changement de statut")
+            raise _StatusRefused(
+                f"Le {label} enregistré sur cette facture est illisible : "
+                f"{judged} ne peut pas être jugé, et rien n'a été écrit. "
+                "La facture doit d'abord être réparée.",
+                "montant_illisible")
         if new_status not in available_transitions(invoice, today=today_mtl()):
             # Nommer la voie plutôt que de refuser sèchement : la seule raison
             # qu'une facture payée ait de rester fermée est qu'un encaissement

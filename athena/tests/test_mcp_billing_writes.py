@@ -705,6 +705,44 @@ def test_lateness_is_a_fact_retirer_le_retard_only_corrects_an_early_mark(
     assert world.peek(f"invoices/{iid}") == before and world.commits == []
 
 
+def test_an_unreadable_amount_paid_reaches_the_caller_by_name(world):
+    """update_invoice reaches the model's by-name refusal (second review of
+    lot 2): a brouillon whose stored amount_paid cannot be read answered
+    « Erreur. Veuillez réessayer. », the traceback of its ERROR line quoting
+    the stored value."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    world.external_write(f"invoices/{iid}", {
+        **world.peek(f"invoices/{iid}"), "amount_paid": "150,00 $"})
+    before = world.peek(f"invoices/{iid}")
+    world.reset_logs()
+    with pytest.raises(tools.ToolArgumentError,
+                       match="Le montant payé enregistré sur cette facture "
+                             "est illisible") as refused:
+        handlers.update_invoice({"invoice_id": iid, "status": "envoyée",
+                                 "expected_etag": before["etag"]})
+    assert refused.value.reason == "invoice_refused"
+    assert world.peek(f"invoices/{iid}") == before and world.commits == []
+
+
+def test_the_connector_refusal_row_states_the_models_lateness_rule():
+    """OBSERVABILITY.md's mcp_write_refused row says what an invoice_refused
+    status write of update_invoice means. Since lot 2 the MODEL judges those
+    writes inside its transaction — the handler's own due-date check is
+    gone —, so the row names the reasons the model's pallas.invoice line then
+    carries, and no longer states the removed rule: « en_retard » only past
+    the RAW due date, on the handler's clock (second review of lot 2)."""
+    doc = (_ATHENA / "OBSERVABILITY.md").read_text(encoding="utf-8")
+    (row,) = [line for line in doc.splitlines()
+              if line.startswith("| `mcp_write_refused` |")]
+    source = (_ATHENA / "models" / "invoice.py").read_text(encoding="utf-8")
+    for reason in ("pas_en_retard", "retard_avere", "montant_illisible"):
+        assert f'"{reason}"' in source, reason      # a code the model raises
+        assert f"`{reason}`" in row, reason
+    assert "`invoice.is_overdue`" in row
+    assert "only past the due date" not in row
+
+
 def test_every_invoice_row_carries_the_models_lateness_and_conforms(
         world, monkeypatch):
     """is_overdue / days_overdue on the three reads that share the row —

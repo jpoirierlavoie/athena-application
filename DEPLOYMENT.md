@@ -5484,7 +5484,9 @@ Notes:
   the invoices imported from the previous system included — hence the
   switch shipped off and the read-only preview,
   `python -m scripts.apercu_factures_echues` (the same strict read, the
-  same rule, the same order). Display: the invoice list shows
+  same rule, the same order — on the day the NEXT run judges, the night it
+  names, never its own day: an invoice payable all day is late by that
+  night's run). Display: the invoice list shows
   « Échue · N j » under the balance of an overdue invoice — an envoyée one
   too, before the sweep marks it —, the sheet a « Retard » line (« N jours
   (depuis le AAAA-MM-JJ) »), and an early mark's button reads « Retirer le
@@ -5509,8 +5511,9 @@ Notes:
   `invoice_overdue_sweep` (its own helper, `log_invoice_overdue_sweep`);
   `invoice_status_changed` gains `cause` (`manuel` | `echeance`) and
   `via`; `invoice_refused` gains `pas_en_retard`, `retard_avere` and
-  `montant_illisible` (an issued invoice whose stored amount `balance_of`
-  cannot read: refused by name, never judged); two `unexpected` messages,
+  `montant_illisible` (a stored amount `available_transitions` cannot
+  read — an issued invoice's balance, or any invoice's `amount_paid`:
+  refused by name, never judged); two `unexpected` messages,
   « invoice lateness unreadable » logged without a traceback (`field`,
   `error_type`: `int()`'s error quotes the stored amount), and « invoice
   status update failed » now names its `invoice_id` — all in
@@ -5541,23 +5544,30 @@ Notes:
      On the phone (375 px) and the desktop: the invoice list shows
      « Échue · N j » under each overdue balance, an overdue invoice's sheet
      its « Retard » line.
-  3. *The preview*, from `athena/`: `python -m scripts.apercu_factures_echues`
-     — READ-ONLY, it reads production through ADC and writes nothing. The
-     lawyer reviews its list: number, due date, prorogued due date, days
-     late, balance, imported flag — what the first night would mark (at
-     most 100, the rest the following nights). An invoice whose lateness
-     could not be judged (a stored amount it cannot read) is listed apart,
-     by id: the sweep would count it in `errors` every night and never mark
-     it, so it is repaired first.
+  3. *The preview*, from `athena/`, ON THE DAY the switch commit is pushed
+     (again if the push slips to a later day):
+     `python -m scripts.apercu_factures_echues` — READ-ONLY, it reads
+     production through ADC and writes nothing. It judges the night of the
+     next run, which it names (« la nuit du AAAA-MM-JJ, à 00 h 20 »), never
+     its own day: an invoice payable all that day is late by the night, and
+     listed (« Dont N payable(s) jusqu'au … »). The lawyer reviews its list:
+     number, due date, prorogued due date, days late that night, balance,
+     imported flag — what that night would mark (at most 100, the rest the
+     following nights) if the switch is on by then. An invoice whose
+     lateness could not be judged (a stored amount it cannot read) is
+     listed apart, by id: the sweep would count it in `errors` every night
+     and never mark it, so it is repaired first.
   4. *The switch on*: a one-line commit sets `FACTURES_RETARD_ACTIF: "true"`
      in `athena/app.yaml`, pushed on his « push » — that line alone: the
      suite checks its form, never its value
      (`tests/test_taches_factures.py`), so Cloud Build's test step passes.
   5. *The next morning*, the `invoice_overdue_sweep` line:
      `gcloud logging read 'jsonPayload.event="invoice_overdue_sweep"' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.outcome,jsonPayload.marked,jsonPayload.refused,jsonPayload.errors,jsonPayload.remaining)"`
-     — `success`, `marked` the preview's count (capped at 100,
-     `remaining` the rest), `refused` and `errors` 0. A `failure`
-     (`reason` `lecture`) wrote nothing; the next night retries. A
+     — `success`, `marked` the preview's count when the switch took effect
+     on the night the preview named (capped at 100, `remaining` the rest):
+     more if it took effect a later night, by the invoices fallen due in
+     between, and less by those paid since; `refused` and `errors` 0. A
+     `failure` (`reason` `lecture`) wrote nothing; the next night retries. A
      non-zero `errors` names its invoices, one `unexpected` line each with
      its `invoice_id`:
      `gcloud logging read 'jsonPayload.event="unexpected" AND jsonPayload.invoice_id:*' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.message,jsonPayload.invoice_id,jsonPayload.field)"`

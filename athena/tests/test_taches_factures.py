@@ -19,7 +19,9 @@ Pins what fails silently in this machine route:
 - ``/taches/factures/retards`` never collides with the web task list's
   ``/taches/<task_id>``, and the real app registers it CSRF-exempt;
 - ``cron.yaml`` schedules it; the read-only preview
-  (``scripts/apercu_factures_echues``) lists exactly what it would mark.
+  (``scripts/apercu_factures_echues``) lists exactly what its NEXT run would
+  mark — judged on that run's night, never on the day the preview runs, its
+  hour pinned to cron.yaml's.
 
 Through the real route, model and fake Firestore (``tests/_fake_firestore``);
 « today » frozen at the one seam (``tests/_frozen_clock``); a fictitious year
@@ -67,6 +69,11 @@ CRON = {"X-Appengine-Cron": "true"}
 URL = "/taches/factures/retards"
 TODAY = date(2031, 3, 5)                  # a Wednesday, EST
 NIGHT = datetime(2031, 3, 5, 0, 20, tzinfo=MTL).astimezone(UTC)   # the cron's hour
+
+
+def _mtl(*parts: int) -> datetime:
+    """A Montréal wall-clock instant, as the frozen clock takes it (UTC)."""
+    return datetime(*parts, tzinfo=MTL).astimezone(UTC)
 
 
 def _fake_modules() -> list:
@@ -547,6 +554,9 @@ def _cron_jobs() -> list[dict]:
 def test_cron_yaml_schedules_the_sweep_at_0020_montreal():
     (job,) = [j for j in _cron_jobs() if j.get("url") == URL]
     assert job["schedule"] == "every day 00:20"
+    # The preview counts its night from the same hour, restated there for
+    # the computation (second review of lot 2): one source, pinned.
+    assert job["schedule"] == f"every day {apercu.SWEEP_TIME:%H:%M}"
     assert job["timezone"] == "America/Montreal"
     assert job["target"] == "default"
     # Every other job keeps its entry: the file REPLACES the whole table.
@@ -574,15 +584,39 @@ def test_no_text_restates_the_job_count():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 5. The preview — the same read, the same rule, the same order
+# 5. The preview — the same read, the same rule, the same order, on the
+#    night of the next run
 # ══════════════════════════════════════════════════════════════════════
 
+#: The last line of every preview: what a switch turned on later changes.
+_LATER_SWITCH = (
+    "Ce balayage ne marque que si l'interrupteur FACTURES_RETARD_ACTIF est "
+    "allumé d'ici là. Allumé une nuit plus tard, son premier balayage "
+    "marquera aussi les factures devenues échues entre-temps : relancez cet "
+    "aperçu le jour même de l'envoi de l'interrupteur.")
 
-def test_the_preview_lists_what_the_sweep_marks_and_writes_nothing(
-        fake, client, capsys):
+
+@pytest.mark.parametrize("preview_at", [
+    _mtl(2031, 3, 4, 14, 0),     # the eve, in the daytime: the runbook's case
+    _mtl(2031, 3, 5, 0, 10),     # the small hours, before that night's run
+], ids=["eve-daytime", "before-0020"])
+def test_the_preview_lists_what_the_next_night_marks_and_writes_nothing(
+        fake, client, monkeypatch, capsys, preview_at):
+    """REWRITTEN deliberately (second review of lot 2). The preview runs
+    BEFORE the night it predicts — the runbook's order (DEPLOYMENT.md §15:
+    the preview, the switch's push, then the next night) — and judges THAT
+    night's day, never the day it runs: inv-002, due on the eve, is payable
+    all that day and late by the 00:20 run, so the preview lists it, says it
+    was payable until the eve, and the night marks it. The test used to run
+    the preview at the sweep's own instant (NIGHT), which hid the day
+    between them: run on the eve, the preview listed three invoices and the
+    night marked four. From the small hours, the next run is that same
+    night's — never the following one's, which would list inv-003, due that
+    day."""
     _seed_night(fake)
     _seed(fake, "inv-021", due=date(2031, 2, 8), legacy_ref="facture:2030-118",
           imported=True, invoice_number="2030-118")
+    freeze_deadlines(monkeypatch, preview_at)
     fake.reset_logs()
     assert apercu.main([]) == 0
     out = capsys.readouterr().out
@@ -596,46 +630,108 @@ def test_the_preview_lists_what_the_sweep_marks_and_writes_nothing(
         f"2031-F001 | 2031-03-01 | 2031-03-03 | 2 | {balance} | non",
         f"2031-F002 | 2031-03-04 | 2031-03-04 | 1 | {balance} | non",
     ]
-    assert "LECTURE SEULE" in out and "Factures envoyées lues : 6." in out
-    assert (f"4 facture(s) en retard, {format_cents_fr(4 * 57312)} de solde "
-            "en tout.") in out
-    assert "en marquerait 4 (au plus 100 par nuit, les plus anciennes d'abord)." in out
-    # The sweep then marks exactly those, in that order.
+    assert lines[0] == (
+        "Aperçu du prochain balayage des factures échues : la nuit du "
+        "2031-03-05, à 00 h 20 (heure de Montréal). LECTURE SEULE : rien "
+        "n'a été écrit.")
+    assert "Factures envoyées lues : 6." in lines
+    assert (f"4 facture(s) en retard cette nuit-là, "
+            f"{format_cents_fr(4 * 57312)} de solde en tout.") in lines
+    assert ("Dont 1 payable(s) jusqu'au 2031-03-04 inclusivement, en retard "
+            "à compter du 2031-03-05 seulement.") in lines
+    assert ("Le prochain balayage en marquerait 4 (au plus 100 par nuit, les "
+            "plus anciennes d'abord).") in lines
+    assert lines[-1] == _LATER_SWITCH
+    # That night's run marks exactly those, in that order.
+    freeze_deadlines(monkeypatch, NIGHT)
     fake.reset_logs()
-    _run(client)
+    assert _run(client).get_json()["marked"] == 4
     marked = [path.split("/")[1] for c in fake.commits for _op, path in c.ops]
     assert marked == ["inv-004", "inv-021", "inv-001", "inv-002"]
 
 
-def test_the_preview_names_the_remainder_and_the_unjudged():
-    rows = [{"id": f"i{n}", "number": f"N{n}", "due": date(2031, 2, 3),
+def test_an_invoice_payable_on_the_previews_day_is_late_by_its_night(
+        fake, client, monkeypatch, capsys):
+    """The headline the second review of lot 2 caught: run on a Friday
+    afternoon over one invoice due that Friday, the preview said « Aucune
+    facture envoyée n'est en retard aujourd'hui : le premier balayage n'en
+    marquerait aucune » — and the Saturday 00:20 run marked it. It judges
+    that night now."""
+    _seed(fake, "inv-031", due=date(2031, 3, 7))            # a Friday
+    freeze_deadlines(monkeypatch, _mtl(2031, 3, 7, 16, 0))
+    assert apercu.main([]) == 0
+    out = capsys.readouterr().out
+    assert "aucune" not in out.lower()
+    assert "la nuit du 2031-03-08, à 00 h 20" in out
+    assert "Le prochain balayage en marquerait 1 " in out
+    freeze_deadlines(monkeypatch, _mtl(2031, 3, 8, 0, 20))
+    assert _run(client).get_json()["marked"] == 1
+    assert _status(fake, "inv-031") == "en_retard"
+
+
+@pytest.mark.parametrize("local,night", [
+    ((2031, 3, 4, 14, 0), date(2031, 3, 5)),     # daytime: that night's run
+    ((2031, 3, 4, 23, 30), date(2031, 3, 5)),    # 04:30 UTC, already the 5th
+    ((2031, 3, 5, 0, 19), date(2031, 3, 5)),     # that night's run is ahead
+    ((2031, 3, 5, 0, 20), date(2031, 3, 6)),     # it is due: the next one
+    ((2031, 7, 16, 0, 50), date(2031, 7, 17)),   # summer time (UTC−4)
+], ids=["daytime", "evening", "0019", "0020", "edt"])
+def test_the_next_sweep_night_is_read_on_montreals_clock(local, night):
+    """The day the next 00:20 run judges, from Montréal's wall clock — never
+    UTC's, whose day turns over at 19:00 (20:00 in summer) there: from the
+    evening a UTC reading skips a night, from the small hours it skips that
+    night's run."""
+    assert apercu.next_sweep_night(_mtl(*local)) == night
+
+
+_LATE_ROW = {"id": "i0", "number": "N0", "due": date(2031, 2, 3),
              "prorogued": date(2031, 2, 3), "days": 30, "balance_cents": 100,
-             "imported": False} for n in range(3)]
-    lines = apercu.report(rows, ["bad-1"], today=TODAY, seen=4, cap=2)
+             "imported": False}
+
+
+@pytest.mark.parametrize("rows,unjudged", [
+    ([], []), ([], ["bad-1"]), ([_LATE_ROW], []), ([_LATE_ROW], ["bad-1"]),
+], ids=["none", "unjudged-only", "late", "late-and-unjudged"])
+def test_every_preview_names_its_night_and_a_later_switch(rows, unjudged):
+    """Whatever it finds, the preview names the night it judges and ends on
+    what a switch turned on a later night changes — the runbook's « run it
+    on the day of the push » (second review of lot 2)."""
+    lines = apercu.report(rows, unjudged, night=TODAY, seen=3, cap=100)
+    assert "la nuit du 2031-03-05, à 00 h 20 (heure de Montréal)" in lines[0]
+    assert lines[-1] == _LATER_SWITCH
+
+
+def test_the_preview_names_the_remainder_and_the_unjudged():
+    rows = [{**_LATE_ROW, "id": f"i{n}", "number": f"N{n}"} for n in range(3)]
+    lines = apercu.report(rows, ["bad-1"], night=TODAY, seen=4, cap=2)
     text = "\n".join(lines)
-    assert "en marquerait 2 (au plus 2 par nuit, les plus anciennes d'abord) ; " \
-           "1 attendrait les nuits suivantes." in text
+    assert ("Le prochain balayage en marquerait 2 (au plus 2 par nuit, les "
+            "plus anciennes d'abord) ; 1 attendrait les nuits suivantes."
+            ) in lines
     assert "bad-1" in text and "illisible" in text
     assert "aucune" not in text.lower()
+    # None of them is late from that night only.
+    assert not [line for line in lines if line.startswith("Dont ")]
 
 
 def test_the_preview_with_nothing_late_says_so():
-    lines = apercu.report([], [], today=TODAY, seen=2, cap=100)
-    assert any("n'en marquerait aucune" in line for line in lines)
-    assert "Aucune facture envoyée n'est en retard aujourd'hui" in lines[3]
+    lines = apercu.report([], [], night=TODAY, seen=2, cap=100)
+    assert lines[3] == (
+        "Aucune facture envoyée ne serait en retard cette nuit-là : le "
+        "prochain balayage n'en marquerait aucune.")
 
 
 def test_the_preview_never_says_none_is_late_over_the_unjudged():
     """Nothing judged late, but an invoice not judged: its lateness is
     unknown, not absent — the headline says so first, never « Aucune facture
-    envoyée n'est en retard » (review of lot 2: CLAUDE.md « A failed read
+    envoyée ne serait en retard » (review of lot 2: CLAUDE.md « A failed read
     never passes for absence »). The sweep would still mark none."""
-    lines = apercu.report([], ["bad-1"], today=TODAY, seen=2, cap=100)
+    lines = apercu.report([], ["bad-1"], night=TODAY, seen=2, cap=100)
     text = "\n".join(lines)
-    assert "Aucune facture envoyée n'est en retard" not in text
+    assert "Aucune facture envoyée" not in text
     assert lines[3] == (
         "Le retard de 1 facture(s) n'a pu être jugé (ci-dessous) ; aucune "
-        "autre n'est en retard aujourd'hui : le premier balayage n'en "
+        "autre ne serait en retard cette nuit-là : le prochain balayage n'en "
         "marquerait aucune.")
     assert "bad-1" in text and "illisible" in text
 
