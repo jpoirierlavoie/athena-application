@@ -893,6 +893,47 @@ def test_an_encaissement_records_the_payment_in_the_same_operation(fake):
     assert fake.peek("invoices/inv1")["amount_paid"] == 30000
 
 
+# Lot 3a (2026-11-12): a write-off — a dated event on the invoice — settles
+# it « payée » with no payment; while a radiation stands, neither register
+# takes a payment on it (the models' « facture_radiee »), and the handlers
+# repeat that guard FIRST, before their own status check, in the models'
+# words. Invented amounts.
+_RADIATION = {"id": "rad-1", "kind": "radiation", "date": _d(2026, 9, 15),
+              "amount": 100000, "gst_amount": 0, "qst_amount": 0,
+              "tax_claimed": False, "reason": "", "reverses_id": ""}
+
+
+@pytest.mark.parametrize("state", ["payee", "reopened"])
+def test_a_standing_radiation_closes_both_register_tools(fake, state):
+    """« payee »: settled whole by the radiation — without the handlers'
+    repeat, their « must be issued » check refused it in the wrong words.
+    « reopened »: « en_retard », 400 $ owed, the radiation of 600 $ still
+    standing — the model refuses, and the handler relays its sentence."""
+    invoice = fake.peek("invoices/inv1")
+    if state == "payee":
+        invoice.update(status="payée", write_offs=[_RADIATION])
+    else:
+        invoice.update(status="en_retard",
+                       write_offs=[{**_RADIATION, "amount": 60000}])
+    fake.external_write("invoices/inv1", invoice)
+    _cleared_deposit(fake)
+    before = (_entries(fake, "admin_transactions"),
+              _entries(fake, "trust_transactions"), fake.peek("invoices/inv1"))
+    encaissement = _refused("record_admin_entry", account_id="ops1",
+                            kind="encaissement_facture", amount_cents=10000,
+                            date="2026-09-16", method="virement",
+                            invoice_id="inv1", counterparty="Jean Tremblay")
+    assert encaissement.reason == "accounting_refused"
+    assert al._ABORT_MESSAGES["facture_radiee"] in str(encaissement)
+    assert "Annuler la radiation" in str(encaissement)
+    fee = _refused("record_trust_entry", **_fee(10000))
+    assert fee.reason == "accounting_refused"
+    assert trust._abort_message("facture_radiee") in str(fee)
+    assert (_entries(fake, "admin_transactions"),
+            _entries(fake, "trust_transactions"),
+            fake.peek("invoices/inv1")) == before
+
+
 def test_a_card_payment_writes_its_two_legs(fake):
     payload = _call("record_admin_entry", account_id="ops1",
                     kind="paiement_carte", amount_cents=25000,

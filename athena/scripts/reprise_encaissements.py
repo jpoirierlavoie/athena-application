@@ -40,6 +40,14 @@ contre-passation depuis Administration (`_entry_lock_reason`, clauses 5 et 6) ;
 sa seule correction repasserait par la contre-passation du virement au
 fidéicommis, que le juriste refuse. D'où : un export Firestore avant, et un
 premier `--appliquer` sur UN SEUL virement (`--seulement`).
+
+UNE FACTURE RADIÉE N'EST JAMAIS TOUCHÉE (lot 3a). Une facture qui porte une
+radiation, même annulée, ou un avis d'intérêts (`write_offs`,
+`interest_charges` — `models.invoice.repair_script_refusal`) est refusée
+ligne par ligne, et rien n'est écrit : la passe de dépaiement rouvrirait
+par-dessus sa radiation une facture « payée » que la radiation solde, hors
+des portes du modèle qui tiennent ses invariants (le radié ne dépasse jamais
+le dû moins le payé ; « payée » ⇔ soldée).
 """
 
 import argparse
@@ -53,7 +61,12 @@ from typing import Optional
 from models import admin_ledger as al
 from models import db
 from models import trust
-from models.invoice import get_invoice, record_payment, update_status
+from models.invoice import (
+    get_invoice,
+    record_payment,
+    repair_script_refusal,
+    update_status,
+)
 from utils.format_fr import format_cents_fr, parse_cents_fr
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -411,6 +424,14 @@ def planifier(compte_id: str, lignes: list[dict],
             facture = par_numero.get(numero)
             if facture is None:
                 refus.append(f"{tid} : aucune facture « {numero} ».")
+                continue
+            # Lot 3a : une radiation (au lot 4a, un avis d'intérêts) —
+            # AVANT le statut, car une facture radiée est « payée » et la
+            # passe de dépaiement la rouvrirait par-dessus sa radiation.
+            hors_reparation = repair_script_refusal(facture)
+            if hors_reparation:
+                refus.append(f"{tid} : la facture « {numero} » "
+                             f"{hors_reparation}.")
                 continue
             if (facture.get("status") not in STATUTS_EMIS
                     and not _sera_rouverte(facture)):

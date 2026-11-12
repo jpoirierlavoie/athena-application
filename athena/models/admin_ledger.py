@@ -1184,6 +1184,14 @@ _ABORT_MESSAGES = {
         "été écrit — faites vérifier le compte d'administration (contrôle "
         "d'intégrité) avant de contre-passer."
     ),
+    # Lot 3a — a standing radiation settles the invoice: no payment lands on
+    # it until the radiation is cancelled (models/invoice.reverse_write_off).
+    "facture_radiee": (
+        "Une radiation est inscrite sur cette facture : aucun encaissement ne "
+        "s'y porte tant qu'elle tient. Si le client paie, annulez d'abord la "
+        "radiation (« Annuler la radiation », sur la fiche de la facture), "
+        "puis inscrivez l'encaissement."
+    ),
     "facture_non_émise": "La facture doit être émise (envoyée ou en retard).",
     "facture_requise": "Un encaissement de facture doit nommer la facture encaissée.",
     "encaissement_excède_solde": (
@@ -1843,6 +1851,11 @@ def _stage_create(
     if kind == "encaissement_facture":
         if account.get("account_type") != "opérations":
             raise _TxnAbort("encaissement_carte_interdit")
+        # Lot 3a — a standing radiation settles the invoice: refused until it
+        # is cancelled, and BEFORE the status, which a radiation leaves
+        # « payée » (« not issued » would send the lawyer the wrong way).
+        if invoice_model.standing_write_offs(invoice):
+            raise _TxnAbort("facture_radiee")
         if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
             raise _TxnAbort("facture_non_émise")
         # The live balance, from its one authority — never a copy of its
@@ -1955,10 +1968,11 @@ def create_transaction(
     refused in the future. There is no backdating guard and no overdraft
     control — deliberate divergences from trust (module docstring). An
     ``encaissement_facture`` additionally reads its invoice inside the
-    transaction: issued status, and ``amount <= invoice.balance_of`` (the
-    LIVE balance — the cap of trust's fee payment too), on an
-    ``opérations`` account only. Returns ``(entry, [])`` or
-    ``(None, [french_errors])``.
+    transaction: no standing radiation (lot 3a, ``facture_radiee`` — judged
+    first: « Annuler la radiation », then the payment), issued status, and
+    ``amount <= invoice.balance_of`` (the LIVE balance — the cap of trust's
+    fee payment too), on an ``opérations`` account only. Returns
+    ``(entry, [])`` or ``(None, [french_errors])``.
 
     **The payment is written in the SAME commit as the entry (lot 5a, D2).**
     An encaissement stages ``invoice.payment_updates(invoice, amount_paid +

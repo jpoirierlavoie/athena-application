@@ -296,3 +296,35 @@ def test_une_facture_posterieure_a_la_seance_est_refusee(base):
     base["invoices"] = [sans_date]
     cibles, refus = corr._collect()
     assert cibles == [] and "postérieure au 2026-08-17" in refus[0]
+
+
+# Lot 3a (2026-11-12) — données fictives (année 2031, montants inventés).
+_RADIATION = {"id": "rad-1", "kind": "radiation",
+              "date": datetime(2031, 3, 5, tzinfo=timezone.utc), "amount": 39975,
+              "gst_amount": 0, "qst_amount": 0, "tax_claimed": False,
+              "reason": "", "reverses_id": ""}
+_ANNULATION = {**_RADIATION, "id": "cp-1", "kind": "contre_passation",
+               "date": datetime(2031, 3, 6, tzinfo=timezone.utc),
+               "reverses_id": "rad-1"}
+
+
+@pytest.mark.parametrize("champ,valeur,nom", [
+    ("write_offs", [_RADIATION], "une radiation"),
+    ("write_offs", [_RADIATION, _ANNULATION], "une radiation"),   # annulée aussi
+    ("interest_charges", [{"n": 1}], "un avis d'intérêts"),
+], ids=["radiation", "radiation-annulee", "avis-d-interets"])
+def test_une_facture_radiee_n_est_jamais_corrigee(base, champ, valeur, nom):
+    """Lot 3a : ce script écrit le « dû » hors du modèle ; sur une facture
+    qui porte une radiation — même annulée — ou un avis d'intérêts, il
+    romprait ce que leurs portes tiennent. Refusée, nommée, jamais
+    corrigée — alors que tout le reste du cas prouvé tient."""
+    base["invoices"] = [_facture(**{champ: valeur})]
+    base["trust"] = [_virement()]
+    cibles, refus = corr._collect()
+    assert cibles == []
+    assert refus == [f"256501-01 : porte {nom} : un script de réparation ne "
+                     "réécrit jamais ses paiements — NON corrigée"]
+    # Le témoin : sans elle, la même facture est retenue.
+    base["invoices"] = [_facture(**{champ: []})]
+    cibles, refus = corr._collect()
+    assert [c["numero"] for c in cibles] == ["256501-01"] and refus == []

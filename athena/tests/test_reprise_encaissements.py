@@ -576,6 +576,39 @@ def test_une_facture_sans_provision_passe_normalement(monkeypatch, base):
     assert refus == [] and len(actions) == 1
 
 
+# Lot 3a (2026-11-12) — données fictives (année 2031, montants inventés).
+_RADIATION = {"id": "rad-1", "kind": "radiation", "date": _d(2031, 3, 5),
+              "amount": 60068, "gst_amount": 0, "qst_amount": 0,
+              "tax_claimed": False, "reason": "", "reverses_id": ""}
+_ANNULATION = {**_RADIATION, "id": "cp-1", "kind": "contre_passation",
+               "date": _d(2031, 3, 6), "reverses_id": "rad-1"}
+
+
+@pytest.mark.parametrize("statut,champ,valeur,nom", [
+    # « Soldée par radiation » : « payée », que la passe de dépaiement
+    # rouvrirait par-dessus sa radiation sans cette garde.
+    ("payée", "write_offs", [_RADIATION], "une radiation"),
+    ("en_retard", "write_offs", [_RADIATION, _ANNULATION], "une radiation"),
+    ("envoyée", "interest_charges", [{"n": 1}], "un avis d'intérêts"),
+], ids=["soldee-par-radiation", "radiation-annulee", "avis-d-interets"])
+def test_une_facture_radiee_n_est_jamais_touchee(monkeypatch, base, statut,
+                                                 champ, valeur, nom):
+    """Lot 3a : la ligne qui vise une facture portant une radiation — même
+    annulée — ou un avis d'intérêts est refusée, AVANT son statut ; et un
+    refus n'écrit rien du tout (« rien ne sera écrit »)."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=60068,
+                           status=statut, **{champ: valeur})],
+                 [_virement("t1", amount=50000)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": ""},
+    ], None)
+    assert actions == []
+    assert refus == [f"t1 : la facture « A » porte {nom} : un script de "
+                     "réparation ne réécrit jamais ses paiements."]
+
+
 def test_le_total_annonce_est_celui_qui_s_ecrira(monkeypatch, base, capsys):
     """Le chiffre du résumé est celui sur lequel le juriste décide d'écrire.
     Sommer le montant du VIREMENT par action double chaque partage — sur la

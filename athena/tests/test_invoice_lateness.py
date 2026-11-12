@@ -258,6 +258,25 @@ def test_an_unreadable_amount_is_named_never_judged(caplog, field, value):
     assert value not in logging.Formatter().format(record)
 
 
+def test_an_unreadable_write_off_array_is_named_never_judged(caplog):
+    """Lot 3a: the balance reads the write-off events too — a malformed
+    array is named ``write_offs`` by the same line, never judged, never
+    quoted (its amount is no log field)."""
+    good = _invoice(due=date(2031, 3, 3), id="good")
+    bad = _invoice(due=date(2031, 3, 3), id="bad",
+                   write_offs=[{**_RAD, "amount": "1 234,56"}])
+    with caplog.at_level(logging.ERROR):
+        late, unjudged = invoice_model.overdue_among(
+            [bad, good], today=date(2031, 3, 10))
+    assert [inv["id"] for inv in late] == ["good"] and unjudged == ["bad"]
+    (record,) = [r for r in caplog.records
+                 if r.getMessage() == "invoice lateness unreadable"]
+    assert record.json_fields == {"event": "unexpected", "invoice_id": "bad",
+                                  "error_type": "WriteOffsUnreadable",
+                                  "field": "write_offs"}
+    assert "1 234,56" not in logging.Formatter().format(record)
+
+
 # Every kind of value a Firestore field can hand back — a NaN and an infinite
 # double included (int() raises ValueError and OverflowError on them).
 _STORED_AMOUNTS = [0, 57312, -1, "57312", " 12 ", 573.12, True, None, "",
@@ -266,28 +285,76 @@ _STORED_AMOUNTS = [0, 57312, -1, "57312", " 12 ", 573.12, True, None, "",
                    datetime(2031, 3, 3, tzinfo=UTC)]
 
 
+_ABSENT = object()
+
+
+def _utc_event(day: int, hour: int = 0) -> datetime:
+    return datetime(2031, 3, day, hour, tzinfo=UTC)
+
+
+_RAD = {"id": "rad-1", "kind": "radiation", "date": _utc_event(5),
+        "amount": 1000, "gst_amount": 43, "qst_amount": 87,
+        "tax_claimed": True, "reason": "", "reverses_id": ""}
+_CP = {**_RAD, "id": "cp-1", "kind": "contre_passation", "date": _utc_event(6),
+       "reverses_id": "rad-1"}
+
+#: Every shape ``write_offs`` can hold (lot 3a): absent (read as []), the
+#: empty list, None, a value that is no list, well-formed events — standing,
+#: cancelled — and each kind of defect, an orphan contre_passation among them.
+_WRITE_OFF_SHAPES = {
+    "absent": _ABSENT,
+    "empty": [],
+    "none": None,
+    "a-record": {"radiation": 1000},
+    "a-text": "radiation",
+    "standing": [_RAD],
+    "cancelled": [_RAD, _CP],
+    "text-amount": [{**_RAD, "amount": "10,00"}],
+    "bool-amount": [{**_RAD, "amount": True}],
+    "unknown-kind": [{**_RAD, "kind": "remise"}],
+    "orphan-contre-passation": [_CP],
+    "cancelled-twice": [_RAD, _CP, {**_CP, "id": "cp-2"}],
+    "time-of-day": [{**_RAD, "date": _utc_event(5, 14)}],
+}
+
+
+def _first_unreadable(inv: dict) -> object:
+    """The first field of balance_of's reading order whose prefix of the
+    invoice balance_of cannot read — None when it reads them all."""
+    order = invoice_model._BALANCE_FIELDS
+    for i, name in enumerate(order):
+        prefix = {k: inv[k] for k in order[:i + 1] if k in inv}
+        try:
+            invoice_model.balance_of(prefix)
+        except Exception:
+            return name
+    return None
+
+
 def test_the_unreadable_field_is_exactly_what_balance_of_cannot_read():
     """unreadable_balance_field names a field exactly when balance_of raises
-    — the FIRST it reads, amount_due before amount_paid — on every pair of
-    stored values, an absent key included (balance_of reads it as 0)."""
-    absent = object()
-    values = [absent, *_STORED_AMOUNTS]
+    — the FIRST it reads, amount_due before amount_paid before (lot 3a) the
+    write-off events — on every pair of stored values and every shape of the
+    array, an absent key included (balance_of reads amounts as 0, the array
+    as []). Extended deliberately by lot 3a, never loosened: the pairs of
+    stored values are the same, each now crossed with every shape."""
+    assert invoice_model._BALANCE_FIELDS == ("amount_due", "amount_paid",
+                                             "write_offs")
+    values = [_ABSENT, *_STORED_AMOUNTS]
     for due, paid in itertools.product(values, repeat=2):
-        inv = {key: value for key, value in (("amount_due", due),
-                                             ("amount_paid", paid))
-               if value is not absent}
-        try:
-            invoice_model.balance_of(inv)
-        except Exception:
+        for shape in _WRITE_OFF_SHAPES.values():
+            inv = {key: value for key, value in (("amount_due", due),
+                                                 ("amount_paid", paid),
+                                                 ("write_offs", shape))
+                   if value is not _ABSENT}
             try:
-                invoice_model.balance_of(
-                    {k: v for k, v in inv.items() if k == "amount_due"})
-                first = "amount_paid"
+                invoice_model.balance_of(inv)
             except Exception:
-                first = "amount_due"
-            assert invoice_model.unreadable_balance_field(inv) == first, inv
-        else:
-            assert invoice_model.unreadable_balance_field(inv) is None, inv
+                first = _first_unreadable(inv)
+                assert first is not None, inv
+                assert invoice_model.unreadable_balance_field(inv) == first, inv
+            else:
+                assert invoice_model.unreadable_balance_field(inv) is None, inv
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -328,28 +395,43 @@ def test_the_status_door_names_a_field_exactly_when_the_transitions_cannot_read(
     it: third review of lot 2). So nothing falls into the door's
     generic failure, whose traceback quoted the stored value, and nothing
     more is refused: a brouillon's amount_due, read by no transition, locks
-    none (second review of lot 2)."""
-    absent = object()
-    values = [absent, *_STORED_AMOUNTS]
+    none (second review of lot 2).
+
+    Extended deliberately by lot 3a, never loosened: every pair is now
+    crossed with every shape of ``write_offs``. An issued invoice's balance
+    reads the array (``unreadable_balance_field``); a payée's transitions
+    read it after its amount_paid — whether a radiation stands closes
+    « Rouvrir »; a brouillon's and an annulée's never do, so a malformed
+    array locks none of theirs."""
+    values = [_ABSENT, *_STORED_AMOUNTS]
     for status in (*invoice_model.VALID_STATUSES, ""):
         for due, paid in itertools.product(values, repeat=2):
-            inv = _invoice(status=status)
-            for key, value in (("amount_due", due), ("amount_paid", paid)):
-                if value is absent:
-                    del inv[key]
+            for shape in _WRITE_OFF_SHAPES.values():
+                inv = _invoice(status=status)
+                for key, value in (("amount_due", due), ("amount_paid", paid),
+                                   ("write_offs", shape)):
+                    if value is _ABSENT:
+                        inv.pop(key, None)
+                    else:
+                        inv[key] = value
+                field = invoice_model.unreadable_transition_field(inv)
+                try:
+                    invoice_model.available_transitions(inv, today=date(2031, 3, 10))
+                except Exception:
+                    assert field is not None, inv
+                    if status in ("envoyée", "en_retard"):
+                        assert field == invoice_model.unreadable_balance_field(inv), inv
+                    elif status == "payée":
+                        try:
+                            invoice_model._payment_recorded(inv)
+                        except Exception:
+                            assert field == "amount_paid", inv
+                        else:
+                            assert field == "write_offs", inv
+                    else:
+                        assert field == "amount_paid", inv
                 else:
-                    inv[key] = value
-            field = invoice_model.unreadable_transition_field(inv)
-            try:
-                invoice_model.available_transitions(inv, today=date(2031, 3, 10))
-            except Exception:
-                assert field is not None, inv
-                if status in ("envoyée", "en_retard"):
-                    assert field == invoice_model.unreadable_balance_field(inv), inv
-                else:
-                    assert field == "amount_paid", inv
-            else:
-                assert field is None, inv
+                    assert field is None, inv
 
 
 # ══════════════════════════════════════════════════════════════════════

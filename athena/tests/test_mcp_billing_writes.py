@@ -969,6 +969,38 @@ def test_a_void_is_refused_while_a_payment_stands(world):
     assert "annulée" not in got["connector_transitions"]
 
 
+def test_a_payee_settled_by_a_radiation_names_the_lawyers_way_back(world):
+    """Lot 3a (2026-11-12): a write-off settles an invoice « payée » with no
+    payment at all. The connector neither reopens nor voids it — and its
+    refusal no longer sends Claude to contre-passer a register entry that
+    does not exist: only the lawyer cancels a radiation, in the application
+    (« Annuler la radiation »). Nothing written; no transition offered."""
+    invoice = _issued(world)
+    iid = invoice["id"]
+    radiation = {"id": "rad-1", "kind": "radiation",
+                 "date": datetime(2026, 9, 25, tzinfo=UTC),
+                 "amount": invoice["amount_due"], "gst_amount": 0,
+                 "qst_amount": 0, "tax_claimed": False, "reason": "",
+                 "reverses_id": ""}
+    world.external_write(f"invoices/{iid}", {**world.peek(f"invoices/{iid}"),
+                                             "status": "payée",
+                                             "write_offs": [radiation]})
+    before = world.peek(f"invoices/{iid}")
+    world.reset_logs()
+    for args in ({"status": "envoyée"},
+                 {"status": "annulée", "void_reason": "Erreur."}):
+        with pytest.raises(tools.ToolArgumentError) as refused:
+            handlers.update_invoice({"invoice_id": iid,
+                                     "expected_etag": before["etag"], **args})
+        assert refused.value.reason == "invoice_refused"
+        assert "Annuler la radiation" in str(refused.value), args
+        assert "reverse_register_entry" not in str(refused.value), args
+    assert world.peek(f"invoices/{iid}") == before
+    assert world.commits == []
+    got = handlers.get_invoice({"invoice_id": iid})["invoice"]
+    assert got["connector_transitions"] == []
+
+
 def test_a_void_demands_a_reason_and_a_voided_one_is_unchanged(world):
     invoice = _issued(world)
     iid = invoice["id"]

@@ -833,6 +833,9 @@ AdminLedgerOutcome = Literal["success", "refused", "failure"]
 # 2026-11-11 (lot 2 of « Factures : retard, radiation, intérêts »): the
 # daily lateness sweep's one counter line, emitted by its own helper,
 # log_invoice_overdue_sweep — a run has no invoice of its own.
+# 2026-11-12 (lot 3a): the two write-off doors' lines, emitted by their own
+# typed helper, log_invoice_write_off, whose signature holds no amount and
+# no free text — so none can ride along.
 InvoiceEvent = Literal[
     "invoice_created",
     "invoice_status_changed",
@@ -840,8 +843,11 @@ InvoiceEvent = Literal[
     "invoice_draft_updated",
     "invoice_refused",
     "invoice_overdue_sweep",
+    "invoice_written_off",
+    "invoice_write_off_reversed",
 ]
 InvoiceOutcome = Literal["success", "refused"]
+InvoiceWriteOffEvent = Literal["invoice_written_off", "invoice_write_off_reversed"]
 InvoiceSweepOutcome = Literal["success", "failure"]
 # Protocol steps and their linked-task cascade (lot 0b, 2026-09-26). A step
 # status change rewrites a DAV-exposed task behind the caller's back; before
@@ -1343,6 +1349,45 @@ def log_invoice_overdue_sweep(
         fields["reason"] = reason
     level = logging.INFO if outcome == "success" else logging.ERROR
     _emit(_PALLAS_INVOICE, level, "invoice_overdue_sweep", fields)
+
+
+def log_invoice_write_off(
+    event: InvoiceWriteOffEvent,
+    invoice_id: str,
+    *,
+    write_off_id: str,
+    tax_claimed: bool,
+    via: str,
+    status: str,
+    dossier_id: str = "",
+    reverses_id: Optional[str] = None,
+) -> None:
+    """Emit a committed write-off door's ONE line — logger
+    ``pallas.invoice``, at INFO (lot 3a, ``models/invoice``):
+    ``invoice_written_off`` (« Radier le solde ») or
+    ``invoice_write_off_reversed`` (« Annuler la radiation »).
+
+    Ids, the tax flag, the writer's path (``web``, ``script``…) and the
+    invoice's status after: ``write_off_id`` is the event the commit
+    appended, ``reverses_id`` — on a reversal — the radiation it cancels.
+    TYPED on purpose, with no ``**extra``: never an amount (written off, or
+    its TPS/TVQ) and never the reason, a free text — the ``RedactionFilter``
+    scrubs neither. A refusal is an ``invoice_refused`` line (``operation``
+    ``write_off`` or ``write_off_reversal``)."""
+    fields: dict[str, Any] = {
+        "event": event,
+        "outcome": "success",
+        "invoice_id": invoice_id,
+        "write_off_id": write_off_id,
+        "tax_claimed": bool(tax_claimed),
+        "via": via,
+        "status": status,
+    }
+    if dossier_id:
+        fields["dossier_id"] = dossier_id
+    if reverses_id:
+        fields["reverses_id"] = reverses_id
+    _emit(_PALLAS_INVOICE, logging.INFO, event, fields)
 
 
 def log_protocol_event(

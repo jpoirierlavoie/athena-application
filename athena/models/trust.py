@@ -584,6 +584,15 @@ _ABORT_MESSAGES = {
     ),
     "virement_direction": "Un paiement d'honoraires doit être un déboursé.",
     "facture_introuvable": "Facture introuvable.",
+    # Lot 3a — a standing radiation settles the invoice: no fee payment is
+    # imputed on it until the radiation is cancelled
+    # (models/invoice.reverse_write_off).
+    "facture_radiee": (
+        "Une radiation est inscrite sur cette facture : aucun paiement "
+        "d'honoraires ne s'y impute tant qu'elle tient. Annulez d'abord la "
+        "radiation (« Annuler la radiation », sur la fiche de la facture), "
+        "puis inscrivez le paiement."
+    ),
     # D20 (2026-09-29, art. 56 2°) — the check still trusts the invoice's
     # status; the refusal names who attests it (the lawyer) and says the
     # rule, never a way around it (no « promote it first »).
@@ -1411,6 +1420,13 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
         if invoice is not None:
             if invoice_external_ref:
                 raise _TxnAbort("facture_ambiguë")
+            # Lot 3a — a standing radiation settles the invoice: refused
+            # until it is cancelled, and BEFORE the status, which a
+            # radiation leaves « payée ». The fee payment's composite
+            # (models/fee_payment) runs this stage first, so it refuses
+            # here — and the administration stage's twin guard backs it.
+            if invoice_model.standing_write_offs(invoice):
+                raise _TxnAbort("facture_radiee")
             if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
                 raise _TxnAbort("facture_non_émise")
             if invoice.get("dossier_id") != dossier_id:

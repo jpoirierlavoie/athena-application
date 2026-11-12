@@ -21,6 +21,7 @@ bloc du fichier épingle ce nouveau sens.
 Firestore est bouchonné : la transaction est simulée par un faux document.
 """
 
+import itertools
 import os
 import sys
 from datetime import date, datetime, timezone
@@ -477,8 +478,105 @@ _EXPECTED = {
     ("annulée", "au_delà_du_dû"): _VOIDED,
 }
 
+# Lot 3a — the WRITTEN-OFF rows (2026-11-12), written by hand from the
+# lawyer's decisions, NOT replayed against the code before the lot: there,
+# the cap ignored what stands written off and the undo always reopened
+# « envoyée ». Since lot 3a the cap is amount_due less what stands written
+# off (models/invoice.written_off_of), the flip counts a write-off as
+# settling, and the undo reopens « en_retard » whenever the invoice carries
+# ANY write-off event — a write-off happens only past the due date, which
+# never moves. (A new payment on an invoice where a radiation stands never
+# reaches this function: the registers refuse it first, « facture_radiee ».)
+def _radiation(eid: str, amount: int) -> dict:
+    return {"id": eid, "kind": "radiation",
+            "date": datetime(2031, 3, 5, tzinfo=UTC), "amount": amount,
+            "gst_amount": 0, "qst_amount": 0, "tax_claimed": False,
+            "reason": "", "reverses_id": ""}
+
+
+def _cancelled(radiation: dict) -> list[dict]:
+    return [radiation, {**radiation, "id": f"cp-{radiation['id']}",
+                        "kind": "contre_passation",
+                        "date": datetime(2031, 3, 6, tzinfo=UTC),
+                        "reverses_id": radiation["id"]}]
+
+
+def _cap(cents: int) -> str:
+    return (f"Le montant encaissé ne peut pas dépasser le solde dû "
+            f"({cents / 100:.2f} $). Pour un trop-perçu, portez-le au "
+            "fidéicommis plutôt qu'à la facture.")
+
+
+_STATES.update({
+    # « Soldée par radiation »: nothing paid, the whole 1 000 $ written off.
+    "payée_radiée": {"status": "payée", "amount_paid": 0,
+                     "write_offs": [_radiation("r1", 100000)]},
+    # « Payée en partie — solde radié »: 400 $ paid, 600 $ written off.
+    "payée_en_partie_radiée": {
+        "status": "payée", "amount_paid": 40000,
+        "paid_date": datetime(2026, 9, 1, tzinfo=UTC),
+        "write_offs": [_radiation("r1", 60000)]},
+    # Its 400 $ payment reversed since: « en_retard », 400 $ owed, the
+    # radiation still standing.
+    "en_retard_radiation_debout": {"status": "en_retard", "amount_paid": 0,
+                                   "write_offs": [_radiation("r1", 60000)]},
+    # A radiation of the whole, cancelled: nothing stands written off.
+    "en_retard_radiation_annulée": {
+        "status": "en_retard", "amount_paid": 0,
+        "write_offs": _cancelled(_radiation("r1", 100000))},
+    # Paid in full after its radiation was cancelled: its undo reopens
+    # « en_retard » — it carries a write-off event.
+    "payée_inscrite_radiation_annulée": {
+        "status": "payée", "amount_paid": 100000,
+        "paid_date": datetime(2026, 9, 1, tzinfo=UTC),
+        "write_offs": _cancelled(_radiation("r1", 100000))},
+})
+_EXPECTED.update({
+    ("payée_radiée", "zéro"): "payée",
+    ("payée_radiée", "partiel"): _cap(0),
+    ("payée_radiée", "solde_dû"): _cap(0),
+    ("payée_radiée", "au_delà_du_dû"): _cap(0),
+    ("payée_en_partie_radiée", "zéro"): "en_retard",
+    ("payée_en_partie_radiée", "partiel"): "payée",
+    ("payée_en_partie_radiée", "solde_dû"): _cap(40000),
+    ("payée_en_partie_radiée", "au_delà_du_dû"): _cap(40000),
+    ("en_retard_radiation_debout", "zéro"): "en_retard",
+    ("en_retard_radiation_debout", "partiel"): "payée",
+    ("en_retard_radiation_debout", "solde_dû"): _cap(40000),
+    ("en_retard_radiation_debout", "au_delà_du_dû"): _cap(40000),
+    ("en_retard_radiation_annulée", "zéro"): "en_retard",
+    ("en_retard_radiation_annulée", "partiel"): "en_retard",
+    ("en_retard_radiation_annulée", "solde_dû"): "payée",
+    ("en_retard_radiation_annulée", "au_delà_du_dû"): _CAP,
+    ("payée_inscrite_radiation_annulée", "zéro"): "en_retard",
+    ("payée_inscrite_radiation_annulée", "partiel"): "en_retard",
+    ("payée_inscrite_radiation_annulée", "solde_dû"): "payée",
+    ("payée_inscrite_radiation_annulée", "au_delà_du_dû"): _CAP,
+})
+
 _MATRIX = sorted(_EXPECTED)
 _STAMP_KEYS = {"etag", "updated_at", "updated_via", "mcp_updated_at"}
+
+
+def test_the_matrix_covers_every_state_and_amount():
+    """Every state crossed with every amount — the table has no hole."""
+    assert set(_EXPECTED) == set(itertools.product(_STATES, _AMOUNTS))
+
+
+def test_a_reduction_on_a_payee_settled_partly_by_a_radiation_reopens_en_retard():
+    """The bounced cheque: the 400 $ reversed (reducing=True), the 600 $
+    radiation standing — « en_retard », never « envoyée »."""
+    updates = imod.payment_updates(
+        _seeded("payée_en_partie_radiée"), 0, None,
+        now=datetime(2026, 9, 20, tzinfo=UTC), reducing=True)
+    assert updates["status"] == "en_retard" and updates["amount_paid"] == 0
+
+
+def test_a_malformed_write_off_array_raises_never_a_cap_that_ignores_it():
+    invoice = {**_seeded("envoyée"), "write_offs": [{"kind": "radiation"}]}
+    with pytest.raises(imod.WriteOffsUnreadable):
+        imod.payment_updates(invoice, 40000, PAID_ON,
+                             now=datetime(2026, 9, 20, tzinfo=UTC))
 
 
 def _seeded(state: str) -> dict:

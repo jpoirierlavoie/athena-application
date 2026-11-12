@@ -9,7 +9,12 @@ account.
 
 Scope, deliberately narrow: an invoice with ``amount_paid > 0`` and NO
 matching ledger entry (``sum_invoice_receipts`` returning less). A payment
-already backed by the register is left alone — re-running is safe.
+already backed by the register is left alone — re-running is safe. An
+invoice that carries a write-off event, a cancelled one included, or an
+interest charge (``write_offs``, ``interest_charges`` — lot 3a,
+``models.invoice.repair_script_refusal``) is refused and listed, never
+purged: clearing its payment around the write-off doors would break what
+they keep (written off ≤ due − paid, « payée » ⇔ settled).
 
 It does not write Firestore directly. It calls
 ``models.invoice.record_payment(invoice_id, 0)``, which already does the
@@ -49,7 +54,7 @@ from datetime import datetime, timezone
 
 from models import admin_ledger as al
 from models import db
-from models.invoice import record_payment
+from models.invoice import record_payment, repair_script_refusal
 from utils.format_fr import format_cents_fr
 
 #: La séance de purge (2026-08-17). Un paiement inscrit APRÈS cette date
@@ -87,6 +92,15 @@ def _collect() -> tuple[list[dict], list[str]]:
             continue
         if registre >= paye:
             continue  # déjà adossée à la comptabilité
+        # (0) Lot 3a : une radiation (au lot 4a, un avis d'intérêts) — ce
+        # script n'efface jamais le paiement d'une telle facture.
+        hors_reparation = repair_script_refusal(inv)
+        if hors_reparation:
+            erreurs.append(
+                f"{inv.get('invoice_number', snap.id)} : {hors_reparation} "
+                f"— NON purgée."
+            )
+            continue
         # ── Gardes de rejeu (audit 2026-08-26) ──────────────────────────
         # (1) Un paiement daté d'APRÈS la séance de purge n'est pas un
         # vestige : record_payment(id, 0) effacerait une saisie du système

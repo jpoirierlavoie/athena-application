@@ -315,6 +315,13 @@ def message_refus_fideicommis(reason: str) -> str:
     return trust._abort_message(reason)
 
 
+def message_refus_administration(reason: str) -> str:
+    """The administration model's French message for *reason* — the twin of
+    :func:`message_refus_fideicommis`, for the same caller (lot 3a: the
+    connector's encaissement repeats the model's « facture_radiee »)."""
+    return al._ABORT_MESSAGES.get(reason, "Opération refusée.")
+
+
 def contrepasser_ecriture_fideicommis(
     tx_id: str, reason: str, *, expected_etag: Optional[str] = None,
 ) -> dict:

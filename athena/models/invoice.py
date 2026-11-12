@@ -58,6 +58,48 @@ the rule cannot read is named by its field, never judged and never quoted
 (:func:`unreadable_balance_field`); the status write refuses by the same
 name any amount :func:`available_transitions` cannot read, on every status
 (:func:`unreadable_transition_field`).
+
+WRITE-OFFS (« radiation » — lot 3a of « Factures : retard, radiation,
+intérêts », the lawyer's decisions of 2026-11-11, D2 and D3, and the
+defaults adopted with them). A write-off is a dated EVENT on the invoice,
+never a register entry: no money moves, so ``amount_paid`` is never touched
+(check 8 of ``scripts/verify_admin_integrity`` stays exact). The events live
+in ``write_offs``, an APPEND-ONLY array — absent on every invoice until its
+first write-off and read as ``[]`` there (no creation writes it, no
+migration). Each event::
+
+    {"id": <uuid4, minted here>,
+     "kind": "radiation" | "contre_passation",       # WRITE_OFF_KINDS
+     "date": <the Montréal day it was recorded, at midnight UTC — never
+              backdated>,
+     "amount": <cents > 0, taxes included>,
+     "gst_amount": <cents ≥ 0>, "qst_amount": <cents ≥ 0>,
+     "tax_claimed": <bool — both parts 0 when False>,
+     "reason": <at most 500 characters, '' allowed — refused, never
+                altered, when security.sanitize would change it>,
+     "reverses_id": <'' on a radiation; on a contre_passation, the id of
+                     the radiation it cancels, whose four figures it
+                     repeats>,
+     "created_at": <instant>, "created_via": <provenance.VALID_VIA>}
+
+An event is never edited and never removed, so it carries no etag (Rule 7);
+a radiation STANDS while no contre_passation names it. :func:`write_off_events`
+is the one judge of a well-formed array: a malformed one RAISES
+(:class:`WriteOffsUnreadable`) wherever it is read — never counted as 0 —
+and :func:`unreadable_balance_field` names it (``write_offs``).
+:func:`balance_of` subtracts what stands (:func:`written_off_of`). Two doors
+write the events, each ONE transaction against the invoice's etag
+(required): :func:`write_off_remainder` writes off the WHOLE remainder of an
+overdue invoice (:func:`write_off_refusal`, judged on ``today_mtl``), its
+TPS/TVQ parts in proportion of the invoice's ``total``
+(:func:`write_off_tax_parts`), and settles it « payée » — no new status: a
+derived label says how (:func:`settlement_label`); :func:`reverse_write_off`
+cancels one standing radiation by a « contre_passation » dated that day,
+which reopens it « en_retard ». While a radiation stands, a payment is
+refused in both registers (``facture_radiee``) and so are the void
+(``radiation_inscrite``) and « Rouvrir »: « Annuler la radiation » first.
+The one-shot repair scripts refuse an invoice that carries one
+(:func:`repair_script_refusal`).
 """
 
 import logging
@@ -70,12 +112,18 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, concurrency, db, full_reads, provenance
+from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import deadlines
 from utils.deadlines import today_mtl, today_utc
 from utils.format_fr import format_cents_fr
-from utils.logging_setup import log_invoice_event, log_unexpected, sanitize_log_value
+from utils.logging_setup import (
+    log_invoice_event,
+    log_invoice_write_off,
+    log_unexpected,
+    sanitize_log_value,
+)
 from utils.recours import MONTHS, add_period
 
 logger = logging.getLogger(__name__)
@@ -411,6 +459,15 @@ def available_transitions(
     facture en retard que tant qu'elle ne l'est PAS (une marque posée avant
     l'échéance). *today*, le jour de Montréal de l'appelant, est REQUIS : une
     fonction pure ne lit aucune horloge.
+
+    Une radiation qui TIENT (lot 3a, :func:`standing_write_offs`) ferme les
+    mêmes portes qu'un paiement inscrit : « Rouvrir » une facture « payée »
+    qu'elle solde, et « Annuler » — :func:`void_invoice_report` la refuse
+    (``radiation_inscrite``). La voie est « Annuler la radiation »
+    (:func:`reverse_write_off`), qui rouvre la facture d'elle-même. Elle se
+    lit sur une facture émise ou payée seulement (:data:`REVENUE_STATUSES`) :
+    un brouillon n'est jamais en retard, une facture annulée n'a plus de
+    transition.
     """
     _montreal_day(today)
     current = invoice.get("status", "")
@@ -422,10 +479,12 @@ def available_transitions(
         if current == "en_retard" and overdue:
             allowed = tuple(s for s in allowed if s != "envoyée")
     paid = _payment_recorded(invoice)
-    if current == "payée" and paid:
+    radiated = current in REVENUE_STATUSES and bool(standing_write_offs(invoice))
+    if current == "payée" and (paid or radiated):
         allowed = tuple(s for s in allowed if s != "envoyée")
     if (
         paid
+        or radiated
         or any(_standing_admin_encaissement(r) for r in (receipts or ()))
         or any(_standing_trust_fee_payment(r) for r in (trust_payments or ()))
     ):
@@ -2050,37 +2109,211 @@ def list_invoices_page(
         return [], None
 
 
+# ── Write-offs (« radiation », lot 3a — module docstring) ────────────────
+
+#: The kinds of a write-off event: a ``radiation`` writes off an overdue
+#: invoice's whole remainder; a ``contre_passation`` cancels ONE radiation,
+#: whole, repeating its figures. Stored keys: a rename is a migration.
+WRITE_OFF_KINDS = ("radiation", "contre_passation")
+_RADIATION, _CONTRE_PASSATION = WRITE_OFF_KINDS
+
+#: The figures a contre_passation repeats from the radiation it cancels.
+_WRITE_OFF_FIGURES = ("amount", "gst_amount", "qst_amount", "tax_claimed")
+
+#: The ceiling of a write-off's stated reason — refused beyond, never
+#: truncated (the void's own).
+WRITE_OFF_REASON_MAX_LENGTH = 500
+
+
+class WriteOffsUnreadable(ValueError):
+    """The stored ``write_offs`` is not the shape its two doors write.
+
+    Its message names the defect in French, by the event's position — never
+    a stored value: an amount is no log field (CLAUDE.md « Do not log
+    PII »), and a traceback carrying this message quotes nothing.
+    ``scripts/verify_admin_integrity`` (check 13) prints it to the lawyer."""
+
+
+def _is_cents(value: object, *, positive: bool = False) -> bool:
+    """*value* is integer cents — never a bool, a float or a text — ``> 0``
+    when *positive*, ``>= 0`` otherwise."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        return False
+    return value > 0 if positive else value >= 0
+
+
+def _utc_midnight_day(value: object) -> Optional[date]:
+    """The calendar day a date-only value names — a tz-aware instant at
+    midnight UTC, as every date-only field is stored (Rule 5) — or ``None``
+    for anything else (a naive instant, a time of day, a text)."""
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    at = value.astimezone(timezone.utc)
+    if (at.hour, at.minute, at.second, at.microsecond) != (0, 0, 0, 0):
+        return None
+    return at.date()
+
+
+def write_off_events(invoice: dict) -> list[dict]:
+    """The write-off events of *invoice*, in stored (append) order —
+    VALIDATED: ``[]`` when the key is absent, :class:`WriteOffsUnreadable`
+    when the array is not the shape the two doors write. PURE.
+
+    The one judge of a well-formed array — :func:`balance_of`, the doors and
+    check 13 of ``scripts/verify_admin_integrity`` read through it, and so
+    must every other reader of the events (the financial statements, part 2
+    of the lot) — so a malformed event is never counted as 0. Each event
+    is a record with a unique, non-blank ``id``; a ``kind`` of
+    :data:`WRITE_OFF_KINDS`; a ``date`` at midnight UTC; an ``amount`` of
+    cents > 0; a ``gst_amount`` and a ``qst_amount`` of cents ≥ 0 that
+    together do not exceed it; a boolean ``tax_claimed`` (both parts 0 when
+    False); and a text ``reverses_id`` — ``''`` on a radiation, and on a
+    contre_passation the id of a radiation EARLIER in the array, dated no
+    later, whose four figures (:data:`_WRITE_OFF_FIGURES`) it repeats — no
+    radiation cancelled twice. The reason and the stamps move no figure and
+    are not judged here."""
+    events = invoice.get("write_offs", [])
+    if not isinstance(events, list):
+        raise WriteOffsUnreadable("les radiations ne sont pas une liste")
+    seen: set[str] = set()
+    radiations: dict[str, tuple[date, dict]] = {}
+    cancelled: set[str] = set()
+    for position, event in enumerate(events, start=1):
+        where = f"événement n° {position}"
+        if not isinstance(event, dict):
+            raise WriteOffsUnreadable(f"{where} : ce n'est pas un enregistrement")
+        event_id = event.get("id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise WriteOffsUnreadable(f"{where} : identifiant absent")
+        if event_id in seen:
+            raise WriteOffsUnreadable(f"{where} : identifiant en double")
+        seen.add(event_id)
+        kind = event.get("kind")
+        if kind not in WRITE_OFF_KINDS:
+            raise WriteOffsUnreadable(f"{where} : nature inconnue")
+        day = _utc_midnight_day(event.get("date"))
+        if day is None:
+            raise WriteOffsUnreadable(
+                f"{where} : date illisible (un jour, à minuit UTC)")
+        if not _is_cents(event.get("amount"), positive=True):
+            raise WriteOffsUnreadable(
+                f"{where} : montant illisible (des cents entiers, positifs)")
+        if not (_is_cents(event.get("gst_amount"))
+                and _is_cents(event.get("qst_amount"))):
+            raise WriteOffsUnreadable(
+                f"{where} : TPS ou TVQ illisible (des cents entiers)")
+        if event["gst_amount"] + event["qst_amount"] > event["amount"]:
+            raise WriteOffsUnreadable(f"{where} : la TPS et la TVQ dépassent le montant")
+        if not isinstance(event.get("tax_claimed"), bool):
+            raise WriteOffsUnreadable(f"{where} : réclamation des taxes illisible")
+        if not event["tax_claimed"] and (event["gst_amount"] or event["qst_amount"]):
+            raise WriteOffsUnreadable(
+                f"{where} : taxes non réclamées, mais une part de TPS ou de "
+                "TVQ inscrite")
+        reverses = event.get("reverses_id")
+        if not isinstance(reverses, str):
+            raise WriteOffsUnreadable(f"{where} : lien de contre-passation illisible")
+        if kind == _RADIATION:
+            if reverses:
+                raise WriteOffsUnreadable(f"{where} : une radiation ne contre-passe rien")
+            radiations[event_id] = (day, event)
+            continue
+        original = radiations.get(reverses)
+        if original is None:
+            raise WriteOffsUnreadable(
+                f"{where} : contre-passation d'aucune radiation antérieure de "
+                "la facture")
+        if reverses in cancelled:
+            raise WriteOffsUnreadable(f"{where} : radiation déjà contre-passée")
+        radiation_day, radiation = original
+        if any(event[name] != radiation[name] for name in _WRITE_OFF_FIGURES):
+            raise WriteOffsUnreadable(
+                f"{where} : contre-passation dont les montants diffèrent de la "
+                "radiation")
+        if day < radiation_day:
+            raise WriteOffsUnreadable(
+                f"{where} : contre-passation antérieure à sa radiation")
+        cancelled.add(reverses)
+    return list(events)
+
+
+def standing_write_offs(invoice: dict) -> list[dict]:
+    """The radiations of *invoice* that STAND — no contre_passation names
+    them — in stored order. PURE; raises :class:`WriteOffsUnreadable` on a
+    malformed array (:func:`write_off_events`)."""
+    events = write_off_events(invoice)
+    cancelled = {e["reverses_id"] for e in events if e["kind"] == _CONTRE_PASSATION}
+    return [e for e in events
+            if e["kind"] == _RADIATION and e["id"] not in cancelled]
+
+
+def written_off_of(invoice: dict) -> int:
+    """What stands written off *invoice*, in cents, taxes included: the sum
+    of its standing radiations (:func:`standing_write_offs`). DERIVED, never
+    stored. PURE; RAISES on a malformed array — a bad event never counts
+    as 0."""
+    return sum(e["amount"] for e in standing_write_offs(invoice))
+
+
 def balance_of(invoice: dict) -> int:
-    """The live balance in cents: what was due at issuance, less what came in.
+    """The live balance in cents: what was due at issuance, less what came
+    in, less what stands written off (lot 3a, :func:`written_off_of`).
 
     DERIVED, never stored — a stored balance drifts the moment either side
     of the subtraction is written without it. Note the trap it replaces:
     ``amount_due`` is frozen at issuance and stays non-zero on a fully paid
-    invoice, so it has never been a balance despite reading like one.
+    invoice, so it has never been a balance despite reading like one. A
+    stored amount it cannot read raises, and so does a malformed
+    ``write_offs`` (:func:`unreadable_balance_field` names which).
     """
-    return int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+    return (int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+            - written_off_of(invoice))
 
 
-#: The stored amounts :func:`balance_of` reads, in the order it reads them.
-_BALANCE_FIELDS = ("amount_due", "amount_paid")
+#: What :func:`balance_of` reads, in the order it reads it: the two stored
+#: amounts, then the write-off events (lot 3a).
+_BALANCE_FIELDS = ("amount_due", "amount_paid", "write_offs")
+
+
+def _write_offs_unreadable(invoice: dict) -> bool:
+    """True when :func:`written_off_of` cannot read *invoice*'s array."""
+    try:
+        written_off_of(invoice)
+    except WriteOffsUnreadable:
+        return True
+    return False
 
 
 def unreadable_balance_field(invoice: dict) -> Optional[str]:
-    """The first stored amount :func:`balance_of` cannot read — its FIELD
-    NAME, in balance_of's order (``amount_due``, then ``amount_paid``) — or
-    ``None`` when it reads both. PURE; ``None`` exactly when balance_of
-    answers, on every type a Firestore field can hold
-    (``tests/test_invoice_lateness`` pins the two together).
+    """The first thing :func:`balance_of` cannot read — its FIELD NAME, in
+    balance_of's order (``amount_due``, then ``amount_paid``, then, since
+    lot 3a, ``write_offs``) — or ``None`` when it reads them all. PURE;
+    ``None`` exactly when balance_of answers, on every type a Firestore
+    field can hold and every shape of the array (``tests/test_invoice_lateness``
+    pins the two together).
 
     The one way to say WHICH amount is unreadable: ``int()``'s own error
     quotes the stored value, and no log line — its traceback included —
     carries an amount (CLAUDE.md « Do not log PII »; review of lot 2)."""
     for name in _BALANCE_FIELDS:
+        if name == "write_offs":
+            if _write_offs_unreadable(invoice):
+                return name
+            continue
         try:
             int(invoice.get(name, 0))
         except (TypeError, ValueError, OverflowError):
             return name
     return None
+
+
+#: How a refusal names each field :func:`unreadable_balance_field` can
+#: return — the opening of its French sentence, never the stored value.
+_UNREADABLE_OPENINGS = {
+    "amount_due": "Le montant dû enregistré sur cette facture est illisible",
+    "amount_paid": "Le montant payé enregistré sur cette facture est illisible",
+    "write_offs": "Les radiations enregistrées sur cette facture sont illisibles",
+}
 
 
 def unreadable_transition_field(invoice: dict) -> Optional[str]:
@@ -2098,16 +2331,22 @@ def unreadable_transition_field(invoice: dict) -> Optional[str]:
     empty one, which on an issued invoice the strict balance read has
     already refused). No transition reads the ``amount_due`` of a
     brouillon, a payée or an annulée, so an unreadable one locks none of
-    theirs. What
+    theirs. Since lot 3a, a payée's transitions also read whether a
+    radiation stands (``write_offs``, after its ``amount_paid``) — an issued
+    invoice's balance reads it already; a brouillon's and an annulée's never.
+    What
     :func:`update_status_report` refuses by name (``montant_illisible``)
     rather than fail generically, its traceback quoting the value (second
     review of lot 2)."""
-    if invoice.get("status", "") in _ISSUED_STATUSES:
+    status = invoice.get("status", "")
+    if status in _ISSUED_STATUSES:
         return unreadable_balance_field(invoice)
     try:
         _payment_recorded(invoice)
     except (TypeError, ValueError, OverflowError):
         return "amount_paid"
+    if status == "payée" and _write_offs_unreadable(invoice):
+        return "write_offs"
     return None
 
 
@@ -2135,6 +2374,43 @@ def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optio
         return "payments_mismatch"
     if invoice.get("status") == "payée" and balance_of(invoice) > 0:
         return "paid_by_hand"
+    return None
+
+
+def _settled_status(
+    invoice: dict, *, paid: int, written_off: int, carries_write_off: bool,
+) -> Optional[str]:
+    """The status a settlement change leaves on *invoice* — ``None`` to
+    leave it as stored. PURE, and no clock: the ONE rule of
+    :func:`payment_updates` and of the two write-off doors (lot 3a).
+
+    *invoice* is the stored document, BEFORE the change; *paid* and
+    *written_off* are its settlement AFTER it — ``amount_paid`` and what
+    stands written off (:func:`written_off_of`); *carries_write_off* —
+    whether the invoice carries any write-off event after the change, a
+    cancelled one included.
+
+    * « payée » once ``paid + written_off`` reaches ``amount_due``, from an
+      issued status (envoyée, en_retard);
+    * a « payée » this module settled — a payment recorded, or a radiation
+      standing, before the change — whose settlement now falls short is
+      reopened: « en_retard » when the invoice carries a write-off event (a
+      write-off happens only past the due date, and an issued invoice's due
+      date never moves), « envoyée » otherwise (the daily sweep marks it
+      again once due);
+    * a « payée » set by hand, with nothing recorded, is the lawyer's
+      statement and is never touched.
+
+    The stored ``amount_paid`` is read strictly, on every status, as
+    :func:`payment_updates` always read it: an unreadable one raises.
+    """
+    status = invoice.get("status", "")
+    recorded_before = (int(invoice.get("amount_paid", 0)) > 0
+                       or written_off_of(invoice) > 0)
+    if paid + written_off >= int(invoice.get("amount_due", 0)):
+        return "payée" if status in _ISSUED_STATUSES else None
+    if status == "payée" and recorded_before:
+        return "en_retard" if carries_write_off else "envoyée"
     return None
 
 
@@ -2177,16 +2453,26 @@ def payment_updates(
       invoice voided since, and leaves its status alone. ``reducing`` never
       raises the amount: a caller that passes more than what is recorded is
       refused, not obeyed;
-    * the cap is ``amount_due``, NEVER ``total``: with a retainer applied,
+    * the cap is ``amount_due`` less what stands written off (lot 3a,
+      :func:`written_off_of`), NEVER ``total``: with a retainer applied,
       ``amount_due < total``, and capping on the total let a payment land
-      between the two — a negative balance with nothing to explain it;
-    * the balance reaching zero flips ``envoyée``/``en_retard`` to ``payée``;
-    * a correction that reopens a balance undoes that flip — and ONLY that
-      flip: a ``payée`` with a RECORDED payment (``amount_paid > 0`` before
-      this write) goes back to ``envoyée``; a ``payée`` set by hand, with
-      nothing recorded, is the lawyer's statement and is never touched;
+      between the two — a negative balance with nothing to explain it; and
+      a written-off remainder is no longer owed;
+    * the status follows :func:`_settled_status`, the one settlement rule
+      it shares with the two write-off doors: the balance reaching zero
+      flips ``envoyée``/``en_retard`` to ``payée``; a correction that
+      reopens a balance undoes that flip — and ONLY that flip: a ``payée``
+      a payment or a radiation settled goes back to ``en_retard`` when the
+      invoice carries a write-off event, to ``envoyée`` otherwise; a
+      ``payée`` set by hand, with nothing recorded, is the lawyer's
+      statement and is never touched;
     * ``paid_date`` is ``None`` once nothing is paid (a stale date would
       read as « paid on that day »).
+
+    A new payment on an invoice where a radiation stands is refused BEFORE
+    this function, by the registers' own guard (``facture_radiee``): the
+    computation itself only caps and settles. A malformed ``write_offs``
+    raises :class:`WriteOffsUnreadable` (never a cap that ignores it).
     """
     if not isinstance(new_amount_paid, int) or isinstance(new_amount_paid, bool):
         raise PaymentRefused("Le montant encaissé doit être un nombre entier de cents.")
@@ -2215,12 +2501,14 @@ def payment_updates(
     # applied, amount_due < total, and capping on `total` let a payment
     # land between the two — producing a NEGATIVE balance with nothing
     # to explain it. An overpayment is a real event, but recording it
-    # here would silently corrupt the balance rather than report it.
-    due = int(invoice.get("amount_due", 0))
-    if amount > due:
+    # here would silently corrupt the balance rather than report it. What
+    # stands written off is no longer owed either (lot 3a).
+    written_off = written_off_of(invoice)
+    cap = int(invoice.get("amount_due", 0)) - written_off
+    if amount > cap:
         raise PaymentRefused(
             "Le montant encaissé ne peut pas dépasser le solde dû "
-            f"({due / 100:.2f} $). Pour un trop-perçu, portez-le au "
+            f"({cap / 100:.2f} $). Pour un trop-perçu, portez-le au "
             "fidéicommis plutôt qu'à la facture."
         )
 
@@ -2232,12 +2520,12 @@ def payment_updates(
         **provenance.update_fields(now),
     }
 
-    had_recorded_payment = int(invoice.get("amount_paid", 0)) > 0
-    if amount >= due and status in ("envoyée", "en_retard"):
-        updates["status"] = "payée"
-    elif amount < due and status == "payée" and had_recorded_payment:
-        # Undo OUR OWN flip only — see the docstring.
-        updates["status"] = "envoyée"
+    # The flip and its narrow undo — see the docstring and _settled_status.
+    settled = _settled_status(
+        invoice, paid=amount, written_off=written_off,
+        carries_write_off=bool(write_off_events(invoice)))
+    if settled is not None:
+        updates["status"] = settled
     return updates
 
 
@@ -2281,7 +2569,8 @@ def record_payment(
 
     * balance reaches zero → the invoice flips to ``payée``;
     * a CORRECTION that reopens a balance undoes that flip, back to
-      ``envoyée``.
+      ``envoyée`` — ``en_retard`` when the invoice carries a write-off
+      event (lot 3a, :func:`_settled_status`).
 
     That second half is not a nicety. ``payée`` does now have a manual exit
     (``payée → envoyée``), but ``available_transitions`` closes it the moment
@@ -2468,6 +2757,13 @@ def update_status_report(
     neither « envoyée → en_retard » nor « en_retard → envoyée », which went
     through on it before lot 2, can be judged (third review of lot 2: this
     docstring said every None or empty one read as no payment).
+
+    Since lot 3a the balance also reads the write-off events, and a payée's
+    transitions read whether a radiation stands: a malformed ``write_offs``
+    is refused by name the same way (« Les radiations enregistrées sur
+    cette facture sont illisibles »). « Rouvrir » a payée that a standing
+    radiation settles is refused naming its way back, « Annuler la
+    radiation » (reason ``radiation_inscrite``).
     """
     if cause not in STATUS_CAUSES:
         raise ValueError(f"cause inconnue : {cause!r}")
@@ -2498,19 +2794,25 @@ def update_status_report(
         # traceback.
         unreadable = unreadable_transition_field(invoice)
         if unreadable is not None:
-            label = ("montant dû" if unreadable == "amount_due"
-                     else "montant payé")
             judged = ("son retard" if current in _ISSUED_STATUSES
                       else "son changement de statut")
             raise _StatusRefused(
-                f"Le {label} enregistré sur cette facture est illisible : "
-                f"{judged} ne peut pas être jugé, et rien n'a été écrit. "
-                "La facture doit d'abord être réparée.",
+                f"{_UNREADABLE_OPENINGS[unreadable]} : {judged} ne peut pas "
+                "être jugé, et rien n'a été écrit. La facture doit d'abord "
+                "être réparée.",
                 "montant_illisible")
         if new_status not in available_transitions(invoice, today=today_mtl()):
             # Nommer la voie plutôt que de refuser sèchement : la seule raison
             # qu'une facture payée ait de rester fermée est qu'un encaissement
-            # l'adosse, et cet encaissement a son propre chemin de correction.
+            # l'adosse, et cet encaissement a son propre chemin de correction
+            # — ou, depuis le lot 3a, qu'une radiation la solde, et c'est
+            # « Annuler la radiation » qui la rouvre.
+            if (current == "payée" and new_status == "envoyée"
+                    and standing_write_offs(invoice)):
+                raise _StatusRefused(
+                    "Cette facture est soldée par une radiation : « Annuler "
+                    "la radiation », sur sa fiche, la rouvrira d'elle-même.",
+                    "radiation_inscrite")
             if current == "payée" and new_status == "envoyée":
                 raise _StatusRefused(
                     "Cette facture porte un encaissement inscrit au grand livre. "
@@ -2615,7 +2917,10 @@ def void_invoice_report(
     * the administration entries and the trust payments imputed on it.
 
     Refused — nothing written — when the invoice is missing, already
-    annulée, payée, not the version *expected_etag* names, or when money
+    annulée, settled by a radiation that still stands (lot 3a,
+    ``radiation_inscrite``: « Annuler la radiation » first — judged before
+    « payée », whose sentence names an encaissement), payée, not the version
+    *expected_etag* names, or when money
     still stands on it: a recorded ``amount_paid``, a standing
     ``encaissement_facture`` in « Administration », a standing
     ``virement_honoraires`` in « Fidéicommis ». It used to check the status
@@ -2662,6 +2967,30 @@ def void_invoice_report(
         status = invoice.get("status", "")
         if status == "annulée":
             raise _VoidRefused("Cette facture est déjà annulée.", "deja_annulee")
+        # Lot 3a — a standing radiation settles the invoice as money does: it
+        # is cancelled first, by its own door. Before « payée », whose
+        # sentence (an encaissement, or a status set by hand) would send the
+        # lawyer the wrong way on an invoice a radiation settles. The void
+        # reads no balance, so an unreadable array is refused under a code
+        # of its own — never the balance doors' unreadable-amount code,
+        # which the void has never answered (DEPLOYMENT.md §15, lot 2,
+        # item 1).
+        try:
+            radiated = bool(standing_write_offs(invoice))
+        except WriteOffsUnreadable:
+            raise _VoidRefused(
+                f"{_UNREADABLE_OPENINGS['write_offs']} : l'annulation ne peut "
+                "pas être jugée, et rien n'a été annulé. La facture doit "
+                "d'abord être réparée.",
+                "radiations_illisibles",
+            ) from None
+        if radiated:
+            raise _VoidRefused(
+                "Une radiation est inscrite sur cette facture : annulez-la "
+                "d'abord (« Annuler la radiation », sur sa fiche), puis "
+                "annulez la facture. Rien n'a été annulé.",
+                "radiation_inscrite",
+            )
         if status == "payée":
             raise _VoidRefused(
                 "Impossible d'annuler une facture déjà payée : contre-passez "
@@ -2844,6 +3173,608 @@ def void_invoice(
     if errors:
         return False, errors[0]
     return True, ""
+
+
+# ── Write-offs: the derived readers and the two doors (lot 3a) ───────────
+
+#: How a « payée » reads once a radiation settles it — no new status (the
+#: default the lawyer adopted on 2026-11-11): :func:`settlement_label`.
+SETTLED_BY_WRITE_OFF_LABEL = "Soldée par radiation"
+PARTLY_PAID_WRITTEN_OFF_LABEL = "Payée en partie — solde radié"
+
+
+def settlement_label(invoice: dict) -> str:
+    """How *invoice*'s status reads, a « payée » saying HOW it was settled:
+    « Payée »; « Soldée par radiation » when a radiation stands and nothing
+    is paid; « Payée en partie — solde radié » when both. Any other status
+    reads as its own label (:data:`STATUS_LABELS`). PURE; raises on a
+    malformed ``write_offs`` (:class:`WriteOffsUnreadable`) or an unreadable
+    ``amount_paid``."""
+    status = invoice.get("status", "")
+    if status != "payée":
+        return STATUS_LABELS.get(status, status)
+    if not standing_write_offs(invoice):
+        return STATUS_LABELS["payée"]
+    if _payment_recorded(invoice):
+        return PARTLY_PAID_WRITTEN_OFF_LABEL
+    return SETTLED_BY_WRITE_OFF_LABEL
+
+
+def write_off_refusal(invoice: dict, *, today: date) -> str:
+    """``''`` EXACTLY when *invoice*'s remainder may be written off on
+    *today* — when it is overdue (:func:`is_overdue`, the one authority of
+    lateness) — otherwise why not, in French. PURE; *today* is the caller's
+    Montréal day (``utils.deadlines.today_mtl``), required. The door judges
+    it inside its transaction; a page offers « Radier le solde » only when it
+    answers ``''``. A stored amount or a ``write_offs`` that cannot be read
+    raises, as everywhere they are read."""
+    if is_overdue(invoice, today=today):
+        return ""
+    status = invoice.get("status", "")
+    if status == "brouillon":
+        return ("Cette facture est encore un brouillon : seul le solde d'une "
+                "facture en retard se radie.")
+    if status == "annulée":
+        return "Cette facture est annulée : il n'y a rien à radier."
+    if status == "payée":
+        return (f"Cette facture est « {settlement_label(invoice)} » : il n'y "
+                "a plus de solde à radier.")
+    if status not in _ISSUED_STATUSES:
+        return "Seul le solde d'une facture en retard se radie."
+    if balance_of(invoice) <= 0:
+        return "Cette facture n'a plus de solde dû : il n'y a rien à radier."
+    first = first_overdue_day(invoice)
+    if first is None:
+        return ("Cette facture n'a pas de date d'échéance : elle n'est jamais "
+                "en retard, et son solde ne se radie pas.")
+    return ("L'échéance de cette facture n'est pas passée : son solde ne se "
+            f"radie qu'une fois la facture en retard, à compter du "
+            f"{first.isoformat()} (une échéance qui tombe un samedi, un "
+            "dimanche ou un jour férié est reportée au jour ouvrable "
+            "suivant).")
+
+
+def write_off_tax_parts(invoice: dict, amount: int) -> tuple[int, int]:
+    """``(gst, qst)`` — the TPS and the TVQ inside *amount*, a write-off of
+    *invoice* (D3, the lawyer's decision of 2026-11-11): each the invoice's
+    own tax (``gst_amount``, ``qst_amount``) in proportion of its ``total``,
+    taxes included — ``round_half_up(amount × tax ÷ total)``, once for each,
+    in ``Decimal``; ``(0, 0)`` when the total is 0. The ``total``, NEVER
+    ``amount_due``: an applied retainer makes ``amount_due < total``, and
+    the tax in the remainder is that of what was billed. PURE; raises
+    ``ValueError`` on a figure that is not integer cents ≥ 0, or on taxes
+    beyond the total — never a guess. (The plan's « For your accountant »,
+    point 1: the fraction's fairness on an invoice that mixes taxed fees and
+    untaxed disbursements is his to confirm.)"""
+    if not _is_cents(amount):
+        raise ValueError("amount : des cents entiers, positifs ou nuls")
+    figures = {name: invoice.get(name)
+               for name in ("total", "gst_amount", "qst_amount")}
+    for name, value in figures.items():
+        if not _is_cents(value):
+            raise ValueError(f"{name} : des cents entiers, positifs ou nuls")
+    total = figures["total"]
+    if figures["gst_amount"] + figures["qst_amount"] > total:
+        raise ValueError("gst_amount et qst_amount dépassent total")
+    if total == 0:
+        return 0, 0
+
+    def _part(tax: int) -> int:
+        return int((Decimal(amount) * Decimal(tax) / Decimal(total))
+                   .quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    return _part(figures["gst_amount"]), _part(figures["qst_amount"])
+
+
+#: What a one-shot repair script never rewrites the payments of: an invoice
+#: carrying write-off events (lot 3a) or interest charges (« avis
+#: d'intérêts », lot 4a). Such a script writes around the model's doors —
+#: each says so in its docstring —, and on such an invoice it would break
+#: what those doors keep: written off ≤ due − paid, « payée » ⇔ settled.
+REPAIR_REFUSED_KEYS = ("write_offs", "interest_charges")
+_REPAIR_REFUSED_WHAT = {
+    "write_offs": "une radiation",
+    "interest_charges": "un avis d'intérêts",
+}
+
+
+def repair_script_refusal(invoice: dict) -> str:
+    """``''`` when a one-shot repair script may rewrite *invoice*'s payment
+    fields; otherwise why not, as a French clause the script completes
+    (« porte une radiation : … »). PURE. An absent key or an empty list
+    carries nothing; any other value — a malformed one included — refuses.
+    A CANCELLED radiation counts too: its pair is history the scripts never
+    rewrite around."""
+    carried = [_REPAIR_REFUSED_WHAT[key] for key in REPAIR_REFUSED_KEYS
+               if key in invoice and invoice[key] != []]
+    if not carried:
+        return ""
+    return (f"porte {' et '.join(carried)} : un script de réparation ne "
+            "réécrit jamais ses paiements")
+
+
+class _WriteOffRefused(Exception):
+    """Refusal raised inside a write-off door's transaction (aborts, never
+    writes). ``reason`` is the machine-stable code the observability event
+    carries; the French sentence is ``str(exc)``."""
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class _WriteOffLanded(Exception):
+    """Raised inside a RE-RUN of a write-off door's transaction that finds
+    THIS call's event already stored: an earlier attempt landed and its
+    answer was lost (the doctrine of :class:`_OwnCommitLandedError` — the
+    ``transactional`` decorator re-runs its body after an ``Aborted`` retry
+    of a commit that landed). The event id is minted once per call and known
+    to no other writer. Judged as a refusal — the invoice already settled,
+    its etag moved — the re-run would report « nothing written » over a
+    write that stands; the door answers it as written instead, from the
+    stored invoice this carries."""
+
+    def __init__(self, invoice: dict) -> None:
+        super().__init__("an earlier attempt of the write-off landed")
+        self.invoice = invoice
+
+
+#: The doors' answer when the caller names no version: a write-off is judged
+#: on the invoice the lawyer saw, so ``expected_etag`` is REQUIRED — there is
+#: no legacy path (reason ``version_requise``).
+WRITE_OFF_VERSION_REQUIRED = (
+    "La version de la facture est requise : rechargez sa fiche, puis "
+    "recommencez. Rien n'a été écrit."
+)
+
+#: Each door's answer when its transaction raised and nothing was written —
+#: no commit was attempted, or the read-back finds none of this call's
+#: event. A commit whose outcome cannot be settled is
+#: ``concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR`` instead, never this.
+WRITE_OFF_NOT_WRITTEN = "La radiation a échoué : rien n'a été écrit. Veuillez réessayer."
+WRITE_OFF_REVERSAL_NOT_WRITTEN = (
+    "L'annulation de la radiation a échoué : rien n'a été écrit. Veuillez "
+    "réessayer."
+)
+
+_DRIFT_ENCAISSEMENTS = (
+    "Les encaissements inscrits au registre d'administration pour cette "
+    "facture ne totalisent pas le montant payé qu'elle affiche : le registre "
+    "et la facture ne concordent plus (contrôle d'intégrité n° 8). Rien n'a "
+    "été radié — faites vérifier le compte d'administration avant de radier "
+    "le solde."
+)
+_DRIFT_FIDEICOMMIS = (
+    "Un paiement d'honoraires tiré du fidéicommis vise cette facture sans "
+    "encaissement qui lui soit lié au registre d'administration : le "
+    "fidéicommis, le registre et la facture ne concordent plus. Rien n'a été "
+    "radié — faites vérifier les deux registres avant de radier le solde."
+)
+
+
+def _write_off_reason_text(reason: object, *, label: str) -> tuple[str, list[str]]:
+    """The reason as it is STORED — its line breaks read as LF (a browser
+    posts a textarea's as CRLF: :func:`_draft_text`), stripped — and why it
+    is refused rather than altered, ``[]`` if fine. The void's rule, on the
+    exact string stored: over :data:`WRITE_OFF_REASON_MAX_LENGTH` characters,
+    or carrying a « < … > » run that ``sanitize`` would delete, it is
+    REFUSED — never truncated, never stripped. ``''`` is fine."""
+    if not isinstance(reason, str):
+        return "", [f"{label} doit être un texte."]
+    text = reason.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) > WRITE_OFF_REASON_MAX_LENGTH:
+        return text, [
+            f"{label} dépasse {WRITE_OFF_REASON_MAX_LENGTH} caractères "
+            f"({len(text)}) : il n'est jamais tronqué — raccourcissez-le."
+        ]
+    if sanitize(text, max_length=WRITE_OFF_REASON_MAX_LENGTH) != text:
+        return text, [
+            f"{label} contient un passage entre chevrons (< … >) qui serait "
+            "supprimé à l'enregistrement : retirez les chevrons."
+        ]
+    return text, []
+
+
+def _log_write_off_refusal(invoice_id: object, operation: str, reason: str) -> None:
+    """The ``invoice_refused`` line of a write-off door (ids and the code)."""
+    log_invoice_event("invoice_refused", str(invoice_id or ""), outcome="refused",
+                      operation=operation, reason=reason)
+
+
+def _carries_event(invoice: dict, event_id: str) -> bool:
+    """Whether *invoice*'s stored array holds an event of id *event_id* —
+    read leniently: it only tells this call's own landed write apart."""
+    events = invoice.get("write_offs")
+    return isinstance(events, list) and any(
+        isinstance(e, dict) and e.get("id") == event_id for e in events)
+
+
+def _read_for_write_off(ref, transaction, event_id: str, expected_etag: str) -> dict:
+    """The invoice a write-off door reads FIRST in its transaction: absent,
+    refused; carrying this call's own event, an earlier attempt landed
+    (:class:`_WriteOffLanded`) — before any guard judges its new state; not
+    the version the caller saw, stale. The document id is authoritative for
+    ``id``."""
+    snap = ref.get(transaction=transaction)
+    if not snap.exists:
+        raise _WriteOffRefused("Facture introuvable.", "introuvable")
+    invoice = {**(snap.to_dict() or {}), "id": snap.id}
+    if _carries_event(invoice, event_id):
+        raise _WriteOffLanded(invoice)
+    if not concurrency.matches(invoice, expected_etag):
+        raise concurrency.StaleWrite()
+    return invoice
+
+
+def _refuse_unreadable(invoice: dict) -> None:
+    """Refuse by NAME (``montant_illisible``) what :func:`balance_of` cannot
+    read — never judge it, never let ``int()`` quote it in a traceback."""
+    unreadable = unreadable_balance_field(invoice)
+    if unreadable is not None:
+        raise _WriteOffRefused(
+            f"{_UNREADABLE_OPENINGS[unreadable]} : le solde ne peut pas être "
+            "jugé, et rien n'a été écrit. La facture doit d'abord être "
+            "réparée.",
+            "montant_illisible")
+
+
+def _register_rows(invoice_id: str, transaction) -> tuple[list[dict], list[dict]]:
+    """The administration and the trust rows that name *invoice_id*, read
+    inside *transaction* — :func:`void_invoice_report`'s two reads, single-
+    field equalities on the automatic index. The document id is
+    authoritative for ``id``."""
+    def _rows(collection: str) -> list[dict]:
+        return [{**(d.to_dict() or {}), "id": d.id}
+                for d in db.collection(collection)
+                .where(filter=FieldFilter("invoice_id", "==", invoice_id))
+                .stream(transaction=transaction)]
+    return _rows(_ADMIN_TRANSACTIONS), _rows(_TRUST_TRANSACTIONS)
+
+
+def _register_drift(
+    invoice: dict, admin_rows: list[dict], trust_rows: list[dict],
+) -> Optional[_WriteOffRefused]:
+    """Why the registers disagree with what *invoice* records as paid — the
+    two drifts a write-off refuses (the judge's point 13), so that the
+    remainder written off is exactly what the registers say is owed — or
+    ``None``:
+
+    * the standing encaissements (:func:`_standing_admin_encaissement`) do
+      not add up to ``amount_paid`` — check 8's drift
+      (``encaissements_discordants``; an amount that is not integer cents
+      counts as a drift too);
+    * a standing trust fee payment (:func:`_standing_trust_fee_payment`)
+      names the invoice with no standing encaissement linked to it by
+      ``trust_transaction_id`` (``fideicommis_sans_encaissement``)."""
+    standing = [r for r in admin_rows if _standing_admin_encaissement(r)]
+    amounts = [r.get("amount") for r in standing]
+    if (not all(_is_cents(a) for a in amounts)
+            or sum(amounts) != int(invoice.get("amount_paid", 0))):
+        return _WriteOffRefused(_DRIFT_ENCAISSEMENTS, "encaissements_discordants")
+    linked = {str(r.get("trust_transaction_id") or "") for r in standing}
+    if any(_standing_trust_fee_payment(r) and r.get("id") not in linked
+           for r in trust_rows):
+        return _WriteOffRefused(_DRIFT_FIDEICOMMIS, "fideicommis_sans_encaissement")
+    return None
+
+
+def _write_off_day(today: date) -> datetime:
+    """*today* — the Montréal day — as a date-only field is stored: midnight
+    UTC (Rule 5)."""
+    return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+
+
+def _landed_report(invoice: dict, event_id: str) -> dict:
+    """The report of a write whose commit landed — the STORED invoice and
+    this call's event in it."""
+    event = next(e for e in invoice.get("write_offs") or []
+                 if isinstance(e, dict) and e.get("id") == event_id)
+    return {"invoice": invoice, "write_off": event}
+
+
+def _settle_failed_write_off(
+    ref, event_id: str, *, attempted: bool, not_written: str,
+) -> tuple[Optional[dict], list[str]]:
+    """A write-off door's transaction RAISED — settle what happened rather
+    than guess (« Honest outcomes »). No commit attempted: nothing was
+    written. Otherwise the invoice is read back: THIS call's event found,
+    the commit landed and its answer was lost — answered as written;
+    absent, nothing was; the read-back failing too, the outcome is
+    uncertain, never « nothing written »."""
+    if not attempted:
+        return None, [not_written]
+    try:
+        snap = ref.get()
+    except Exception:
+        return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+    stored = {**(snap.to_dict() or {}), "id": snap.id} if snap.exists else None
+    if stored is not None and _carries_event(stored, event_id):
+        return _landed_report(stored, event_id), []
+    return None, [not_written]
+
+
+def _log_write_off_committed(event: str, invoice_id: str, report: dict) -> None:
+    """The ONE line of a committed write-off door, after its commit: ids,
+    the tax flag, the writer's path (the event's own ``created_via``) and the
+    invoice's status after — never an amount, never the reason."""
+    written, entry = report["invoice"], report["write_off"]
+    log_invoice_write_off(
+        event, invoice_id,
+        write_off_id=str(entry.get("id") or ""),
+        reverses_id=str(entry.get("reverses_id") or "") or None,
+        tax_claimed=bool(entry.get("tax_claimed")),
+        via=str(entry.get("created_via") or ""),
+        status=str(written.get("status") or ""),
+        dossier_id=str(written.get("dossier_id") or ""),
+    )
+
+
+def write_off_remainder(
+    invoice_id: str,
+    *,
+    expected_etag: str,
+    reason: str = "",
+    claim_tax: bool = True,
+) -> tuple[Optional[dict], list[str]]:
+    """Write off the WHOLE remainder of an overdue invoice — « Radier le
+    solde » (lot 3a; the lawyer's decisions D2 and D3 and the defaults
+    adopted with them: module docstring). Returns ``(report, errors)``; the
+    report::
+
+        {"invoice": <the invoice as WRITTEN, its new etag included>,
+         "write_off": <the radiation appended>}
+
+    No entry point in this lot: lot 3b's web action calls it. The connector
+    never may — ``mcp/disclosure``'s « invoice_paid » promise forbids the
+    name.
+
+    Judged before anything is read: *claim_tax* must be a bool (a caller's
+    bug raises ``TypeError``); *expected_etag* — the version the lawyer saw —
+    is REQUIRED (``version_requise``: no legacy path); *reason* is stored as
+    :func:`_write_off_reason_text` reads it, refused rather than altered
+    (``motif_invalide``); an id that cannot name an invoice is
+    ``introuvable``.
+
+    ONE Firestore transaction, every read before the write:
+
+    * the invoice — this call's own landed event first
+      (:class:`_WriteOffLanded`), then its etag (``stale_etag``); a stored
+      amount or a ``write_offs`` :func:`balance_of` cannot read is refused
+      by name (``montant_illisible``); it must be overdue on ``today_mtl()``,
+      read inside the transaction (:func:`write_off_refusal`,
+      ``pas_en_retard``);
+    * the administration and the trust rows that name it, read as
+      :func:`void_invoice_report` reads them, and the two register drifts of
+      :func:`_register_drift` refused (``encaissements_discordants``,
+      ``fideicommis_sans_encaissement``).
+
+    Then ``W = balance_of`` — computed here, never typed —, its TPS and TVQ
+    parts when *claim_tax* (:func:`write_off_tax_parts`, on the invoice's
+    ``total``; a tax figure it cannot read refuses, ``taxes_illisibles``),
+    the radiation dated today (Montréal, at midnight UTC) appended to
+    ``write_offs``, the invoice settled through :func:`_settled_status`
+    (« payée »), a fresh etag and the writer's stamps (Rule 7).
+    ``amount_paid`` is never touched.
+
+    After the commit, ONE ``invoice_written_off`` line. A transaction that
+    raised is settled by :func:`_settle_failed_write_off` — never « nothing
+    written » over a write that may stand.
+    """
+    if not isinstance(claim_tax, bool):
+        raise TypeError("claim_tax : un booléen, jamais une autre valeur")
+    operation = "write_off"
+    text, reason_errors = _write_off_reason_text(
+        reason, label="Le motif de la radiation")
+    if not isinstance(expected_etag, str):
+        _log_write_off_refusal(invoice_id, operation, "version_requise")
+        return None, [WRITE_OFF_VERSION_REQUIRED]
+    if reason_errors:
+        _log_write_off_refusal(invoice_id, operation, "motif_invalide")
+        return None, reason_errors
+    if not is_addressable_id(invoice_id):
+        _log_write_off_refusal(invoice_id, operation, "introuvable")
+        return None, ["Facture introuvable."]
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+    event_id = str(uuid.uuid4())
+    attempted = {"commit": False}
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        invoice = _read_for_write_off(ref, transaction, event_id, expected_etag)
+        admin_rows, trust_rows = _register_rows(invoice_id, transaction)
+        # ── every read is done: judge ──
+        today = today_mtl()
+        _refuse_unreadable(invoice)
+        refusal = write_off_refusal(invoice, today=today)
+        if refusal:
+            raise _WriteOffRefused(refusal, "pas_en_retard")
+        drift = _register_drift(invoice, admin_rows, trust_rows)
+        if drift is not None:
+            raise drift
+        remainder = balance_of(invoice)
+        gst = qst = 0
+        if claim_tax:
+            try:
+                gst, qst = write_off_tax_parts(invoice, remainder)
+            except ValueError:
+                raise _WriteOffRefused(
+                    "Le total, la TPS ou la TVQ enregistrés sur cette facture "
+                    "sont illisibles : la part de taxes de la radiation ne "
+                    "peut pas être calculée, et rien n'a été écrit. La "
+                    "facture doit d'abord être réparée.",
+                    "taxes_illisibles") from None
+        now = datetime.now(timezone.utc)
+        event = {
+            "id": event_id,
+            "kind": _RADIATION,
+            "date": _write_off_day(today),
+            "amount": remainder,
+            "gst_amount": gst,
+            "qst_amount": qst,
+            "tax_claimed": claim_tax,
+            "reason": text,
+            "reverses_id": "",
+            "created_at": now,
+            "created_via": provenance.current_via(),
+        }
+        events = list(invoice.get("write_offs") or []) + [event]
+        write_off_events({"write_offs": events})     # well-formed, proved
+        settled = _settled_status(
+            invoice, paid=int(invoice.get("amount_paid", 0)),
+            written_off=written_off_of(invoice) + remainder,
+            carries_write_off=True)
+        updates: dict = {"write_offs": events, **provenance.update_fields(now)}
+        if settled is not None:
+            updates["status"] = settled
+        transaction.update(ref, updates)
+        attempted["commit"] = True
+        return {"invoice": {**invoice, **updates}, "write_off": event}
+
+    try:
+        report = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        _log_write_off_refusal(invoice_id, operation, "stale_etag")
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except _WriteOffRefused as refusal:
+        _log_write_off_refusal(invoice_id, operation, refusal.reason)
+        return None, [str(refusal)]
+    except _WriteOffLanded as landed:
+        report = _landed_report(landed.invoice, event_id)
+    except Exception as exc:
+        # The class only, no traceback: nothing raised here may quote a
+        # stored value into the log (CLAUDE.md « Do not log PII »).
+        log_unexpected("invoice write-off failed", exc_info=False,
+                       invoice_id=invoice_id, error_type=type(exc).__name__,
+                       commit_attempted=attempted["commit"])
+        report, errors = _settle_failed_write_off(
+            ref, event_id, attempted=attempted["commit"],
+            not_written=WRITE_OFF_NOT_WRITTEN)
+        if errors:
+            return None, errors
+    provenance.note_commit(COLLECTION, invoice_id)
+    _log_write_off_committed("invoice_written_off", invoice_id, report)
+    return report, []
+
+
+def _standing_radiation(invoice: dict, event_id: object) -> dict:
+    """The radiation *event_id* names on *invoice*, if it STANDS — refused
+    otherwise: already cancelled (``radiation_deja_annulee``, so a second
+    cancellation is refused), or no radiation of this invoice
+    (``radiation_introuvable`` — a contre_passation is never cancelled)."""
+    for event in standing_write_offs(invoice):
+        if event["id"] == event_id:
+            return event
+    if any(e["kind"] == _RADIATION and e["id"] == event_id
+           for e in write_off_events(invoice)):
+        raise _WriteOffRefused(
+            "Cette radiation est déjà annulée : une radiation ne s'annule "
+            "qu'une fois. Rien n'a été écrit.", "radiation_deja_annulee")
+    raise _WriteOffRefused(
+        "Cette radiation est introuvable sur la facture (seule une radiation "
+        "s'annule, jamais une annulation). Rien n'a été écrit.",
+        "radiation_introuvable")
+
+
+def reverse_write_off(
+    invoice_id: str,
+    event_id: str,
+    *,
+    expected_etag: str,
+    reason: str = "",
+) -> tuple[Optional[dict], list[str]]:
+    """Cancel one standing radiation — « Annuler la radiation » (lot 3a) —
+    by a ``contre_passation`` DATED TODAY that repeats its four figures
+    (:data:`_WRITE_OFF_FIGURES`); the radiation itself is never edited.
+    The way back when the client pays after all: cancel the radiation,
+    record the payment, then write off any new remainder. Returns
+    ``(report, errors)`` — the report of :func:`write_off_remainder`, its
+    ``write_off`` the contre_passation appended.
+
+    The same pre-checks as :func:`write_off_remainder` (``version_requise``,
+    ``motif_invalide``, ``introuvable``) and the same ONE transaction: the
+    invoice read first (this call's own landed event, then ``stale_etag``,
+    then ``montant_illisible``); the radiation must STAND
+    (:func:`_standing_radiation`: ``radiation_deja_annulee``,
+    ``radiation_introuvable``). The invoice is settled again through
+    :func:`_settled_status` — a « payée » that falls short reopens
+    « en_retard », the due date having passed when it was written off —,
+    with a fresh etag and the writer's stamps.
+
+    After the commit, ONE ``invoice_write_off_reversed`` line (ids, the
+    radiation it cancels, the tax flag, the writer's path, the status after
+    — never an amount, never the reason). A transaction that raised is
+    settled as :func:`write_off_remainder`'s is.
+    """
+    operation = "write_off_reversal"
+    text, reason_errors = _write_off_reason_text(
+        reason, label="Le motif de l'annulation de la radiation")
+    if not isinstance(expected_etag, str):
+        _log_write_off_refusal(invoice_id, operation, "version_requise")
+        return None, [WRITE_OFF_VERSION_REQUIRED]
+    if reason_errors:
+        _log_write_off_refusal(invoice_id, operation, "motif_invalide")
+        return None, reason_errors
+    if not is_addressable_id(invoice_id):
+        _log_write_off_refusal(invoice_id, operation, "introuvable")
+        return None, ["Facture introuvable."]
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+    reversal_id = str(uuid.uuid4())
+    attempted = {"commit": False}
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        invoice = _read_for_write_off(ref, transaction, reversal_id, expected_etag)
+        _refuse_unreadable(invoice)
+        radiation = _standing_radiation(invoice, event_id)
+        today = today_mtl()
+        now = datetime.now(timezone.utc)
+        event = {
+            "id": reversal_id,
+            "kind": _CONTRE_PASSATION,
+            "date": _write_off_day(today),
+            **{name: radiation[name] for name in _WRITE_OFF_FIGURES},
+            "reason": text,
+            "reverses_id": radiation["id"],
+            "created_at": now,
+            "created_via": provenance.current_via(),
+        }
+        events = list(invoice.get("write_offs") or []) + [event]
+        write_off_events({"write_offs": events})     # well-formed, proved
+        settled = _settled_status(
+            invoice, paid=int(invoice.get("amount_paid", 0)),
+            written_off=written_off_of(invoice) - radiation["amount"],
+            carries_write_off=True)
+        updates: dict = {"write_offs": events, **provenance.update_fields(now)}
+        if settled is not None:
+            updates["status"] = settled
+        transaction.update(ref, updates)
+        attempted["commit"] = True
+        return {"invoice": {**invoice, **updates}, "write_off": event}
+
+    try:
+        report = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        _log_write_off_refusal(invoice_id, operation, "stale_etag")
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except _WriteOffRefused as refusal:
+        _log_write_off_refusal(invoice_id, operation, refusal.reason)
+        return None, [str(refusal)]
+    except _WriteOffLanded as landed:
+        report = _landed_report(landed.invoice, reversal_id)
+    except Exception as exc:
+        log_unexpected("invoice write-off reversal failed", exc_info=False,
+                       invoice_id=invoice_id, error_type=type(exc).__name__,
+                       commit_attempted=attempted["commit"])
+        report, errors = _settle_failed_write_off(
+            ref, reversal_id, attempted=attempted["commit"],
+            not_written=WRITE_OFF_REVERSAL_NOT_WRITTEN)
+        if errors:
+            return None, errors
+    provenance.note_commit(COLLECTION, invoice_id)
+    _log_write_off_committed("invoice_write_off_reversed", invoice_id, report)
+    return report, []
 
 
 # ── Draft corrections ────────────────────────────────────────────────────
@@ -3273,23 +4204,38 @@ def get_outstanding_total() -> int:
 
 
 def get_invoice_summary(dossier_id: str) -> dict:
-    """Return invoice summary for a dossier."""
+    """Return invoice summary for a dossier — the « Facturation » tab's
+    figures and the connector's ``get_dossier`` / ``get_billing_snapshot``
+    dossier summaries.
+
+    Every invoice but the annulée ones counts (brouillons included), on its
+    ``total``; a « payée » one counts as paid (the hand-set ones too: that
+    status is the lawyer's statement). Since lot 3a, what stands written off
+    (:func:`written_off_of`) is ``total_written_off``, and a « payée »
+    invoice counts ``total − written_off`` as paid: a remainder written off
+    was never received, and is no longer outstanding either —
+    ``total_outstanding`` is what was invoiced less what was paid and
+    written off. A malformed ``write_offs`` raises, as the balance does."""
     invoices = list_invoices(dossier_id=dossier_id)
     total_invoiced = 0
     total_paid = 0
+    total_written_off = 0
     count = 0
 
     for inv in invoices:
         if inv.get("status") == "annulée":
             continue
         count += 1
+        written_off = written_off_of(inv)
         total_invoiced += inv.get("total", 0)
+        total_written_off += written_off
         if inv.get("status") == "payée":
-            total_paid += inv.get("total", 0)
+            total_paid += inv.get("total", 0) - written_off
 
     return {
         "count": count,
         "total_invoiced": total_invoiced,
         "total_paid": total_paid,
-        "total_outstanding": total_invoiced - total_paid,
+        "total_written_off": total_written_off,
+        "total_outstanding": total_invoiced - total_paid - total_written_off,
     }

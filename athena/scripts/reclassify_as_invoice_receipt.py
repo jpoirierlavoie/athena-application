@@ -71,6 +71,12 @@ for an absence
 * the guards of an encaissement (``_stage_create``): an « opérations »
   account, open; an issued invoice; the amount within the LIVE balance; and
   ``payment_updates`` must accept the payment;
+* the invoice carries no write-off event — a cancelled one included — and
+  no interest charge (``write_offs``, ``interest_charges``; lot 3a,
+  ``invoice.repair_script_refusal``): this script writes around the model's
+  doors, and on such an invoice it would break what the write-off doors keep
+  (written off ≤ due − paid, « payée » ⇔ settled) — refused, its balance
+  not even read;
 * the entry: a simple recette of :data:`SOURCE_KINDS`, linked to no invoice,
   no trust entry and no reversal, not annulée, with no category and the zero
   split of a recette, and a trail with room for this write and one
@@ -858,7 +864,12 @@ def _invoice_refusals(account: dict, invoice: dict, amount: int) -> list:
         out.append(al._ABORT_MESSAGES["encaissement_carte_interdit"])
     if account.get("status") != "actif":
         out.append(al._ABORT_MESSAGES["compte_fermé"])
-    if invoice.get("status") not in al._ISSUED_INVOICE_STATUSES:
+    # Lot 3a — a write-off (lot 4a: an interest charge): never rewritten
+    # around the model's doors, and its balance is not even read.
+    beyond_repair = invoice_model.repair_script_refusal(invoice)
+    if beyond_repair:
+        out.append(f"la facture {beyond_repair}")
+    elif invoice.get("status") not in al._ISSUED_INVOICE_STATUSES:
         out.append(al._ABORT_MESSAGES["facture_non_émise"])
     elif amount > invoice_model.balance_of(invoice):
         out.append(al._ABORT_MESSAGES["encaissement_excède_solde"])

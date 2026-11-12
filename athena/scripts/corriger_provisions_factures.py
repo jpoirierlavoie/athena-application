@@ -31,7 +31,12 @@ prouvé :
 - l'invariant d'entrée `amount_due == total − retainer_applied` doit tenir ;
 - la facture ne doit porter AUCUN paiement (`amount_paid == 0`) — l'écraser
   fausserait son solde ;
-- son statut doit être « envoyée » ou « en retard ».
+- son statut doit être « envoyée » ou « en retard » ;
+- elle ne doit porter AUCUNE radiation, même annulée, ni aucun avis
+  d'intérêts (`write_offs`, `interest_charges` — lot 3a,
+  `models.invoice.repair_script_refusal`) : changer son « dû » hors des
+  portes du modèle romprait ce qu'elles tiennent (le radié ne dépasse
+  jamais le dû moins le payé ; « payée » ⇔ soldée).
 
 Fenêtre assumée : entre ce script et la reprise, `get_outstanding_total` monte
 du total des provisions retirées, puis redescend quand les encaissements sont
@@ -48,6 +53,7 @@ from typing import Optional
 
 from models import db
 from models import trust
+from models.invoice import repair_script_refusal
 from utils.format_fr import format_cents_fr as f
 
 #: Statuts d'une facture qui peut encore recevoir un encaissement — miroir de
@@ -153,6 +159,12 @@ def _collect(arbitrage: Optional[dict[str, str]] = None) -> tuple[list[dict], li
         if prov <= 0:
             continue
         num = inv.get("invoice_number", inv["id"])
+        # Lot 3a : une radiation (au lot 4a, un avis d'intérêts) — ce
+        # script écrit hors du modèle, et n'y touche jamais.
+        hors_reparation = repair_script_refusal(inv)
+        if hors_reparation:
+            refus.append(f"{num} : {hors_reparation} — NON corrigée")
+            continue
         # Garde de rejeu : le cas prouvé ne couvre que les factures
         # ANTÉRIEURES à la séance du 2026-08-17 (voir DATE_CORRECTION).
         if (inv.get("created_at") or DATE_CORRECTION) >= DATE_CORRECTION:

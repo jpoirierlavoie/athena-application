@@ -531,6 +531,11 @@ NEVERS: tuple[Never, ...] = (
             "tests/test_mcp_billing_writes.py::"
             "test_update_invoice_can_never_mark_an_invoice_paid"
         ),
+        # Lot 3a: a write-off settles an invoice « payée » with no payment
+        # at all, and its cancellation reopens one — both the lawyer's, in
+        # the application. Swept, so no connector module can reach either
+        # door; the promise's text does not change.
+        forbidden=("write_off_remainder", "reverse_write_off"),
     ),
     Never(
         key="invoice_sources",

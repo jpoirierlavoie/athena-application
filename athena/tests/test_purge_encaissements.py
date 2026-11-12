@@ -122,6 +122,35 @@ def test_un_paiement_posterieur_a_la_seance_est_refuse(monde):
     assert len(erreurs) == 1 and "postérieur au 2026-08-17" in erreurs[0]
 
 
+# Lot 3a (2026-11-12) — données fictives (année 2031, montants inventés).
+_RADIATION = {"id": "rad-1", "kind": "radiation",
+              "date": datetime(2031, 3, 5, tzinfo=UTC), "amount": 48261,
+              "gst_amount": 0, "qst_amount": 0, "tax_claimed": False,
+              "reason": "", "reverses_id": ""}
+_ANNULATION = {**_RADIATION, "id": "cp-1", "kind": "contre_passation",
+               "date": datetime(2031, 3, 6, tzinfo=UTC), "reverses_id": "rad-1"}
+
+
+@pytest.mark.parametrize("champ,valeur,nom", [
+    ("write_offs", [_RADIATION], "une radiation"),
+    ("write_offs", [_RADIATION, _ANNULATION], "une radiation"),
+    ("interest_charges", [{"n": 1}], "un avis d'intérêts"),
+], ids=["radiation", "radiation-annulee", "avis-d-interets"])
+def test_une_facture_radiee_n_est_jamais_purgee(monde, champ, valeur, nom):
+    """Lot 3a : effacer le paiement d'une facture qui porte une radiation —
+    même annulée — ou un avis d'intérêts romprait ce que leurs portes
+    tiennent (le radié ne dépasse jamais le dû moins le payé ; « payée » ⇔
+    soldée). Nommée, jamais purgée — alors qu'elle serait une cible."""
+    monde([_facture("001", **{champ: valeur})])
+    cibles, erreurs = purge._collect()
+    assert cibles == []
+    assert erreurs == [f"2026-F001 : porte {nom} : un script de réparation ne "
+                       "réécrit jamais ses paiements — NON purgée."]
+    monde([_facture("001", **{champ: []})])                 # le témoin
+    cibles, erreurs = purge._collect()
+    assert [c["numero"] for c in cibles] == ["2026-F001"] and erreurs == []
+
+
 def test_les_dix_neuf_payees_sans_montant_ne_sont_pas_touchees(monde):
     """Le statut « payée » posé à la main, sans montant, est la parole de
     l'avocat : la purge n'a rien à y redire."""

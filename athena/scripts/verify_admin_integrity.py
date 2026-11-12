@@ -64,6 +64,22 @@ module deliberately does not have (balances are computed at read). Checks:
      a correction reverses is its ``reverses_kind`` stamp, else its
      original's kind (a reversal by an older release carries no stamp); a
      stamp that contradicts the original is named too.
+ 12. (reserved — the « avis d'intérêts » of lot 4b.)
+ 13. (lot 3a, 2026-11-12) the write-offs, over every invoice, read apart
+     from check 8's sweep (which does not change): the events are
+     well-formed — the vocabulary, the ids, the integer cents, the dates,
+     and every contre_passation naming an earlier radiation of the same
+     invoice with the same figures, none cancelled twice: the model's ONE
+     judge, ``invoice.write_off_events``; what stands written off never
+     exceeds what is due less what is paid; a radiation stands only on a
+     billed invoice (envoyée, en retard, payée); and wherever a settlement
+     is recorded (``amount_paid`` > 0 or any write-off event), a billed
+     invoice is « payée » exactly when its balance (``invoice.balance_of``)
+     is zero — invariant I4. One state the model itself leaves on purpose
+     is a NOTE, not an écart: a « payée » set by hand, with no write-off,
+     whose recorded payment falls short — the lawyer's own statement,
+     which ``invoice.payment_updates`` never touches (the financial
+     statements list its shortfall as « présumé réglé »).
 
 Exit 1 when an écart is found, 2 when only notes are, 0 when clean. Every
 finding prints with a key; ``--revue FICHIER`` names the findings the
@@ -81,6 +97,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import admin_ledger as al
 from models import db
+from models import invoice as invoice_model
 from scripts.findings_review import report
 from tz import to_mtl
 
@@ -107,6 +124,61 @@ def _account_transactions(account_id: str) -> list[dict]:
         .order_by("sequence")
         .stream()
     ]
+
+
+def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
+    """Check 13 (lot 3a) over *invoices* — every invoice read, its document
+    id in ``id``. PURE; ``(problems, notes)`` — see the module docstring.
+    Amounts print in cents, as check 8's do; the reason of an event never
+    prints."""
+    problems: list[str] = []
+    notes: list[str] = []
+    for inv in invoices:
+        label = f"facture {inv.get('invoice_number') or inv.get('id') or '?'}"
+        try:
+            events = invoice_model.write_off_events(inv)
+        except invoice_model.WriteOffsUnreadable as exc:
+            problems.append(f"{label}: radiations mal formées — {exc}")
+            continue
+        try:
+            due = int(inv.get("amount_due", 0))
+            paid = int(inv.get("amount_paid", 0))
+        except (TypeError, ValueError, OverflowError):
+            if events:
+                problems.append(
+                    f"{label}: montant dû ou payé illisible — ses radiations ne "
+                    f"peuvent pas être contrôlées")
+            continue
+        written_off = invoice_model.written_off_of(inv)
+        status = inv.get("status", "")
+        billed = status in invoice_model.REVENUE_STATUSES
+        if written_off and not billed:
+            shown = status or "(sans statut)"
+            problems.append(
+                f"{label}: radiation debout sur une facture « {shown} » — seule "
+                f"une facture émise ou payée se radie, et l'annulation refuse "
+                f"tant qu'une radiation tient")
+        if written_off + paid > due:
+            problems.append(
+                f"{label}: radié {written_off} + payé {paid} > dû {due} (cents) — "
+                f"le radié dépasse ce qui restait dû")
+        if not billed or not (paid > 0 or events):
+            continue
+        balance = invoice_model.balance_of(inv)
+        if (status == "payée") == (balance == 0):
+            continue
+        if status == "payée" and balance > 0 and not events:
+            notes.append(
+                f"{label}: « payée » posée à la main, mais l'encaissement inscrit "
+                f"({paid} cents) laisse un solde de {balance} cents — la "
+                f"déclaration de l'avocat, que le modèle ne touche jamais ; les "
+                f"états financiers présument ce solde réglé")
+        else:
+            problems.append(
+                f"{label}: « {status} » avec un solde de {balance} cents — dès "
+                f"qu'un règlement est inscrit, une facture est « payée » "
+                f"exactement quand son solde est nul (I4)")
+    return problems, notes
 
 
 def collect() -> tuple[list[str], list[str]]:
@@ -389,6 +461,20 @@ def collect() -> tuple[list[str], list[str]]:
                 f"comptabilité est le seul écrivain d'un paiement depuis le "
                 f"2026-08-17; le compte d'opérations est faux de l'écart."
             )
+
+    # 13. The write-offs (lot 3a) — over every invoice, in a read of its
+    # own: check 8's sweep above stays exactly as it was.
+    try:
+        invoices = [{**(snap.to_dict() or {}), "id": snap.id}
+                    for snap in db.collection("invoices").stream()]
+    except Exception as exc:
+        problems.append(
+            f"factures: lecture impossible pour le contrôle 13 "
+            f"({type(exc).__name__})")
+    else:
+        found, noted = _check_write_offs(invoices)
+        problems.extend(found)
+        notes.extend(noted)
 
     return problems, notes
 

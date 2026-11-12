@@ -7136,6 +7136,18 @@ def _invoice_edit_payload(
     }
 
 
+def _settled_by_radiation(invoice: dict) -> bool:
+    """Whether a standing radiation settles *invoice* (lot 3a) — only to
+    choose the wording of a refusal the handler makes anyway: a radiation
+    is cancelled by the lawyer alone, in the application (the connector
+    reaches neither write-off door — mcp/disclosure). An array the model
+    cannot read reads False here: the refusal stands, in its other words."""
+    try:
+        return bool(invoice_model.standing_write_offs(invoice))
+    except invoice_model.WriteOffsUnreadable:
+        return False
+
+
 def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
     invoice_id = invoice.get("id") or args["invoice_id"]
     current = invoice.get("status", "")
@@ -7147,7 +7159,14 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
             warnings=[f"La facture est déjà « {current} » : rien n'a été "
                       "écrit."])
     if (current, target) not in _CONNECTOR_STATUS_MOVES:
-        if current == "payée":
+        if current == "payée" and _settled_by_radiation(invoice):
+            message = (
+                "Cette facture est « payée » : une radiation l'a soldée. Le "
+                "connecteur n'annule jamais une radiation : seul l'avocat le "
+                "fait, dans l'application (« Annuler la radiation ») — la "
+                "facture se rouvrira d'elle-même."
+            )
+        elif current == "payée":
             message = (
                 "Cette facture est « payée ». Le connecteur ne rouvre pas "
                 "une facture payée : si un encaissement l'a soldée, "
@@ -7224,6 +7243,12 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
         return _invoice_edit_payload(
             "void", invoice, previous_status=current, applied=False,
             warnings=["La facture est déjà annulée : rien n'a été écrit."])
+    if current == "payée" and _settled_by_radiation(invoice):
+        raise ToolArgumentError(
+            "Cette facture est soldée par une radiation : seul l'avocat "
+            "l'annule, dans l'application (« Annuler la radiation »), avant "
+            "toute annulation de la facture. Rien n'a été annulé.",
+            reason="invoice_refused")
     if current == "payée":
         raise ToolArgumentError(
             "Cette facture est payée : contre-passez d'abord l'écriture "
@@ -18432,6 +18457,13 @@ def _record_trust_entry_impl(args: dict) -> dict:
             raise ToolArgumentError(refusal.message, reason="accounting_refused")
         # The model's guards, repeated before it in ITS order, each in the
         # model's own words where they are the model's (D20, D21).
+        if invoice_model.standing_write_offs(invoice):
+            # Lot 3a: a standing radiation settles the invoice — judged
+            # before its status, which the radiation leaves « payée ». Only
+            # the lawyer cancels it, in the application.
+            raise ToolArgumentError(
+                comptabilite_service.message_refus_fideicommis("facture_radiee")
+                + " Rien n'a été inscrit.", reason="accounting_refused")
         if invoice.get("status") not in _TRUST_ISSUED:
             # D20 (art. 56 2°): the sending is the lawyer's to attest — the
             # refusal says the rule and who attests, never a way around it.
@@ -18725,6 +18757,13 @@ def _record_admin_entry_impl(args: dict) -> dict:
                 "Un encaissement de facture exige `invoice_id` : la facture "
                 "payée (list_invoices).")
         invoice = _read_invoice_strict(invoice_id)
+        if invoice_model.standing_write_offs(invoice):
+            # Lot 3a — the model's guard, in its order and its words: a
+            # standing radiation settles the invoice (it reads « payée »),
+            # and only the lawyer cancels it, in the application.
+            raise ToolArgumentError(
+                comptabilite_service.message_refus_administration(
+                    "facture_radiee"), reason="accounting_refused")
         if invoice.get("status") not in _TRUST_ISSUED:
             raise ToolArgumentError(
                 "La facture doit être envoyée (ou en retard) pour être "
