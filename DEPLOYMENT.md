@@ -5492,7 +5492,10 @@ Notes:
   date (Rule 5). Through the connector, `_invoice_past_due` and
   `update_invoice`'s own due-date check are gone (the handler's clock and
   the raw due date broke Rule 5): the model judges, and its refusal reaches
-  the caller. `update_invoice`'s description says lateness is automatic;
+  the caller. `update_invoice`'s description says lateness is automatic,
+  `is_overdue` its authority and never the stored status, and that the
+  nightly job marks an overdue invoice only when active — the switch ships
+  off, and off is the rollback too (`is_overdue`'s description likewise);
   the rows of `get_invoice`, `list_invoices` and
   `get_billing_snapshot.outstanding_invoices` gain `is_overdue` and
   `days_overdue`. Change Impact: item 1 — touched: a write narrowed in
@@ -5505,8 +5508,13 @@ Notes:
   not DAV-exposed). Item 3 — not touched. Item 4 — one new event,
   `invoice_overdue_sweep` (its own helper, `log_invoice_overdue_sweep`);
   `invoice_status_changed` gains `cause` (`manuel` | `echeance`) and
-  `via`; `invoice_refused` gains `pas_en_retard` and `retard_avere`; two
-  `unexpected` messages — all in OBSERVABILITY.md. Item 5 — a new machine
+  `via`; `invoice_refused` gains `pas_en_retard`, `retard_avere` and
+  `montant_illisible` (an issued invoice whose stored amount `balance_of`
+  cannot read: refused by name, never judged); two `unexpected` messages,
+  « invoice lateness unreadable » logged without a traceback (`field`,
+  `error_type`: `int()`'s error quotes the stored amount), and « invoice
+  status update failed » now names its `invoice_id` — all in
+  OBSERVABILITY.md. Item 5 — a new machine
   route under `/taches/` on its own CSRF-exempt blueprint (two literal
   segments: no `/taches/<task_id>` rule can match it), guarded by its
   header, and a new setting; no header, CSP, rate limit or prefix change,
@@ -5517,7 +5525,12 @@ Notes:
   overrides nothing on it. In order:
   1. *The push, with the switch OFF* — `app.yaml` ships
      `FACTURES_RETARD_ACTIF: "false"`; no index, no consent train. Cloud
-     Build deploys `cron.yaml` with the new job.
+     Build deploys `cron.yaml` with the new job. Check the value by hand
+     before the push — `git grep -n FACTURES_RETARD_ACTIF athena/app.yaml`
+     reads `"false"`: the suite pins the line's FORM only (one line,
+     `"true"` or `"false"`), since a pinned value would fail the one-line
+     commits of step 4 and of the rollback at Cloud Build's test step,
+     before any deploy.
   2. *Cloud Scheduler lists the new job*: the console's Cloud Scheduler
      page, tab « App Engine Cron jobs », shows `/taches/factures/retards`,
      `every day 00:20`, America/Montreal, beside the others (a Cloud Build
@@ -5532,14 +5545,26 @@ Notes:
      — READ-ONLY, it reads production through ADC and writes nothing. The
      lawyer reviews its list: number, due date, prorogued due date, days
      late, balance, imported flag — what the first night would mark (at
-     most 100, the rest the following nights).
+     most 100, the rest the following nights). An invoice whose lateness
+     could not be judged (a stored amount it cannot read) is listed apart,
+     by id: the sweep would count it in `errors` every night and never mark
+     it, so it is repaired first.
   4. *The switch on*: a one-line commit sets `FACTURES_RETARD_ACTIF: "true"`
-     in `athena/app.yaml`, pushed on his « push ».
+     in `athena/app.yaml`, pushed on his « push » — that line alone: the
+     suite checks its form, never its value
+     (`tests/test_taches_factures.py`), so Cloud Build's test step passes.
   5. *The next morning*, the `invoice_overdue_sweep` line:
      `gcloud logging read 'jsonPayload.event="invoice_overdue_sweep"' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.outcome,jsonPayload.marked,jsonPayload.refused,jsonPayload.errors,jsonPayload.remaining)"`
      — `success`, `marked` the preview's count (capped at 100,
      `remaining` the rest), `refused` and `errors` 0. A `failure`
-     (`reason` `lecture`) wrote nothing; the next night retries.
+     (`reason` `lecture`) wrote nothing; the next night retries. A
+     non-zero `errors` names its invoices, one `unexpected` line each with
+     its `invoice_id`:
+     `gcloud logging read 'jsonPayload.event="unexpected" AND jsonPayload.invoice_id:*' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.message,jsonPayload.invoice_id,jsonPayload.field)"`
+     — « invoice lateness unreadable » (its `field` names the amount to
+     repair), « invoice status update failed » (re-read that invoice: the
+     mark may have landed) or « invoice overdue sweep: mark raised » (a
+     defect).
   A rollback is the switch: a one-line commit sets it back to `"false"`,
   and the job answers `{"actif": false}` from the next night. The marks
   already made stay, as facts; « Retirer le retard » only corrects a mark

@@ -5,8 +5,10 @@ Pins what fails silently in this machine route:
 
 - the cron guard: 403 without ``X-Appengine-Cron: true``, before anything is
   read;
-- the kill switch ``FACTURES_RETARD_ACTIF``: off, nothing read or written —
-  and it ships OFF (app.yaml), the ``MIROIR_OUTLOOK_ACTIF`` precedent;
+- the kill switch ``FACTURES_RETARD_ACTIF``: off, nothing read or written;
+  read as ``MIROIR_OUTLOOK_ACTIF`` is, and set in app.yaml by ONE line that
+  the runbook flips both ways (DEPLOYMENT.md §15) — its form is pinned,
+  never its value;
 - a failed or truncated read writes nothing and says so (200, an ERROR line);
 - only what ``invoice.is_overdue`` says is late is marked, through
   ``update_status_report`` against the etag read — a changed invoice is
@@ -27,6 +29,7 @@ and invented amounts.
 import logging
 import os
 import pathlib
+import re
 import sys
 import textwrap
 from datetime import date, datetime, timedelta, timezone
@@ -159,18 +162,57 @@ def test_the_switch_off_reads_and_writes_nothing(fake, client, monkeypatch, capl
     assert _status(fake, "inv-004") == "envoyée"
 
 
-def test_the_switch_follows_the_outlook_mirror_precedent_and_ships_off():
+#: The switch's one line in app.yaml: the lowercase quoted value config.py
+#: compares (``.lower() == "true"``), ON or OFF.
+_SWITCH_LINE = re.compile(r'  FACTURES_RETARD_ACTIF: "(true|false)"')
+
+
+def _switch_value(app_yaml: str) -> str:
+    """The switch's value in *app_yaml* — once it is proved set by exactly
+    one line outside the comments, in the form config.py reads."""
+    lines = [line for line in app_yaml.splitlines()
+             if "FACTURES_RETARD_ACTIF" in line
+             and not line.lstrip().startswith("#")]
+    assert len(lines) == 1, lines
+    found = _SWITCH_LINE.fullmatch(lines[0])
+    assert found, lines[0]
+    return found.group(1)
+
+
+def test_the_switch_follows_the_outlook_mirror_precedent():
     """config.py reads it exactly as MIROIR_OUTLOOK_ACTIF (the environment,
-    default true); app.yaml ships it "false" until the lawyer has reviewed
-    the preview (DEPLOYMENT.md §15)."""
+    default true); app.yaml sets it by one line, "true" or "false". WHICH one
+    ships is a review fact (DEPLOYMENT.md §15, step 1), never a pin: a pin of
+    "false" failed the runbook's one-line commit that turns the sweep on at
+    Cloud Build's test step, before any deploy — and, re-pinned "true", it
+    would have failed the one-line rollback (review of lot 2)."""
     config = (_ATHENA / "config.py").read_text(encoding="utf-8")
     for name in ("MIROIR_OUTLOOK_ACTIF", "FACTURES_RETARD_ACTIF"):
         assert (f'os.environ.get("{name}", "true").lower() == "true"'
                 in config), name
-    app_yaml = (_ATHENA / "app.yaml").read_text(encoding="utf-8").splitlines()
-    assert '  FACTURES_RETARD_ACTIF: "false"' in app_yaml
-    assert sum("FACTURES_RETARD_ACTIF" in line and not line.lstrip().startswith("#")
-               for line in app_yaml) == 1
+    assert _switch_value((_ATHENA / "app.yaml").read_text(encoding="utf-8")) in (
+        "true", "false")
+
+
+@pytest.mark.parametrize("value", ["true", "false"], ids=["switch-on", "rollback"])
+def test_the_runbooks_one_line_commit_passes_this_suite(value):
+    """DEPLOYMENT.md §15 turns the sweep on — step 4 — and rolls it back by
+    ONE line of app.yaml, pushed through Cloud Build, whose first step runs
+    this whole suite before any deploy. That very edit, made on a copy of the
+    real file, changes one line at most and passes the switch's check; the
+    runbook names that very setting."""
+    lines = (_ATHENA / "app.yaml").read_text(encoding="utf-8").splitlines()
+    setting = f'FACTURES_RETARD_ACTIF: "{value}"'
+    edited = [f"  {setting}" if _SWITCH_LINE.fullmatch(line) else line
+              for line in lines]
+    assert len(edited) == len(lines)
+    assert sum(a != b for a, b in zip(lines, edited)) <= 1
+    assert _switch_value("\n".join(edited)) == value
+    runbook = " ".join((_ATHENA.parent / "DEPLOYMENT.md").read_text(
+        encoding="utf-8").split())
+    promise = {"true": f"a one-line commit sets `{setting}`",
+               "false": 'a one-line commit sets it back to `"false"`'}[value]
+    assert promise in runbook
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -398,11 +440,23 @@ def test_errors_are_counted_and_the_run_goes_on(fake, client, monkeypatch, caplo
         "envoyée"] * 3
     assert {_status(fake, i) for i in ("inv-001", "inv-002", "inv-004")} == {
         "en_retard"}
-    messages = [r.getMessage() for r in caplog.records
-                if getattr(r, "json_fields", {}).get("event") == "unexpected"]
-    assert sorted(messages) == ["invoice lateness unreadable",
-                                "invoice overdue sweep: mark raised",
-                                "invoice status update failed"]
+    lines = {r.getMessage(): r.json_fields for r in caplog.records
+             if getattr(r, "json_fields", {}).get("event") == "unexpected"}
+    assert sorted(lines) == ["invoice lateness unreadable",
+                             "invoice overdue sweep: mark raised",
+                             "invoice status update failed"]
+    # The morning's « errors: 3 » leads to its three invoices: each line
+    # names its own — one request marks up to a hundred (review of lot 2).
+    assert {message: line["invoice_id"] for message, line in lines.items()} == {
+        "invoice lateness unreadable": "inv-011",
+        "invoice status update failed": "inv-012",
+        "invoice overdue sweep: mark raised": "inv-013",
+    }
+    # The unreadable amount: its field, never its value — no line, no
+    # traceback carries it (CLAUDE.md « Do not log PII »).
+    assert lines["invoice lateness unreadable"]["field"] == "amount_due"
+    assert not [r for r in caplog.records
+                if "1 234,56" in logging.Formatter().format(r)]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -568,6 +622,22 @@ def test_the_preview_names_the_remainder_and_the_unjudged():
 def test_the_preview_with_nothing_late_says_so():
     lines = apercu.report([], [], today=TODAY, seen=2, cap=100)
     assert any("n'en marquerait aucune" in line for line in lines)
+    assert "Aucune facture envoyée n'est en retard aujourd'hui" in lines[3]
+
+
+def test_the_preview_never_says_none_is_late_over_the_unjudged():
+    """Nothing judged late, but an invoice not judged: its lateness is
+    unknown, not absent — the headline says so first, never « Aucune facture
+    envoyée n'est en retard » (review of lot 2: CLAUDE.md « A failed read
+    never passes for absence »). The sweep would still mark none."""
+    lines = apercu.report([], ["bad-1"], today=TODAY, seen=2, cap=100)
+    text = "\n".join(lines)
+    assert "Aucune facture envoyée n'est en retard" not in text
+    assert lines[3] == (
+        "Le retard de 1 facture(s) n'a pu être jugé (ci-dessous) ; aucune "
+        "autre n'est en retard aujourd'hui : le premier balayage n'en "
+        "marquerait aucune.")
+    assert "bad-1" in text and "illisible" in text
 
 
 def test_a_failed_read_raises_never_prints_none(fake, monkeypatch, capsys):

@@ -53,7 +53,9 @@ it: the nightly sweep (``routes/taches_factures``, behind
 « Marquer en retard » only while the invoice is overdue and « Retirer le
 retard » only while it is not — the correction of a mark made before the
 due date, never a waiver. Every caller names its « today »; the status
-write judges with ``today_mtl`` inside its own transaction.
+write judges with ``today_mtl`` inside its own transaction. A stored amount
+the rule cannot read is named by its field, never judged and never quoted
+(:func:`unreadable_balance_field`).
 """
 
 import logging
@@ -1859,16 +1861,25 @@ def overdue_among(
     then the id) — the order the nightly sweep marks them in and its preview
     lists them in, so the two can never disagree — and the ids of those whose
     lateness could not be judged (a stored amount :func:`balance_of` cannot
-    read), each logged. PURE but for that log."""
+    read), each logged by its id, the exception's class and the amount's
+    field (:func:`unreadable_balance_field`) — never a traceback, whose last
+    line quotes the stored value. PURE but for that log."""
     _montreal_day(today)
     late: list[dict] = []
     unjudged: list[str] = []
     for invoice in invoices:
         try:
             overdue = is_overdue(invoice, today=today)
-        except Exception:
-            log_unexpected("invoice lateness unreadable",
-                           invoice_id=str(invoice.get("id") or ""))
+        except Exception as exc:
+            # The class and the FIELD, never the traceback: int()'s error
+            # quotes the stored amount (CLAUDE.md « Do not log PII »).
+            fields = {"invoice_id": str(invoice.get("id") or ""),
+                      "error_type": type(exc).__name__}
+            unreadable = unreadable_balance_field(invoice)
+            if unreadable is not None:
+                fields["field"] = unreadable
+            log_unexpected("invoice lateness unreadable", exc_info=False,
+                           **fields)
             unjudged.append(str(invoice.get("id") or ""))
             continue
         if overdue:
@@ -2034,6 +2045,28 @@ def balance_of(invoice: dict) -> int:
     invoice, so it has never been a balance despite reading like one.
     """
     return int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+
+
+#: The stored amounts :func:`balance_of` reads, in the order it reads them.
+_BALANCE_FIELDS = ("amount_due", "amount_paid")
+
+
+def unreadable_balance_field(invoice: dict) -> Optional[str]:
+    """The first stored amount :func:`balance_of` cannot read — its FIELD
+    NAME, in balance_of's order (``amount_due``, then ``amount_paid``) — or
+    ``None`` when it reads both. PURE; ``None`` exactly when balance_of
+    answers, on every type a Firestore field can hold
+    (``tests/test_invoice_lateness`` pins the two together).
+
+    The one way to say WHICH amount is unreadable: ``int()``'s own error
+    quotes the stored value, and no log line — its traceback included —
+    carries an amount (CLAUDE.md « Do not log PII »; review of lot 2)."""
+    for name in _BALANCE_FIELDS:
+        try:
+            int(invoice.get(name, 0))
+        except (TypeError, ValueError, OverflowError):
+            return name
+    return None
 
 
 def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optional[str]:
@@ -2301,7 +2334,9 @@ STATUS_CAUSES = ("manuel", "echeance")
 #: :func:`update_status_report`'s answer when its transaction RAISED — the
 #: one error that is not a refusal of the change itself (the nightly sweep
 #: counts it apart). Nothing is known to be written: a commit whose answer
-#: was lost may have landed, which a re-read settles.
+#: was lost may have landed, which a re-read settles. Its ERROR line names
+#: the invoice (``invoice_id``): one request of the sweep marks up to
+#: :data:`OVERDUE_SWEEP_CAP` of them (review of lot 2).
 STATUS_UPDATE_FAILED = "Erreur. Veuillez réessayer."
 
 
@@ -2370,6 +2405,13 @@ def update_status_report(
     ``invoice_status_changed`` line records beside the writer's path; a
     cause outside it, or ``echeance`` for any status but « en_retard », is a
     caller's bug and raises before anything is read.
+
+    Lateness reads an issued invoice's balance (:func:`balance_of`): a
+    stored amount it cannot read is refused by NAME (reason
+    ``montant_illisible``, the field in French), never judged — and never
+    the generic failure, whose traceback quoted the value (review of lot 2).
+    Only there: no other transition reads the balance, so no legacy amount
+    locks one.
     """
     if cause not in STATUS_CAUSES:
         raise ValueError(f"cause inconnue : {cause!r}")
@@ -2392,6 +2434,20 @@ def update_status_report(
             raise concurrency.StaleWrite()
 
         current = invoice.get("status", "")
+        if current in _ISSUED_STATUSES:
+            # Lateness reads THIS invoice's balance (is_overdue → balance_of).
+            # An amount it cannot read is refused by name, never judged:
+            # int()'s error quotes the stored value, and the catch-all below
+            # would log it in its traceback.
+            unreadable = unreadable_balance_field(invoice)
+            if unreadable is not None:
+                label = ("montant dû" if unreadable == "amount_due"
+                         else "montant payé")
+                raise _StatusRefused(
+                    f"Le {label} enregistré sur cette facture est illisible : "
+                    "son retard ne peut pas être jugé, et rien n'a été écrit. "
+                    "La facture doit d'abord être réparée.",
+                    "montant_illisible")
         if new_status not in available_transitions(invoice, today=today_mtl()):
             # Nommer la voie plutôt que de refuser sèchement : la seule raison
             # qu'une facture payée ait de rester fermée est qu'un encaissement
@@ -2433,7 +2489,7 @@ def update_status_report(
                           operation="status", reason=refusal.reason)
         return None, [str(refusal)]
     except Exception:
-        log_unexpected("invoice status update failed")
+        log_unexpected("invoice status update failed", invoice_id=invoice_id)
         return None, [STATUS_UPDATE_FAILED]
     provenance.note_commit(COLLECTION, invoice_id)
     log_invoice_event("invoice_status_changed", invoice_id,

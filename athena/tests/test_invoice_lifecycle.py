@@ -54,7 +54,9 @@ with mock.patch("google.cloud.firestore.Client"):
 from flask import Flask  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._frozen_clock import freeze_deadlines  # noqa: E402
 from tz import to_mtl  # noqa: E402
+from utils import deadlines  # noqa: E402
 from utils.format_fr import format_cents_fr  # noqa: E402
 from utils.icons import ms  # noqa: E402
 
@@ -67,6 +69,16 @@ _ = (expense_model, time_entry_model)
 
 UTC = timezone.utc
 WHEN = datetime(2026, 6, 15, tzinfo=UTC)
+# Le « maintenant » de CHAQUE test de ce fichier, figé (règle 5 : un test
+# fige today_mtl, jamais l'horloge murale). Depuis le lot 2 (2026-11-11), le
+# changement de statut et la fiche jugent le retard sur today_mtl() : la
+# facture de `_invoice`, échue le WHEN (un lundi), n'est en retard qu'à
+# compter du 2026-06-16, et six tests ci-dessous — l'etag, la concurrence,
+# les formulaires de la fiche — la marquent « en retard » ou en attendent le
+# bouton. Ils ne passaient que parce que l'horloge murale avait dépassé ce
+# jour (revue du lot 2). Figé deux semaines après l'échéance, plus rien ne
+# lit l'horloge ; WHEN, la date que reçoit create_invoice, reste au passé.
+MAINTENANT = datetime(2026, 7, 1, 16, tzinfo=UTC)
 INV = "inv1"
 ETAG = "aaaaaaaa-1111-4222-8333-444444444444"
 RIVAL = "bbbbbbbb-1111-4222-8333-444444444444"
@@ -88,6 +100,26 @@ def _fake_modules() -> list:
 @pytest.fixture
 def fake(monkeypatch):
     return install(monkeypatch, *_fake_modules())
+
+
+@pytest.fixture(autouse=True)
+def _horloge_figee(monkeypatch):
+    """Chaque test de ce fichier lit MAINTENANT, jamais l'horloge murale."""
+    freeze_deadlines(monkeypatch, MAINTENANT)
+
+
+def test_le_jour_de_ces_tests_est_fige_apres_le_premier_jour_de_retard():
+    """Le banc lui-même (revue du lot 2) : le jour que lisent ces tests est
+    figé, et postérieur au premier jour de retard de la facture de
+    `_invoice` — un 2026-06-15 réel ou épinglé n'y change rien. (Vérifié en
+    retirant la fixture : ce test tombe, et sous une horloge épinglée au
+    2026-06-15 les six tests de l'etag, de la concurrence et des formulaires
+    de la fiche tombent avec lui.)"""
+    assert deadlines.today_mtl() == deadlines.today_utc() == date(2026, 7, 1)
+    facture = {"status": "envoyée", "amount_due": 40241, "amount_paid": 0,
+               "due_date": WHEN}
+    assert invoice_model.first_overdue_day(facture) == date(2026, 6, 16)
+    assert invoice_model.is_overdue(facture, today=deadlines.today_mtl())
 
 
 def _invoice(fake, **over) -> dict:

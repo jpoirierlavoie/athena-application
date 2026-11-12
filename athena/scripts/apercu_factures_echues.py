@@ -22,8 +22,9 @@ prorogued to the next business day on the civil calendar, the days late,
 the balance and whether it was imported (``invoice.is_imported``) — never a
 client's name. Then the count, the total balance, how many the first night
 marks (``invoice.OVERDUE_SWEEP_CAP`` a run) and the ids whose lateness could
-not be judged. The lawyer reviews it; a one-line commit then turns the
-switch on (DEPLOYMENT.md §15).
+not be judged — over which it never says « aucune » unqualified: their
+lateness is unknown, not absent. The lawyer reviews it; a one-line commit
+then turns the switch on (DEPLOYMENT.md §15).
 
     python -m scripts.apercu_factures_echues
 """
@@ -83,9 +84,16 @@ def report(rows: list[dict], unjudged: list[str], *, today: date,
         f"Factures envoyées lues : {seen}.",
         "",
     ]
-    if not rows:
+    if not rows and not unjudged:
         lines.append("Aucune facture envoyée n'est en retard aujourd'hui : "
                      "le premier balayage n'en marquerait aucune.")
+    elif not rows:
+        # Never « none is late » over invoices it could not judge: their
+        # lateness is unknown, not absent (review of lot 2).
+        lines.append(
+            f"Le retard de {len(unjudged)} facture(s) n'a pu être jugé "
+            "(ci-dessous) ; aucune autre n'est en retard aujourd'hui : le "
+            "premier balayage n'en marquerait aucune.")
     else:
         lines.append("Facture | échéance | reportée au | jours de retard | "
                      "solde | importée")

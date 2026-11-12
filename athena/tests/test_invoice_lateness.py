@@ -18,6 +18,7 @@ Through the real model, routes and templates, on the shared fake Firestore
 (``tests/_fake_firestore``); every amount is invented.
 """
 
+import itertools
 import logging
 import os
 import pathlib
@@ -230,16 +231,58 @@ def test_the_sweep_order_is_the_longest_late_first():
     assert unjudged == []
 
 
-def test_an_unreadable_amount_is_named_never_judged(caplog):
+@pytest.mark.parametrize("field,value", [
+    ("amount_due", "1 234,56"), ("amount_paid", "150,00 $"),
+], ids=["amount_due", "amount_paid"])
+def test_an_unreadable_amount_is_named_never_judged(caplog, field, value):
+    """Named by its id, the exception's class and the amount's FIELD — never
+    by a traceback, whose last line quoted the stored value (int()'s own
+    error) into Cloud Logging every night (review of lot 2: no log carries an
+    amount, CLAUDE.md « Do not log PII »)."""
     good = _invoice(due=date(2031, 3, 3), id="good")
-    bad = _invoice(due=date(2031, 3, 3), id="bad", amount_due="1 234,56")
+    bad = _invoice(due=date(2031, 3, 3), id="bad", **{field: value})
     with caplog.at_level(logging.ERROR):
         late, unjudged = invoice_model.overdue_among(
             [bad, good], today=date(2031, 3, 10))
     assert [inv["id"] for inv in late] == ["good"] and unjudged == ["bad"]
-    (line,) = [r.json_fields for r in caplog.records
-               if r.getMessage() == "invoice lateness unreadable"]
-    assert line == {"event": "unexpected", "invoice_id": "bad"}
+    (record,) = [r for r in caplog.records
+                 if r.getMessage() == "invoice lateness unreadable"]
+    assert record.json_fields == {"event": "unexpected", "invoice_id": "bad",
+                                  "error_type": "ValueError", "field": field}
+    assert not record.exc_info and record.exc_text is None
+    assert value not in logging.Formatter().format(record)
+
+
+# Every kind of value a Firestore field can hand back — a NaN and an infinite
+# double included (int() raises ValueError and OverflowError on them).
+_STORED_AMOUNTS = [0, 57312, -1, "57312", " 12 ", 573.12, True, None, "",
+                   "1 234,56", "573.12", "150,00 $", float("inf"),
+                   float("nan"), b"12", b"x", [], {},
+                   datetime(2031, 3, 3, tzinfo=UTC)]
+
+
+def test_the_unreadable_field_is_exactly_what_balance_of_cannot_read():
+    """unreadable_balance_field names a field exactly when balance_of raises
+    — the FIRST it reads, amount_due before amount_paid — on every pair of
+    stored values, an absent key included (balance_of reads it as 0)."""
+    absent = object()
+    values = [absent, *_STORED_AMOUNTS]
+    for due, paid in itertools.product(values, repeat=2):
+        inv = {key: value for key, value in (("amount_due", due),
+                                             ("amount_paid", paid))
+               if value is not absent}
+        try:
+            invoice_model.balance_of(inv)
+        except Exception:
+            try:
+                invoice_model.balance_of(
+                    {k: v for k, v in inv.items() if k == "amount_due"})
+                first = "amount_paid"
+            except Exception:
+                first = "amount_due"
+            assert invoice_model.unreadable_balance_field(inv) == first, inv
+        else:
+            assert invoice_model.unreadable_balance_field(inv) is None, inv
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -394,6 +437,52 @@ def test_lateness_is_judged_on_the_invoice_read_inside_the_transaction(
         remove()
     assert fired and ok is False
     assert "à compter du 2031-04-02" in error
+    assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
+
+
+@pytest.mark.parametrize("status,target,field,value,label", [
+    ("envoyée", "en_retard", "amount_due", "1 234,56", "montant dû"),
+    ("envoyée", "en_retard", "amount_paid", "150,00 $", "montant payé"),
+    ("en_retard", "envoyée", "amount_due", None, "montant dû"),
+], ids=["mark-due", "mark-paid", "unmark-none"])
+def test_an_unreadable_amount_refuses_the_status_write_by_name(
+        fake, monkeypatch, caplog, status, target, field, value, label):
+    """Lateness reads an issued invoice's balance inside the status
+    transaction: a stored amount it cannot read is REFUSED, the field named
+    in French (reason montant_illisible) — no longer the generic « Erreur.
+    Veuillez réessayer. », whose ERROR traceback quoted the stored value
+    (int()'s own error; review of lot 2). Nothing is written."""
+    fake.seed(f"invoices/{INV}", _invoice(status=status, due=date(2031, 3, 1),
+                                          **{field: value}))
+    _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
+    before = fake.peek(f"invoices/{INV}")
+    fake.reset_logs()
+    with caplog.at_level(logging.INFO):
+        written, errors = invoice_model.update_status_report(
+            INV, target, expected_etag=ETAG)
+    assert written is None
+    (error,) = errors
+    assert error.startswith(f"Le {label} enregistré sur cette facture est "
+                            "illisible : son retard ne peut pas être jugé")
+    assert fake.peek(f"invoices/{INV}") == before and fake.commits == []
+    (line,) = [r.json_fields for r in caplog.records if r.name == "pallas.invoice"]
+    assert (line["event"], line["invoice_id"], line["reason"]) == (
+        "invoice_refused", INV, "montant_illisible")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    if value is not None:
+        assert not [r for r in caplog.records
+                    if value in logging.Formatter().format(r)]
+
+
+def test_a_brouillon_is_sent_whatever_its_amounts_read(fake, monkeypatch):
+    """The refusal guards the transitions whose judgement reads the balance —
+    an issued invoice's — and no other: « brouillon → envoyée » reads none,
+    before lot 2 as after, so no legacy amount locks it."""
+    fake.seed(f"invoices/{INV}", _invoice(status="brouillon",
+                                          amount_due="1 234,56"))
+    _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
+    assert invoice_model.update_status(INV, "envoyée", expected_etag=ETAG) == (
+        True, "")
     assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
 
 

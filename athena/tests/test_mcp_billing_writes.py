@@ -737,6 +737,37 @@ def test_every_invoice_row_carries_the_models_lateness_and_conforms(
         assert '"is_overdue"' in schema and '"days_overdue"' in schema, tool
 
 
+def _clause(text: str, start: int) -> str:
+    """*text* from *start* to its next « ; », « . » or « ) »."""
+    ends = [i for i in (text.find(c, start) for c in ";.)") if i != -1]
+    return text[start:min(ends, default=len(text))]
+
+
+def test_the_texts_hold_whether_the_nightly_job_is_on_or_off():
+    """FACTURES_RETARD_ACTIF ships "false", and switching it off is the
+    rollback: a served text that says, unqualified, that a nightly job marks
+    an overdue invoice is false for as long as it is off — a claude.ai
+    session would tell the lawyer an invoice « will be marked tonight »
+    (review of lot 2). Every mention of the job in tools/list — descriptions
+    and output schemas alike — says « when active » in the same clause (the
+    Outlook mirror's precedent), and update_invoice names is_overdue as the
+    authority, never the stored status."""
+    served = json.dumps(tools.list_tool_descriptors(None), ensure_ascii=False)
+    mentions = []
+    at = served.find("nightly")
+    while at != -1:
+        mentions.append(_clause(served, at))
+        at = served.find("nightly", at + 1)
+    # update_invoice's description, and is_overdue in get_invoice,
+    # list_invoices and get_billing_snapshot.
+    assert len(mentions) == 4, mentions
+    assert all("when active" in clause for clause in mentions), mentions
+    (update,) = [d for d in tools.list_tool_descriptors(None)
+                 if d["name"] == "update_invoice"]
+    assert "is_overdue" in update["description"]
+    assert "never the stored status" in update["description"]
+
+
 def test_a_draft_goes_to_envoyee_first(world):
     invoice = _issued(world)
     with pytest.raises(tools.ToolArgumentError, match="d'abord"):

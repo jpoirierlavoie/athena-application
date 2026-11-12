@@ -686,8 +686,9 @@ def _invoice_row(extra: Optional[dict[str, Any]] = None,
             "next business day when it falls on a Saturday, a Sunday or a "
             "public holiday (civil calendar) — past. Independent of the "
             "stored status: an envoyée invoice is overdue from that day on, "
-            "before the nightly job marks it en_retard. Never recompute it "
-            "from due_date."),
+            "whether or not it is marked en_retard yet (the nightly job "
+            "marks it only when active; update_invoice can). Never recompute "
+            "it from due_date."),
         "days_overdue": _int(
             "Days late, counted from the prorogued due date (1 on the first "
             "late day); 0 unless is_overdue."),
