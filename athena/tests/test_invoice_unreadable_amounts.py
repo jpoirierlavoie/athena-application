@@ -977,3 +977,33 @@ def test_the_texts_say_where_an_unreadable_amount_is_refused_now():
     assert "locks none of theirs" not in moves_doc
     void_doc = " ".join(invoice_model.void_invoice_report.__doc__.split())
     assert "The stored amounts are judged through their authority" in void_doc
+
+
+@pytest.mark.parametrize("field,value", [
+    ("amount_due", "150,00 $"), ("amount_paid", "1 234,56"),
+    ("amount_paid", None), ("amount_paid", ""), ("amount_due", float("inf")),
+    ("amount_due", float("nan")), ("amount_paid", ["150,00 $"]),
+], ids=["due-text", "paid-text", "paid-none", "paid-empty", "due-inf",
+        "due-nan", "paid-list"])
+def test_balance_of_names_the_field_and_chains_no_value(field, value):
+    """The lawyer's decision of 2026-11-12: every reader of the balance —
+    the note d'honoraires, the journal PDF, « Solde dû actuel », the
+    registers' pickers and caps — reads it through balance_of, whose
+    error now names the unreadable FIELD and chains nothing: no traceback
+    of theirs quotes the stored value. The connector's name is the same
+    class."""
+    import traceback
+    invoice = {"amount_due": 10000, "amount_paid": 2500, field: value}
+    with pytest.raises(invoice_model.UnreadableAmount) as raised:
+        invoice_model.balance_of(invoice)
+    assert str(raised.value) == field
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+    rendered = "".join(traceback.format_exception(raised.value))
+    assert "150,00" not in rendered and "1 234,56" not in rendered
+    assert isinstance(raised.value, ValueError)
+    assert handlers.UnreadableAmount is invoice_model.UnreadableAmount
+    # What reads well still reads as before: an absent amount is 0.
+    assert invoice_model.balance_of({"amount_due": 10000}) == 10000
+    assert invoice_model.balance_of(
+        {"amount_due": 10000, "amount_paid": 2500}) == 7500

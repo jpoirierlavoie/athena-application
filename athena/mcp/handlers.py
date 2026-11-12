@@ -276,17 +276,10 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
     return value
 
 
-class UnreadableAmount(ValueError):
-    """A stored amount that every tool's money reader (:func:`_money`,
-    through :func:`_cents`) or an invoice path's read of the balance or the
-    transitions cannot read as integer cents. Its message is the FIELD NAME
-    alone (2026-11-12): ``int()``'s own error quotes the stored value, and
-    every traceback that carried it reached Cloud Logging — the endpoint's
-    catch-all and ``run_write``'s post-commit line keep theirs (CLAUDE.md
-    « Do not log PII »). Raised OUTSIDE the failed conversion, so it chains
-    no context that would quote it either. A ValueError, as the
-    conversion's own error was. (This module's other direct ``int()`` reads
-    are unchanged.)"""
+#: The model's error for a stored amount that cannot be read as integer
+#: cents, its message the FIELD NAME alone (2026-11-12): one class for
+#: every reader, balance_of's included — models.invoice.UnreadableAmount.
+UnreadableAmount = invoice_model.UnreadableAmount
 
 
 def _cents(key: str, cents: Any) -> int:

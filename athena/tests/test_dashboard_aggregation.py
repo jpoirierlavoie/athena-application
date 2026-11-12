@@ -427,7 +427,9 @@ def test_outstanding_totals_fail_open_to_zero(monkeypatch, caplog, case):
     else:
         _invoice_rows(monkeypatch, [
             *rows, {"status": "en_retard", "amount_due": "1 234,56", "amount_paid": 0}])
-        expected = "ValueError"
+        # balance_of names the field since 2026-11-12 (UnreadableAmount, a
+        # ValueError); it was int()'s own ValueError, quoting the value.
+        expected = "UnreadableAmount"
     with caplog.at_level("WARNING", logger=invoice_model.logger.name):
         assert invoice_model.get_outstanding_totals() == {"envoyée": 0, "en_retard": 0}
         assert invoice_model.get_outstanding_total() == 0

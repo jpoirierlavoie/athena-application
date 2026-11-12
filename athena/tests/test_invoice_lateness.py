@@ -252,8 +252,11 @@ def test_an_unreadable_amount_is_named_never_judged(caplog, field, value):
     assert [inv["id"] for inv in late] == ["good"] and unjudged == ["bad"]
     (record,) = [r for r in caplog.records
                  if r.getMessage() == "invoice lateness unreadable"]
+    # error_type: UnreadableAmount since 2026-11-12 (balance_of names the
+    # field, never the value); it was int()'s own ValueError.
     assert record.json_fields == {"event": "unexpected", "invoice_id": "bad",
-                                  "error_type": "ValueError", "field": field}
+                                  "error_type": "UnreadableAmount",
+                                  "field": field}
     assert not record.exc_info and record.exc_text is None
     assert value not in logging.Formatter().format(record)
 

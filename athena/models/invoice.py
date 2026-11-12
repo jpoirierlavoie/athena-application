@@ -2256,6 +2256,32 @@ def written_off_of(invoice: dict) -> int:
     return sum(e["amount"] for e in standing_write_offs(invoice))
 
 
+class UnreadableAmount(ValueError):
+    """A stored amount that cannot be read as integer cents. Its message
+    is the FIELD NAME alone (the lawyer's decision of 2026-11-12):
+    ``int()``'s own error quotes the stored value, and every traceback that
+    carried it reached Cloud Logging (CLAUDE.md « Do not log PII »). Raised
+    OUTSIDE the failed conversion, so it chains no context that would quote
+    it either. A ValueError, as the conversion's own error was.
+
+    Raised by :func:`balance_of`, so by every reader of the balance — the
+    note d'honoraires, the journal PDF, an administration entry's « Solde
+    dû actuel », the registers' pickers and caps — and by the connector's
+    money reader (``mcp.handlers._cents``, which names it too)."""
+
+
+def _stored_cents(invoice: dict, field: str) -> int:
+    """``int()`` of *invoice*'s stored *field* — an absent one as 0, as
+    :func:`balance_of` always read it — or :class:`UnreadableAmount` naming
+    *field*, never the value."""
+    value = invoice.get(field, 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    raise UnreadableAmount(field)
+
+
 def balance_of(invoice: dict) -> int:
     """The live balance in cents: what was due at issuance, less what came
     in, less what stands written off (lot 3a, :func:`written_off_of`).
@@ -2264,10 +2290,13 @@ def balance_of(invoice: dict) -> int:
     of the subtraction is written without it. Note the trap it replaces:
     ``amount_due`` is frozen at issuance and stays non-zero on a fully paid
     invoice, so it has never been a balance despite reading like one. A
-    stored amount it cannot read raises, and so does a malformed
-    ``write_offs`` (:func:`unreadable_balance_field` names which).
+    stored amount it cannot read raises :class:`UnreadableAmount`, naming
+    the field, never the value; a malformed ``write_offs`` raises
+    :class:`WriteOffsUnreadable`, naming the event by its position
+    (:func:`unreadable_balance_field` names which, beforehand).
     """
-    return (int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+    return (_stored_cents(invoice, "amount_due")
+            - _stored_cents(invoice, "amount_paid")
             - written_off_of(invoice))
 
 
