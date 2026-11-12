@@ -494,3 +494,59 @@ def test_the_fees_print_under_their_heading_and_other_income_as_one_line(client,
     for label in ("Honoraires professionnels", "Notaire", "Avocat", "Autres produits"):
         assert label in text, label
     assert "Payeur fictif" not in text
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Write-offs (« radiation », lot 3a, part 2/3)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _written_off_inv1(**event) -> dict:
+    """The seeded inv1, its remainder (778,49 $) written off on 25 August
+    2031 — *event* overrides the radiation's stored fields."""
+    inv = {"id": "inv1", "invoice_number": "2031-F001", "status": "payée",
+           "date": _d(2031, 8, 4), "subtotal_fees": 100000, "subtotal_expenses": 2500,
+           "gst_amount": 5125, "qst_amount": 10224, "total": 117849,
+           "retainer_applied": 0, "amount_due": 117849, "amount_paid": 40000,
+           "dossier_id": "dos1"}
+    gst, qst = invoice.write_off_tax_parts(inv, 77849)
+    inv["write_offs"] = [{"id": "w1", "kind": "radiation", "date": _d(2031, 8, 25),
+                          "amount": 77849, "gst_amount": gst, "qst_amount": qst,
+                          "tax_claimed": True, "reason": "", "reverses_id": "",
+                          "created_at": _d(2031, 8, 25), "created_via": "web", **event}]
+    return inv
+
+
+def test_a_write_off_prints_on_the_page_and_in_the_pdf(client, fake):
+    """The page and the PDF print the rows the model presents: the
+    write-down, the TPS/TVQ it claims, the event in « Redressements »."""
+    inv = _written_off_inv1()
+    fake.seed("invoices/inv1", inv)
+    (event,) = inv["write_offs"]
+    gst, qst = event["gst_amount"], event["qst_amount"]
+    page = _plain(_page(client, "/finances/?periode=2031-08"))
+    income = _section(page, "État des résultats")
+    assert "Radiations de comptes clients" in income
+    assert _money(-(77849 - gst - qst)) in income
+    taxes = _section(page, "TPS/TVQ de la période")
+    assert "TPS des créances irrécouvrables (radiations de la période)" in taxes
+    assert "TVQ des créances irrécouvrables (radiations de la période)" in taxes
+    assert _money(-gst) in taxes and _money(-qst) in taxes
+    adjustments = _section(page, "Redressements de périodes antérieures")
+    assert "2031-F001 — radiation du 25 août 2031" in adjustments
+    assert _money(gst) in adjustments and _money(qst) in adjustments
+    text = _pdf_text(client.get("/finances/pdf?periode=2031-08").data)
+    for label in ("Radiations de comptes clients", "TPS des créances irrécouvrables",
+                  "TVQ des créances irrécouvrables", "2031-F001 — radiation du 25 août 2031"):
+        assert label in text, label
+
+
+def test_a_malformed_write_off_array_is_said_never_a_500(client, fake):
+    fake.seed("invoices/inv1", _written_off_inv1(amount=778.49))
+    page = _plain(_page(client, "/finances/?periode=2031-08"))
+    assert "Indisponible — Radiations illisibles sur la facture 2031-F001" in page
+    assert "778" not in page
+    resp = client.get("/finances/pdf?periode=2031-08")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(
+        "/finances/?periode=2031-08&erreur=pdf_indisponible")

@@ -389,3 +389,80 @@ def test_it_is_an_ordinary_read():
     (descriptor,) = [d for d in tools.list_tool_descriptors(None) if d["name"] == TOOL]
     assert descriptor["annotations"]["readOnlyHint"] is True
     assert descriptor["annotations"]["openWorldHint"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Write-offs (« radiation », lot 3a, part 2/3) — rows the schema already holds
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _event(id_, day, amount, gst, qst, *, kind="radiation", reverses=""):
+    return {"id": id_, "kind": kind, "date": day, "amount": amount,
+            "gst_amount": gst, "qst_amount": qst, "tax_claimed": bool(gst or qst),
+            "reason": "", "reverses_id": reverses, "created_at": day, "created_via": "web"}
+
+
+def _write_off(fake) -> tuple:
+    """inv1's remainder (1 178,49 $ less the 400 $ paid) written off on 15
+    September 2031, its TPS/TVQ claimed; inv2 written off on 2 September and
+    the radiation cancelled on the 10th. Returns inv1's (TPS, TVQ) parts."""
+    inv1 = {"id": "inv1", "invoice_number": "2031-F001", "status": "payée",
+            "date": _d(2031, 8, 4), "subtotal_fees": 100000, "subtotal_expenses": 2500,
+            "gst_amount": 5125, "qst_amount": 10224, "total": 117849,
+            "retainer_applied": 0, "amount_due": 117849, "amount_paid": 40000,
+            "dossier_id": "dos1"}
+    gst, qst = invoice.write_off_tax_parts(inv1, 77849)
+    inv1["write_offs"] = [_event("w1", _d(2031, 9, 15), 77849, gst, qst)]
+    fake.seed("invoices/inv1", inv1)
+    inv2 = {"id": "inv2", "invoice_number": "2031-F002", "status": "en_retard",
+            "date": _d(2031, 7, 15), "subtotal_fees": 60000, "subtotal_expenses": 0,
+            "gst_amount": 3000, "qst_amount": 5985, "total": 68985,
+            "retainer_applied": 0, "amount_due": 68985, "amount_paid": 0,
+            "dossier_id": "dos1",
+            "write_offs": [_event("w2", _d(2031, 9, 2), 68985, 3000, 5985),
+                           _event("w3", _d(2031, 9, 10), 68985, 3000, 5985,
+                                  kind="contre_passation", reverses="w2")]}
+    fake.seed("invoices/inv2", inv2)
+    return gst, qst
+
+
+def test_a_write_off_reaches_the_connector_in_the_page_s_rows(fake):
+    gst, qst = _write_off(fake)
+    payload = _call(periods=["2031-08", "2031-09"])
+    _conforms(TOOL, payload)                    # no schema change: the rows fit
+    august, september = payload["periods"]
+    for got in (august, september):
+        period, _ = periods.parse_period(got["period"], today=TODAY,
+                                         books_start=fs.BOOKS_START)
+        _st, view, _counts = statements_service.build(period, today=TODAY, now=NOW)
+        for mine, page in zip(got["sections"], view["sections"]):
+            assert mine["notes"] == page["notes"]
+            assert [(r["key"], r["label"], r["level"], r["style"], r["values_cents"])
+                    for r in mine["rows"]] == [
+                (r["key"], r["label"], r["level"], r["style"], r["values"])
+                for r in page["rows"]]
+    assert "radiations" not in {r["key"] for r in _section(august, "resultats")["rows"]}
+    kpis = {k["key"]: k["value_cents"] for k in august["kpis"]}
+    assert kpis["comptes_clients"] == 77849 + 68985
+    down = _row(_section(september, "resultats"), "radiations")
+    assert down["values_cents"] == [-(77849 - gst - qst)] and down["level"] == 1
+    assert down["values_display"] == [tools.format_cents(-(77849 - gst - qst))]
+    taxes = _section(september, "taxes")
+    assert _row(taxes, "tps_creances_irrecouvrables")["values_cents"] == [-gst]
+    assert _row(taxes, "tvq_creances_irrecouvrables")["values_cents"] == [-qst]
+    adjustments = _section(september, "redressements")
+    assert [(r["key"], r["values_cents"]) for r in adjustments["rows"]] == [
+        ("groupe:radiations", [None, None]),
+        ("radiation:w2", [3000, 5985]), ("radiation:w3", [-3000, -5985]),
+        ("radiation:w1", [gst, qst])]
+    assert {k["key"]: k["value_cents"] for k in september["kpis"]}["comptes_clients"] == 68985
+
+
+def test_the_revenue_sentence_names_the_write_off_rows_the_model_prints(fake):
+    _write_off(fake)
+    (september,) = _call(periods=["2031-09"])["periods"]
+    printed = {r["key"] for s in september["sections"] for r in s["rows"]}
+    description = tools.TOOLS[TOOL]["description"]
+    assert "write-offs" in description and "radiation" in description
+    for key in ("radiations", "tps_creances_irrecouvrables", "tvq_creances_irrecouvrables"):
+        assert f"`{key}`" in description and key in printed, key

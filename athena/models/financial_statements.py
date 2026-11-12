@@ -48,8 +48,28 @@ The rules (the plan of 2026-11-07, « The rules (Lot B) »):
   revenue and is listed (« facture absente d'Athéna »); a unique match in
   ANOTHER dossier is listed apart, never attributed.
 * **Hand-set « payée »**: an invoice whose status is payée while its
-  register payments fall short counts the shortfall as settled, and is
-  listed.
+  register payments AND what stands written off fall short counts the
+  shortfall as settled, and is listed — a write-off is never also presumed
+  settled, which would count it twice.
+* **Write-offs** (« radiation », lot 3a of « Factures : retard, radiation,
+  intérêts » — the lawyer's decisions D2 and D3 of 2026-11-11): dated
+  events on the invoice (``write_offs``), never register entries, read
+  through ``invoice.write_off_events`` — the one judge of a well-formed
+  array: a malformed one makes every section that needs the invoices
+  « indisponible », never a skipped event nor a 0. ONE predicate,
+  :func:`_event_counts`: an event counts at a day when its invoice counts
+  there (billed, dated on or before it) and the event is dated on or
+  before it; a period takes the events that START counting in it
+  (:func:`_period_write_offs`) — for the income, the TPS/TVQ table and
+  « Redressements » alike. Revenue loses each event's amount less the
+  TPS/TVQ it claims (« Radiations de comptes clients », printed when not
+  zero; a fraction not claimed stays inside it); the receivables lose the
+  amount, the TPS/TVQ payable the claimed parts (« créances
+  irrécouvrables »); a « contre_passation » counts the same figures with
+  the opposite sign, on its own day. « Redressements » lists each event of
+  the period with its TPS and TVQ — the lawyer's list for the tax return.
+  The rollforward takes no term of its own: a write-off moves the net
+  assets by exactly its effect on net income.
 * **Days.** A stored date-only value counts on its UTC calendar day; an
   instant (``voided_at``, ``created_at``, now) on its Montréal day
   (Architecture Rule 5). A period never starts before ``BOOKS_START``;
@@ -311,10 +331,32 @@ def _tax_credits(row: dict) -> tuple:
 # ── Invoices ────────────────────────────────────────────────────────────────
 
 
+#: How each write-off kind counts — the model's vocabulary
+#: (``invoice.WRITE_OFF_KINDS``: a radiation, then the contre_passation that
+#: cancels one), in its order; pinned by a test.
+WRITE_OFF_SIGNS = dict(zip(invoice_model.WRITE_OFF_KINDS, (1, -1)))
+
+
+@dataclass(frozen=True)
+class _WriteOff:
+    """One write-off event of an invoice, as ``invoice.write_off_events``
+    validated it: ``sign`` +1 for a radiation, -1 for the contre_passation
+    that cancels one (the same figures, given back on its own day)."""
+
+    id: str
+    sign: int
+    day: date                      # its UTC calendar day (stored at midnight UTC)
+    amount: int                    # cents, taxes included
+    gst: int                       # the TPS it claims (0 when not claimed)
+    qst: int                       # the TVQ it claims (0 when not claimed)
+    tax_claimed: bool
+
+
 @dataclass
 class _Invoices:
     by_id: dict
     index: dict                    # normalized number -> [invoice ids]
+    write_offs: dict = field(default_factory=dict)   # invoice id -> (_WriteOff, ...)
 
 
 _INVOICE_MONEY = ("subtotal_fees", "subtotal_expenses", "gst_amount",
@@ -325,17 +367,41 @@ _INVOICE_MONEY = ("subtotal_fees", "subtotal_expenses", "gst_amount",
 def _invoices(snapshot: Snapshot) -> _Invoices:
     by_id = {}
     index: dict = {}
+    write_offs: dict = {}
     for inv in snapshot.rows("invoices"):
         for key in _INVOICE_MONEY:
             _cents(inv, key)                      # unreadable ⇒ Unavailable
         iid = inv["id"]
         by_id[iid] = inv
+        events = _write_off_events(inv)           # malformed ⇒ Unavailable
+        if events:
+            write_offs[iid] = events
         keys = {invoice_model.normalize_reference(inv.get("invoice_number")),
                 invoice_model.normalize_reference(inv.get("legacy_ref"))}
         for key in keys:
             if key and iid not in index.setdefault(key, []):
                 index[key].append(iid)
-    return _Invoices(by_id, index)
+    return _Invoices(by_id, index, write_offs)
+
+
+def _write_off_events(inv: dict) -> tuple:
+    """The write-off events of *inv*, in stored order, read through the one
+    judge of a well-formed array (``invoice.write_off_events``) — every
+    invoice's, whatever its status, as every invoice's money is read: a
+    malformed array is :class:`Unavailable`, never an event skipped nor
+    counted as 0. The judge's message names the event by its position,
+    never a stored value."""
+    try:
+        events = invoice_model.write_off_events(inv)
+    except invoice_model.WriteOffsUnreadable as exc:
+        raise Unavailable(
+            f"Radiations illisibles sur la facture {_number(inv)} ({exc}) — "
+            "aucun total n'est calculé sur une radiation douteuse.") from None
+    return tuple(
+        _WriteOff(id=e["id"], sign=WRITE_OFF_SIGNS[e["kind"]],
+                  day=_day(e["date"]), amount=e["amount"], gst=e["gst_amount"],
+                  qst=e["qst_amount"], tax_claimed=e["tax_claimed"])
+        for e in events)
 
 
 def _counted(inv: Optional[dict]) -> bool:
@@ -344,6 +410,44 @@ def _counted(inv: Optional[dict]) -> bool:
 
 def _inv_day(inv: dict) -> Optional[date]:
     return _day(inv.get("date"))
+
+
+def _billed_by(inv: Optional[dict], day: date) -> bool:
+    """A billed invoice (``REVENUE_STATUSES``) dated on or before *day* —
+    what the receivables take at *day*."""
+    inv_day = _inv_day(inv) if inv else None
+    return _counted(inv) and inv_day is not None and inv_day <= day
+
+
+def _event_counts(inv: dict, event: _WriteOff, day: Optional[date]) -> bool:
+    """THE predicate of the write-offs (lot 3a): *event* counts at *day*
+    when its invoice counts there (:func:`_billed_by`) and the event itself
+    is dated on or before *day*; *day* None is all time — the invoice
+    billed, whatever the dates. The positions, the presumed-settled
+    shortfall and every period's slice (:func:`_period_write_offs`) read
+    it, so no figure can count an event another leaves out."""
+    if day is None:
+        return _counted(inv)
+    return _billed_by(inv, day) and event.day <= day
+
+
+def _period_write_offs(invoices: _Invoices, start: date, end: date) -> list:
+    """``[(invoice, event)]`` — the write-off events that START counting in
+    the period: counted at *end*, not at the day before *start*
+    (:func:`_event_counts`); in the event's day, then the invoice's number
+    and id, then stored order. The one slice the income, the TPS/TVQ table
+    and « Redressements » take: each moves exactly what the two balance
+    sheets move."""
+    opening = start - timedelta(days=1)
+    found = []
+    for iid, events in invoices.write_offs.items():
+        inv = invoices.by_id[iid]
+        for position, event in enumerate(events):
+            if (_event_counts(inv, event, end)
+                    and not _event_counts(inv, event, opening)):
+                found.append(((event.day, _number(inv), str(iid), position), inv, event))
+    found.sort(key=lambda item: item[0])
+    return [(inv, event) for _key, inv, event in found]
 
 
 def _amount_due(inv: dict) -> int:
@@ -480,16 +584,35 @@ class _World:
                 + self.receipts(iid, until, ATTRIBUTED)
                 - self.provision_part(iid, until))
 
+    def written_off(self, iid: str, until: Optional[date]) -> int:
+        """What stands written off *iid* at *until* (None: all time), taxes
+        included: its radiations less their contre-passations, each as
+        :func:`_event_counts` counts it."""
+        inv = self.invoices.by_id[iid]
+        return sum(e.sign * e.amount for e in self.invoices.write_offs.get(iid, ())
+                   if _event_counts(inv, e, until))
+
+    def tax_relief(self, iid: str, until: Optional[date]) -> tuple:
+        """``(TPS, TVQ)`` the write-offs of *iid* claim at *until* — off the
+        TPS/TVQ payable; a contre-passation gives them back."""
+        inv = self.invoices.by_id[iid]
+        gst = qst = 0
+        for e in self.invoices.write_offs.get(iid, ()):
+            if _event_counts(inv, e, until):
+                gst += e.sign * e.gst
+                qst += e.sign * e.qst
+        return gst, qst
+
     def balance(self, iid: str, until: date) -> int:
         inv = self.invoices.by_id[iid]
-        return _amount_due(inv) - self.paid(iid, until) - self.settled.get(iid, 0)
+        return (_amount_due(inv) - self.paid(iid, until) - self.written_off(iid, until)
+                - self.settled.get(iid, 0))
 
     def taken(self, iid: Optional[str], until: date) -> bool:
         """Whether a payment to *iid* is one the receivables take at *until*:
         a billed invoice dated on or before that day."""
         inv = self.invoices.by_id.get(iid) if iid else None
-        day = _inv_day(inv) if inv else None
-        return _counted(inv) and day is not None and day <= until
+        return _billed_by(inv, until)
 
 
 def _world(admin: _Admin, invoices: _Invoices, trust_rows: Optional[list]) -> _World:
@@ -505,7 +628,10 @@ def _world(admin: _Admin, invoices: _Invoices, trust_rows: Optional[list]) -> _W
     world = _World(admin, invoices, attribution, tuple(payments))
     for iid, inv in invoices.by_id.items():
         if inv.get("status") == "payée":
-            shortfall = _amount_due(inv) - world.paid(iid, None)
+            # What stands written off is no presumed settlement: subtracted
+            # from the balance already, it would be lost a second time.
+            shortfall = (_amount_due(inv) - world.paid(iid, None)
+                         - world.written_off(iid, None))
             if shortfall > 0:
                 world.settled[iid] = shortfall
     return world
@@ -564,7 +690,12 @@ def _position(world: _World, day: date) -> Position:
     receivables = provisions = 0
     for iid, inv in world.invoices.by_id.items():
         if world.taken(iid, day):
-            tax += _cents(inv, "gst_amount") + _cents(inv, "qst_amount")
+            # The TPS/TVQ a write-off claims comes off the payable — the
+            # same relief the period's table counts (_taxes): both move
+            # together, or its assert fails the whole request.
+            gst_relief, qst_relief = world.tax_relief(iid, day)
+            tax += (_cents(inv, "gst_amount") + _cents(inv, "qst_amount")
+                    - gst_relief - qst_relief)
             receivables += world.balance(iid, day)
             provisions += world.provision_part(iid, day)
     unattached = sum(p.amount for p in world.payments
@@ -644,12 +775,17 @@ def _income(admin: _Admin, invoices: _Invoices, start: date, end: date,
             bucket[category] = bucket.get(category, 0) + _cost(r)
     other.sort(key=lambda r: (r["_day"], r.get("id") or ""))
     other_total = sum(_signed(r) for r in other)
+    # The period's write-offs (lot 3a): each one's amount less the TPS/TVQ
+    # it claims — a fraction not claimed stays in the write-down; a
+    # contre-passation gives it back.
+    write_downs = sum(e.sign * (e.amount - e.gst - e.qst)
+                      for _inv, e in _period_write_offs(invoices, start, end))
     totals = {cls: sum(v.values()) for cls, v in costs.items()}
-    revenue = fees + billed_expenses + other_total
+    revenue = fees + billed_expenses + other_total - write_downs
     gross = revenue - totals["direct"]
     net = gross - totals["variable"] - totals["fixe"]
     return {"fees": fees, "billed_expenses": billed_expenses,
-            "other": other, "other_total": other_total,
+            "other": other, "other_total": other_total, "write_downs": write_downs,
             "marks": {r["id"]: marks[r["id"]] for r in other if r["id"] in marks},
             "costs": costs, "cost_totals": totals,
             "revenue": revenue, "gross_margin": gross, "net_income": net}
@@ -736,6 +872,9 @@ def _rollforward(world: _World, start: date, end: date, income: dict,
                 defect_ids["invoice"].append(iid)
     received = closing.provisions - opening.provisions
     total = sum(defects.values())
+    # No term for the write-offs (lot 3a): each moves the receivables by its
+    # amount and the TPS/TVQ payable by its claimed parts — the net assets by
+    # exactly the write-down it takes off the net income.
     expected = (opening.net + income["net_income"] + terms["apports"]
                 - terms["prelevements"] + terms["virements"]
                 + terms["factures_absentes"] - settled - applied + received + total)
@@ -778,10 +917,17 @@ def _taxes(admin: _Admin, invoices: _Invoices, start: date, end: date,
             remitted += _signed(r)
         elif kind == "remboursement_tps_tvq":
             refunded += _signed(r)
-    net = gst + qst - cti - rti
+    # The TPS/TVQ the period's write-offs claim (lot 3a) — the relief
+    # _position takes off the payable, on the same predicate.
+    bad_gst = bad_qst = 0
+    for _inv, e in _period_write_offs(invoices, start, end):
+        bad_gst += e.sign * e.gst
+        bad_qst += e.sign * e.qst
+    net = gst + qst - cti - rti - bad_gst - bad_qst
     if opening_tax + net - remitted + refunded != closing_tax:
         raise AssertionError("TPS/TVQ table does not close")
     return {"gst_collected": gst, "qst_collected": qst, "cti": cti, "rti": rti,
+            "bad_debt_gst": bad_gst, "bad_debt_qst": bad_qst,
             "net": net, "remitted": remitted, "refunded": refunded,
             "opening": opening_tax, "closing": closing_tax}
 
@@ -806,7 +952,10 @@ def _adjustments(invoices: _Invoices, start: date, end: date) -> dict:
 
     return {"voided": sorted(voided, key=order), "late": sorted(late, key=order),
             "late_imported": sorted(late_imported, key=order),
-            "undated_voids": undated_voids}
+            "undated_voids": undated_voids,
+            # Every write-off event of the period (lot 3a), a contre-passation
+            # on its own row: the lawyer's list for the tax return.
+            "write_offs": _period_write_offs(invoices, start, end)}
 
 
 def _trust_memo(snapshot: Snapshot, opening_day: date, as_of: date) -> dict:
@@ -1233,9 +1382,19 @@ def _present_income(data: dict) -> dict:
             _row("Honoraires facturés", data["fees"], key="honoraires", level=1),
             _row("Débours refacturés", data["billed_expenses"],
                  key="debours_refactures", level=1),
-            _row("Autres produits", data["other_total"], key="autres_produits", level=1),
-            _row("Total des produits", data["revenue"], key="total_produits",
-                 style="subtotal")]
+            _row("Autres produits", data["other_total"], key="autres_produits", level=1)]
+    notes = ["Base facturée : factures envoyées, en retard ou payées, à la date de "
+             "la facture, avant taxes. Coûts nets de TPS/TVQ."]
+    if data["write_downs"]:
+        # Printed when not zero (lot 3a): a period without a write-off shows
+        # the rows it always showed.
+        rows.append(_row("Radiations de comptes clients", -data["write_downs"],
+                         key="radiations", level=1))
+        notes.append("Radiations de comptes clients : les soldes radiés à la date "
+                     "de la radiation, moins la TPS/TVQ réclamée — une part non "
+                     "réclamée y reste ; une annulation de radiation les rétablit.")
+    rows.append(_row("Total des produits", data["revenue"], key="total_produits",
+                     style="subtotal"))
     for cls in al.COST_CLASSES:
         heading = al.COST_CLASS_LABELS[cls]
         if cls == "direct":
@@ -1249,9 +1408,7 @@ def _present_income(data: dict) -> dict:
                              style="subtotal"))
     rows.append(_row("Bénéfice net", data["net_income"], key="benefice_net",
                      style="total"))
-    return {"columns": ["Période"], "rows": rows, "notes": [
-        "Base facturée : factures envoyées, en retard ou payées, à la date de "
-        "la facture, avant taxes. Coûts nets de TPS/TVQ."]}
+    return {"columns": ["Période"], "rows": rows, "notes": notes}
 
 
 def _present_cash_flow(data: dict) -> dict:
@@ -1356,13 +1513,20 @@ def _present_taxes(data: dict) -> dict:
             _row("TVQ perçue (factures de la période)", data["qst_collected"],
                  key="tvq_percue", level=1),
             _row("CTI — TPS payée sur les dépenses", -data["cti"], key="cti", level=1),
-            _row("RTI — TVQ payée sur les dépenses", -data["rti"], key="rti", level=1),
-            _row("Taxe nette de la période", data["net"], key="taxe_nette",
-                 style="subtotal"),
-            _row("Remises versées", -data["remitted"], key="remises", level=1),
-            _row("Remboursements reçus", data["refunded"], key="remboursements", level=1),
-            _row("Solde à la fin (à remettre)", data["closing"], key="solde_fin",
-                 style="total")]
+            _row("RTI — TVQ payée sur les dépenses", -data["rti"], key="rti", level=1)]
+    if data["bad_debt_gst"] or data["bad_debt_qst"]:
+        # The pair prints when either is not zero (lot 3a): a period whose
+        # write-offs claim nothing shows the rows it always showed.
+        rows += [_row("TPS des créances irrécouvrables (radiations de la période)",
+                      -data["bad_debt_gst"], key="tps_creances_irrecouvrables", level=1),
+                 _row("TVQ des créances irrécouvrables (radiations de la période)",
+                      -data["bad_debt_qst"], key="tvq_creances_irrecouvrables", level=1)]
+    rows += [_row("Taxe nette de la période", data["net"], key="taxe_nette",
+                  style="subtotal"),
+             _row("Remises versées", -data["remitted"], key="remises", level=1),
+             _row("Remboursements reçus", data["refunded"], key="remboursements", level=1),
+             _row("Solde à la fin (à remettre)", data["closing"], key="solde_fin",
+                  style="total")]
     return {"columns": ["Période"], "rows": rows, "notes": [
         "Selon l'état actuel des inscriptions : une facture annulée après son "
         "envoi, ou inscrite après coup, peut modifier une période déjà déclarée — "
@@ -1385,6 +1549,19 @@ def _present_adjustments(data: dict) -> dict:
                 rows.append(_row(f"{_number(inv)} ({format_date_fr(_inv_day(inv))})",
                                  _cents(inv, "gst_amount"), _cents(inv, "qst_amount"),
                                  key=f"facture:{inv.get('id')}", level=1))
+    if data["write_offs"]:
+        # Lot 3a: each event of the period, with the TPS and the TVQ it
+        # claims; a contre-passation is its own row and gives them back.
+        rows.append(_row("Radiations de comptes clients pendant la période — la TPS "
+                         "et la TVQ réclamées (en négatif : une radiation annulée)",
+                         None, None, key="groupe:radiations", style="heading"))
+        for inv, event in data["write_offs"]:
+            what = "radiation" if event.sign > 0 else "annulation de radiation"
+            label = f"{_number(inv)} — {what} du {format_date_fr(event.day)}"
+            if not event.tax_claimed:
+                label += " (taxes non réclamées)"
+            rows.append(_row(label, event.sign * event.gst, event.sign * event.qst,
+                             key=f"radiation:{event.id}", level=1))
     notes = []
     if not rows:
         notes.append("Aucun redressement.")

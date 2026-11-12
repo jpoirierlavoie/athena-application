@@ -10,8 +10,15 @@ defects injected (a direction that contradicts the kind, inexact splits,
 card legs in different periods, inconsistent invoices, payments to voided,
 draft or unknown invoices, provisions, hand-set « payée ») — the
 « écart non expliqué » is zero for every period, and every defect is a
-point of its own.
+point of its own. Since lot 3a (part 2/3), the random ledgers carry
+write-off events too — cancelled or standing, their tax claimed or not,
+across period boundaries, after a partial payment, on invoices never
+billed, dated before their invoice — and a world drawn WITHOUT them
+presents exactly what 77fd14c presented (the deploy check's promise).
 """
+
+import hashlib
+import json
 
 import os
 import random
@@ -104,6 +111,21 @@ def _invoice(id_, day, *, status="envoyée", fees=10000, expenses=0, retainer=0,
            "amount_paid": 0, "dossier_id": dossier}
     inv.update(extra)
     return inv
+
+
+def _event(id_, day, amount, *, gst=0, qst=0, claimed=None):
+    """A radiation as ``invoice.write_off_remainder`` writes it (lot 3a)."""
+    return {"id": id_, "kind": "radiation", "date": day, "amount": amount,
+            "gst_amount": gst, "qst_amount": qst,
+            "tax_claimed": bool(gst or qst) if claimed is None else claimed,
+            "reason": "", "reverses_id": "", "created_at": day + timedelta(hours=15),
+            "created_via": "web"}
+
+
+def _cancel(id_, radiation, day):
+    """The contre_passation of *radiation*, dated *day* — its four figures."""
+    return {**radiation, "id": id_, "kind": "contre_passation", "date": day,
+            "reverses_id": radiation["id"], "created_at": day + timedelta(hours=15)}
 
 
 def _snapshot(*, transactions=(), invoices=(), trust_rows=(), trust_accounts=None,
@@ -594,7 +616,44 @@ def test_remittances_never_reach_the_income_statement():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _random_world(rng: random.Random):
+def _draw_write_offs(rng: random.Random, invoices: list, rows: list, day) -> None:
+    """Write-off events on a few invoices (lot 3a), drawn AFTER everything
+    else so a world drawn without them is the one 77fd14c drew: the
+    remainder or another amount, the tax claimed or not, some cancelled —
+    the same day, the next, a month or a quarter later: across period
+    boundaries —, some after a partial payment, some dated before their
+    invoice, some on a brouillon or an annulée (which never count); a
+    standing radiation settles an issued invoice « payée », mostly."""
+    for inv in rng.sample(invoices, k=rng.randint(1, min(5, len(invoices)))):
+        start = inv["date"] or day()
+        due = inv["amount_due"]
+        paid = 0
+        if due > 1 and rng.random() < 0.4:                       # partly paid first
+            paid = rng.randint(1, due - 1)
+            rows.append(_tx(f"p{inv['id']}", "encaissement_facture", paid,
+                            start + timedelta(days=rng.choice([0, 6, 30])),
+                            invoice_id=inv["id"]))
+            inv["amount_paid"] = paid
+        events = []
+        for k in range(rng.choice([1, 1, 2])):
+            when = start + timedelta(days=rng.choice([-2, 0, 29, 30, 31, 59, 90, 181]))
+            amount = (due - paid if k == 0 and due - paid > 0
+                      else rng.choice([1, 777, 31415]))
+            claimed = rng.random() < 0.7
+            gst, qst = inv_model.write_off_tax_parts(inv, amount) if claimed else (0, 0)
+            radiation = _event(f"{inv['id']}-r{k}", when, amount, gst=gst, qst=qst,
+                               claimed=claimed)
+            events.append(radiation)
+            if rng.random() < 0.4:
+                events.append(_cancel(f"{inv['id']}-c{k}", radiation,
+                                      when + timedelta(days=rng.choice([0, 1, 31, 92]))))
+        inv["write_offs"] = events
+        if (inv["status"] in ("envoyée", "en_retard") and inv_model.written_off_of(inv)
+                and rng.random() < 0.7):
+            inv["status"] = "payée"
+
+
+def _random_world(rng: random.Random, *, write_offs: bool = True):
     days = [date(2031, 1, 1) + timedelta(days=i) for i in range(0, 700, 3)]
 
     def day():
@@ -674,14 +733,22 @@ def _random_world(rng: random.Random):
     for n, original in enumerate(rng.sample(rows, k=min(6, len(rows)))):
         later = original["date"] + timedelta(days=rng.choice([0, 10, 90]))
         rows.append(_correction(f"c{n:03d}", original, later))
+    if write_offs:
+        _draw_write_offs(rng, invoices, rows, day)
     return _snapshot(transactions=rows, invoices=invoices, trust_rows=trust_rows)
+
+
+#: The seven periods of the rollforward property — and of the deploy check's
+#: promise (test_a_world_without_write_offs_presents_what_77fd14c_presented).
+_ROLLFORWARD_PERIODS = ("2031-02", "2031-07", "2031-T3", "2031", "2032-03", "2032-T4",
+                        "2032")
 
 
 @pytest.mark.parametrize("seed", range(40))
 def test_the_rollforward_always_closes(seed):
     rng = random.Random(20311107 + seed)
     snap = _random_world(rng)
-    for slug in ("2031-02", "2031-07", "2031-T3", "2031", "2032-03", "2032-T4", "2032"):
+    for slug in _ROLLFORWARD_PERIODS:
         st = _compute(snap, slug)
         assert st.unavailable == {}, st.unavailable
         roll = st.sections["avoir"]
@@ -1113,10 +1180,10 @@ def _rows(view, key):
     return next(s for s in view["sections"] if s["key"] == key)["rows"]
 
 
-@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("seed", range(40))
 def test_every_displayed_statement_foots(seed):
     snap = _random_world(random.Random(91 + seed))
-    for slug in ("2031-07", "2032-T2", "2032"):
+    for slug in _ROLLFORWARD_PERIODS + ("2032-T2",):
         st = _compute(snap, slug)
         view = fs.present(st)
         roll = _rows(view, "avoir")
@@ -1136,6 +1203,22 @@ def test_every_displayed_statement_foots(seed):
         assert bilan["Avoir net (actif − passif)"] == [opening.net, closing.net]
         income = {r["label"]: r["values"][0] for r in _rows(view, "resultats")}
         assert income["Bénéfice net"] == st.sections["resultats"]["net_income"]
+        # Lot 3a: the products foot their total, write-downs included; the
+        # tax table's lines foot its net tax, the bad-debt relief included;
+        # « Redressements » lists exactly the relief that table takes.
+        products = [r for r in _rows(view, "resultats")]
+        keys = [r["key"] for r in products]
+        products = products[keys.index("produits") + 1:keys.index("total_produits")]
+        assert all(r["level"] == 1 for r in products)
+        assert sum(r["values"][0] for r in products) == income["Total des produits"]
+        tax_rows = _rows(view, "taxes")
+        tax_keys = [r["key"] for r in tax_rows]
+        net_lines = tax_rows[tax_keys.index("solde_debut") + 1:tax_keys.index("taxe_nette")]
+        assert sum(r["values"][0] for r in net_lines) == st.sections["taxes"]["net"]
+        relief = {r["key"]: r["values"][0] for r in tax_rows}
+        group = [r for r in _rows(view, "redressements") if r["key"].startswith("radiation:")]
+        assert sum(r["values"][0] for r in group) == -relief.get("tps_creances_irrecouvrables", 0)
+        assert sum(r["values"][1] for r in group) == -relief.get("tvq_creances_irrecouvrables", 0)
 
 
 @pytest.mark.parametrize("seed", range(20))
@@ -1419,3 +1502,360 @@ def test_the_world_compute_builds_holds_its_payments_in_a_tuple(monkeypatch):
     assert st.unavailable == {} and built
     assert all(isinstance(w.payments, tuple) for w in built)
     assert any(w.payments for w in built)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 13. Write-offs (« radiation », lot 3a, part 2/3)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _view_rows(st, section):
+    return {r["key"]: r for r in _rows(fs.present(st), section)}
+
+
+def _written_off(*, claimed=True, status="payée", cancel_on=None):
+    """An invoice of 1 149,75 $ (fees 1 000 $, dated 2 March 2031), 400 $
+    paid on 20 March, its remainder of 749,75 $ written off on 12 May — its
+    TPS/TVQ claimed or not —, the radiation cancelled on *cancel_on*."""
+    inv = _invoice("i001", _d(2031, 3, 2), fees=100000, status=status, amount_paid=40000)
+    pay = _tx("a1", "encaissement_facture", 40000, _d(2031, 3, 20), invoice_id="i001")
+    gst, qst = inv_model.write_off_tax_parts(inv, 74975) if claimed else (0, 0)
+    radiation = _event("w1", _d(2031, 5, 12), 74975, gst=gst, qst=qst, claimed=claimed)
+    inv["write_offs"] = [radiation]
+    if cancel_on is not None:
+        inv["write_offs"].append(_cancel("w2", radiation, cancel_on))
+    return _snapshot(transactions=[pay], invoices=[inv])
+
+
+def test_the_write_off_signs_are_the_models_vocabulary():
+    assert fs.WRITE_OFF_SIGNS == {"radiation": 1, "contre_passation": -1}
+    assert tuple(fs.WRITE_OFF_SIGNS) == inv_model.WRITE_OFF_KINDS
+
+
+def test_a_write_off_takes_its_amount_less_its_claimed_tax_off_revenue_on_its_day():
+    snap = _written_off()
+    assert inv_model.write_off_tax_parts(snap.invoices[0], 74975) == (3260, 6505)
+    may = _compute(snap, "2031-05")
+    income = may.sections["resultats"]
+    assert income["write_downs"] == 74975 - 3260 - 6505 == 65210
+    assert (income["fees"], income["revenue"], income["net_income"]) == (0, -65210, -65210)
+    rows = _rows(fs.present(may), "resultats")
+    keys = [r["key"] for r in rows]
+    assert keys[keys.index("autres_produits") + 1:keys.index("total_produits")] == [
+        "radiations"]
+    row = rows[keys.index("radiations")]
+    assert (row["label"], row["values"], row["level"], row["style"]) == (
+        "Radiations de comptes clients", [-65210], 1, "line")
+    assert any(n.startswith("Radiations de comptes clients :")
+               for n in next(s for s in fs.present(may)["sections"]
+                             if s["key"] == "resultats")["notes"])
+    taxes = may.sections["taxes"]
+    assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"]) == (3260, 6505)
+    assert taxes["net"] == -(3260 + 6505)
+    tax_rows = _rows(fs.present(may), "taxes")
+    tax_keys = [r["key"] for r in tax_rows]
+    assert tax_keys[tax_keys.index("rti") + 1:tax_keys.index("taxe_nette")] == [
+        "tps_creances_irrecouvrables", "tvq_creances_irrecouvrables"]
+    by_key = {r["key"]: r for r in tax_rows}
+    assert by_key["tps_creances_irrecouvrables"]["values"] == [-3260]
+    assert by_key["tvq_creances_irrecouvrables"]["values"] == [-6505]
+    assert by_key["tps_creances_irrecouvrables"]["level"] == 1
+    bilan = may.sections["bilan"]
+    assert (bilan["opening"].receivables, bilan["closing"].receivables) == (74975, 0)
+    assert bilan["closing"].tax_payable == bilan["opening"].tax_payable - 3260 - 6505
+    assert bilan["closing"].net - bilan["opening"].net == -65210
+    assert may.sections["avoir"]["unexplained"] == 0
+    march = _compute(snap, "2031-03")
+    assert march.sections["resultats"]["write_downs"] == 0
+    assert "radiations" not in _view_rows(march, "resultats")
+    assert "tps_creances_irrecouvrables" not in _view_rows(march, "taxes")
+    assert march.sections["avoir"]["unexplained"] == 0
+
+
+def test_a_written_off_payee_is_never_also_presumed_settled():
+    """The double count. A « payée » settled by a write-off is no hand-set
+    « payée »: its remainder is owed until the write-off's day, then gone —
+    once. Presumed settled as well (as on 77fd14c, which read no write-off),
+    it leaves the receivables at its invoice date, and the write-off takes it
+    off a second time."""
+    snap = _written_off()
+    march, april, may = (_compute(snap, slug) for slug in ("2031-03", "2031-04", "2031-05"))
+    assert march.sections["avoir"]["settled"] == 0
+    assert "reglees_hors_registres" not in _points(march)
+    assert march.sections["bilan"]["closing"].receivables == 74975
+    assert april.sections["bilan"]["closing"].receivables == 74975
+    assert may.sections["bilan"]["closing"].receivables == 0
+    assert "creances_negatives" not in _points(may)
+    for st in (march, april, may):
+        assert st.sections["avoir"]["unexplained"] == 0
+
+
+def test_a_payee_short_of_its_payments_and_write_offs_presumes_only_the_rest_settled():
+    inv = _invoice("i001", _d(2031, 3, 2), fees=100000, status="payée", amount_paid=40000)
+    pay = _tx("a1", "encaissement_facture", 40000, _d(2031, 3, 20), invoice_id="i001")
+    inv["write_offs"] = [_event("w1", _d(2031, 5, 12), 50000)]
+    snap = _snapshot(transactions=[pay], invoices=[inv])
+    march = _compute(snap, "2031-03")
+    assert march.sections["avoir"]["settled"] == 114975 - 40000 - 50000 == 24975
+    assert _points(march)["reglees_hors_registres"]["amount"] == 24975
+    may = _compute(snap, "2031-05")
+    assert may.sections["bilan"]["opening"].receivables == 50000
+    assert may.sections["bilan"]["closing"].receivables == 0
+    assert may.sections["resultats"]["write_downs"] == 50000
+    for st in (march, may):
+        assert st.sections["avoir"]["unexplained"] == 0
+
+
+def test_a_tax_not_claimed_stays_inside_the_write_down():
+    may = _compute(_written_off(claimed=False), "2031-05")
+    assert may.sections["resultats"]["write_downs"] == 74975
+    assert _view_rows(may, "resultats")["radiations"]["values"] == [-74975]
+    taxes = may.sections["taxes"]
+    assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"], taxes["net"]) == (0, 0, 0)
+    assert not {"tps_creances_irrecouvrables", "tvq_creances_irrecouvrables"} & set(
+        _view_rows(may, "taxes"))
+    bilan = may.sections["bilan"]
+    assert bilan["closing"].tax_payable == bilan["opening"].tax_payable
+    row = _view_rows(may, "redressements")["radiation:w1"]
+    assert row["label"] == "2031-F001 — radiation du 12 mai 2031 (taxes non réclamées)"
+    assert row["values"] == [0, 0]
+    assert may.sections["avoir"]["unexplained"] == 0
+
+
+def test_a_cancelled_write_off_gives_everything_back_in_the_period_it_is_cancelled():
+    snap = _written_off(status="en_retard", cancel_on=_d(2031, 6, 3))
+    may, june = _compute(snap, "2031-05"), _compute(snap, "2031-06")
+    assert may.sections["resultats"]["write_downs"] == 65210
+    assert june.sections["resultats"]["write_downs"] == -65210
+    assert _view_rows(june, "resultats")["radiations"]["values"] == [65210]
+    taxes = june.sections["taxes"]
+    assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"]) == (-3260, -6505)
+    tax_rows = _view_rows(june, "taxes")
+    assert tax_rows["tps_creances_irrecouvrables"]["values"] == [3260]
+    assert tax_rows["tvq_creances_irrecouvrables"]["values"] == [6505]
+    bilan = june.sections["bilan"]
+    assert (bilan["opening"].receivables, bilan["closing"].receivables) == (0, 74975)
+    assert bilan["closing"].tax_payable == may.sections["bilan"]["opening"].tax_payable
+    quarter = _compute(snap, "2031-T2")
+    assert quarter.sections["resultats"]["write_downs"] == 0
+    assert "radiations" not in _view_rows(quarter, "resultats")
+    assert "tps_creances_irrecouvrables" not in _view_rows(quarter, "taxes")
+    for st in (may, june, quarter):
+        assert st.sections["avoir"]["unexplained"] == 0
+
+
+def test_redressements_list_each_event_of_the_period_with_its_tps_and_tvq():
+    snap = _written_off(status="en_retard", cancel_on=_d(2031, 6, 3))
+    may = fs.present(_compute(snap, "2031-05"))
+    section = next(s for s in may["sections"] if s["key"] == "redressements")
+    assert section["columns"] == ["TPS", "TVQ"]
+    assert "Aucun redressement." not in section["notes"]
+    heading, row = section["rows"]
+    assert (heading["key"], heading["style"], heading["values"]) == (
+        "groupe:radiations", "heading", [None, None])
+    assert (row["key"], row["label"], row["values"], row["level"]) == (
+        "radiation:w1", "2031-F001 — radiation du 12 mai 2031", [3260, 6505], 1)
+    june = _view_rows(_compute(snap, "2031-06"), "redressements")
+    assert june["radiation:w2"]["label"] == (
+        "2031-F001 — annulation de radiation du 3 juin 2031")
+    assert june["radiation:w2"]["values"] == [-3260, -6505]
+    quarter = _rows(fs.present(_compute(snap, "2031-T2")), "redressements")
+    assert [r["key"] for r in quarter] == ["groupe:radiations", "radiation:w1",
+                                           "radiation:w2"]
+
+
+def test_a_write_off_counts_from_its_own_day_never_the_day_before():
+    """The predicate's edge: dated the last day of May, a write-off counts
+    in May and in the position at that day; dated the first of June, in
+    June only."""
+    late = _invoice("i001", _d(2031, 3, 2), fees=100000, status="payée")
+    late["write_offs"] = [_event("w1", _d(2031, 5, 31), 114975, gst=5000, qst=9975)]
+    early = _invoice("i002", _d(2031, 3, 3), fees=100000, status="payée")
+    early["write_offs"] = [_event("w2", _d(2031, 6, 1), 114975, gst=5000, qst=9975)]
+    snap = _snapshot(invoices=[late, early])
+    may, june = _compute(snap, "2031-05"), _compute(snap, "2031-06")
+    assert may.sections["resultats"]["write_downs"] == 100000
+    assert june.sections["resultats"]["write_downs"] == 100000
+    assert [e.id for _i, e in may.sections["redressements"]["write_offs"]] == ["w1"]
+    assert [e.id for _i, e in june.sections["redressements"]["write_offs"]] == ["w2"]
+    assert may.sections["bilan"]["opening"].receivables == 2 * 114975       # 30 April
+    assert may.sections["bilan"]["closing"].receivables == 114975           # 31 May
+    assert june.sections["bilan"]["closing"].receivables == 0
+    assert may.sections["taxes"]["bad_debt_gst"] == june.sections["taxes"]["bad_debt_gst"] == 5000
+
+
+def test_a_write_off_dated_before_its_invoice_counts_from_the_invoice_date():
+    """Data the doors never write (a write-off follows the due date) still
+    closes: the event counts once its invoice does."""
+    inv = _invoice("i001", _d(2031, 6, 10), fees=100000, status="payée")
+    inv["write_offs"] = [_event("w1", _d(2031, 5, 20), 114975, gst=5000, qst=9975)]
+    snap = _snapshot(invoices=[inv])
+    may, june = _compute(snap, "2031-05"), _compute(snap, "2031-06")
+    assert may.sections["resultats"]["write_downs"] == 0
+    assert may.sections["redressements"]["write_offs"] == []
+    assert june.sections["resultats"]["write_downs"] == 100000
+    assert june.sections["resultats"]["revenue"] == 0
+    assert _view_rows(june, "redressements")["radiation:w1"]["label"] == (
+        "2031-F001 — radiation du 20 mai 2031")
+    assert june.sections["bilan"]["closing"].receivables == 0
+    for st in (may, june):
+        assert st.sections["avoir"]["unexplained"] == 0
+
+
+@pytest.mark.parametrize("status", ["brouillon", "annulée", "mystère"])
+def test_the_write_offs_of_an_invoice_never_billed_never_count(status):
+    inv = _invoice("i001", _d(2031, 5, 2), status=status)
+    bare = _compute(_snapshot(invoices=[dict(inv)]), "2031-05")
+    inv["write_offs"] = [_event("w1", _d(2031, 5, 20), inv["amount_due"],
+                                gst=inv["gst_amount"], qst=inv["qst_amount"])]
+    st = _compute(_snapshot(invoices=[inv]), "2031-05")
+    assert st.unavailable == {} and st.sections["redressements"]["write_offs"] == []
+    assert fs.present(st) == fs.present(bare)
+    assert st.points == bare.points
+
+
+#: Arrays no door writes (``invoice.write_off_events`` refuses each).
+_MALFORMED = {
+    "pas_une_liste": lambda ev: {"0": ev},
+    "pas_un_enregistrement": lambda ev: ["w1"],
+    "nature_inconnue": lambda ev: [{**ev, "kind": "remise"}],
+    "montant_en_dollars": lambda ev: [{**ev, "amount": 749.75}],
+    "montant_nul": lambda ev: [{**ev, "amount": 0, "gst_amount": 0, "qst_amount": 0,
+                                "tax_claimed": False}],
+    "taxes_au_dela_du_montant": lambda ev: [{**ev, "gst_amount": ev["amount"]}],
+    "reclamation_illisible": lambda ev: [{**ev, "tax_claimed": "oui"}],
+    "date_a_l_heure": lambda ev: [{**ev, "date": _d(2031, 5, 12, 15)}],
+    "contre_passation_orpheline": lambda ev: [_cancel("w2", ev, _d(2031, 6, 3))],
+    "contre_passation_d_autres_chiffres": lambda ev: [
+        ev, {**_cancel("w2", ev, _d(2031, 6, 3)), "gst_amount": ev["gst_amount"] - 1}],
+    "annulee_deux_fois": lambda ev: [ev, _cancel("w2", ev, _d(2031, 6, 3)),
+                                     _cancel("w3", ev, _d(2031, 6, 4))],
+}
+
+
+@pytest.mark.parametrize("status", ["payée", "annulée"])
+@pytest.mark.parametrize("damage", list(_MALFORMED))
+def test_a_malformed_write_off_array_makes_the_invoice_sections_unavailable(damage, status):
+    """Never a skipped event, never a 0, never a 500: every section that
+    needs the invoices says why in French — the invoice's number and the
+    event's position, never a stored value. Every invoice's array is read,
+    whatever its status, as its money is."""
+    inv = _invoice("i001", _d(2031, 5, 2), status=status)
+    inv["write_offs"] = _MALFORMED[damage](
+        _event("w1", _d(2031, 5, 12), 74975, gst=3260, qst=6505))
+    st = _compute(_snapshot(invoices=[inv]), "2031-05")
+    lost = {"resultats", "flux", "bilan", "avoir", "taxes", "redressements", "travaux"}
+    assert set(st.unavailable) == lost and not lost & set(st.sections)
+    for reason in st.unavailable.values():
+        assert reason.startswith("Radiations illisibles sur la facture 2031-F001 (")
+        assert reason.endswith("aucun total n'est calculé sur une radiation douteuse.")
+        for stored in ("749", "15:00", "2031-05-12", "remise", "oui"):
+            assert stored not in reason, (damage, stored)
+    assert fs.pdf_refusal(st)
+    labels = [r["label"] for r in fs.present(st)["points"]["rows"]]
+    assert labels[0].startswith("Liste incomplète — Radiations illisibles")
+
+
+def test_the_random_worlds_draw_every_kind_of_write_off():
+    """The properties are only as good as the worlds they draw: over the
+    rollforward's 40, every case of lot 3a occurs."""
+    seen = set()
+    for seed in range(40):
+        snap = _random_world(random.Random(20311107 + seed))
+        partly_paid = {r["invoice_id"] for r in snap.admin_transactions
+                       if r["id"] == f"p{r.get('invoice_id')}"}
+        for inv in snap.invoices:
+            events = inv.get("write_offs") or []
+            if not events:
+                continue
+            seen.add("billed" if inv["status"] in inv_model.REVENUE_STATUSES
+                     else "never_billed")
+            if inv["id"] in partly_paid:
+                seen.add("partly_paid")
+            if inv["status"] == "payée" and inv_model.written_off_of(inv):
+                seen.add("settled_payee")
+            radiations = {e["id"]: e for e in events if e["kind"] == "radiation"}
+            for e in events:
+                seen.add("claimed" if e["tax_claimed"] else "unclaimed")
+                if inv["date"] is not None and e["date"] < inv["date"]:
+                    seen.add("before_invoice")
+                if e["kind"] == "contre_passation":
+                    seen.add("cancelled")
+                    r = radiations[e["reverses_id"]]
+                    if (r["date"].year, r["date"].month) != (e["date"].year, e["date"].month):
+                        seen.add("cancelled_across_months")
+    assert seen == {"billed", "never_billed", "partly_paid", "settled_payee", "claimed",
+                    "unclaimed", "before_invoice", "cancelled", "cancelled_across_months"}
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_the_write_offs_agree_with_an_independent_count(seed):
+    """The predicate restated: an event of a billed, dated invoice counts
+    from the later of its own day and its invoice's — each period's
+    write-down, TPS/TVQ relief and « Redressements » rows are exactly the
+    events that start counting in it."""
+    snap = _random_world(random.Random(4242 + seed))
+    for slug in _ROLLFORWARD_PERIODS:
+        st = _compute(snap, slug)
+        start, end = st.period.start, st.as_of
+        down = gst = qst = 0
+        keys = set()
+        for inv in snap.invoices:
+            if inv["status"] not in inv_model.REVENUE_STATUSES or inv["date"] is None:
+                continue
+            for e in inv.get("write_offs") or []:
+                if not start <= max(e["date"], inv["date"]).date() <= end:
+                    continue
+                sign = 1 if e["kind"] == "radiation" else -1
+                down += sign * (e["amount"] - e["gst_amount"] - e["qst_amount"])
+                gst += sign * e["gst_amount"]
+                qst += sign * e["qst_amount"]
+                keys.add(f"radiation:{e['id']}")
+        assert st.sections["resultats"]["write_downs"] == down, (seed, slug)
+        taxes = st.sections["taxes"]
+        assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"]) == (gst, qst), (seed, slug)
+        shown = {r["key"] for r in _rows(fs.present(st), "redressements")
+                 if r["key"].startswith("radiation:")}
+        assert shown == keys, (seed, slug)
+
+
+def _digest(snapshot) -> str:
+    """A digest of everything the statements present of *snapshot* over the
+    rollforward's seven periods: the page's and the PDF's labelled view, the
+    points (ids included), what the points could not judge and the
+    unavailable sections — all the connector reads too."""
+    parts = []
+    for slug in _ROLLFORWARD_PERIODS:
+        st = _compute(snapshot, slug)
+        parts.append({"view": fs.present(st), "points": st.points,
+                      "unchecked": st.points_unchecked, "unavailable": st.unavailable})
+    raw = json.dumps(parts, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+#: CAPTURED on 77fd14c — part 1 of lot 3a, before the statements read any
+#: write-off —, by this very digest over the 40 worlds of
+#: test_the_rollforward_always_closes drawn without write-offs (77fd14c's
+#: generator drew none). The deploy check's promise: a world without a
+#: write-off — every closed period, none existing before lot 3b — presents
+#: exactly what it presented. A deliberate change to a label or a figure of
+#: such a world recaptures them, and its commit says so.
+_PRESENTED_ON_77FD14C = {
+    0: "594827b370ca5ace", 1: "acd07df88cd1c486", 2: "e4b1c82dad1e3bc6", 3: "740dc8d64e13ea45",
+    4: "9fb82f7be6cac067", 5: "47f108169875633c", 6: "54c03b387fabd1cb", 7: "9700067eca393065",
+    8: "d6769e0b7e6a858c", 9: "5ce988f589d642f0", 10: "a8aa0cc56c385ba3", 11: "2cde984c81b434cd",
+    12: "9ea3990aa85d2ec6", 13: "a23e7c074267d99d", 14: "639ab085bbb2296e", 15: "a7ae24b60f616413",
+    16: "7dfb1d431b094787", 17: "ff3713e1e40bdb3d", 18: "bf80c057f20c3af8", 19: "c069b28ee45d7784",
+    20: "0a8c565f0968298a", 21: "ab0da368eed01214", 22: "25fb1b88374bd26d", 23: "69f7336f17f11724",
+    24: "4a3a4c84a48d4c15", 25: "2907040068e9ab26", 26: "2ddebd1ac0cb8054", 27: "3eed3cc66f0ca4e0",
+    28: "99b40d73d3fb39d5", 29: "45029c87ada692bc", 30: "2faf5cb1cf6f6d17", 31: "24c547566a970183",
+    32: "56d7e9db2a6c0cf1", 33: "6c3d573bf88dfb42", 34: "3a47d9e1ec17498c", 35: "185a70a52a73412a",
+    36: "eea48b5a19e71a32", 37: "cb4e8eacbb9f8e78", 38: "7cb9f4952c62d72c", 39: "75e9b4c84a96995d",
+}
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_a_world_without_write_offs_presents_what_77fd14c_presented(seed):
+    snap = _random_world(random.Random(20311107 + seed), write_offs=False)
+    assert not [inv for inv in snap.invoices if "write_offs" in inv]
+    assert _digest(snap) == _PRESENTED_ON_77FD14C[seed]
