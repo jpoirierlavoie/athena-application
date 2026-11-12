@@ -1,0 +1,90 @@
+{#- Le contenu de #radiations-rows (lot 3c) : la page entière l'inclut, et la
+    barre de pagination (htmx) le remplace. Tout ce qui dépend de la période
+    y vit — l'en-tête, les totaux, les liens d'exportation, les rangées —,
+    si bien qu'aucun élément hors de la cible ne périme (règle 8). Lot 4b :
+    les avis d'intérêts y viendront en rangées de mémoire, hors des
+    totaux ; aucun n'est simulé ici. -#}
+<div class="mb-4">
+  <p class="text-sm text-gray-900">{{ heading.period_label }} — {{ heading.span }}</p>
+  <p class="text-xs text-gray-500 mt-1">{{ heading.as_of_line }}</p>
+</div>
+
+{% if journal.unavailable %}
+{#- Une lecture manquée ou tronquée n'est jamais un journal vide : la raison,
+    et aucun total, aucune rangée, aucune exportation. -#}
+<p role="alert" class="px-4 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">Journal indisponible — {{ journal.unavailable }}</p>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+  <p class="text-xs text-gray-500 mb-3">{{ entry_sentence }}</p>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    {% for tile in totals %}
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">{{ tile.side }} — {{ tile.label }}</p>
+      <p class="text-lg font-semibold {% if tile.value < 0 %}text-red-600{% else %}text-gray-900{% endif %}">{{ tile.value | cents_fr }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="text-xs text-gray-500 mt-3">{{ totals_sentence }}</p>
+  <p class="text-xs text-gray-500 mt-1">{{ interest_sentence }}</p>
+</div>
+
+<div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+  <p class="text-sm text-gray-500">{{ count }} écriture{% if count > 1 %}s{% endif %} dans la période</p>
+  <div class="flex flex-wrap items-center gap-2">
+    <a href="{{ url_for('journal_radiations.export', fmt='csv', periode=slug) }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+    <a href="{{ url_for('journal_radiations.export', fmt='pdf', periode=slug) }}" class="inline-flex items-center gap-1 px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">{{ ms('picture_as_pdf', 16) }} PDF</a>
+  </div>
+</div>
+
+{% if not rows %}
+<div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucune radiation ni annulation de radiation dans cette période.</div>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead>
+      {#- La bande au-dessus des colonnes : le côté de l'écriture de chaque
+          colonne d'argent (fs.JOURNAL_COLUMNS, regroupé par la route). -#}
+      <tr class="text-xs text-gray-500">
+        {% for side, span in band %}
+        {% if side %}
+        <th colspan="{{ span }}" scope="colgroup" class="px-3 pt-2 font-medium text-center border-b border-gray-200">{{ side }}</th>
+        {% else %}
+        <td colspan="{{ span }}"></td>
+        {% endif %}
+        {% endfor %}
+        <td></td>
+      </tr>
+      <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+        {% for key, label, side in columns %}
+        <th scope="col" class="px-3 py-2 font-medium{% if side %} text-right{% endif %}">{{ label }}</th>
+        {% endfor %}
+        <th scope="col" class="px-3 py-2 font-medium">Motif</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {#- Les plus récentes d'abord ; une annulation passe l'écriture
+          inverse, ses montants en négatif. -#}
+      {% for r in rows %}
+      <tr>
+        {% for key, label, side in columns %}
+        {% if side %}
+        <td class="px-3 py-2 text-right whitespace-nowrap {% if r[key] < 0 %}text-red-600{% else %}text-gray-900{% endif %}">{{ r[key] | cents_fr }}</td>
+        {% elif key == 'invoice_number' %}
+        <td class="px-3 whitespace-nowrap"><a href="{{ url_for('invoices.invoice_detail', invoice_id=r.invoice_id) }}" class="inline-block py-3 text-indigo-600 hover:underline">{{ r[key] }}</a></td>
+        {% elif key == 'state' %}
+        <td class="px-3 py-2 whitespace-nowrap"><span class="text-xs px-2 py-0.5 rounded-full {{ 'bg-amber-100 text-amber-800' if r.standing else 'bg-gray-200 text-gray-600' }}">{{ r[key] }}</span></td>
+        {% elif key == 'client' %}
+        <td class="px-3 py-2 text-gray-900">{{ r[key] }}</td>
+        {% else %}
+        <td class="px-3 py-2 whitespace-nowrap text-gray-900">{{ r[key] }}</td>
+        {% endif %}
+        {% endfor %}
+        <td class="px-3 py-2 text-gray-700 min-w-[12rem] whitespace-pre-line wrap-anywhere">{{ r.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% include "components/pagination.html" %}
+{% endif %}
+{% endif %}

@@ -10,6 +10,11 @@ read makes the sections that need it « indisponible », never zero
 (CLAUDE.md « A failed read never passes for absence »). A transaction that
 cannot begin, or whose (empty) commit fails, loses every collection.
 
+The « Journal des radiations et intérêts » (lot 3c, ``build_write_off_journal``)
+reads the invoices alone through the same reader — its own read-only
+transaction, the same strict reader, cap and log lines —, so it fails
+exactly as the statements' invoice sections do.
+
 The transaction comes from a model module's client (``admin_ledger.db``,
 read at call time): this module holds no client of its own.
 
@@ -54,16 +59,17 @@ def _root_error(exc: BaseException) -> BaseException:
     return exc
 
 
-def read_snapshot() -> fs.Snapshot:
-    """Every collection of the statements, read in ONE read-only
-    transaction; a collection whose read fails is ``None`` with its reason
-    in ``failures``."""
+def read_snapshot(names: tuple = fs.COLLECTIONS) -> fs.Snapshot:
+    """The collections *names* of the statements — every one, by default —
+    read in ONE read-only transaction; a collection whose read fails is
+    ``None`` with its reason in ``failures``. A collection left out of
+    *names* is ``None`` with no reason: nothing may ask for it."""
     snapshot = fs.Snapshot()
     transaction = al.db.transaction(read_only=True)
 
     @firestore.transactional
     def _read(txn) -> None:
-        for name in fs.COLLECTIONS:
+        for name in names:
             try:
                 setattr(snapshot, name, READERS[name](txn))
             except full_reads.TruncatedRead:
@@ -84,7 +90,7 @@ def read_snapshot() -> fs.Snapshot:
         log_unexpected("financial statements: read transaction failed",
                        exc_info=False, error_type=type(_root_error(exc)).__name__)
         lost = fs.Snapshot()
-        lost.failures = {name: "read" for name in fs.COLLECTIONS}
+        lost.failures = {name: "read" for name in names}
         return lost
     return snapshot
 
@@ -110,3 +116,17 @@ def build_series(periods: list, *, today: date, now: datetime) -> tuple:
     every period of a comparative rests on the same consistent data."""
     snapshot = read_snapshot()
     return [fs.compute(snapshot, p, today=today, now=now) for p in periods], snapshot
+
+
+#: What the « Journal des radiations et intérêts » reads (lot 3c): the
+#: invoices alone — their write-off events are its rows.
+JOURNAL_COLLECTIONS = ("invoices",)
+
+
+def build_write_off_journal(period, *, today: date) -> fs.WriteOffJournal:
+    """The journal of *period* (lot 3c): the invoices read through
+    :func:`read_snapshot`, then the model's derivation
+    (``models/financial_statements.write_off_journal``) — « indisponible »
+    when that read failed or was truncated."""
+    return fs.write_off_journal(read_snapshot(JOURNAL_COLLECTIONS), period,
+                                today=today)

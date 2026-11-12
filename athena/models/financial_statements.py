@@ -75,6 +75,13 @@ The rules (the plan of 2026-11-07, « The rules (Lot B) »):
   each event of the period with its TPS and TVQ — the lawyer's list for the
   tax return. The rollforward takes no term of its own: a write-off moves
   the net assets by exactly its effect on net income.
+* **The « Journal des radiations et intérêts »** (lot 3c, the lawyer's
+  decision B of 2026-11-11): DERIVED, it stores nothing.
+  :func:`write_off_journal` lists the events of :func:`_period_write_offs`
+  over the span the statements compute, each closed like a journal entry,
+  so its four totals are, by construction, the period's « Créances
+  irrécouvrables », its two TPS/TVQ bad-debt rows and their sum. Lot 4b
+  adds the interest notices there as memo rows, outside those totals.
 * **Days.** A stored date-only value counts on its UTC calendar day; an
   instant (``voided_at``, ``created_at``, now) on its Montréal day
   (Architecture Rule 5). A period never starts before ``BOOKS_START``;
@@ -1777,3 +1784,147 @@ def present(st: Statements) -> dict:
         "floors_heading": FLOORS_HEADING,
         "floors": floors,
     }
+
+
+# ── The « Journal des radiations et intérêts » (lot 3c) ─────────────────────
+
+
+#: The journal's columns, in their order — ``(key, label, side)``: the side
+#: of the entry, « Débit » or « Crédit », on its four money columns, ''
+#: elsewhere. The page, the CSV and the PDF read this one table; the totals
+#: sum exactly its money columns. The page alone adds the reason, free
+#: text, after them.
+JOURNAL_COLUMNS = (
+    ("date", "Date", ""),
+    ("credit_note_number", "N° note de crédit", ""),
+    ("invoice_number", "N° facture", ""),
+    ("client", "Client", ""),
+    ("kind", "Nature", ""),
+    ("bad_debt", "Créances irrécouvrables", "Débit"),
+    ("gst", "TPS à payer", "Débit"),
+    ("qst", "TVQ à payer", "Débit"),
+    ("receivables", "Comptes clients", "Crédit"),
+    ("state", "État de la note", ""),
+)
+#: The money columns — derived, never a second list.
+JOURNAL_MONEY_KEYS = tuple(key for key, _label, side in JOURNAL_COLUMNS if side)
+#: How each row closes, in one sentence — the page and the PDF print it.
+JOURNAL_ENTRY_SENTENCE = (
+    "Chaque radiation se passe comme une écriture de journal : au débit, les "
+    "créances irrécouvrables (le montant radié, moins la TPS et la TVQ "
+    "réclamées), la TPS à payer et la TVQ à payer ; au crédit, les comptes "
+    "clients (le montant radié, taxes comprises). Une annulation de "
+    "radiation passe l'écriture inverse, à sa propre date : ses montants "
+    "sont en négatif.")
+#: What the totals are: the statements' own figures of the period.
+JOURNAL_TOTALS_SENTENCE = (
+    "Les totaux de la période sont ceux des états financiers : les "
+    "« Créances irrécouvrables » de l'état des résultats, et la TPS et la "
+    "TVQ des créances irrécouvrables du tableau de la TPS/TVQ.")
+#: Until lot 4b, the interest notices do not exist: said, never faked.
+JOURNAL_INTEREST_SENTENCE = (
+    "Les avis d'intérêts n'existent pas encore dans Athéna : ce journal ne "
+    "porte, pour l'instant, que les radiations.")
+
+
+@dataclass(frozen=True)
+class JournalEntry:
+    """One row of the journal: one write-off event, closed like a journal
+    entry. A radiation debits « Créances irrécouvrables » (``bad_debt``:
+    its amount less the TPS and the TVQ it claims — a part not claimed
+    stays in it), « TPS à payer » (``gst``) and « TVQ à payer » (``qst``),
+    and credits « Comptes clients » (``receivables``: its amount, taxes
+    included), so ``bad_debt + gst + qst == receivables`` on every row; a
+    contre_passation passes the reverse entry on its own day, every figure
+    negated. ``credit_note_number`` is the radiation's, or the one the
+    contre_passation cancels; ``standing`` says whether that credit note is
+    still « en vigueur » — its radiation standing
+    (``invoice.standing_write_offs``), as the inscriptions stand today,
+    like every figure here."""
+
+    invoice_id: str
+    invoice_number: str
+    client_name: str
+    event_id: str
+    kind: str                      # invoice.WRITE_OFF_KINDS
+    day: date                      # the event's UTC calendar day
+    credit_note_number: str
+    bad_debt: int
+    gst: int
+    qst: int
+    receivables: int
+    standing: bool
+    reason: str
+
+
+@dataclass
+class WriteOffJournal:
+    """The journal of one period: its entries, oldest first, and the totals
+    of its money columns (:data:`JOURNAL_MONEY_KEYS`) — or ``unavailable``,
+    the French sentence, when the invoices cannot be read whole: never an
+    empty journal over a failed read."""
+
+    period: periods.Period
+    as_of: date
+    in_progress: bool
+    entries: list = field(default_factory=list)
+    totals: dict = field(default_factory=dict)
+    unavailable: str = ""
+
+
+def write_off_journal(snapshot: Snapshot, period: periods.Period, *,
+                      today: date) -> WriteOffJournal:
+    """The « Journal des radiations et intérêts » of *period* (lot 3c, the
+    lawyer's decision B of 2026-11-11) — DERIVED from the invoices'
+    write-off events; it stores nothing.
+
+    Its rows are :func:`_period_write_offs` over the span :func:`compute`
+    takes — ``period.start`` to ``periods.as_of`` (*today*, Montréal's,
+    while the period is in progress) —, the one slice of the income's
+    « Créances irrécouvrables », the TPS/TVQ table's bad-debt rows and
+    « Redressements ». So its totals are, by construction, the statements'
+    figures of the period: ``bad_debt`` the income's ``bad_debts``, ``gst``
+    and ``qst`` the TPS/TVQ table's ``bad_debt_gst`` and ``bad_debt_qst``,
+    ``receivables`` their sum — what the receivables lose. The invoices are
+    read through :func:`_invoices`, as the statements read them: a failed
+    or truncated read, or one unreadable amount or write-off array, makes
+    the journal ``unavailable``.
+
+    The interest notices (« avis d'intérêts ») do not exist before lot 4a:
+    lot 4b adds each avis of the period HERE, as a memo row (calculated,
+    recalculated, cancelled, with the receipts linked to it), outside the
+    totals — at the place the comment below marks. None is faked."""
+    as_of = periods.as_of(period, today)
+    journal = WriteOffJournal(period=period, as_of=as_of,
+                              in_progress=periods.in_progress(period, today))
+    try:
+        invoices = _invoices(snapshot)
+    except Unavailable as exc:
+        journal.unavailable = exc.args[0]
+        return journal
+    # Each invoice's stored events by id, and its standing radiations — the
+    # array _invoices already judged well-formed.
+    seen: dict = {}
+    for inv, event in _period_write_offs(invoices, period.start, as_of):
+        iid = str(inv["id"])
+        if iid not in seen:
+            seen[iid] = ({e["id"]: e for e in inv["write_offs"]},
+                         {e["id"] for e in invoice_model.standing_write_offs(inv)})
+        stored, standing = seen[iid]
+        own = stored[event.id]
+        radiation = own if event.sign > 0 else stored[own["reverses_id"]]
+        journal.entries.append(JournalEntry(
+            invoice_id=iid, invoice_number=_number(inv),
+            client_name=str(inv.get("client_name") or ""),
+            event_id=event.id, kind=own["kind"], day=event.day,
+            credit_note_number=radiation["credit_note_number"],
+            bad_debt=event.sign * (event.amount - event.gst - event.qst),
+            gst=event.sign * event.gst, qst=event.sign * event.qst,
+            receivables=event.sign * event.amount,
+            standing=radiation["id"] in standing,
+            reason=str(own.get("reason") or "")))
+    # Lot 4b: each avis d'intérêts of the period joins the journal here, as
+    # a memo row — never in the totals below, which stay the statements'.
+    journal.totals = {key: sum(getattr(e, key) for e in journal.entries)
+                      for key in JOURNAL_MONEY_KEYS}
+    return journal

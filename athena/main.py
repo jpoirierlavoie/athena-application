@@ -118,6 +118,7 @@ def create_app() -> Flask:
     from routes.budgets import budgets_bp
     from routes.admin_ledger import admin_bp
     from routes.comptabilite import comptabilite_bp
+    from routes.journal_radiations import journal_radiations_bp
     from routes.financial_statements import etats_anciens_bp, etats_bp
     from routes.settings import settings_bp
 
@@ -141,6 +142,10 @@ def create_app() -> Flask:
     app.register_blueprint(budgets_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(comptabilite_bp)
+    # Journal des radiations et intérêts (lot 3c) : GET seulement, en lecture
+    # seule, sous @login_required — un blueprint de navigateur, jamais
+    # exempté de CSRF, sous /comptabilite/radiations/ (aucun préfixe exempté).
+    app.register_blueprint(journal_radiations_bp)
     # États financiers (lot B) : GET seulement, en lecture seule, sous
     # @login_required — un blueprint de navigateur, jamais exempté de CSRF.
     # Au menu « Finances » (/finances/) depuis le 2026-11-10 ; l'ancienne

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Journal des radiations et intérêts — Pallas Athena{% endblock %}
+{% block content %}
+{#- Le journal des radiations et intérêts (lot 3c, décision B de l'avocat du
+    2026-11-11) : DÉRIVÉ des factures, rien n'y est inscrit. Chaque chiffre
+    et chaque colonne viennent de models/financial_statements
+    (write_off_journal, JOURNAL_COLUMNS), chaque drapeau de la route : ce
+    gabarit ne calcule ni ne compare aucune date. La période se choisit par
+    un formulaire GET et des liens, en pages entières, comme aux états
+    financiers ; seule la barre de pagination passe par htmx, sa période
+    épinglée (routes/journal_radiations.py). -#}
+<div class="max-w-5xl mx-auto px-4 py-6">
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-6">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Journal des radiations et intérêts</h1>
+      <p class="text-sm text-gray-500">Les radiations de comptes clients en écritures de journal — dérivées des factures.</p>
+    </div>
+    <a href="{{ url_for('comptabilite.hub') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptabilité</a>
+  </div>
+
+  <form method="get" action="{{ url_for('journal_radiations.index') }}" class="flex flex-wrap items-end gap-2 mb-6">
+    <div class="flex-1 min-w-0">
+      <label for="periode" class="block text-xs text-gray-500 mb-1">Période</label>
+      <select id="periode" name="periode" class="w-full px-3 py-3 text-sm border border-gray-300 rounded-lg bg-white">
+        {% for group, options_of_group in options %}
+        <optgroup label="{{ group }}">
+          {% for value, label in options_of_group %}
+          <option value="{{ value }}"{% if nav and value == nav.slug %} selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="inline-flex items-center px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Afficher</button>
+    {% if nav %}
+    {% if nav.previous %}
+    <a href="{{ url_for('journal_radiations.index', periode=nav.previous) }}" class="inline-flex items-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50" aria-label="Période précédente" title="Période précédente">{{ ms('chevron_left', 20) }}</a>
+    {% endif %}
+    {% if nav.next %}
+    <a href="{{ url_for('journal_radiations.index', periode=nav.next) }}" class="inline-flex items-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50" aria-label="Période suivante" title="Période suivante">{{ ms('chevron_right', 20) }}</a>
+    {% endif %}
+    {% endif %}
+  </form>
+
+  {% if refusal %}
+  <div role="alert" class="mb-6 px-4 py-3 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg">{{ refusal }}</div>
+  {% endif %}
+  {% if error %}
+  <div role="alert" class="mb-6 px-4 py-3 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg">{{ error }}</div>
+  {% endif %}
+
+  {% if journal %}
+  <div id="radiations-rows">{% include "comptabilite/_radiations_rows.html" %}</div>
+  {% endif %}
+</div>
+{% endblock %}

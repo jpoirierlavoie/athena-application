@@ -38,6 +38,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import trust
     import routes.admin_ledger as ra
     import routes.comptabilite as rc
+    import routes.journal_radiations as rj
     import routes.trust as rt
     from services import types_ecritures as te
 
@@ -58,7 +59,8 @@ def _app() -> Flask:
     app.jinja_env.globals["ms"] = ms
     app.jinja_env.globals["csrf_token"] = lambda: "jeton-test"
     app.jinja_env.filters["cents_fr"] = format_cents_fr
-    for bp in (rc.comptabilite_bp, rt.trust_bp, ra.admin_bp):
+    # The hub's header names the write-off journal too (lot 3c).
+    for bp in (rc.comptabilite_bp, rj.journal_radiations_bp, rt.trust_bp, ra.admin_bp):
         app.register_blueprint(bp)
     return app
 

@@ -2,9 +2,15 @@
 {% block title %}Comptabilité — Pallas Athena{% endblock %}
 {% block content %}
 <div class="max-w-3xl mx-auto px-4 py-6">
-  <div class="flex items-center justify-between mb-6">
+  {# Le journal des radiations et intérêts (lot 3c) : un lien seulement —
+     sa page lit elle-même les factures, jamais ce hub (« no new Firestore
+     query », la doctrine de routes/comptabilite.py). #}
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Comptabilité</h1>
-    <a href="{{ url_for('comptabilite.types_ecritures') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Types d'écritures</a>
+    <div class="flex flex-wrap items-center justify-end gap-2">
+      <a href="{{ url_for('journal_radiations.index') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal des radiations et intérêts</a>
+      <a href="{{ url_for('comptabilite.types_ecritures') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Types d'écritures</a>
+    </div>
   </div>
 
   {# ── Fidéicommis ──────────────────────────────────────────────────────

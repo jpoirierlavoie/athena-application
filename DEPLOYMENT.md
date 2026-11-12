@@ -6326,6 +6326,77 @@ Notes:
   `credit_note_number`, so a radiation written here still reads there (its
   statements then take it off revenue again, lot 3a's way); the counter
   stays, and a later deploy continues its series.
+- **Accounting: the « Journal des radiations et intérêts » — a page, a CSV
+  and a PDF, derived from the invoices — lot 3c (2026-11-12).** Lot 3c of
+  the lawyer's plan « Factures : retard, radiation, intérêts », on his
+  decision B of 2026-11-11: a DERIVED journal that stores nothing, where
+  each write-off of a period closes like a journal entry — debit
+  « Créances irrécouvrables » (the amount less the TPS and the TVQ it
+  claims), « TPS à payer » and « TVQ à payer », credit « Comptes clients »
+  (the amount, taxes included); a cancellation (« Annulation de
+  radiation ») passes the reverse entry on its own day, in negative, naming
+  the credit note it cancels.
+  1. *The derivation* (`models/financial_statements.write_off_journal`,
+     pure). Its rows are `_period_write_offs` over the span the statements
+     compute (the period, to today while it is in progress) — the one slice
+     of the income's « Créances irrécouvrables », the TPS/TVQ table's two
+     bad-debt rows and « Redressements » —, so its totals are those figures
+     by construction (a test compares them on the statements' random
+     worlds, periods in progress included). Each row: date, credit note
+     number, invoice number, client, kind, the four amounts, and whether
+     the credit note is « en vigueur » or « annulée » as the inscriptions
+     stand today; its columns are one table (`JOURNAL_COLUMNS`) that the
+     page, the CSV and the PDF read. The invoices are read as the
+     statements read them (`_invoices`): a failed or truncated read, or one
+     unreadable amount or write-off array, makes the journal « Journal
+     indisponible » with its reason — never an empty journal, never a
+     total. The interest notices do not exist yet: lot 4b adds them there
+     as memo rows, outside the totals; the page says so in one sentence.
+  2. *The read* (`services/financial_statements`). `read_snapshot` takes
+     the collections to read (every one by default, as before): the journal
+     reads the invoices alone, in its own read-only transaction, through
+     the statements' strict reader, cap and log lines.
+  3. *The page* (`routes/journal_radiations.py`, its own blueprint under
+     `/comptabilite/radiations/`, GET only, `@login_required`; the
+     templates `comptabilite/radiations.html` and `_radiations_rows.html`).
+     The statements' period selector (a month, a quarter or a year; the
+     current month by default), a plain GET form and links; the period's
+     four totals; newest first, fifteen rows a page — the pagination bar
+     alone is htmx, its period pinned; each row links to its invoice; the
+     reason, free text, on the page only. Linked from the Comptabilité
+     hub, beside « Types d'écritures »: the hub still reads nothing new.
+  4. *The exports* (`…/export/csv`, `…/export/pdf`): the whole period,
+     oldest first, without the reason (as the fee journal's carry none);
+     the PDF (`utils/journal_radiations_pdf.py`) is legal landscape like
+     the other journals, a « Débit » / « Crédit » band above the money
+     columns and a totals row; refused while the journal is « indisponible »
+     (a redirect to the page, `?erreur=export_indisponible`).
+  Change Impact: item 1 — not touched (no tool, schema, description or
+  consent text; the connector's `get_financial_statements` reads the same
+  module, unchanged). Item 2 — not touched. Item 3 — not touched (no
+  gabarit). Item 4 — no new event: the read logs through the statements'
+  three lines (`collection` « invoices »), the PDF builder a WARNING with
+  the exception class only; OBSERVABILITY.md says so. Item 5 — touched: a
+  new browser blueprint, GET only, each route `@login_required`, never
+  CSRF-exempt, under no special-cased prefix; no header, setting or rate
+  limit. Item 6 — touched: two new templates and the hub's header,
+  compiled classes only (no recompile — checked against the artifact by
+  test); every new control is 44 px. Item 7 — not touched: the invoices
+  are read whole, as the statements read them — no new query shape, no
+  index. In order:
+  1. *The push* — no index, no consent train, no migration: nothing is
+     stored.
+  2. *On the phone at 375 px*: « Comptabilité » → « Journal des radiations
+     et intérêts » opens on the current month — while no write-off exists
+     it reads « Aucune radiation ni annulation de radiation dans cette
+     période. », its four totals at 0,00 $; the period selector and the
+     arrows move between months, quarters and years.
+  3. *The exports*: the CSV and the PDF of a period download (headings
+     only while it is empty); after the first real write-off, the period's
+     PDF shows its row and a totals row equal to « Créances
+     irrécouvrables » and the TPS/TVQ bad-debt rows of the same period's
+     statements (« Finances »).
+  A rollback is the code alone: nothing is stored.
 
 ## 16. Troubleshooting
 

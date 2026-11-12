@@ -7,7 +7,8 @@ modifié — et get_firm_admin_snapshot). Ce qu'on épingle ici :
 - le rendu RÉEL (la leçon du 2026-08-13 : une épingle de source avait laissé
   passer un lien cassé) avec les TROIS blueprints enregistrés — le gabarit
   porte des url_for inconditionnels des deux espaces de noms, et une fixture
-  qui n'en enregistre que deux lèverait BuildError ;
+  qui n'en enregistre que deux lèverait BuildError — plus, depuis le lot 3c,
+  celui du journal des radiations, que l'en-tête nomme aussi ;
 - le fail-closed PAR SECTION : une panne de lecture d'un côté rend un panneau
   « indisponibles » SANS bouton de création (un état vide sur une panne
   inviterait à recréer un compte en double) pendant que l'autre section rend
@@ -34,6 +35,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
     import routes.comptabilite as rc
+    import routes.journal_radiations as rj
     import routes.trust as rt
     import routes.admin_ledger as ra
 
@@ -86,7 +88,8 @@ def web_rendu(monkeypatch):
     contraste voulu avec les smoke admin, qui n'enregistrent que admin_bp
     (leurs liens croisés sont gardés par des {% if %}). Les états
     financiers ont quitté le hub le 2026-11-10 (menu « Finances ») : leur
-    blueprint n'est plus enregistré ici, et le rendu le prouve."""
+    blueprint n'est plus enregistré ici, et le rendu le prouve. Le journal
+    des radiations (lot 3c) y est : l'en-tête du hub le nomme."""
     from utils.format_fr import format_cents_fr
     from utils.icons import ms as _ms
 
@@ -97,6 +100,7 @@ def web_rendu(monkeypatch):
     app.jinja_env.globals["csrf_token"] = lambda: "jeton-test"
     app.jinja_env.filters["cents_fr"] = format_cents_fr
     app.register_blueprint(rc.comptabilite_bp)
+    app.register_blueprint(rj.journal_radiations_bp)
     app.register_blueprint(rt.trust_bp)
     app.register_blueprint(ra.admin_bp)
     client = app.test_client()
