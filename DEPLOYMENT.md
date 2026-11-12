@@ -5408,6 +5408,21 @@ Notes:
   before) and, over the next days, the requests' `pendingTime` and the
   instance count. A rollback is the two yaml files.
 
+  **The bytecode** (same release): App Engine's disk is read-only and the
+  upload excluded `__pycache__/` and `*.pyc`, so every worker recompiled
+  the app's own source (about 5.8 MB) at every start — 0.66 s per
+  process on the development machine, more on F2. Cloud Build's test
+  step now compiles it once the tests pass (`python -m compileall -q -f
+  --invalidation-mode checked-hash -x '/tests/' .`, Python 3.13 as the
+  runtime), and `.gcloudignore` lets it ship. checked-hash: each file is
+  checked against its source's hash before use, so a stale one never
+  runs, whatever the upload does to file times. The one exception to
+  « no deploy-time build » (CLAUDE.md), by the lawyer's decision. A hand
+  deploy from a checkout ships the timestamp-based files Python wrote
+  there, which Python uses only while their source's recorded time and
+  size still match; a clean checkout ships none — as before. Its effect shows in the same
+  `/_ah/warmup` latency.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |
