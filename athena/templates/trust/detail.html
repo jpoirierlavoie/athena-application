@@ -59,7 +59,7 @@
       <div><p class="text-xs text-gray-500">Mode</p><p class="text-gray-900">{{ method_labels.get(entry.method, entry.method) }}</p></div>
       <div><p class="text-xs text-gray-500">Objet</p><p class="text-gray-900">{{ purpose_labels.get(entry.purpose, entry.purpose) }}</p></div>
       <div><p class="text-xs text-gray-500">Compte</p><p class="text-gray-900">{{ account.name if account else '' }}</p></div>
-      <div class="col-span-2"><p class="text-xs text-gray-500">Somme reçue de / Bénéficiaire</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
+      <div class="col-span-2"><p class="text-xs text-gray-500">{{ payee_label }}</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
       <div><p class="text-xs text-gray-500">Client</p><p class="text-gray-900">{{ entry.client_name or '—' }}</p></div>
       <div><p class="text-xs text-gray-500">N/Réf</p>
         <p class="text-gray-900">{% if entry.dossier_id %}<a href="{{ url_for('dossiers.dossier_detail', dossier_id=entry.dossier_id) }}" class="text-indigo-600 hover:underline">{{ entry.dossier_file_number }}</a>{% else %}—{% endif %}</p></div>

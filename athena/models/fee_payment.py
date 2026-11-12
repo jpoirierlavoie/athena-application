@@ -302,16 +302,33 @@ def guard_fee_payees() -> list[str]:
     return _payees_from(settings_model.get_cabinet_strict())
 
 
+def _payee_name(value) -> str:
+    """A payee's name as the firm profile spells it, runs of whitespace
+    folded — the spelling every surface shows and stores."""
+    return " ".join(str(value or "").split())
+
+
 def _payees_from(cab: dict) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for key in ("organisation", "nom"):
-        name = " ".join(str(cab.get(key) or "").split())
+        name = _payee_name(cab.get(key))
         folded = _payee_key(name)
         if folded and folded not in seen:
             seen.add(folded)
             names.append(name)
     return names
+
+
+def lawyer_name() -> str:
+    """The LAWYER's name as the firm profile holds it (``nom``), spelt as
+    the fee payment's payees are (:func:`_payee_name`) — "" when the profile
+    names no lawyer, never the firm (unlike :func:`default_fee_payee`, which
+    falls back to it). Display only, so the fail-open
+    ``utils/cabinet.cabinet_dict``: it pre-fills the counterparty of the
+    lawyer's drawings and contributions on the administration entry form
+    (the lawyer's decision of 2026-11-11)."""
+    return _payee_name(cabinet_util.cabinet_dict().get("nom"))
 
 
 def match_fee_payee(value, payees: Optional[list[str]] = None) -> Optional[str]:

@@ -12,7 +12,9 @@ labels derive from that table. These tests pin:
   the labels' content — written before the table, against the old code:
   nothing a page, an export or the connector shows changes. The trust
   labels keep their order too; the administration labels now follow the
-  vocabulary's order, a dict nothing iterates;
+  vocabulary's order, a dict nothing iterates. (Lot 5 then grouped the
+  entry forms' menus by family, on purpose: the trust « Objet » order is
+  pinned below, the administration's in tests/test_entry_forms.py);
 * each table against its vocabulary, and each family against the rule set
   it restates — moving « apport » out of the lawyer's money fails;
 * the suggestions and pre-fills against the lawyer's decisions of
@@ -81,9 +83,15 @@ TRUST_LABELS_TODAY = [
     ("correction", "Correction"),
     ("autre", "Autre"),
 ]
-ENTRY_FORM_PURPOSES_TODAY = (
-    "avance_honoraires", "dépôt_client", "règlement", "virement_honoraires",
-    "remise_client", "déboursé_tiers", "intérêts", "frais_bancaires", "autre",
+# The trust entry form's « Objet » choices since lot 5: family by family
+# (trust.PURPOSE_FAMILIES), the table's order inside each, « Avance
+# d'honoraires » first. Before lot 5: avance, dépôt, règlement, paiement
+# d'honoraires, remise, déboursé, intérêts, frais bancaires, autre.
+ENTRY_FORM_PURPOSES_BY_FAMILY = (
+    "avance_honoraires", "dépôt_client",
+    "virement_honoraires", "remise_client", "déboursé_tiers",
+    "règlement", "autre",
+    "intérêts", "frais_bancaires",
 )
 
 
@@ -102,9 +110,9 @@ def test_the_trust_purposes_and_labels_are_today_s_order_included():
     assert list(svc.TRUST_PURPOSE_LABELS.items()) == TRUST_LABELS_TODAY
 
 
-def test_the_trust_entry_form_offers_today_s_purposes():
+def test_the_trust_entry_form_offers_its_purposes_family_by_family():
     from routes import trust as trust_routes
-    assert trust_routes.ENTRY_FORM_PURPOSES == ENTRY_FORM_PURPOSES_TODAY
+    assert trust_routes.ENTRY_FORM_PURPOSES == ENTRY_FORM_PURPOSES_BY_FAMILY
 
 
 # ── 2. One table per register, one family per rule set ─────────────────────
@@ -170,7 +178,7 @@ def test_each_trust_family_is_its_rule_set():
         assert _members(trust.PURPOSE_TYPES, family) == set(rule), family
     assert not set(TRUST_FAMILY_RULES["selon_le_cas"]) & set(trust.PURPOSE_DIRECTIONS)
     # The entry form offers every purpose but the reserved family.
-    assert set(ENTRY_FORM_PURPOSES_TODAY) == (
+    assert set(ENTRY_FORM_PURPOSES_BY_FAMILY) == (
         set(trust.VALID_PURPOSES) - _members(trust.PURPOSE_TYPES, "particulières"))
 
 

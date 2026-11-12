@@ -206,8 +206,39 @@ PURPOSE_LABELS = {purpose: purpose_type.label
                   for purpose, purpose_type in PURPOSE_TYPES.items()}
 # The counterparty field's label, by direction: the two halves of the
 # register's column (``BARREAU_COLUMNS``, pinned by tests/test_entry_types.py).
-# A correction takes its original's.
+# A correction takes its original's (``payee_label_of``).
 PAYEE_LABELS = {"recette": "Somme reçue de", "déboursé": "Bénéficiaire du débours"}
+#: The label when the direction is unknown: the register's whole column.
+PAYEE_LABEL_FALLBACK = " / ".join(PAYEE_LABELS.values())
+
+
+def payee_label_of(entry: dict) -> str:
+    """The label of an entry's counterparty on its page: its direction's
+    (``PAYEE_LABELS``). A correction takes its original's — the opposite of
+    its own direction, since every reversal inverts it
+    (``reverse_transaction``, the inter-dossier pair, the fee payment's) —
+    with no read; an unknown direction, ``PAYEE_LABEL_FALLBACK``."""
+    direction = entry.get("direction") or ""
+    if entry.get("purpose") == REVERSAL_PURPOSE or entry.get("reverses_id"):
+        direction = {"recette": "déboursé", "déboursé": "recette"}.get(direction, "")
+    return PAYEE_LABELS.get(direction, PAYEE_LABEL_FALLBACK)
+
+
+def purposes_by_family(purposes) -> list[tuple[str, list[str]]]:
+    """*purposes* grouped under their family's label: the families in
+    ``PURPOSE_FAMILIES`` order, each group in the order given, an empty
+    family left out — the « Objet » menu's ``<optgroup>``. An unknown
+    purpose raises ``ValueError``."""
+    groups: dict[str, list[str]] = {family: [] for family in PURPOSE_FAMILIES}
+    for purpose in purposes:
+        purpose_type = PURPOSE_TYPES.get(purpose)
+        if purpose_type is None:
+            raise ValueError(f"purpose outside PURPOSE_TYPES: {purpose!r}")
+        groups[purpose_type.family].append(purpose)
+    return [(PURPOSE_FAMILIES[family], members)
+            for family, members in groups.items() if members]
+
+
 METHOD_LABELS = {
     "chèque": "Chèque",
     "virement": "Virement",

@@ -31,6 +31,7 @@ import pathlib
 import re
 import sys
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from unittest import mock
 
 import pytest
@@ -360,6 +361,84 @@ def test_d23_le_beneficiaire_choisi_est_inscrit_comme_le_profil_l_ecrit(fake, cl
     assert [t["counterparty"] for t in fees] == [LAWYER]
 
 
+class _Controls(HTMLParser):
+    """The named controls of a form as a browser posts them: each input's
+    value, each select's selected option (else its first), with their
+    attributes — a control inside a ``<template>`` (Alpine's x-for) is
+    never posted as such."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.controls: list = []
+        self._select = None
+        self._template = 0
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "template":
+            self._template += 1
+        elif self._template:
+            return
+        elif tag in ("input", "textarea") and a.get("name"):
+            if a.get("type") in ("checkbox", "radio") and "checked" not in a:
+                return
+            self.controls.append({"name": a["name"], "attrs": a,
+                                  "value": a.get("value", "")})
+        elif tag == "select" and a.get("name"):
+            self._select = {"name": a["name"], "attrs": a, "value": None,
+                            "chosen": False}
+            self.controls.append(self._select)
+        elif tag == "option" and self._select is not None:
+            if "selected" in a or self._select["value"] is None:
+                if not self._select["chosen"]:
+                    self._select["value"] = a.get("value", "")
+                    self._select["chosen"] = "selected" in a
+
+    def handle_endtag(self, tag):
+        if tag == "template":
+            self._template -= 1
+        elif tag == "select":
+            self._select = None
+
+
+def test_d23_le_paiement_construit_depuis_le_formulaire_n_a_qu_un_beneficiaire(
+        fake, client):
+    """Lot 5 (2026-11-11) a déplacé le dossier et le client au-dessus de la
+    contrepartie : le POST qu'un navigateur construit du formulaire rendu,
+    l'objet réglé sur le paiement d'honoraires, ne porte toujours qu'UN
+    bénéficiaire — le sélecteur, qui suit le champ libre dans la page ; le
+    champ libre, désactivé pour cet objet, n'est pas soumis. Les valeurs
+    qu'Alpine pose (le dossier, le client, la facture du dossier) sont
+    posées comme le navigateur le ferait."""
+    from werkzeug.datastructures import MultiDict
+
+    # Opened for the dossier, as the browser holds it once the dossier is
+    # picked: its invoices' select is then rendered (htmx reloads it on a
+    # pick; without a dossier it is a disabled placeholder).
+    page = client.get("/fideicommis/nouvelle?dossier_id=dos1").get_data(as_text=True)
+    start = page.index('<form method="post" action="/fideicommis/"')
+    parser = _Controls()
+    parser.feed(page[start:page.index("</form>", start)])
+    browser = {"purpose": "virement_honoraires", "direction": "déboursé",
+               "amount": "100,00", "method": "chèque", "date": "2026-09-10",
+               "dossier_id": "dos1", "client_id": "c1",
+               "invoice_number": "2026-F040", "admin_account_id": "ops1"}
+    posted = MultiDict()
+    for control in parser.controls:
+        disabled = control["attrs"].get(":disabled", "")
+        if disabled == "purpose === 'virement_honoraires'" or "disabled" in control["attrs"]:
+            continue                       # disabled for a fee payment
+        assert disabled in ("", "purpose !== 'virement_honoraires'"), disabled
+        posted.add(control["name"], browser.get(control["name"], control["value"] or ""))
+    assert posted.getlist("counterparty") == [LAWYER]   # the select, on a cheque
+    resp = client.post("/fideicommis/", data=posted)
+    assert resp.status_code == 302, (re.findall(r"<li>(.*?)</li>", _html(resp)),
+                                     sorted(posted.items(multi=True)))
+    fees = [t for t in fake.peek_collection("trust_transactions").values()
+            if t["purpose"] == trust.FEE_PAYMENT_PURPOSE]
+    assert [t["counterparty"] for t in fees] == [LAWYER]
+
+
 def test_d23_un_profil_sans_nom_le_dit_au_formulaire(fake, client):
     """Un profil qui ne nomme personne : le formulaire n'offre aucun nom —
     le navigateur ne poste donc AUCUN bénéficiaire, et le refus dit que
@@ -529,7 +608,11 @@ def test_le_formulaire_n_emploie_que_des_classes_compilees(fake, client):
     pages.append(client.get("/fideicommis/nouvelle").get_data(as_text=True))
     classes = set()
     for html in pages:
-        form = html[html.index("<form"):html.index("</form>")]
+        # The ENTRY form — the page's first <form> is the sidebar's sign-out,
+        # which this slice read until 2026-11-11 (a vacuous guard).
+        start = html.index('<form method="post" action="/fideicommis/"')
+        form = html[start:html.index("</form>", start)]
+        assert 'name="purpose"' in form and 'name="counterparty"' in form
         classes |= {c for block in re.findall(r'class="([^"]+)"', form)
                     for c in block.split()}
     css = next(_ATHENA.glob("static/vendor/app.*.css")).read_text(encoding="utf-8")

@@ -335,12 +335,16 @@ INTERNAL_TRANSFER_SENS_LABELS = {
     "entrant": "Entrant — d'un autre compte",
 }
 # The create form's « Type » choices, in display order (a card payment has
-# its own form).
-FORM_KINDS = (
-    "dépense", "recette_autre", "encaissement_facture", "remboursement_depense",
-    "prélèvement", "apport", INTERNAL_TRANSFER_FORM_KIND, "avance_honoraires",
-    "remise_tps_tvq", "remboursement_tps_tvq",
-)
+# its own form): the declared table walked family by family
+# (``KIND_FAMILIES``), the two virement codes shown as ONE « Virement
+# interne ». « Dépense » comes first because its family does; inside a
+# family, the table's order — never reorder ``ENTRY_TYPES`` for a menu: it
+# IS ``VALID_KINDS``, which the connector's enum repeats.
+FORM_KINDS = tuple(dict.fromkeys(
+    INTERNAL_TRANSFER_FORM_KIND if kind in INTERNAL_TRANSFER_KINDS else kind
+    for family in KIND_FAMILIES
+    for kind, entry_type in ENTRY_TYPES.items()
+    if entry_type.family == family and kind in _SIMPLE_KINDS))
 # The sign of a simple kind is IMPLIED, never chosen. Until lot 0b only the
 # web route derived it (its form has no « Sens » select); the model checked
 # encaissement ⇒ recette and dépense ⇒ déboursé but NOT recette_autre, so a
@@ -380,6 +384,64 @@ def form_kind(kind: str) -> tuple[str, str]:
         if kind == code:
             return INTERNAL_TRANSFER_FORM_KIND, sens
     return kind, ""
+
+
+def form_entry_type(value: str) -> Optional[EntryType]:
+    """The declared type behind a stored kind or a FORM value — « Virement
+    interne » is the two virement codes, which share one profile (pinned by
+    tests/test_entry_forms.py); ``None`` for a value the table ignores."""
+    if value == INTERNAL_TRANSFER_FORM_KIND:
+        value = INTERNAL_TRANSFER_KIND_BY_SENS["sortant"]
+    return ENTRY_TYPES.get(value)
+
+
+def kinds_by_family(values) -> list[tuple[str, list[str]]]:
+    """*values* (stored kinds or FORM values) grouped under their family's
+    label: the families in ``KIND_FAMILIES`` order, each group in the order
+    given, an empty family left out — the « Type » menus' ``<optgroup>``.
+    An unknown value raises ``ValueError``: a menu never offers a kind the
+    table does not declare."""
+    groups: dict[str, list[str]] = {family: [] for family in KIND_FAMILIES}
+    for value in values:
+        entry_type = form_entry_type(value)
+        if entry_type is None:
+            raise ValueError(f"kind outside ENTRY_TYPES: {value!r}")
+        groups[entry_type.family].append(value)
+    return [(KIND_FAMILIES[family], members)
+            for family, members in groups.items() if members]
+
+
+#: The label of a counterparty whose type gives none (a correction whose
+#: original is unknown, a legacy kind): the journal's own column header
+#: (decision D8 of 2026-11-11), never a blank.
+PAYEE_LABEL_FALLBACK = "Fournisseur / Source"
+
+
+def counted_kind(entry: dict, original: Optional[dict] = None) -> str:
+    """The kind an entry counts as: its own; a correction, the kind it
+    reverses — ``reverses_kind``, stamped since 2026-10-07, else the kind of
+    its *original* as the caller read it, else "" (the rule
+    ``results_statement`` applies)."""
+    kind = entry.get("kind") or ""
+    if kind != REVERSAL_KIND:
+        return kind
+    return entry.get("reverses_kind") or (original or {}).get("kind") or ""
+
+
+def payee_label_of(entry: dict, original: Optional[dict] = None) -> str:
+    """The label of an entry's counterparty on its page: its type's
+    (``ENTRY_TYPES``), a correction its original's, else
+    ``PAYEE_LABEL_FALLBACK``."""
+    entry_type = ENTRY_TYPES.get(counted_kind(entry, original))
+    return (entry_type.payee_label if entry_type else "") or PAYEE_LABEL_FALLBACK
+
+
+def shows_split(entry: dict, original: Optional[dict] = None) -> bool:
+    """Does an entry's page show its TPS/TVQ split? A dépense, a supplier's
+    refund and their corrections (``CATEGORY_KINDS``), whatever the
+    direction — no other kind carries a split of its own."""
+    return counted_kind(entry, original) in CATEGORY_KINDS
+
 
 VALID_METHODS = (
     "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant", "autre",

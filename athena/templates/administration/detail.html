@@ -98,7 +98,7 @@
       <div><p class="text-xs text-gray-500">Mode</p><p class="text-gray-900">{{ method_labels.get(entry.method, entry.method) }}</p></div>
       <div><p class="text-xs text-gray-500">Sens</p><p class="text-gray-900">{{ direction_labels_for(account.account_type if account else 'opérations').get(entry.direction, entry.direction) }}</p></div>
       <div><p class="text-xs text-gray-500">Compte</p><p class="text-gray-900">{{ account.name if account else '' }}</p></div>
-      <div class="col-span-2"><p class="text-xs text-gray-500">Payeur / Fournisseur</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
+      <div class="col-span-2"><p class="text-xs text-gray-500">{{ payee_label }}</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
       {% if entry.category %}<div><p class="text-xs text-gray-500">Catégorie</p><p class="text-gray-900">{{ category_labels.get(entry.category, entry.category) }}</p></div>{% endif %}
       {% if entry.transfer_purpose %}<div><p class="text-xs text-gray-500">Objet du virement</p><p class="text-gray-900">{{ transfer_purpose_labels.get(entry.transfer_purpose, entry.transfer_purpose) }}</p></div>{% endif %}
       {% if entry.supplier_invoice_ref %}<div><p class="text-xs text-gray-500">N° facture fournisseur</p><p class="text-gray-900">{{ entry.supplier_invoice_ref }}</p></div>{% endif %}
@@ -107,7 +107,10 @@
       {% if entry.cleared_date %}<div><p class="text-xs text-gray-500">Compensée le</p><p class="text-gray-900">{{ entry.cleared_date.strftime('%Y-%m-%d') }}</p></div>{% endif %}
     </div>
 
-    {% if entry.direction == 'déboursé' and entry.kind in ('dépense', 'correction') %}
+    {# La ventilation d'une dépense, d'un remboursement de dépense et de
+       leurs corrections, quel qu'en soit le sens (admin_ledger.shows_split,
+       calculé par la route). #}
+    {% if show_split %}
     <div class="grid grid-cols-3 gap-3 pt-3 border-t border-gray-100">
       <div><p class="text-xs text-gray-500">Net</p><p class="text-gray-900">{{ entry.net_amount | cents_fr }}</p></div>
       <div><p class="text-xs text-gray-500">TPS</p><p class="text-gray-900">{{ entry.gst_amount | cents_fr }}</p></div>

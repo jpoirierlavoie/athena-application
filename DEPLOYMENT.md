@@ -5577,6 +5577,63 @@ Notes:
      change the role of each flagged contact.
   3. *Delete both files* once done: they hold names.
 
+- **The entry forms read the declared tables; three dead handlers revived
+  (2026-11-11).** First a fix outside the suppliers request, in its own
+  commit: the administration entry form's three Alpine handlers opened with
+  `var` and never ran since the form was created (Alpine compiles a
+  directive into an assignment, where `var` is a syntax error) — a dossier
+  picked set nothing, a chosen invoice never filled its balance, and a page
+  arriving on the card account never disabled « Encaissement ». They open
+  with `let` now, and `tests/test_alpine_expressions.py` refuses a
+  statement-led Alpine expression in every template; a read-only census
+  found no stored dossier lost. Then the forms read lot 4's tables
+  (`admin_ledger.ENTRY_TYPES`, `trust.PURPOSE_TYPES`): the « Type » menus
+  (create, edit and the journal's filter) and the trust « Objet » are
+  grouped by family; the counterparty's label and example follow the type
+  (« Fournisseur », « Reçu de », « Versé à », « Compte de contrepartie »,
+  « Administration fiscale ») or, in trust, the direction (« Somme reçue
+  de », « Bénéficiaire du débours »); a NEW entry's field starts with its
+  type's pre-fill — the lawyer's name as the firm profile spells it (its
+  « nom », never the firm) on a drawing or a contribution, « Revenu
+  Québec » on a TPS/TVQ remittance or refund, the chosen invoice's client on
+  an encaissement, the chosen client on a trust advance, deposit or
+  remittance, the account's bank on trust interest or fees — only while the
+  field is empty or still holds the last pre-fill, never on an edit, a
+  refused submission or a name the page arrives with (D6). The pickers now
+  come before the field (D7). The supplier's invoice number shows and posts
+  only for a dépense, its refund and an « Autre recette »: a create of any
+  other kind stores none, and an edit keeps the stored number whatever the
+  kind becomes. Each entry page names its counterparty by its type (a
+  correction, its original's) and shows the TPS/TVQ split of a dépense, a
+  refund and their corrections, whatever the direction. On the trust form
+  the dossier's hint follows the purpose, a refused submission keeps its
+  client selected, and a new dossier search drops the old client. Change
+  Impact: item 1 lightly (`models/fee_payment` and `services/comptabilite`
+  gain a display-only reader of the lawyer's name; `fee_payees` unchanged;
+  no tool, schema or registry change); item 5 (two JSON data blocks,
+  executed by nothing, so no nonce; no posted value reaches an x-data raw);
+  item 6 (native `<optgroup>`, compiled classes only); item 7 (the
+  administration create form reads the firm profile once — one keyed get);
+  items 2, 3 and 4 not touched.
+  In order:
+  1. *The push.*
+  2. *Administration, a new entry* (desktop, then the phone at 375 px): the
+     « Type » menu shows its families; « Prélèvement de l'avocat » fills
+     « Versé à » with the lawyer's name, « Dépense » empties it again; a
+     name typed survives every change of type; « Remise de TPS/TVQ » fills
+     « Revenu Québec »; « Encaissement de facture » then an invoice fills
+     its client and its balance; the card account switches back to
+     « Dépense » and empties the client's name.
+  3. *The dossier picker*: on a new dépense, search a dossier and pick it —
+     the field shows it, and the saved entry carries it.
+  4. *An edit*: change an entry's type — the label follows, the name stays.
+  5. *Fidéicommis, a new entry*: pick a dossier and its client — « Somme
+     reçue de » fills with the client; « Intérêts » fills the bank, and the
+     dossier's hint says it may stay empty.
+  6. *An entry page*: a refund shows its TPS/TVQ; a correction reads its
+     original's label.
+  A rollback is the code alone: nothing stored changes shape.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

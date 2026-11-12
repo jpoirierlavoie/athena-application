@@ -95,6 +95,7 @@ from utils.logging_setup import (
     log_unexpected,
     sanitize_log_value,
 )
+from utils import contreparties as cp
 from utils import storage_identity
 from routes import _releve_conciliation as releve_routes
 from routes import edit_conflict
@@ -132,6 +133,13 @@ _parse_date = parse_date_input
 # had silently DRIFTED on narrow-NBSP handling (audit 2026-08-26).
 _parse_cents = parse_cents_or_none
 
+# The journal's « Type » filter: EVERY stored kind, grouped by family
+# (``admin_ledger.KIND_FAMILIES``) — both virement codes apart, the card
+# payment and the correction under « Écritures particulières ». Stored
+# codes, never the form's « Virement interne », which the filter's
+# ``VALID_KINDS`` check would drop.
+_KIND_FILTER_GROUPS = al.kinds_by_family(VALID_KINDS)
+
 
 def _labels() -> dict:
     return {
@@ -146,6 +154,7 @@ def _labels() -> dict:
         "balance_labels": BALANCE_LABELS,
         "reconciliation_status_labels": RECONCILIATION_STATUS_LABELS,
         "valid_kinds": VALID_KINDS,
+        "kind_filter_groups": _KIND_FILTER_GROUPS,
         "valid_methods": VALID_METHODS,
         "valid_categories": ADMIN_EXPENSE_CATEGORIES,
         "valid_tx_statuses": VALID_TX_STATUSES,
@@ -196,7 +205,10 @@ def _factures_impayees() -> list[dict]:
     recette may pay the invoice of ANY dossier, so no dossier cascade (the
     invoice determines the dossier, not the reverse). Only what the model's
     transactional verification will accept: issued statuses, live balance
-    > 0. Fails OPEN to [] — a picker aid, never the verdict."""
+    > 0. Fails OPEN to [] — a picker aid, never the verdict. Each row
+    carries the invoice's client, as the invoice froze it at issuance
+    (``client_name``, "" on an imported one): the pre-fill of an
+    encaissement's counterparty."""
     from models.invoice import balance_of, list_invoices
 
     out = []
@@ -210,6 +222,7 @@ def _factures_impayees() -> list[dict]:
                     "id": inv.get("id", ""),
                     "invoice_number": inv.get("invoice_number", ""),
                     "dossier": inv.get("dossier_file_number", ""),
+                    "client": inv.get("client_name", "") or "",
                     "solde_cents": solde,
                     "solde_fmt": format_cents_fr(solde),
                 })
@@ -331,7 +344,15 @@ def _entry_form_data() -> dict:
     its key KEPT: the model judges only what a write carries and reads these
     empties as absent, while a present empty ``dossier_id`` is what clears a
     dossier left on an entry that becomes one of them (``dossier_interdit``
-    otherwise)."""
+    otherwise).
+
+    The supplier's invoice number is DROPPED instead, by presence: sent only
+    for a kind of ``SUPPLIER_REF_KINDS`` and only when the field was posted.
+    A create of any other kind then stores none (a stale number the field
+    still held never lands on a prélèvement), and an edit keeps the stored
+    one whatever the kind becomes — the model merges by presence, and a
+    present empty value would ERASE it. Not a rule of the model: the
+    connector's edit and every reversal carry the number on any kind."""
     f = request.form
     kind = f.get("kind", "").strip()
     if kind == al.INTERNAL_TRANSFER_FORM_KIND:
@@ -347,7 +368,6 @@ def _entry_form_data() -> dict:
         "net_amount": _parse_cents(f.get("net_amount", "")),
         "gst_amount": _parse_cents(f.get("gst_amount", "")),
         "qst_amount": _parse_cents(f.get("qst_amount", "")),
-        "supplier_invoice_ref": f.get("supplier_invoice_ref", "").strip(),
         "invoice_id": f.get("invoice_id", "").strip(),
         "dossier_id": f.get("dossier_id", "").strip() or None,
         "reference": f.get("reference", "").strip(),
@@ -355,6 +375,8 @@ def _entry_form_data() -> dict:
         "date": _parse_date(f.get("date", "")),
         "transfer_purpose": f.get("transfer_purpose", "").strip(),
     }
+    if kind in al.SUPPLIER_REF_KINDS and "supplier_invoice_ref" in f:
+        data["supplier_invoice_ref"] = f.get("supplier_invoice_ref", "").strip()
     if kind in al.NON_RESULT_KINDS:
         data.update(category="", net_amount=None, gst_amount=None,
                     qst_amount=None, invoice_id="")
@@ -412,12 +434,45 @@ def _kind_choices(mode: str, stored_kind: str) -> tuple[list, list]:
     )
 
 
+def _counterparty_profiles(prefill_on: bool) -> dict:
+    """The counterparty field of each « Type » the form offers, keyed by
+    FORM value (« Virement interne » included): its label, its example and
+    what a NEW entry's field starts with (``admin_ledger.ENTRY_TYPES``, the
+    lawyer's decisions of 2026-11-11) — the pre-fill RESOLVED here, never
+    its code: the lawyer's name as the firm profile spells it, the first
+    tax authority. An encaissement's is the chosen invoice's client, read in
+    the page (``from_invoice``). The profile is read only when the pre-fill
+    applies: an edit costs no read of it."""
+    values: dict = {}
+    if prefill_on:
+        values = {cp.PREFILL_TAX_AUTHORITY: cp.TAX_AUTHORITIES[0],
+                  cp.PREFILL_LAWYER: comptabilite.nom_avocat()}
+    profiles = {}
+    for value in al.FORM_KINDS:
+        entry_type = al.form_entry_type(value)
+        profiles[value] = {
+            "payee_label": entry_type.payee_label,
+            "placeholder": entry_type.placeholder,
+            "prefill": values.get(entry_type.prefill, ""),
+            "from_invoice": (prefill_on
+                             and entry_type.prefill == cp.PREFILL_INVOICE_CLIENT),
+        }
+    return profiles
+
+
 def _form_context(entry, errors: list[str], mode: str = "create",
                   conflict=None, *, stored_kind: str = "") -> dict:
     """The entry form's context. *entry* is what the form shows — the stored
     entry, or what a refused POST sent; *stored_kind* (an edit) is the kind
     on file, which alone decides the passages offered (default: the entry's
-    own kind)."""
+    own kind).
+
+    A NEW entry's counterparty starts with its type's pre-fill (decision D6
+    of 2026-11-11): only in create mode with no errors and no counterparty
+    in *entry* — never on an edit, never on a refused POST shown again, and
+    never over a name the page arrives with. A create render given an
+    *entry* (a pre-filled link) keeps every key of it: they reach the
+    template untouched."""
     dossier = None
     if entry and entry.get("dossier_id"):
         dossier = get_dossier(entry["dossier_id"])
@@ -439,12 +494,33 @@ def _form_context(entry, errors: list[str], mode: str = "create",
     if not sens_value and len(sens_values) == 1:
         # The one sens a passage keeps is a fact, not a choice.
         sens_value = sens_values[0]
+    prefill_on = (mode == "create" and not errors
+                  and not str((entry or {}).get("counterparty") or "").strip())
+    profiles = _counterparty_profiles(prefill_on)
+    # The « Type » menu's groups (``KIND_FAMILIES``), in the order of the
+    # flat choices — which stay the source of the default and of the check
+    # above.
+    choice_labels = dict(kind_choices)
+    kind_groups = [(family, [(value, choice_labels[value]) for value in values])
+                   for family, values in al.kinds_by_family(list(choice_labels))]
+    initial = profiles.get(kind_value, {})
     return dict(
         accounts=al.list_accounts(status="actif"), entry=entry, dossier=dossier,
         mode=mode, errors=errors, conflict=conflict,
         factures=_factures_impayees() if mode == "create" else [],
-        kind_choices=kind_choices, sens_choices=sens_choices,
+        kind_choices=kind_choices, kind_groups=kind_groups,
+        sens_choices=sens_choices,
         form_kind_value=kind_value, form_sens_value=sens_value,
+        # The counterparty field: the page's JSON data block (every type's
+        # label, example and pre-fill) and the initial type's label and
+        # example, rendered by the server for the first paint and without
+        # Alpine.
+        entry_types={"prefill_on": prefill_on, "kinds": profiles,
+                     "payee_label_fallback": al.PAYEE_LABEL_FALLBACK},
+        counterparty_label=initial.get("payee_label") or al.PAYEE_LABEL_FALLBACK,
+        counterparty_placeholder=initial.get("placeholder", ""),
+        # The kinds that carry the supplier's invoice number.
+        supplier_ref_kinds=list(al.SUPPLIER_REF_KINDS),
         # The kinds whose dossier block the form hides, those its TPS/TVQ
         # and advance help lines follow, and those that carry a category
         # and a split — the model's lists, never restated in the template.
@@ -534,6 +610,11 @@ def entry_detail(tx_id: str):
         "administration/detail.html", entry=entry, account=account,
         reversal=reversal, reverses=reverses, other_leg=other_leg,
         invoice=invoice, lock_reason=lock_reason,
+        # The counterparty's label and the split, by the kind the entry
+        # counts as — a correction, its original's (the fail-open read
+        # above when the entry carries no ``reverses_kind``).
+        payee_label=al.payee_label_of(entry, reverses),
+        show_split=al.shows_split(entry, reverses),
         avertissement=request.args.get("avertissement", ""),
         copie_admissible=admissible, copies=copies,
         copie_dossier_introuvable=dossier_introuvable,

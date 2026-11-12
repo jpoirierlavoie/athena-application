@@ -50,6 +50,7 @@ from pagination import (
     total_pages_of,
 )
 from security import safe_internal_redirect
+from utils import contreparties as cp
 from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
@@ -100,36 +101,72 @@ def _labels() -> dict:
     }
 
 
-#: The purposes the entry form offers — every purpose but the two the model
-#: reserves: « correction » (a reversal mints it) and, since decision D24
-#: (2026-09-29), « virement inter-dossiers », which only the two-leg transfer
-#: screen writes (``trust.create_inter_dossier_transfer``). The list filters
-#: keep every purpose (``valid_purposes``): the entries already written stay
-#: findable.
+#: The purposes the entry form offers, in its « Objet » menu's order: every
+#: purpose but the two the model reserves — « correction » (a reversal mints
+#: it) and, since decision D24 (2026-09-29), « virement inter-dossiers »,
+#: which only the two-leg transfer screen writes
+#: (``trust.create_inter_dossier_transfer``) — family by family
+#: (``trust.PURPOSE_FAMILIES``, 2026-11-11), the table's order inside each.
+#: « Avance d'honoraires » stays first: the form's default.
 ENTRY_FORM_PURPOSES = tuple(
-    p for p in VALID_PURPOSES
-    if p not in (trust.REVERSAL_PURPOSE, trust.TRANSFER_PURPOSE)
+    p for family in trust.PURPOSE_FAMILIES
+    for p, purpose_type in trust.PURPOSE_TYPES.items()
+    if purpose_type.family == family
+    and p not in (trust.REVERSAL_PURPOSE, trust.TRANSFER_PURPOSE)
 )
 
 
-def _entry_form_extras(method: str = "") -> dict:
+def _entry_form_extras(method: str = "", *, entry=None, errors=()) -> dict:
     """What the entry form needs beyond the labels (D23, D24): the purposes
-    it offers, the direction each unambiguous purpose implies (the model's
-    map, plus the fee payment, always a déboursé) so the form sets the sens
-    when the objet is chosen, and the payees a fee payment may name — the
-    lawyer and his firm, as the firm profile names them (art. 58) — with
-    the one preselected: the model's default for *method*, the mode the
-    form shows (its first, « chèque », when none was posted) — the lawyer
-    on a cheque, since art. 58 draws a fee cheque « à l'ordre de
-    l'avocat »."""
+    it offers, grouped by family for the « Objet » menu; the direction each
+    unambiguous purpose implies (the model's map, plus the fee payment,
+    always a déboursé) so the form sets the sens when the objet is chosen;
+    the payees a fee payment may name — the lawyer and his firm, as the
+    firm profile names them (art. 58) — with the one preselected: the
+    model's default for *method*, the mode the form shows (its first,
+    « chèque », when none was posted) — the lawyer on a cheque, since art.
+    58 draws a fee cheque « à l'ordre de l'avocat ».
+
+    And the counterparty field (2026-11-11): its label by direction
+    (``trust.PAYEE_LABELS``), the purposes whose field a NEW entry
+    pre-fills — with the chosen client, or with the account's bank — and
+    those whose dossier may stay empty. *entry* is what the form shows (a
+    refused POST's data), *errors* its refusals: the pre-fill applies only
+    with no errors and no counterparty arriving with the page (D6). Both
+    renders call this one helper, so every key is on both paths."""
     directions = dict(trust.PURPOSE_DIRECTIONS)
     directions[trust.FEE_PAYMENT_PURPOSE] = "déboursé"
+    shown = entry or {}
+    optional_dossier = [p for p in ENTRY_FORM_PURPOSES
+                        if p in trust.NO_DOSSIER_PURPOSES]
     return {
         "entry_purposes": ENTRY_FORM_PURPOSES,
+        "entry_purpose_groups": [
+            (family, [(p, PURPOSE_LABELS[p]) for p in purposes])
+            for family, purposes in trust.purposes_by_family(ENTRY_FORM_PURPOSES)],
         "purpose_directions": directions,
         "fee_payees": comptabilite.beneficiaires_honoraires(),
         "default_fee_payee": comptabilite.beneficiaire_honoraires_par_defaut(
             method or VALID_METHODS[0]),
+        # The page's JSON data block for the counterparty field.
+        "entry_types": {
+            "prefill_on": (not errors
+                           and not str(shown.get("counterparty") or "").strip()),
+            "payee_labels": dict(trust.PAYEE_LABELS),
+            "payee_label_fallback": trust.PAYEE_LABEL_FALLBACK,
+            "client_prefill": [p for p in ENTRY_FORM_PURPOSES
+                               if trust.PURPOSE_TYPES[p].prefill
+                               == cp.PREFILL_CHOSEN_CLIENT],
+            "bank_prefill": [p for p in ENTRY_FORM_PURPOSES
+                             if trust.PURPOSE_TYPES[p].prefill == cp.PREFILL_BANK],
+            "optional_dossier": optional_dossier,
+        },
+        # What the server renders first: the label of the direction shown,
+        # the dossier's hint for the purpose shown.
+        "payee_label": trust.PAYEE_LABELS.get(
+            shown.get("direction") or VALID_DIRECTIONS[0], trust.PAYEE_LABEL_FALLBACK),
+        "dossier_optional": (shown.get("purpose") or ENTRY_FORM_PURPOSES[0])
+                            in optional_dossier,
     }
 
 
@@ -516,7 +553,8 @@ def entry_create():
             factures=_factures_emises(dossier["id"] if dossier else None),
             admin_accounts=admin_accounts, admin_lisible=admin_lisible,
             admin_account_id=admin_account_id,
-            **_entry_form_extras(data.get("method") or ""),
+            **_entry_form_extras(data.get("method") or "", entry=data,
+                                 errors=errors),
             **_labels(),
         ), 400
     return redirect(url_for("trust.entry_detail", tx_id=entry_id,
@@ -561,6 +599,9 @@ def entry_detail(tx_id: str):
     return render_template(
         "trust/detail.html", entry=entry, account=account, reversal=reversal,
         reverses=reverses, other_leg=other_leg,
+        # The counterparty's label by direction; a correction, its
+        # original's (``trust.payee_label_of``).
+        payee_label=trust.payee_label_of(entry),
         avertissements=_warnings_from_args(), **_labels(),
     )
 
