@@ -1549,28 +1549,31 @@ def test_the_write_off_signs_are_the_models_vocabulary():
 
 def test_a_write_off_is_a_bad_debt_expense_of_its_day_revenue_staying_as_billed():
     """Lot 3b (the lawyer's decision 8): the amount less the TPS/TVQ claimed
-    is an EXPENSE, « Créances irrécouvrables », among the direct costs —
-    no longer taken off revenue (lot 3a's « Radiations de comptes clients »
-    row is gone); the gross margin and the net income are lot 3a's."""
+    is an EXPENSE, « Créances irrécouvrables », among the OPERATING
+    expenses — the variable costs, below the gross margin (the lawyer's
+    decision of 2026-11-12, conventional reporting) —, no longer taken off
+    revenue (lot 3a's « Radiations de comptes clients » row is gone); the
+    net income is lot 3a's."""
     snap = _written_off()
     assert inv_model.write_off_tax_parts(snap.invoices[0], 74975) == (3260, 6505)
     may = _compute(snap, "2031-05")
     income = may.sections["resultats"]
     assert income["bad_debts"] == 74975 - 3260 - 6505 == 65210
     assert (income["fees"], income["revenue"], income["net_income"]) == (0, 0, -65210)
-    assert income["cost_totals"] == {"direct": 65210, "variable": 0, "fixe": 0}
-    assert income["gross_margin"] == -65210
-    assert fs.BAD_DEBT_CLASS == "direct"
+    assert income["cost_totals"] == {"direct": 0, "variable": 65210, "fixe": 0}
+    assert income["gross_margin"] == 0
+    assert fs.BAD_DEBT_CLASS == "variable"
     rows = _rows(fs.present(may), "resultats")
     keys = [r["key"] for r in rows]
     assert "radiations" not in keys
     assert keys[keys.index("autres_produits") + 1] == "total_produits"
-    assert keys[keys.index("classe:direct") + 1:keys.index("total:direct")] == [
+    assert keys[keys.index("classe:variable") + 1:keys.index("total:variable")] == [
         "creances_irrecouvrables"]
+    assert keys.index("marge_brute") < keys.index("creances_irrecouvrables")
     row = rows[keys.index("creances_irrecouvrables")]
     assert (row["label"], row["values"], row["level"], row["style"]) == (
         "Créances irrécouvrables", [65210], 1, "line")
-    assert rows[keys.index("total:direct")]["values"] == [65210]
+    assert rows[keys.index("total:variable")]["values"] == [65210]
     assert any(n.startswith("Créances irrécouvrables :")
                for n in next(s for s in fs.present(may)["sections"]
                              if s["key"] == "resultats")["notes"])
@@ -1849,9 +1852,10 @@ def test_the_write_offs_agree_with_an_independent_count(seed):
 
 def test_the_bad_debts_leave_revenue_as_billed_and_the_net_income_as_lot_3a_left_it():
     """Lot 3b moves the write-offs from revenue to the expenses: revenue is
-    what was billed (and the « autres produits »), the direct costs carry
-    the bad debts beside the ledger's, and the gross margin and the net
-    income are lot 3a's to the cent — the write-down off revenue, the
+    what was billed (and the « autres produits »), the variable costs carry
+    the bad debts beside the ledger's — an operating expense, below the
+    gross margin (the lawyer's decision of 2026-11-12) —, and the net
+    income is lot 3a's to the cent — the write-down off revenue, the
     ledger's costs. Over 20 random worlds, most of which move a bad debt
     in one of the seven periods (never vacuous)."""
     moved = set()
@@ -1865,8 +1869,9 @@ def test_the_bad_debts_leave_revenue_as_billed_and_the_net_income_as_lot_3a_left
                 moved.add(seed)
             assert income["revenue"] == (income["fees"] + income["billed_expenses"]
                                          + income["other_total"]), (seed, slug)
-            assert income["cost_totals"] == {**ledger, "direct": ledger["direct"] + bad}
-            assert income["gross_margin"] == income["revenue"] - bad - ledger["direct"]
+            assert income["cost_totals"] == {**ledger, "variable": ledger["variable"] + bad}
+            # Below the gross margin (the lawyer's decision of 2026-11-12).
+            assert income["gross_margin"] == income["revenue"] - ledger["direct"]
             assert income["net_income"] == income["revenue"] - bad - sum(ledger.values())
     assert len(moved) >= 15, sorted(moved)
 

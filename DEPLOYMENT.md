@@ -6314,7 +6314,8 @@ Notes:
      « note de crédit AAAA-NC001 », « en vigueur »;
      `python -m scripts.verify_admin_integrity` — check 13 clean; the
      statements (« Finances ») of its period show « Créances
-     irrécouvrables » among the direct costs, revenue as billed, and
+     irrécouvrables » among the operating expenses (« Coûts variables »,
+     below the gross margin), revenue as billed, and
      « Redressements » its row with the TPS and TVQ claimed; a note
      d'honoraires generated from it, with a gabarit that prints the
      payments, opens in Word without repair, its row « Note de crédit

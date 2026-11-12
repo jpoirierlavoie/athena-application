@@ -66,8 +66,9 @@ The rules (the plan of 2026-11-07, « The rules (Lot B) »):
   booked as a BAD DEBT), revenue stays as billed: each event's amount less
   the TPS/TVQ it claims is an EXPENSE, « Créances irrécouvrables » (row
   ``creances_irrecouvrables``, printed when not zero; a fraction not claimed
-  stays inside it), among the direct costs (:data:`BAD_DEBT_CLASS`); the
-  gross margin and the net income are lot 3a's to the cent. The
+  stays inside it), among the OPERATING expenses, with the variable
+  costs (:data:`BAD_DEBT_CLASS`), below the gross margin; the net income
+  is lot 3a's to the cent. The
   receivables lose the amount, the TPS/TVQ payable the claimed parts
   (« créances irrécouvrables »); a « contre_passation » counts the same
   figures with the opposite sign, on its own day. « Redressements » lists
@@ -394,12 +395,14 @@ def _tax_credits(row: dict) -> tuple:
 WRITE_OFF_SIGNS = dict(zip(invoice_model.WRITE_OFF_KINDS, (1, -1)))
 
 #: The cost class (``admin_ledger.COST_CLASSES``) of the bad debts, the
-#: expense « Créances irrécouvrables » (lot 3b): DIRECT, as
-#: ``admin_ledger.cost_class`` classes every cost linked to a dossier — a
-#: write-off always is, through its invoice. So the gross margin, and not
-#: only the net income, is what lot 3a computed when it took them off
-#: revenue.
-BAD_DEBT_CLASS = "direct"
+#: expense « Créances irrécouvrables » (lot 3b): an OPERATING expense, as
+#: conventional reporting presents a bad debt (the lawyer's decision of
+#: 2026-11-12) — a cost of collecting, not of doing the work, so below the
+#: gross margin; among the VARIABLE costs, since it moves with what is
+#: billed (« Frais fixes » are rent and subscriptions). The net income is
+#: what lot 3a computed when it took them off revenue; the gross margin no
+#: longer carries them.
+BAD_DEBT_CLASS = "variable"
 
 
 @dataclass(frozen=True)

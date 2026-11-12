@@ -449,7 +449,8 @@ def test_a_write_off_reaches_the_connector_in_the_page_s_rows(fake):
         r["key"] for r in _section(august, "resultats")["rows"]}
     kpis = {k["key"]: k["value_cents"] for k in august["kpis"]}
     assert kpis["comptes_clients"] == 77849 + 68985
-    # Lot 3b: the bad debt, an expense among the direct costs; nothing taken
+    # Lot 3b: the bad debt, an operating expense (the variable costs, below
+    # the gross margin); nothing taken
     # off revenue any more (no « radiations » row).
     resultats = _section(september, "resultats")
     assert "radiations" not in {r["key"] for r in resultats["rows"]}
