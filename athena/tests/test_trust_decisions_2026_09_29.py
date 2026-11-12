@@ -624,3 +624,74 @@ def test_le_formulaire_n_emploie_que_des_classes_compilees(fake, client):
                    for i in hits):
             absent.append(c)
     assert classes and not absent, absent
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 8 (2026-11-12) — la référence du virement ; le lien de la recette
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _fee_of(fake) -> dict:
+    (fee,) = [t for t in fake.peek_collection("trust_transactions").values()
+              if t["purpose"] == trust.FEE_PAYMENT_PURPOSE]
+    return fee
+
+
+def test_lot8_le_virement_inter_dossiers_garde_sa_reference(fake, client):
+    """Régression — la route lisait « reference », le formulaire ne l'offrait
+    pas : un virement inter-dossiers ne portait jamais sa référence."""
+    assert 'name="reference"' in _html(client.get("/fideicommis/virement"))
+    fake.seed("dossiers/dos2", {
+        "id": "dos2", "file_number": "2026-002", "title": "U c. Y",
+        "status": "actif", "client_ids": ["c3"],
+        "clients": [{"id": "c3", "name": "Paul Fictif"}],
+        "trust_balance": 0, "trust_balance_by_client": {},
+        "trust_cleared_by_client": {},
+    })
+    resp = client.post("/fideicommis/virement", data={
+        "account_id": "acc1", "from_dossier_id": "dos1", "from_client_id": "c1",
+        "to_dossier_id": "dos2", "to_client_id": "c3", "amount": "100,00",
+        "method": "virement", "description": "instruction", "reference": "VIR-42"})
+    assert resp.status_code == 302, _html(resp)[:400]
+    legs = [t for t in fake.peek_collection("trust_transactions").values()
+            if t["purpose"] == trust.TRANSFER_PURPOSE]
+    assert len(legs) == 2 and {t["reference"] for t in legs} == {"VIR-42"}
+
+
+def test_lot8_le_paiement_d_honoraires_mene_a_sa_recette(fake, client):
+    """Régression — la fiche d'un paiement d'honoraires ne menait pas à sa
+    recette au compte d'administration, ni celle de sa correction."""
+    resp = client.post("/fideicommis/", data=_fee_form(counterparty=LAWYER, amount="100,00"))
+    assert resp.status_code == 302, _html(resp)
+    fee = _fee_of(fake)
+    (recette,) = [r for r in fake.peek_collection("admin_transactions").values()
+                  if r.get("trust_transaction_id") == fee["id"]]
+    link = f'href="/administration/{recette["id"]}"'
+    assert link in _html(client.get(f"/fideicommis/{fee['id']}"))
+    _, errs = fee_payment.reverse_fee_payment(fee["id"], "Saisie en double")
+    assert errs == [], errs
+    (rev,) = [t for t in fake.peek_collection("trust_transactions").values()
+              if t.get("reverses_id") == fee["id"]]
+    assert link in _html(client.get(f"/fideicommis/{rev['id']}"))
+    # Any other entry reads nothing of the kind.
+    others = [t for t in fake.peek_collection("trust_transactions").values()
+              if t["purpose"] == "dépôt_client"]
+    assert "Recette au compte d'administration" not in _html(
+        client.get(f"/fideicommis/{others[0]['id']}"))
+
+
+def test_lot8_une_lecture_en_echec_dit_indisponible(fake, client, monkeypatch):
+    from models import admin_ledger as al
+
+    resp = client.post("/fideicommis/", data=_fee_form(counterparty=LAWYER, amount="100,00"))
+    assert resp.status_code == 302, _html(resp)
+    fee = _fee_of(fake)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(al, "list_by_trust_transaction", broken)
+    resp = client.get(f"/fideicommis/{fee['id']}")
+    assert resp.status_code == 200
+    assert "Recette au compte d'administration : indisponible." in _html(resp)

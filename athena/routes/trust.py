@@ -55,8 +55,11 @@ from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
 from routes._helpers import (
+    counterparty_suggestions,
     dossier_search_fragment,
     is_htmx,
+    no_counterparty_suggestions,
+    types_ecritures_url,
     parse_date_input,
     redirect_after_post,
     standard_dossier_row,
@@ -167,6 +170,8 @@ def _entry_form_extras(method: str = "", *, entry=None, errors=()) -> dict:
             shown.get("direction") or VALID_DIRECTIONS[0], trust.PAYEE_LABEL_FALLBACK),
         "dossier_optional": (shown.get("purpose") or ENTRY_FORM_PURPOSES[0])
                             in optional_dossier,
+        # « Que fait chaque type ? » (lot 7).
+        "types_url": types_ecritures_url(),
     }
 
 
@@ -252,25 +257,25 @@ def client_search() -> str:
 
 @trust_bp.route("/counterparty-suggest")
 @login_required
-def counterparty_suggest() -> str:
-    """Suggest the dossier's parties as TEXT (stored as a string, never a FK)."""
-    dossier_id = request.args.get("dossier_id", "").strip()
-    dossier = get_dossier(dossier_id) if dossier_id else None
-    names = []
-    if dossier:
-        for group in ("clients", "opposing_parties"):
-            names.extend(p.get("name", "") for p in dossier.get(group, []))
-    names = [n for n in names if n]
-    if not names:
-        return ""
-    parts = ['<ul class="divide-y divide-gray-100">']
-    for n in names:
-        parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f' data-counterparty="{escape(n)}">{escape(n)}</li>'
-        )
-    parts.append("</ul>")
-    return "\n".join(parts)
+def counterparty_suggest():
+    """The counterparty field's suggestions for the « Objet » chosen — its
+    sources in the declared table (``trust.PURPOSE_TYPES``, lot 6 of
+    2026-11-11), with the dossier the form shows; TEXT, stored as typed,
+    never a key. A request without a purpose (a page rendered before lot
+    6) gets the dossier's parties, as before. A purpose the table ignores,
+    or one that suggests nothing, answers an empty list and reads nothing."""
+    purpose = request.args.get("purpose", "")
+    typed = request.args.get("counterparty", "")
+    if not purpose:
+        sources, typed = (cp.SOURCE_DOSSIER_PARTIES,), ""
+    else:
+        purpose_type = trust.PURPOSE_TYPES.get(purpose)
+        if purpose_type is None or not purpose_type.sources:
+            return no_counterparty_suggestions()
+        sources = purpose_type.sources
+    return counterparty_suggestions(
+        "trust", purpose or "sans_objet", sources, typed,
+        dossier_id=request.args.get("dossier_id", "").strip())
 
 
 # ── Journal de caisse ──────────────────────────────────────────────────────
@@ -596,9 +601,30 @@ def entry_detail(tx_id: str):
         trust.get_transaction(entry["related_transaction_id"])
         if entry.get("related_transaction_id") else None
     )
+    # A fee payment's recette at the administration account (written in the
+    # same transaction, models/fee_payment) — and a correction of one, its
+    # original's. Read through the registers' door (services/comptabilite:
+    # this blueprint reaches no admin_ledger function, pinned by
+    # tests/test_admin_integration.py), strictly, only for those entries; a
+    # failed read says « indisponible » and the page still answers (lot 8).
+    fee_tx_id = None
+    if entry.get("purpose") == trust.FEE_PAYMENT_PURPOSE:
+        fee_tx_id = entry.get("id")
+    elif reverses and reverses.get("purpose") == trust.FEE_PAYMENT_PURPOSE:
+        fee_tx_id = reverses.get("id")
+    recettes: list = []
+    recettes_indisponibles = False
+    if fee_tx_id:
+        try:
+            recettes = comptabilite.recettes_du_paiement(fee_tx_id)
+        except Exception:
+            log_unexpected("trust detail: fee payment recette read failed",
+                           transaction_id=entry.get("id"))
+            recettes_indisponibles = True
     return render_template(
         "trust/detail.html", entry=entry, account=account, reversal=reversal,
         reverses=reverses, other_leg=other_leg,
+        recettes=recettes, recettes_indisponibles=recettes_indisponibles,
         # The counterparty's label by direction; a correction, its
         # original's (``trust.payee_label_of``).
         payee_label=trust.payee_label_of(entry),

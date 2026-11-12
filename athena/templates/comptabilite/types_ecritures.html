@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Types d'écritures — Comptabilité — Pallas Athena{% endblock %}
+{% block content %}
+{# Ce que fait chaque type d'écriture des deux registres (lot 7 du
+   2026-11-11). Chaque carte est TIRÉE DU MODÈLE (services/types_ecritures :
+   les tables déclarées, leurs règles, les lignes de flux de trésorerie et
+   les phrases des états financiers) — jamais écrite à la main : aucun code
+   de type n'est écrit ici. Aucune lecture Firestore. #}
+<div class="max-w-3xl mx-auto px-4 py-6 space-y-6">
+  <div class="flex items-center gap-2">
+    <a href="{{ url_for('comptabilite.hub') }}" class="text-gray-400 hover:text-gray-600" aria-label="Comptabilité" title="Comptabilité">&larr;</a>
+    <h1 class="text-xl font-semibold text-gray-900">Types d'écritures</h1>
+  </div>
+  <p class="text-sm text-gray-500">Ce que fait chaque type des deux registres, tiré des règles de l'application. Les phrases « Aux états financiers » sont à revoir avec votre comptable.</p>
+
+  <div class="p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-gray-900 space-y-2">
+    <p class="font-semibold">Ne pas confondre</p>
+    <p>« Dépense » (ce registre : ce que le cabinet paie) et « Débours » (Temps : ce qui se refacture au client) — un huissier payé par le cabinet pour un dossier s'inscrit aux deux.</p>
+    <p>« Prélèvement de l'avocat » (le type : l'avocat retire son argent du cabinet) et le mode de paiement « Prélèvement » (un débit préautorisé).</p>
+    <p>« Remise de TPS/TVQ » (le cabinet paie l'administration fiscale) et « Remise au client » (le fidéicommis rend sa somme au client).</p>
+    <p>« Avance d'honoraires » : au fidéicommis, l'argent du client en dépôt ; à l'administration, une avance reçue au compte d'opérations, qui se vire au fidéicommis.</p>
+  </div>
+
+  <section class="space-y-4">
+    <h2 class="text-lg font-semibold text-gray-900">Administration — l'argent du cabinet</h2>
+    {% for family, cards in administration %}
+    <h3 class="text-sm font-semibold text-gray-700">{{ family }}</h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {% for c in cards %}
+      <article id="type-{{ c.code }}" class="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
+        {% for a in c.aliases %}<span id="type-{{ a }}"></span>{% endfor %}
+        <h4 class="font-semibold text-gray-900">{{ c.label }}</h4>
+        <dl class="space-y-2 text-sm">
+          <div><dt class="text-xs text-gray-500">Sens</dt><dd class="text-gray-900">{{ c.sens }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Dossier</dt><dd class="text-gray-900">{{ c.dossier }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Catégorie et taxes</dt><dd class="text-gray-900">{{ c.split }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Contrepartie</dt><dd class="text-gray-900">{{ c.payee_label }} — suggestions : {{ c.suggestions }} ; préremplie : {{ c.prefill }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Flux de trésorerie</dt><dd class="text-gray-900">{{ c.cash_flow | join(' ; ') }}</dd></div>
+          <div><dt class="text-xs text-gray-500">S'inscrit par</dt><dd class="text-gray-900">{{ c.where }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Aux états financiers</dt><dd class="text-gray-900">{{ c.statement }}</dd></div>
+        </dl>
+      </article>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="space-y-4">
+    <h2 class="text-lg font-semibold text-gray-900">Fidéicommis — l'argent des clients</h2>
+    <p class="text-sm text-gray-500">Aux états financiers : {{ trust_statement }}</p>
+    {% for family, cards in fideicommis %}
+    <h3 class="text-sm font-semibold text-gray-700">{{ family }}</h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {% for c in cards %}
+      <article id="type-fideicommis-{{ c.code }}" class="bg-white rounded-xl border border-gray-200 p-4 space-y-2">
+        <h4 class="font-semibold text-gray-900">{{ c.label }}</h4>
+        <dl class="space-y-2 text-sm">
+          <div><dt class="text-xs text-gray-500">Sens</dt><dd class="text-gray-900">{{ c.sens }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Dossier</dt><dd class="text-gray-900">{{ c.dossier }}</dd></div>
+          <div><dt class="text-xs text-gray-500">Contrepartie</dt><dd class="text-gray-900">{{ c.payee_label }} — suggestions : {{ c.suggestions }} ; préremplie : {{ c.prefill }}</dd></div>
+          <div><dt class="text-xs text-gray-500">S'inscrit par</dt><dd class="text-gray-900">{{ c.where }}</dd></div>
+        </dl>
+      </article>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+</div>
+{% endblock %}

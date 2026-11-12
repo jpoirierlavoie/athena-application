@@ -1,0 +1,16 @@
+{# Les suggestions d'un champ de contrepartie (routes/_helpers
+   .counterparty_suggestions, lot 6 du 2026-11-11) : chaque rang est un
+   bouton de 44 px qui porte le nom à inscrire et, pour un fournisseur ou un
+   professionnel, sa catégorie de dépense habituelle. Le nom aussi sur le
+   <li> : une page rendue avant ce lot le lit là. Une lecture en échec dit
+   « indisponibles », jamais « aucun ». #}
+{% if unavailable %}
+<p class="px-3 py-3 text-sm text-gray-500">Suggestions indisponibles — saisissez le nom.</p>
+{% elif rows %}
+<ul class="divide-y divide-gray-100">
+  {% for r in rows %}
+  <li data-counterparty="{{ r.name }}"><button type="button" class="w-full text-left px-3 py-3 text-sm cursor-pointer hover:bg-gray-50" data-counterparty="{{ r.name }}" data-category="{{ r.category }}">{{ r.name }}{% if r.detail %} <span class="text-gray-400">{{ r.detail }}</span>{% endif %}</button></li>
+  {% endfor %}
+</ul>
+{% if more %}<p class="px-3 py-2 text-xs text-gray-500">D'autres noms correspondent : précisez.</p>{% endif %}
+{% endif %}

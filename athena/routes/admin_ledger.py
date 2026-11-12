@@ -100,8 +100,11 @@ from utils import storage_identity
 from routes import _releve_conciliation as releve_routes
 from routes import edit_conflict
 from routes._helpers import (
+    counterparty_suggestions,
     dossier_search_fragment,
     is_htmx,
+    no_counterparty_suggestions,
+    types_ecritures_url,
     parse_date_input,
     redirect_after_post,
 )
@@ -240,6 +243,24 @@ def _factures_impayees() -> list[dict]:
 @login_required
 def dossier_search() -> str:
     return dossier_search_fragment(request.args.get("q", ""))
+
+
+@admin_bp.route("/counterparty-suggest")
+@login_required
+def counterparty_suggest():
+    """The counterparty field's suggestions for the « Type » chosen — its
+    sources in the declared table (``admin_ledger.ENTRY_TYPES``, lot 6 of
+    2026-11-11), with the dossier and the invoice the form shows. A type the
+    table ignores, or one that suggests nothing, answers an empty list and
+    reads nothing."""
+    kind = request.args.get("kind", "")
+    entry_type = al.form_entry_type(kind)
+    if entry_type is None or not entry_type.sources:
+        return no_counterparty_suggestions()
+    return counterparty_suggestions(
+        "admin", kind, entry_type.sources, request.args.get("counterparty", ""),
+        dossier_id=request.args.get("dossier_id", "").strip(),
+        invoice_id=request.args.get("invoice_id", "").strip())
 
 
 # ── Journal ────────────────────────────────────────────────────────────────
@@ -521,6 +542,8 @@ def _form_context(entry, errors: list[str], mode: str = "create",
         counterparty_placeholder=initial.get("placeholder", ""),
         # The kinds that carry the supplier's invoice number.
         supplier_ref_kinds=list(al.SUPPLIER_REF_KINDS),
+        # « Que fait chaque type ? » (lot 7).
+        types_url=types_ecritures_url(),
         # The kinds whose dossier block the form hides, those its TPS/TVQ
         # and advance help lines follow, and those that carry a category
         # and a split — the model's lists, never restated in the template.
