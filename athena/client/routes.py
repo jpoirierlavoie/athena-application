@@ -469,8 +469,8 @@ def _deja_transmis(invitation: dict) -> tuple[int, int]:
     assumé). ``soumissions[]`` is written by the MAIN service when the Cloud
     Task lands, so two windows stay open: bytes uploaded but never finalised
     are recorded nowhere durable, and between a finalisation and the task
-    landing (seconds normally, but 15 minutes whenever the queue is degraded
-    and the reconciliation cron is doing the rescuing) the consumed budget
+    landing (seconds normally, but until the next reconciliation run — three
+    a day — whenever the queue is degraded and the cron is doing the rescuing) the consumed budget
     reads zero on both sides. ``creer_session`` clears the session counters,
     and nothing rate-limits re-opening a session with a retained Firebase
     refresh token. This bounds the honest client, not a determined one; the

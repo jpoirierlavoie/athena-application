@@ -3930,10 +3930,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "enum": ["follows", "removed", "not_mirrored", "unchanged"],
                 "description": (
-                    "What the 10-minute Outlook mirror of confirmed events "
-                    "(when active; events 30 days back to 365 ahead) does "
-                    "with this write: follows = its copy is created or "
-                    "updated at the next cycle; removed = status annulée, "
+                    "What the Outlook mirror of confirmed events (when "
+                    "active; three runs a day; events 30 days back to 365 "
+                    "ahead) does with this write: follows = its copy is "
+                    "created or updated at its next run; removed = status "
+                    "annulée, "
                     "the copy is deleted; not_mirrored = a Bookings "
                     "rendez-vous, of which only the dossier or the notes "
                     "changed — neither is on its Outlook meeting (the "

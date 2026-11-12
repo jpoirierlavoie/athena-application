@@ -1,16 +1,24 @@
 runtime: python313
 instance_class: F2
 automatic_scaling:
-  # min_instances: 0 trades a cold start after idle (Flask + firebase_admin +
-  # OTel imports, several seconds) for zero standing cost. Warmup requests
-  # below soften this. Set min_instances: 1 to eliminate cold starts entirely
-  # at the cost of one always-on F2 instance.
+  # min_instances: 0 — an instance stops after about 15 idle minutes, and
+  # the first request after that waits while a new one starts (about 8 s
+  # measured in November 2026: two gunicorn workers importing Flask,
+  # firebase_admin and OTel, the secrets, the Firestore clients). Until
+  # 2026-11-12 the crons, every 10 to 15 minutes, kept one instance up
+  # around the clock, so this saved nothing; they now run three times a
+  # day (cron.yaml) and the instance sleeps between uses. min_instances: 1
+  # removes cold starts at the cost of one always-on F2 instance
+  # (DEPLOYMENT.md §3).
   min_instances: 0
   max_instances: 2
   target_cpu_utilization: 0.65
 
-# Ask App Engine to send /_ah/warmup before routing live traffic to a new
-# instance (handled in main.py; primes Firebase/Firestore clients).
+# Ask App Engine to send /_ah/warmup to an instance it starts AHEAD of
+# traffic — a deploy, a second instance (handled in main.py: both
+# Firestore channels, the Firebase modules, the first templates). It is
+# never sent when the service wakes from zero: the first request itself
+# then waits for the start.
 inbound_services:
   - warmup
 

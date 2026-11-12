@@ -23,6 +23,7 @@ from tz import to_mtl
 # Pure module (no Firestore at import) — safe to derive enums from, unlike
 # models.* (see the literal-enum comment below).
 from utils import analyse_taxonomies as _tax
+from utils import cron_schedule as _cron
 from utils import docx_templatize as _templatize
 from utils import civilite as _civilite
 from utils import kyc as _kyc
@@ -4088,8 +4089,9 @@ TOOLS: dict[str, dict] = {
             "Reschedule with date / start_time / end_time (Montréal): an "
             "omitted hour keeps the stored wall-clock hour, an omitted end "
             "keeps the duration. `status` annulée drops the event from "
-            "get_agenda and removes its Outlook copy at the next 10-minute "
-            "cycle (the phone shows it cancelled). `dossier_id` MOVES it "
+            "get_agenda and removes its Outlook copy at the mirror's next "
+            f"run ({_cron.runs_24h('or')}, Montréal; the phone shows it "
+            "cancelled at once). `dossier_id` MOVES it "
             "(\"\" = « Général ») — a series occurrence moves only with "
             "detach_from_series true. A pending or refused Bookings request "
             "is refused here (decide_rendez_vous). On a CONFIRMED Bookings "

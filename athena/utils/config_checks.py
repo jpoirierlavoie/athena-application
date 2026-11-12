@@ -292,7 +292,7 @@ def check_integrations(rpt: Report) -> None:
         rpt.emit(
             WARN,
             f"Bookings sync and the Outlook mirror cannot run — {why} is "
-            "absent (both cron jobs no-op and say so every 10 minutes)",
+            "absent (both cron jobs no-op and say so at every run)",
             integration="bookings",
         )
 

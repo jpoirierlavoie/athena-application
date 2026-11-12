@@ -5,8 +5,8 @@ by App Engine cron: the ``X-Appengine-Cron: true`` header is STRIPPED from all
 external traffic, so the in-handler guard is proof of origin (the
 before_request bypasses in security.py rely on the same fact).
 
-Every 10 minutes it reads « Bookings with me » reservations from the juriste's
-mailbox and upserts them as hearings gated behind ``confirmation="à_confirmer"``
+At every cron run (three a day, cron.yaml) it reads « Bookings with me »
+reservations from the juriste's mailbox and upserts them as hearings gated behind ``confirmation="à_confirmer"``
 (invisible to DAV/MCP/Calendar-DavX5 until the juriste confirms in Réception).
 Idempotent: every write is conditioned on a real change, so a re-run writes
 nothing (acceptance criterion §7.6).
@@ -125,7 +125,7 @@ def _creer(r: dict, counters: dict, integ: dict) -> None:
     _created, errors = hearing.create_hearing(data)
     if errors:
         # Sans ce journal, un refus de validation était avalé en silence et
-        # retenté toutes les 10 minutes indéfiniment : la réservation ne
+        # retenté à chaque passage, indéfiniment : la réservation ne
         # paraissait jamais en Réception et rien n'en disait la cause. Les
         # messages du modèle ne portent ni sujet ni adresse.
         logger.warning("bookings: création refusée par le modèle: %s", errors)
@@ -414,7 +414,7 @@ def sync():
     if not integ["bookings_subject_keywords"]:
         # Un BOOKINGS_SUBJECT_KEYWORDS vide (valeur vide, virgule seule,
         # espaces) produit un tuple vide, et le prédicat ne mord alors JAMAIS :
-        # la synchro tourne toutes les 10 minutes sans jamais rien importer, et
+        # la synchro tourne à chaque passage sans jamais rien importer, et
         # rien ne le dit. Pire, la boucle d'absence finirait par déclarer
         # « annulées côté client » les réservations déjà importées. Le dire
         # fort est la seule défense contre une panne totale silencieuse.
@@ -438,8 +438,8 @@ def sync():
     try:
         counters = _synchroniser(integ, provenance)
     except (GraphError, GraphNotConfigured):
-        # A Graph outage is transient — log and return 200 (the next 10-min
-        # cycle retries); a 500 would only spawn a cron retry storm.
+        # A Graph outage is transient — log and return 200 (the next run
+        # retries); a 500 would only spawn a cron retry storm.
         logger.exception("bookings sync graph call failed")
         log_bookings_event(
             "bookings_sync_erreur_graph", "failure", reason="graph_error"

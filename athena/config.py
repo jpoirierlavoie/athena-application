@@ -13,14 +13,23 @@ def _is_production() -> bool:
     return os.environ.get("ENV") == "production"
 
 
-@lru_cache(maxsize=None)
-def _from_secret_manager(secret_id: str) -> str:
+@lru_cache(maxsize=1)
+def _secret_manager_client():
+    """ONE Secret Manager client per process (2026-11-12). Each client opens
+    its own gRPC channel and resolves credentials; every gunicorn worker
+    used to build one PER SECRET at import, five of them, inside the start
+    a cold request waits for. A failed construction is not cached: the next
+    secret tries again, as before."""
     from google.cloud import secretmanager
 
-    client = secretmanager.SecretManagerServiceClient()
+    return secretmanager.SecretManagerServiceClient()
+
+
+@lru_cache(maxsize=None)
+def _from_secret_manager(secret_id: str) -> str:
     project = os.environ["FIREBASE_PROJECT_ID"]
     name = f"projects/{project}/secrets/{secret_id}/versions/latest"
-    response = client.access_secret_version(request={"name": name})
+    response = _secret_manager_client().access_secret_version(request={"name": name})
     return response.payload.data.decode("utf-8")
 
 
@@ -193,7 +202,7 @@ class Config:
         return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
 
     # Miroir Outlook (2026-07-29). Pushes confirmed Athéna hearings into the
-    # juriste's DEFAULT Outlook calendar every 10 min (they then count toward
+    # juriste's DEFAULT Outlook calendar three times a day (they then count toward
     # Exchange free/busy, so « Bookings with me » stops offering slots over a
     # court date). One-way, Firestore-read-only; loop-proof against the
     # Bookings sync via the extended-property marker (utils/graph_calendrier).

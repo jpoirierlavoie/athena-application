@@ -74,7 +74,7 @@ from routes import edit_conflict
 from security import sanitize
 from services import portail_emission as emission
 from services import rendez_vous
-from utils import occupations, rapprochement, storage_identity
+from utils import cron_schedule, occupations, rapprochement, storage_identity
 from utils.logging_setup import log_bookings_event, log_portail_event
 
 logger = logging.getLogger(__name__)
@@ -245,14 +245,18 @@ def _contexte_rdv() -> dict:
     swallows every error into ``[]``: its own try could never fire, and a
     Firestore blip printed « Aucun rendez-vous à confirmer ». A failed read
     now shows the warning banner and NO empty state (the template hides it
-    under ``erreur_rdv``).
+    under ``erreur_rdv``). ``heures_synchro`` is what the tab's footnote
+    quotes for the import hours (``utils.cron_schedule``).
     """
+    heures = cron_schedule.runs_fr()
     try:
         rdvs = rendez_vous.lister_en_attente()
         divergences = rendez_vous.lister_divergences()
     except rendez_vous.LectureImpossible:
-        return {"rdvs": [], "divergences": [], "erreur_rdv": True}
-    return {"rdvs": rdvs, "divergences": divergences, "erreur_rdv": False}
+        return {"rdvs": [], "divergences": [], "erreur_rdv": True,
+                "heures_synchro": heures}
+    return {"rdvs": rdvs, "divergences": divergences, "erreur_rdv": False,
+            "heures_synchro": heures}
 
 
 # ── Ouvertures (L3 §5) ───────────────────────────────────────────────────

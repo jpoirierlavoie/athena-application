@@ -1,6 +1,7 @@
 """Bookings rendez-vous — Réception today, the MCP connector from lot 1b.
 
-A « Bookings with me » reservation is imported by the 10-minute sync
+A « Bookings with me » reservation is imported, three times a day, by the
+Bookings sync
 (``routes/taches_bookings.py``) as a hearing gated behind
 ``confirmation == "à_confirmer"`` — invisible to DAV, the connector and the
 dashboard until the lawyer decides. What lives HERE is that decision, so
@@ -54,7 +55,7 @@ from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombsto
 from models import concurrency, provenance
 from models import hearing as hearing_model
 from models import partie as partie_model
-from utils import graph_calendrier
+from utils import cron_schedule, graph_calendrier
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_bookings_event, log_unexpected
 
@@ -113,7 +114,8 @@ ANNULATION_OUTLOOK_INCERTAINE = (
 REFUS_NON_INSCRIT = (
     "La réunion Outlook a été annulée et le client notifié, mais le refus "
     "n'a pas pu être inscrit dans Athéna. Ne cliquez pas « Refuser » de "
-    "nouveau : la synchronisation Bookings (10 min au plus) le marquera "
+    "nouveau : la prochaine synchronisation Bookings (à "
+    f"{cron_schedule.runs_fr('ou')}) le marquera "
     "« Annulé par le client » ; retirez-le alors."
 )
 SYNCHRO_NON_AVERTIE = (

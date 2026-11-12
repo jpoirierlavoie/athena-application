@@ -301,7 +301,7 @@ def _construire_manifeste(bucket, inv_id: str, batch: str,
 
 # A batch whose newest object stopped moving this long ago is considered
 # abandoned rather than in flight (a 1 GiB upload on a slow link stays well
-# inside this window; the cron runs every 15 min).
+# inside this window; the cron runs three times a day, cron.yaml).
 _ABANDON_APRES = timedelta(hours=2)
 
 
@@ -375,7 +375,7 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
             # (faux dans un contexte probatoire). Le marqueur poser_accuse a
             # été posé à dessein — il fait converger la réconciliation (les
             # objets ne réapparaîtront pas, le lot est clos côté client) au
-            # lieu de la laisser ré-enfiler ce lot vide toutes les 15 min. Le
+            # lieu de la laisser ré-enfiler ce lot vide à chaque passage. Le
             # lot figure déjà en Réception (manifeste tout-« manquant » +
             # soumission files_count=0), où le juriste peut relancer le client.
             log_portail_event(
@@ -477,7 +477,7 @@ def _traiter_intake(inv_id: str, batch: str, invitation: dict) -> None:
     Aucune empreinte de fichier : l'enveloppe EST la soumission. Ce qui doit
     absolument arriver, c'est que ``soumissions[]`` ET ``accuses[batch]``
     finissent renseignés — la réconciliation ne connaît que ces deux critères,
-    donc un lot qui n'en pose qu'un serait ré-enfilé toutes les 15 minutes à
+    donc un lot qui n'en pose qu'un serait ré-enfilé à chaque passage, à
     perpétuité.
     """
     bucket = _bucket()

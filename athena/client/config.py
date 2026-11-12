@@ -124,14 +124,21 @@ def _is_production() -> bool:
     return os.environ.get("ENV") == "production"
 
 
-@lru_cache(maxsize=None)
-def _from_secret_manager(secret_id: str) -> str:
+@lru_cache(maxsize=1)
+def _secret_manager_client():
+    """ONE Secret Manager client per process (2026-11-12), as in config.py:
+    each client opens its own gRPC channel and resolves credentials. A
+    failed construction is not cached: the next secret tries again."""
     from google.cloud import secretmanager
 
-    client = secretmanager.SecretManagerServiceClient()
+    return secretmanager.SecretManagerServiceClient()
+
+
+@lru_cache(maxsize=None)
+def _from_secret_manager(secret_id: str) -> str:
     project = os.environ["FIREBASE_PROJECT_ID"]
     name = f"projects/{project}/secrets/{secret_id}/versions/latest"
-    response = client.access_secret_version(request={"name": name})
+    response = _secret_manager_client().access_secret_version(request={"name": name})
     return response.payload.data.decode("utf-8")
 
 
