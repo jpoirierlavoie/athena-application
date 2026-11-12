@@ -312,7 +312,7 @@ Toutes les valeurs `facture.*` de montant, de taux, de date et d'heures arrivent
 | `{{facture.total_apres_taxes}}` | Total après taxes |
 | `{{facture.avances_fideicommis}}` | Avances en fidéicommis appliquées à la facture, en déduction **entre parenthèses** (« (1 150,00) $ ») |
 | `{{facture.solde}}` | Solde dû **à l'émission** — un paiement ne le réduit jamais |
-| `{{facture.solde_restant}}` | Solde restant après les paiements inscrits au moment où la note est générée — le « Solde » de la page de la facture. Seulement dans un gabarit qui imprime les paiements (voir *Paiements*, plus bas) |
+| `{{facture.solde_restant}}` | Solde restant après les paiements inscrits et les radiations en vigueur au moment où la note est générée — le « Solde » de la page de la facture; zéro sur une facture dont le solde est radié. Seulement dans un gabarit qui imprime les paiements (voir *Paiements*, plus bas) |
 | `{{facture.solde_fideicommis}}` | Solde en fidéicommis du client dans le dossier de la facture au moment où la note est générée, écritures non encore compensées comprises (voir *Solde en fidéicommis*, plus bas) |
 | `{{facture.nombre_heures}}` | Total des heures facturées (« 0,50 ») |
 | `{{facture.taux_horaire}}` | Taux horaire : le taux facturé, s'il est le même pour toutes les lignes; sinon celui du dossier; sinon vide |
@@ -343,11 +343,12 @@ Encadrez le tableau de chaque section entre les marqueurs de sa condition : une 
 
 ### Paiements (`ligne_paiement`)
 
-La rangée répétée des paiements énumère ce qui a été payé sur la facture **au moment où la note est générée**. Une note générée à l'émission ne montre aucun paiement : générez-la de nouveau après un paiement. Le bouton de la facture enregistre une nouvelle note à chaque clic, et le connecteur en enregistre une nouvelle dès que les paiements ont changé.
+La rangée répétée des paiements énumère ce qui a été payé — ou radié — sur la facture **au moment où la note est générée**. Une note générée à l'émission ne montre aucun paiement : générez-la de nouveau après un paiement ou une radiation. Le bouton de la facture enregistre une nouvelle note à chaque clic, et le connecteur en enregistre une nouvelle dès que les paiements ont changé.
 
 - **Les rangées.** La provision d'une facture importée vient en premier (les « Avances en fidéicommis » déduites à son émission), datée du jour de la facture, avec la source « Fidéicommis ». Suivent les encaissements imputés à la facture dans le registre de l'administration, du plus ancien au plus récent. Un paiement d'honoraires tiré du fidéicommis en fait partie, puisqu'il est aussi inscrit à ce registre. Un encaissement contre-passé ou annulé n'est jamais imprimé.
-- **`{{p.date}}`** — la date de l'encaissement au registre (celle qu'affiche la page de la facture), écrite au long.
-- **`{{p.source}}`** — « Fidéicommis » pour un paiement tiré du fidéicommis. Sinon, le mode de paiement inscrit : Chèque, Virement, Prélèvement, Dépôt direct, Carte, Comptant, et « Paiement » pour « Autre ».
+- **La radiation.** La radiation du solde d'une facture en retard est un pardon que la note **montre** au client : chaque radiation en vigueur occupe une rangée, datée du jour où elle a été inscrite, avec la source « Radiation » et son montant, taxes comprises. Elle suit les encaissements de son jour et mène le solde restant à zéro. Une radiation annulée n'est jamais imprimée, ni son annulation. La rangée est celle de votre gabarit : rien à y ajouter.
+- **`{{p.date}}`** — la date de l'encaissement au registre (celle qu'affiche la page de la facture), écrite au long; pour une radiation, le jour où elle a été inscrite.
+- **`{{p.source}}`** — « Fidéicommis » pour un paiement tiré du fidéicommis, « Radiation » pour une radiation du solde. Sinon, le mode de paiement inscrit : Chèque, Virement, Prélèvement, Dépôt direct, Carte, Comptant, et « Paiement » pour « Autre ».
 - **`{{p.montant}}`** — entre parenthèses, sous la même forme de déduction que `{{facture.avances_fideicommis}}` : « (500,00) $ ».
 - **Le solde.** `{{facture.solde}}` demeure le montant dû à l'émission. Le solde après les rangées est `{{facture.solde_restant}}` : sur la note, le TOTAL APRÈS TAXES moins les rangées donne exactement ce solde.
 - **Placez la rangée répétée À LA PLACE de la ligne « Avances en fidéicommis »**, jamais à côté. La rangée reprend déjà la provision : garder les deux la déduirait deux fois.

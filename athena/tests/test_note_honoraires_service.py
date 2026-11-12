@@ -54,17 +54,21 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import models.doc_template as tpl
     import models.document as document_model
+    import models.invoice as invoice_model
     import routes.documents as rd
     import routes.invoices as ri
     import services.note_honoraires as nh
     from models import folder as folder_model
 
+from defusedxml import ElementTree as ET  # noqa: E402
 from flask import Flask  # noqa: E402
 from markupsafe import escape  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 from tests._fake_gcs import FakeBucket  # noqa: E402
+from tests._frozen_clock import freeze_deadlines  # noqa: E402
 from utils import storage_identity  # noqa: E402
+from utils.format_fr import format_cents_fr, format_cents_fr_parens  # noqa: E402
 
 UTC = timezone.utc
 UID = "kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s"
@@ -1059,6 +1063,102 @@ def test_a_new_payment_makes_a_new_note_and_none_reuses_it(store):
     assert again.reused is False
     assert again.fingerprint != first.fingerprint
     assert again.counts["rows_paiement"] == 3
+
+
+# ── Lot 3a: the write-off, a forgiveness SHOWN TO THE CLIENT (D2) ────────
+# Through the model's own doors on the fake store, the clock frozen on a
+# Monday of a fictitious year: the invoice, due on 3 February 2031, is late
+# on 10 March; 150,00 $ came in on 20 February, the rest is written off.
+
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+WRITE_OFF_DAY = date(2031, 3, 10)
+
+
+def _table(text: str) -> list[list[str]]:
+    """The document's table, row by row, each cell's text."""
+    return [["".join(t.text or "" for t in cell.iter(f"{_W}t"))
+             for cell in row.iter(f"{_W}tc")]
+            for row in ET.fromstring(text).iter(f"{_W}tr")]
+
+
+def _overdue_with_a_payment(db, monkeypatch) -> None:
+    freeze_deadlines(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
+    db.external_write("admin_transactions/a5", _receipt(
+        "a5", 15000, 20, date=datetime(2031, 2, 20, tzinfo=UTC),
+        invoice_number="2031-F031"))
+    db.external_write("invoices/i1", _invoice(
+        invoice_number="2031-F031", status="en_retard",
+        date=datetime(2031, 1, 3, tzinfo=UTC),
+        due_date=datetime(2031, 2, 3, tzinfo=UTC),
+        amount_paid=15000, paid_date=datetime(2031, 2, 20, tzinfo=UTC)))
+
+
+def _write_off(db) -> dict:
+    report, errors = invoice_model.write_off_remainder(
+        "i1", expected_etag=db.peek("invoices/i1")["etag"])
+    assert errors == [], errors
+    return report["write_off"]
+
+
+def _printed(db, bucket, note) -> str:
+    data = bucket.blob(
+        db.peek(f"documents/{note.document['id']}")["storage_path"]
+    ).download_as_bytes()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        # String substitution only (Change Impact item 3): no new part, and
+        # every other entry byte for byte.
+        assert zf.namelist() == ["[Content_Types].xml", "word/document.xml"]
+        assert zf.read("[Content_Types].xml").decode("utf-8") == _CT
+        return zf.read("word/document.xml").decode("utf-8")
+
+
+def test_a_written_off_invoice_prints_its_radiation_and_a_zero_balance(
+    store, monkeypatch,
+):
+    """The radiation is a row of the template's own payment row, after the
+    payment it followed: TOTAL APRÈS TAXES less the rows gives the balance,
+    which reaches zero — the note never refuses a written-off invoice
+    (payments_print_defect accepts it)."""
+    db, bucket, _template = store
+    _print_payments(store)
+    _overdue_with_a_payment(db, monkeypatch)
+    radiation = _write_off(db)
+    assert radiation["amount"] == 51739 - 15000
+
+    note = _generate(today=WRITE_OFF_DAY)
+
+    assert note.invoice["status"] == "payée"
+    assert note.counts["rows_paiement"] == 2
+    assert _table(_printed(db, bucket, note)) == [
+        ["TOTAL APRÈS TAXES", format_cents_fr(51739)],
+        ["20 février 2031 — Virement", format_cents_fr_parens(15000)],
+        ["10 mars 2031 — Radiation", format_cents_fr_parens(36739)],
+        ["SOLDE", format_cents_fr(0)],
+    ]
+
+
+def test_a_cancelled_radiation_prints_neither_row(store, monkeypatch):
+    """Cancelled, the radiation and its cancellation both leave the note:
+    the invoice reopens « en_retard » and its balance is owing again."""
+    db, bucket, _template = store
+    _print_payments(store)
+    _overdue_with_a_payment(db, monkeypatch)
+    radiation = _write_off(db)
+    _report, errors = invoice_model.reverse_write_off(
+        "i1", radiation["id"], expected_etag=db.peek("invoices/i1")["etag"])
+    assert errors == [], errors
+
+    note = _generate(today=WRITE_OFF_DAY)
+
+    text = _printed(db, bucket, note)
+    assert note.invoice["status"] == "en_retard"
+    assert note.counts["rows_paiement"] == 1
+    assert "Radiation" not in text
+    assert _table(text) == [
+        ["TOTAL APRÈS TAXES", format_cents_fr(51739)],
+        ["20 février 2031 — Virement", format_cents_fr_parens(15000)],
+        ["SOLDE", format_cents_fr(36739)],
+    ]
 
 
 # ══════════════════════════════════════════════════════════════════════

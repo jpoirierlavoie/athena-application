@@ -2387,22 +2387,34 @@ def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optio
     """Why the invoice's payments cannot be PRINTED as they stand, or ``None``.
 
     The note d'honoraires lists the standing encaissements imputed on the
-    invoice (``models.admin_ledger.receipt_stands``) above its live balance
-    (:func:`balance_of`): on paper, TOTAL APRÈS TAXES less the rows must give
-    that balance. Two states break the sum, and the note refuses rather than
+    invoice (``models.admin_ledger.receipt_stands``) and, since lot 3a, its
+    standing write-offs (:func:`standing_write_offs`, a « Radiation » row
+    each) above its live balance (:func:`balance_of`, which subtracts
+    them): on paper, TOTAL APRÈS TAXES less the rows must give that
+    balance. Two states break the sum, and the note refuses rather than
     print figures that do not close (``services/note_honoraires``):
 
-    * ``payments_mismatch`` — the rows do not sum to ``amount_paid``: the
-      register and the invoice drifted (``scripts/verify_admin_integrity``,
-      check 8, reports the same);
+    * ``payments_mismatch`` — the encaissement rows do not sum to
+      ``amount_paid``: the register and the invoice drifted
+      (``scripts/verify_admin_integrity``, check 8, reports the same). The
+      write-off rows are not among them: they are the very events
+      :func:`balance_of` subtracts, never a payment;
     * ``paid_by_hand`` — « payée » with a balance left: a status the lawyer
       set by hand, with nothing (or not everything) recorded, since
-      :func:`payment_updates` flips to « payée » only at a zero balance. The
-      note would print a balance owing under the lawyer's own « payée ».
+      :func:`payment_updates` and the write-off doors settle « payée » only
+      at a zero balance. The note would print a balance owing under the
+      lawyer's own « payée ». A « payée » a standing write-off settles has
+      no balance left: its note prints, the « Radiation » row bringing it to
+      zero (the lawyer's decision D2 — a forgiveness shown to the client,
+      never refused).
 
     PURE: the caller reads the rows (strictly) and keeps the standing ones.
+    ``amount_paid`` reads as :func:`_payment_recorded` reads it — absent,
+    None or empty as 0 — and an amount ``int()`` cannot read raises
+    :class:`UnreadableAmount`, naming the field, never the value (the
+    lawyer's decision of 2026-11-12, which :func:`balance_of` follows).
     """
-    paid = int(invoice.get("amount_paid", 0) or 0)
+    paid = _stored_cents(invoice, "amount_paid") if invoice.get("amount_paid") else 0
     if sum(int(r.get("amount", 0) or 0) for r in standing_receipts) != paid:
         return "payments_mismatch"
     if invoice.get("status") == "payée" and balance_of(invoice) > 0:

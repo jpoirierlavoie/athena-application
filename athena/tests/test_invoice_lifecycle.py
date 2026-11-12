@@ -877,6 +877,54 @@ def test_des_paiements_imprimables_menent_au_solde():
         {"status": "envoyée", "amount_due": 5000}, []) is None
 
 
+def _radiation_2031(montant: int) -> dict:
+    """Une radiation debout, telle que la porte du modèle l'écrit (année
+    fictive, montants inventés)."""
+    return {"id": "rad-1", "kind": "radiation",
+            "date": datetime(2031, 3, 10, tzinfo=timezone.utc),
+            "amount": montant, "gst_amount": 0, "qst_amount": 0,
+            "tax_claimed": False, "reason": "", "reverses_id": ""}
+
+
+def test_une_facture_soldee_par_radiation_imprime_ses_paiements():
+    """Lot 3a (D2, un pardon montré au client) : une « payée » qu'une
+    radiation solde n'a plus de solde — la note l'imprime, sa rangée
+    « Radiation » le menant à zéro, et ne la refuse jamais. Ses lignes
+    d'encaissement se vérifient toujours contre amount_paid SEUL : la
+    radiation n'en est pas une."""
+    lignes = [{"amount": 30000}, {"amount": 12000}]
+    en_partie = {"status": "payée", "amount_due": 90000, "amount_paid": 42000,
+                 "write_offs": [_radiation_2031(48000)]}
+    assert invoice_model.payments_print_defect(en_partie, lignes) is None
+    rien_paye = {"status": "payée", "amount_due": 90000, "amount_paid": 0,
+                 "write_offs": [_radiation_2031(90000)]}
+    assert invoice_model.payments_print_defect(rien_paye, []) is None
+    # Compter la radiation parmi les encaissements serait une dérive.
+    assert invoice_model.payments_print_defect(
+        en_partie, lignes + [{"amount": 48000}]) == "payments_mismatch"
+
+
+def test_un_montant_paye_illisible_est_nomme_jamais_cite():
+    """La décision de l'avocat du 2026-11-12, que balance_of suit : la note
+    lit amount_paid avant le solde, et son erreur nomme le CHAMP — celle
+    d'int() citait la valeur stockée dans la trace. Absent, None ou vide, il
+    se lit toujours comme aucun paiement."""
+    import traceback
+
+    # Built apart, so the traceback's quoted source lines never hold it.
+    illisible = {"status": "envoyée", "amount_due": 90000,
+                 "amount_paid": "1 234,56"}
+    with pytest.raises(invoice_model.UnreadableAmount) as raised:
+        invoice_model.payments_print_defect(illisible, [])
+    assert str(raised.value) == "amount_paid"
+    assert raised.value.__context__ is None
+    assert "1 234,56" not in "".join(traceback.format_exception(raised.value))
+    for absent in (None, "", 0):
+        assert invoice_model.payments_print_defect(
+            {"status": "envoyée", "amount_due": 5000, "amount_paid": absent},
+            []) is None
+
+
 # ══════════════════════════════════════════════════════════════════════
 # L'application (routes + gabarits réels)
 # ══════════════════════════════════════════════════════════════════════

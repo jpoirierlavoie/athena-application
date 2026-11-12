@@ -51,6 +51,7 @@ from models.invoice import (
     DRAFT_NOTES_MAX_LENGTH,
     STATUS_LABELS,
     VALID_STATUSES,
+    WriteOffsUnreadable,
     # The statuses whose lateness the model judges (is_overdue): the sheet
     # says « illisible » on its « Retard » line for them alone.
     _ISSUED_STATUSES,
@@ -75,6 +76,7 @@ from models.invoice import (
     update_invoice_draft,
     update_status,
     void_invoice_report,
+    written_off_of,
 )
 from models.admin_ledger import (
     METHOD_LABELS,
@@ -858,11 +860,19 @@ _EXPORT_COLUMNS_CSV = [
     ("gst_amount", "TPS"),
     ("qst_amount", "TVQ"),
     ("total", "Total"),
+    # Lot 3a: what stands written off (« radiation », taxes included —
+    # invoice.written_off_of), after the last money column: this export
+    # carries no « Solde », before which the journal puts it.
+    ("written_off", "Radié"),
     ("status", "Statut"),
 ]
 
+#: The CSV's « Radié » cell for an invoice whose write-offs cannot be read
+#: (``invoice.WriteOffsUnreadable``) — the invoice list's own word.
+_CSV_UNREADABLE = "illisible"
+
 # The PDF export is the « Journal des honoraires » (utils/journal_pdf.py),
-# which owns its own thirteen columns — no generic column list here.
+# which owns its own fourteen columns — no generic column list here.
 
 
 def _export_filters() -> tuple[str, str, "datetime | None", "datetime | None"]:
@@ -885,13 +895,24 @@ def _filtered_invoices() -> list[dict]:
     )
 
 
+def _csv_written_off(invoice: dict):
+    """The CSV's « Radié » cell: what stands written off, in cents — or
+    :data:`_CSV_UNREADABLE` when the write-off events cannot be read: never
+    a 0, and never a failed export over one invoice."""
+    try:
+        return written_off_of(invoice)
+    except WriteOffsUnreadable:
+        return _CSV_UNREADABLE
+
+
 def _get_export_invoices() -> list[dict]:
     """Fetch and pre-process invoices for export, respecting current filters."""
     from utils.export_csv import prepare_export_rows
 
-    return prepare_export_rows(
+    rows = prepare_export_rows(
         _filtered_invoices(), label_maps={"status": STATUS_LABELS}
     )
+    return [{**row, "written_off": _csv_written_off(row)} for row in rows]
 
 
 def _journal_rows(invoices: list[dict]) -> list[dict]:
@@ -901,6 +922,12 @@ def _journal_rows(invoices: list[dict]) -> list[dict]:
     disbursements is not stored on the invoice document (see
     ``models.invoice.expense_split``). Deliberately uncapped — an accounting
     journal that silently stopped at N rows would be worse than a slow one.
+
+    ``radie`` (lot 3a) is what stands written off, taxes included
+    (``models.invoice.written_off_of``) — the figure ``solde`` subtracts
+    beside ``recu``. A malformed array of write-offs raises, as the balance
+    beside it already does (``WriteOffsUnreadable``, naming the event's
+    position, never a value).
     """
     rows: list[dict] = []
     for inv in invoices:
@@ -928,6 +955,7 @@ def _journal_rows(invoices: list[dict]) -> list[dict]:
             "tvq": int(inv.get("qst_amount") or 0),
             "total": int(inv.get("total") or 0),
             "recu": int(inv.get("amount_paid") or 0),
+            "radie": written_off_of(inv),
             "solde": balance_of(inv),
             "annulee": inv.get("status") == "annulée",
         })
@@ -968,7 +996,8 @@ def export_csv_route() -> Response:
         rows=rows,
         columns=_EXPORT_COLUMNS_CSV,
         filename=f"factures_{date_str}.csv",
-        cents_fields=["subtotal", "gst_amount", "qst_amount", "total"],
+        cents_fields=["subtotal", "gst_amount", "qst_amount", "total",
+                      "written_off"],
     )
 
 

@@ -677,7 +677,10 @@ def _invoice_row(extra: Optional[dict[str, Any]] = None,
                 "\"recorded\" = an amount was posted in the accounting module; "
                 "\"none\" = nothing recorded. With \"none\", a balance equal "
                 "to the total means nothing has been RECORDED — NOT that "
-                "nothing was paid. Status alone may still say « payée »."
+                "nothing was paid. Status alone may still say « payée ». A "
+                "« payée » with `written_off_cents` > 0 was settled by a "
+                "write-off (« radiation ») of its remainder: that part was "
+                "forgiven, never paid — with \"none\", the whole of it."
             ),
         },
         # 2026-11-11: required — these three READ outputs (never a write's,
@@ -700,7 +703,16 @@ def _invoice_row(extra: Optional[dict[str, Any]] = None,
                  "it is never updated and stays non-zero on a paid invoice. "
                  "Use `balance` for what is still owed."),
         **_money("amount_paid", "Recorded payment; 0 when none was entered."),
-        **_money("balance", "amount_due − amount_paid — the live balance."),
+        # Lot 3a (2026-11-12): required — these three READ outputs always
+        # carry it; no write output does.
+        **_money("written_off",
+                 "What stands written off (« radiation »), taxes included: "
+                 "the remainder of an overdue invoice the lawyer forgave — a "
+                 "dated event on the invoice, never a payment and never a "
+                 "register entry. 0 when none stands; a cancelled write-off "
+                 "counts for nothing."),
+        **_money("balance", "amount_due − amount_paid − written_off — the "
+                            "live balance."),
     }
     if extra:
         properties.update(extra)
@@ -1944,7 +1956,7 @@ def _invoice_payment_block() -> dict:
         "status_after": _str(
             "Its status after the write (on a replay: after the FIRST call)."),
         **_money("amount_paid", "The payment recorded on it."),
-        **_money("balance", "amount_due − amount_paid."),
+        **_money("balance", "amount_due − amount_paid − written_off."),
         "paid_in_full": _bool(),
     }))
 
@@ -2091,7 +2103,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_money("unbilled"),
             **_money("unbilled_expenses"),
             **_money("outstanding",
-                     "Σ of the LIVE balance (amount_due − amount_paid) over "
+                     "Σ of the LIVE balance (amount_due − amount_paid − "
+                     "written_off) over "
                      "invoices in status envoyée or en_retard. A derived "
                      "figure, not a stored one: `amount_due` alone is frozen "
                      "at issuance and would overstate this by everything "
@@ -2713,7 +2726,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_money("unbilled"),
             **_money("unbilled_expenses"),
             **_money("outstanding",
-                     "Σ of the LIVE balance (amount_due − amount_paid) over "
+                     "Σ of the LIVE balance (amount_due − amount_paid − "
+                     "written_off) over "
                      "invoices in status envoyée or en_retard. A derived "
                      "figure, not a stored one: `amount_due` alone is frozen "
                      "at issuance and would overstate this by everything "
@@ -2866,6 +2880,41 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "created_via": _str(
                 f"Path that created the invoice: {_VIA_VOCABULARY}. '' = not "
                 "recorded."),
+            # Lot 3a (2026-11-12): both always present — required, in this
+            # READ output.
+            "settlement_label": _str(
+                "How the status reads: « Payée », « Soldée par radiation » "
+                "(a write-off settled it, nothing paid) or « Payée en partie "
+                "— solde radié » (paid in part, the rest written off); any "
+                "other status, its own French label."),
+            "write_offs": _arr(_obj({
+                "id": _str(),
+                "kind": {"type": "string",
+                         "enum": ["radiation", "contre_passation"],
+                         "description": (
+                             "radiation = the remainder written off; "
+                             "contre_passation = the cancellation of ONE "
+                             "radiation, which then counts for nothing.")},
+                "date": _str("YYYY-MM-DD — the day it was recorded (Montréal), "
+                             "never backdated."),
+                **_money("amount", "Taxes included."),
+                **_money("gst_amount", "The TPS inside `amount`; 0 when not "
+                                       "claimed."),
+                **_money("qst_amount", "The TVQ inside `amount`; 0 when not "
+                                       "claimed."),
+                "tax_claimed": _bool(
+                    "true = the TPS/TVQ inside `amount` is claimed back as "
+                    "a bad debt."),
+                "reverses_id": _str(
+                    "'' on a radiation; on a contre_passation, the id of the "
+                    "radiation it cancels (same figures)."),
+                "reason": _str("The lawyer's stated reason, verbatim; '' when "
+                               "none."),
+            }), (
+                "Every write-off event of the invoice, in the order they "
+                "were recorded; empty when none. A radiation STANDS while no "
+                "contre_passation names it; `written_off_cents` is the sum "
+                "of those that stand.")),
             }, optional=("etag", "created_via")),
         }),
         {"invoice_id": _str("Echo of the id that was not found.")},
@@ -3159,7 +3208,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "previous_status": _str("The status before this call."),
             "void_reason": _nstr("null unless annulée."),
             **_money("amount_paid", "Recorded payment; 0 when none."),
-            **_money("balance", "amount_due − amount_paid."),
+            **_money("balance", "amount_due − amount_paid − written_off."),
         }),
         "changed_fields": _arr(_str(), "draft: the fields that changed."),
         "released_time_entry_ids": _arr(_str(), (

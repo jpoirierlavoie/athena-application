@@ -6092,6 +6092,136 @@ Notes:
      the list shows its balance and « Échue · N j » as before.
   A rollback is the code alone.
 
+- **Invoices: the write-off of a remainder, « radiation » — lot 3a
+  (2026-11-12).** Lot 3a of the lawyer's plan « Factures : retard,
+  radiation, intérêts », in three parts on one branch (`77fd14c`,
+  `c62daa4`, then the prints, the journal and the connector's reads), with
+  the merge of the release above (`d6fdc2c`) and `d7dca58`. His decisions
+  of 2026-11-11: D2 — a write-off is a forgiveness SHOWN TO THE CLIENT: the
+  note d'honoraires prints it and never refuses it; D3 — its TPS and TVQ
+  are claimed back by default, each `round_half_up(W × tax ÷ total)` on
+  the invoice's `total`, never `amount_due` (a retainer makes the two
+  differ). **No entry point until lot 3b**: no web route or action, no
+  connector write — only the tests reach the two doors, so no invoice can
+  carry a write-off after this push, and every figure, page, print and read
+  stays what it was.
+  1. *The model* (`77fd14c`). A write-off is a dated EVENT on the invoice,
+     never a register entry: `write_offs`, append-only, absent on every
+     invoice until its first and read as `[]` (no migration); no money
+     moves, and `amount_paid` is never touched (check 8 stays exact).
+     `invoice.write_off_events` is the one judge of a well-formed array — a
+     malformed one raises, never counts as 0 —, and `balance_of` =
+     `amount_due` − `amount_paid` − `written_off_of`. Two doors, each ONE
+     transaction against the etag, which they require:
+     `write_off_remainder` writes off the WHOLE remainder of an invoice
+     overdue on `today_mtl` (read inside the transaction), dated that
+     Montréal day, refused when the registers disagree with `amount_paid`,
+     and settles it « payée » — no new status: `settlement_label` reads
+     « Soldée par radiation » or « Payée en partie — solde radié »;
+     `reverse_write_off` cancels one standing radiation by a
+     « contre_passation » dated that day, which reopens it « en_retard ».
+     While a radiation stands, both registers refuse a payment on the
+     invoice (`facture_radiee`, the fee payment included), and the void and
+     « Rouvrir » are refused (`radiation_inscrite`): « Annuler la
+     radiation » first. The four one-shot repair scripts refuse an invoice
+     that carries a write-off; `mcp/disclosure` forbids both doors to every
+     connector module. Check 13 of `scripts/verify_admin_integrity` watches
+     the events, written off ≤ due − paid, and « payée » exactly at a zero
+     balance wherever a settlement is recorded.
+  2. *The financial statements* (`c62daa4`). Revenue less the write-downs
+     at their own date, net of the TPS/TVQ they claim (« Radiations de
+     comptes clients », printed when not zero; a cancellation counts back
+     at its date); the TPS and TVQ « des créances irrécouvrables » in the
+     tax table; one row per event in « Redressements » — the lawyer's list
+     for his returns. The rollforward takes no new term, « écart non
+     expliqué » stays zero, and a world without write-offs presents exactly
+     what it did.
+  3. *The prints, the journal, the connector's reads* (the third part).
+     The note d'honoraires, when its gabarit prints the payments, prints one
+     `ligne_paiement` row per STANDING radiation — `{{p.source}}`
+     « Radiation », its date, its amount taxes included —, after the
+     encaissements of its day, and `{{facture.solde_restant}}` reaches 0; a
+     cancelled radiation prints neither row; `payments_print_defect`
+     accepts such an invoice, its encaissement rows still checked against
+     `amount_paid` alone. The template's own row is filled once more: no
+     new part, no new field (GABARITS_PLACEHOLDERS.md, hence
+     `/gabarits/aide`, says so). The « Journal des honoraires » PDF gains a
+     « Radié » column before « Solde » — fourteen columns, the money and
+     client columns giving up width; an eight-figure amount and every
+     header still fit, measured —, and the invoices CSV a « Radié » column
+     after « Total » (it has no « Solde »), « illisible » for an invoice
+     whose write-offs cannot be read. The connector's invoice row
+     (`get_invoice`, `list_invoices`, `get_billing_snapshot`'s
+     `outstanding_invoices`) gains `written_off_cents` /
+     `written_off_display`, and `get_invoice` gains `settlement_label` and
+     `write_offs[]` (id, kind, date, amounts, `tax_claimed`,
+     `reverses_id`, reason).
+  4. *`d7dca58` and the merge.* `balance_of` reads each stored amount
+     through `_stored_cents`: one `int()` cannot read raises
+     `UnreadableAmount`, whose message is the field's name alone, raised
+     outside the failed conversion. The readers the release above left
+     raising (the note d'honoraires, the journal PDF, « Solde dû actuel »,
+     the registers' pickers and caps) still fail on such an amount — they
+     cannot print or cap a balance they cannot read —, but their traceback
+     names the field, never the value; the third part brings the note's own
+     read of `amount_paid` (`payments_print_defect`) to the same rule. The
+     lines that carried `int()`'s error type now carry `UnreadableAmount`
+     (« invoice lateness unreadable », « get_outstanding_totals: failed »);
+     no metric or alert reads it. And `update_invoice` can now meet
+     `montant_illisible` on an issued invoice whose `write_offs` is
+     malformed — its balance reads them since `77fd14c` —, in the one
+     sentence family the merge (`d6fdc2c`) gave the release above and the
+     write-offs, which names the radiations too (« Les radiations
+     enregistrées … sont illisibles »).
+  Change Impact: item 1 — touched, reads and refusals only: three READ
+  outputs gain keys, required since always present (the row's
+  `written_off_cents` / `written_off_display`, `get_invoice`'s
+  `settlement_label` and `write_offs`), and no write output does; the
+  `balance`, `outstanding` and `payment_basis` descriptions, and
+  `list_invoices`' and `get_invoice`'s, name the write-off;
+  `record_admin_entry` and `record_trust_entry` refuse `facture_radiee` in
+  the models' words, and `update_invoice` names the lawyer's way back on a
+  « payée » a radiation settles; no tool, input schema, disclosure promise
+  or consent text moved — the consent screen's read paragraph already
+  names « facturation »; `exporter_plugin_athena --check`: registry
+  `f38e98b4dbf7` unchanged, plugin 1.9.2 up to date, no version. Item 2 —
+  not touched (invoices are not DAV-exposed). Item 3 — touched: the note's
+  payment row filled once more per standing radiation, by string
+  substitution, no new part — a test reads the filed note back: its
+  template's two parts, the other one byte for byte; a generated note must
+  still open in Word without repair (step 4). Item 4 — two events,
+  `invoice_written_off` and `invoice_write_off_reversed`, through their
+  typed helper (ids, `tax_claimed`, `via`, the status — never an amount,
+  never the reason); the new refusal codes of `invoice_refused`,
+  `admin_transaction_refused`, `trust_transaction_refused`,
+  `trust_fee_payment_refused` and `mcp_write_refused`; the doors' two
+  `unexpected` messages, without a traceback; `document_generated`'s
+  `rows_paiement` counts the radiation rows; all in OBSERVABILITY.md.
+  Item 5 — not touched: no route, header, CSRF exemption, prefix or
+  setting; a reason is refused, never altered. Item 6 — not touched: no
+  template, no class. Item 7 — not touched: the doors read the registers
+  by an equality on `invoice_id`, as the void does (automatic index); check
+  13 and the statements read the invoices whole. In order:
+  1. *Before the push*, the lawyer downloads the statements PDF
+     (« Finances ») of a closed period — the last quarter — and keeps it.
+     *The push* — no index, no consent train, no data to migrate: no
+     invoice carries `write_offs`.
+  2. *After the deploy*, the same period's PDF shows identical figures: no
+     write-off exists yet.
+  3. `python -m scripts.verify_admin_integrity` (read-only): check 13 names
+     no écart — and nothing at all, unless an invoice set « payée » by hand
+     carries a recorded payment that falls short: that one is a NOTE
+     (exit 2), not an écart — the lawyer's own statement, which the model
+     leaves on purpose.
+  4. *In Word*: a note d'honoraires generated after the deploy, from a
+     gabarit that prints the payments, opens without repair (its fill is
+     unchanged while no write-off exists); the « Radiation » row is checked
+     the same way once lot 3b lets one exist.
+  5. *The plugin*: not bumped — the registry did not move; 1.9.2 stays
+     delivered, nothing to send.
+  Nothing to check on the phone: there is no entry point yet.
+  A rollback is the code alone: no write-off can exist before lot 3b.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

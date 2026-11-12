@@ -2683,7 +2683,9 @@ TOOLS: dict[str, dict] = {
             "PAYMENT IS ONLY AS RECORDED: `amount_paid` is the sum posted in "
             "the accounting module (the only writer of a payment), "
             "`balance` is amount_due − "
-            "amount_paid, and `payment_basis: \"none\"` means nothing was "
+            "amount_paid − written_off (`written_off` = what the lawyer "
+            "forgave by a write-off, « radiation » — never a payment), and "
+            "`payment_basis: \"none\"` means nothing was "
             "recorded — NOT that nothing was paid. Older invoices predate "
             "the payment field and read that way. "
             "`amount_due` is the balance AT ISSUANCE and is never updated: "
@@ -2742,8 +2744,10 @@ TOOLS: dict[str, dict] = {
         "title": "Facture",
         "description": (
             "One invoice: its parties, its full money block (fees, "
-            "disbursements, GST, QST, retainer, total, recorded payment and "
-            "live balance) and its line items. "
+            "disbursements, GST, QST, retainer, total, recorded payment, "
+            "write-offs and live balance) and its line items. A « payée » "
+            "says how it was settled in `settlement_label`; `write_offs` "
+            "lists each write-off (« radiation ») and its cancellation. "
             "Line descriptions are what PRINTED on the client's invoice — "
             "quote them verbatim, never paraphrase. "
             "`subtotal_matches_line_items: false` means the stored subtotal "

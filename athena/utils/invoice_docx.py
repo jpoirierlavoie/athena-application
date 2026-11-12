@@ -20,12 +20,22 @@ The payments (2026-11-08) join only when the caller passes them
 (:class:`InvoicePayments`; ``services/note_honoraires`` does so only for a
 template that PRINTS them, :func:`prints_payments`): the region
 ``ligne_paiement`` — the provision of an imported invoice, then each
-standing encaissement imputed on the invoice —, its flag ``si_paiements``
-and ``facture.solde_restant``. Without them the context holds exactly the
-keys every earlier template was filled with, so its fingerprint
+standing encaissement imputed on the invoice, then each standing write-off
+of its remainder —, its flag ``si_paiements`` and ``facture.solde_restant``.
+Without them the context holds exactly the keys every earlier template was
+filled with, so its fingerprint
 (``services.note_honoraires.fill_fingerprint``) does not move. The balance
 arrives computed (``models.invoice.balance_of``, its one authority); the
 payment rows are read and formatted, never summed here.
+
+A write-off (« radiation », lot 3a of « Factures : retard, radiation,
+intérêts ») is a forgiveness SHOWN TO THE CLIENT — the lawyer's decision D2
+of 2026-11-11: each one that stands prints as a row of its own, source
+« Radiation », its amount taxes included, and brings the printed balance to
+zero. A cancelled one prints neither row, its nor its cancellation's (the
+caller passes ``models.invoice.standing_write_offs``). The row is the
+template's own ``ligne_paiement`` row, filled once more: no new part, no new
+field.
 
 So does the client's trust balance, ``facture.solde_fideicommis``
 (2026-11-08): given only for a template that prints it
@@ -41,7 +51,7 @@ pure module may not import ``models``.
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Optional
+from typing import Iterable, Optional
 
 from utils.format_fr import (
     format_cents_fr,
@@ -71,6 +81,9 @@ PAYMENT_FIELDS = PAYMENT_ROW_FIELDS + ("facture.solde_restant",)
 #: ``p.source`` of a payment drawn from trust — a fee payment's encaissement
 #: (``trust_transaction_id`` set) — and of an imported invoice's provision.
 PAYMENT_SOURCE_TRUST = "Fidéicommis"
+#: ``p.source`` of a standing write-off of the invoice's remainder
+#: (« radiation », lot 3a): a forgiveness shown to the client (D2).
+PAYMENT_SOURCE_WRITE_OFF = "Radiation"
 #: ``p.source`` of every other encaissement, by its ``method`` (the module
 #: docstring declares this vocabulary). A method outside it prints the
 #: « autre » wording: the row is a payment either way.
@@ -104,11 +117,14 @@ class InvoicePayments:
     (``models.admin_ledger.list_invoice_receipts_strict``, kept by
     ``receipt_stands``), oldest first; ``balance_cents`` — its live balance
     (``models.invoice.balance_of``). The caller has checked that the two
-    agree (``models.invoice.payments_print_defect``).
+    agree (``models.invoice.payments_print_defect``). ``write_offs`` — its
+    STANDING write-offs (lot 3a, ``models.invoice.standing_write_offs``),
+    in stored order: never a cancelled one, never a cancellation.
     """
 
     receipts: list[dict]
     balance_cents: int
+    write_offs: list[dict] = field(default_factory=list)
 
 
 def prints_payments(placeholders) -> bool:
@@ -239,7 +255,9 @@ def _payment_source(receipt: dict) -> str:
         receipt.get("method") or "", PAYMENT_SOURCE_LABELS["autre"])
 
 
-def _payment_rows(invoice: dict, receipts: list[dict]) -> list[dict[str, str]]:
+def _payment_rows(
+    invoice: dict, receipts: list[dict], write_offs: Iterable[dict] = (),
+) -> list[dict[str, str]]:
     """The ``ligne_paiement`` rows, oldest first.
 
     First the provision of an imported invoice (``retainer_applied``, the
@@ -247,9 +265,12 @@ def _payment_rows(invoice: dict, receipts: list[dict]) -> list[dict[str, str]]:
     invoice's date, drawn from trust), so that the region REPLACES the
     Avances line and TOTAL APRÈS TAXES less the rows gives the balance;
     then each standing encaissement, in the caller's ``(date, sequence)``
-    order. The sort is stable on the calendar day: the provision stays first
-    on its day, the register's order holds within a day. Dates are the UTC
-    calendar day (date-only values at UTC midnight, never ``to_mtl``).
+    order; then each standing write-off (lot 3a), « Radiation », its amount
+    taxes included, dated the day it was recorded — it wrote off what the
+    encaissements left. The sort is stable on the calendar day: the
+    provision stays first on its day, the register's order holds within a
+    day, and a write-off follows the encaissements of its day. Dates are the
+    UTC calendar day (date-only values at UTC midnight, never ``to_mtl``).
     """
     entries = []
     retainer = int(invoice.get("retainer_applied", 0) or 0)
@@ -258,6 +279,9 @@ def _payment_rows(invoice: dict, receipts: list[dict]) -> list[dict[str, str]]:
     for receipt in receipts:
         entries.append((_as_date(receipt.get("date")), _payment_source(receipt),
                         int(receipt.get("amount", 0) or 0)))
+    for write_off in write_offs:
+        entries.append((_as_date(write_off.get("date")), PAYMENT_SOURCE_WRITE_OFF,
+                        int(write_off.get("amount", 0) or 0)))
     entries.sort(key=lambda entry: entry[0] or date.min)
     return [
         {
@@ -322,7 +346,8 @@ def build_invoice_context(
     }
     if payments is not None:
         values["facture.solde_restant"] = format_cents_fr(payments.balance_cents)
-        rows[PAYMENT_REGION] = _payment_rows(invoice, payments.receipts)
+        rows[PAYMENT_REGION] = _payment_rows(invoice, payments.receipts,
+                                             payments.write_offs)
         conditions[PAYMENT_FLAG] = bool(rows[PAYMENT_REGION])
     if trust_balance_cents is not None:
         values[TRUST_BALANCE_FIELD] = format_cents_fr(trust_balance_cents)

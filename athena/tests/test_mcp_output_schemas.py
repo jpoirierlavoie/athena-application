@@ -1078,6 +1078,101 @@ def test_billing_snapshot_still_conforms_after_the_shared_row_grew(monkeypatch):
     payload = handlers.get_billing_snapshot({})
     _conforms("get_billing_snapshot", payload)
     assert payload["outstanding_invoices"][0]["payment_basis"] == "none"
+    assert payload["outstanding_invoices"][0]["written_off_cents"] == 0
+
+
+# ── Lot 3a: the write-offs, read ────────────────────────────────────────
+# A fictitious year and invented amounts (the repository is public).
+
+
+def _write_off_event(eid: str, kind: str, day: int, reverses: str = "") -> dict:
+    return {"id": eid, "kind": kind,
+            "date": datetime(2031, 3, day, tzinfo=UTC),
+            "amount": 64975, "gst_amount": 2826, "qst_amount": 5636,
+            "tax_claimed": True,
+            "reason": "Cliente introuvable." if kind == "radiation" else "",
+            "reverses_id": reverses,
+            "created_at": datetime(2031, 3, day, 15, tzinfo=UTC),
+            "created_via": "web"}
+
+
+def _written_off_doc() -> dict:
+    """500,00 $ paid, the rest written off, that radiation cancelled, then
+    written off again: ONE radiation stands."""
+    return _invoice_doc(
+        status="payée", amount_paid=50000,
+        write_offs=[_write_off_event("rad-1", "radiation", 5),
+                    _write_off_event("cp-1", "contre_passation", 6,
+                                     reverses="rad-1"),
+                    _write_off_event("rad-2", "radiation", 10)])
+
+
+def test_a_written_off_invoice_reads_and_conforms(monkeypatch):
+    doc = _written_off_doc()
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (doc, []))
+    payload = handlers.get_invoice({"invoice_id": "inv1"})
+    _conforms("get_invoice", payload)
+    inv = payload["invoice"]
+    assert (inv["amount_paid_cents"], inv["written_off_cents"],
+            inv["balance_cents"]) == (50000, 64975, 0)
+    assert inv["settlement_label"] == "Payée en partie — solde radié"
+    assert [(w["id"], w["kind"], w["date"], w["reverses_id"])
+            for w in inv["write_offs"]] == [
+        ("rad-1", "radiation", "2031-03-05", ""),
+        ("cp-1", "contre_passation", "2031-03-06", "rad-1"),
+        ("rad-2", "radiation", "2031-03-10", ""),
+    ]
+    first = inv["write_offs"][0]
+    assert (first["amount_cents"], first["gst_amount_cents"],
+            first["qst_amount_cents"], first["tax_claimed"],
+            first["reason"]) == (64975, 2826, 5636, True, "Cliente introuvable.")
+    assert "created_via" not in first and "created_at" not in first
+
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices_page",
+                        lambda **kw: ([doc], None))
+    listed = handlers.list_invoices({})
+    _conforms("list_invoices", listed)
+    assert listed["items"][0]["written_off_cents"] == 64975
+
+    # Nothing written off: 0, an empty list, the status's own label.
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (_invoice_doc(), []))
+    legacy = handlers.get_invoice({"invoice_id": "inv1"})["invoice"]
+    assert (legacy["written_off_cents"], legacy["write_offs"],
+            legacy["settlement_label"]) == (0, [], "Envoyée")
+
+
+def _required_keys(schema) -> set:
+    """Every key some object of *schema* requires, at any depth."""
+    found: set = set()
+    if isinstance(schema, dict):
+        found.update(schema.get("required") or ())
+        for value in schema.values():
+            found |= _required_keys(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            found |= _required_keys(value)
+    return found
+
+
+def test_the_new_keys_are_required_in_the_reads_and_in_no_write():
+    """Always present, so REQUIRED in the three READ outputs of the shared
+    row (and settlement_label, write_offs in get_invoice's) — never in a
+    write output: a same-key retry replays a payload written before the
+    deploy."""
+    row_keys = {"written_off_cents", "written_off_display"}
+    found, _ = OUTPUT_SCHEMAS["get_invoice"]["anyOf"]
+    assert row_keys | {"settlement_label", "write_offs"} <= set(
+        found["properties"]["invoice"]["required"])
+    assert row_keys <= set(
+        OUTPUT_SCHEMAS["list_invoices"]["properties"]["items"]["items"]["required"])
+    snapshot = OUTPUT_SCHEMAS["get_billing_snapshot"]["anyOf"][0]
+    assert row_keys <= set(
+        snapshot["properties"]["outstanding_invoices"]["items"]["required"])
+    new_keys = row_keys | {"settlement_label", "write_offs"}
+    for name in tools.WRITE_TOOLS:
+        assert not new_keys & _required_keys(OUTPUT_SCHEMAS[name]), name
 
 
 # ── Lot 1: the scoped search conforms on every branch ───────────────────

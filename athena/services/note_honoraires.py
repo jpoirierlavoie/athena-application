@@ -38,9 +38,13 @@ surfaces log identically:
    refuses, ``payments_unreadable``: « no payment » on a client document
    must never be a blip —, and the standing ones refused when they do not
    explain its payment state, ``models.invoice.payments_print_defect``:
-   ``payments_mismatch``, ``paid_by_hand``; a template without a payment
-   field reads nothing, and keeps the context and fingerprint it always
-   had), the client's trust balance when the template prints it
+   ``payments_mismatch``, ``paid_by_hand``; since lot 3a, its STANDING
+   write-offs too, ``models.invoice.standing_write_offs`` — one
+   « Radiation » row each, a forgiveness shown to the client (the lawyer's
+   decision D2 of 2026-11-11, never a refusal): the printed balance reaches
+   zero, and a cancelled write-off prints neither row; a template without a
+   payment field reads nothing, and keeps the context and fingerprint it
+   always had), the client's trust balance when the template prints it
    (``utils/invoice_docx.prints_trust_balance``: the book balance the
    dossier just read strictly carries for the client whose funds stand
    against the invoice, ``models.trust.invoice_trust_client`` — refused,
@@ -109,6 +113,7 @@ from models.invoice import (
     get_invoice_with_items_strict,
     line_items_missing,
     payments_print_defect,
+    standing_write_offs,
 )
 from models.partie import get_partie
 from models.trust import client_book_balance, invoice_trust_client
@@ -366,7 +371,9 @@ def generer_note_honoraires(
     # is filed on this answer, and « no payment » on a read failure would
     # print a blip as an unpaid invoice. The standing rows must explain the
     # invoice's payment state, or the printed rows would not lead to the
-    # printed balance (models.invoice.payments_print_defect).
+    # printed balance (models.invoice.payments_print_defect). The standing
+    # write-offs print beside them (lot 3a, D2): balance_of subtracts the
+    # very events these rows print.
     payments = None
     if prints_payments(template.get("placeholders")):
         try:
@@ -382,7 +389,8 @@ def generer_note_honoraires(
             raise _refuse(defect, PAYMENT_DEFECT_MESSAGES[defect],
                           template_id=template_id, invoice_id=invoice_id)
         payments = InvoicePayments(receipts=standing,
-                                   balance_cents=balance_of(invoice))
+                                   balance_cents=balance_of(invoice),
+                                   write_offs=standing_write_offs(invoice))
 
     # The client's trust balance — only for a template that PRINTS it: the
     # book balance the dossier read above carries (no second read), for the

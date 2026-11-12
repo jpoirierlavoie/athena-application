@@ -691,6 +691,11 @@ def _invoice_row(inv: dict, *, today: date) -> dict:
     An invoice whose balance the model cannot read is REFUSED by name
     (2026-11-12): the read answers nothing, rather than a raw failure whose
     traceback quoted the stored value.
+
+    ``written_off`` (lot 3a) is what stands written off the invoice
+    (« radiation », taxes included — ``invoice.written_off_of``), the third
+    term of ``balance``; a malformed array of write-offs is one more thing
+    the refusal above names (``write_offs``).
     """
     _refuse_unreadable_amount(inv, _UNREADABLE_READ)
     row = {
@@ -718,6 +723,7 @@ def _invoice_row(inv: dict, *, today: date) -> dict:
     _money(row, "total", inv.get("total", 0))
     _money(row, "amount_due", inv.get("amount_due", 0))
     _money(row, "amount_paid", inv.get("amount_paid", 0))
+    _money(row, "written_off", invoice_model.written_off_of(inv))
     _money(row, "balance", _invoice_balance(inv))
     return row
 
@@ -3078,11 +3084,35 @@ def _line_item_row(item: dict) -> dict:
     return row
 
 
+def _write_off_row(event: dict) -> dict:
+    """One write-off event of an invoice (lot 3a) — a « radiation » of its
+    remainder, or the « contre_passation » that cancels one —, as the model
+    validated it (``invoice.write_off_events``). Its reason is the lawyer's
+    own text, served as stored; its stamps stay out."""
+    row = {
+        "id": event["id"],
+        "kind": event["kind"],
+        "date": date_str(event["date"]),
+        "tax_claimed": event["tax_claimed"],
+        "reverses_id": event["reverses_id"],
+        "reason": str(event.get("reason") or ""),
+    }
+    _money(row, "amount", event["amount"])
+    _money(row, "gst_amount", event["gst_amount"])
+    _money(row, "qst_amount", event["qst_amount"])
+    return row
+
+
 def get_invoice(args: dict) -> dict:
     """One invoice with its totals and its line items.
 
     Never the retired ``payment_terms`` (« Conditions », 2026-11-11 —
-    ``models/invoice.py``), which an older invoice still stores."""
+    ``models/invoice.py``), which an older invoice still stores.
+
+    Since lot 3a, how a « payée » was settled (``settlement_label``,
+    ``invoice.settlement_label``) and every write-off event in stored
+    order (``write_offs``) — read once the row has refused an invoice whose
+    events cannot be read."""
     invoice_id = args["invoice_id"]
     invoice, items = invoice_model.get_invoice_with_items(invoice_id)
     if invoice is None:
@@ -3133,6 +3163,9 @@ def get_invoice(args: dict) -> dict:
         if invoice.get("status") == "annulée" else None
     )
     record["created_via"] = str(invoice.get("created_via") or "")
+    record["settlement_label"] = invoice_model.settlement_label(invoice)
+    record["write_offs"] = [
+        _write_off_row(e) for e in invoice_model.write_off_events(invoice)]
     return {"found": True, "invoice": record}
 
 

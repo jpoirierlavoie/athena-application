@@ -6,7 +6,12 @@ sheet, per the practitioner (2026-08-10): its top grouping band
 (Facturation / Détail de la facture / Paiement) is dropped as noise, and its
 historical rate footnotes are not reproduced — they describe the pre-2013
 QST regimes this application never issued under, and each invoice carries
-the rate it was actually issued at.
+the rate it was actually issued at. A third since lot 3a of « Factures :
+retard, radiation, intérêts » (2026-11-12): a fourteenth column, « Radié »,
+before « Solde » — what stands written off the invoice, taxes included
+(``models.invoice.written_off_of``), which the balance subtracts beside
+« Sommes reçues ». The money columns gave up a little width for it, and the
+widest value each holds still fits (a test measures that).
 
 A dedicated builder rather than ``utils.export_pdf``: that one wraps cells
 in Paragraphs (rows that fold onto themselves — precisely what a journal
@@ -65,21 +70,24 @@ class Column(NamedTuple):
 # account than an untidy one. Their widths are therefore budgeted past the
 # widest value they can realistically hold (a « 2026-F001 (ann.) » note
 # number — the canonical shape again since 2026-08-12 — a seven-figure
-# amount), and a test measures that.
+# amount), and a test measures that. Lot 3a's « Radié » took its width from
+# the money columns (0.070 → 0.066 each) and the client column (0.178 →
+# 0.148): an eight-figure amount and the « Sommes reçues » header still fit.
 COLUMNS: tuple[Column, ...] = (
     Column("Date", 0.055, False, "date"),
-    Column("Client", 0.178, False, "client", clip=True),
+    Column("Client", 0.148, False, "client", clip=True),
     Column("N/Réf", 0.065, False, "reference"),
     Column("N° de note", 0.072, False, "numero"),
-    Column("Honoraires", 0.070, True, "honoraires"),
-    Column("Débours TX", 0.070, True, "debours_tx"),
-    Column("Débours NTX", 0.070, True, "debours_ntx"),
-    Column("Sous-total", 0.070, True, "sous_total"),
-    Column("TPS", 0.070, True, "tps"),
-    Column("TVQ", 0.070, True, "tvq"),
-    Column("Total", 0.070, True, "total"),
-    Column("Sommes reçues", 0.070, True, "recu"),
-    Column("Solde", 0.070, True, "solde"),
+    Column("Honoraires", 0.066, True, "honoraires"),
+    Column("Débours TX", 0.066, True, "debours_tx"),
+    Column("Débours NTX", 0.066, True, "debours_ntx"),
+    Column("Sous-total", 0.066, True, "sous_total"),
+    Column("TPS", 0.066, True, "tps"),
+    Column("TVQ", 0.066, True, "tvq"),
+    Column("Total", 0.066, True, "total"),
+    Column("Sommes reçues", 0.066, True, "recu"),
+    Column("Radié", 0.066, True, "radie"),
+    Column("Solde", 0.066, True, "solde"),
 )
 
 # Derived, never hand-kept: the totals row sums exactly the money columns
