@@ -128,7 +128,7 @@ env_variables:
   # (python -m scripts.apercu_factures_echues) revu par l'avocat
   # (DEPLOYMENT.md §15). "false" : le cron répond {"actif": false}, sans rien
   # lire ni écrire.
-  FACTURES_RETARD_ACTIF: "false"
+  FACTURES_RETARD_ACTIF: "true"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
