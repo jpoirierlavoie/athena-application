@@ -556,18 +556,19 @@ def test_an_unreadable_amount_paid_refuses_any_status_write_by_name(
 
 @pytest.mark.parametrize("paid", ["absent", None, "", 0],
                          ids=["absent", "none", "empty", "zero"])
-def test_a_hand_set_payee_reopens_whatever_reads_as_no_payment(
+def test_a_hand_set_payee_reopens_only_when_its_balance_can_be_read(
         fake, monkeypatch, paid):
-    """The by-name refusal reads a payée's amount_paid as
-    available_transitions does: absent, None, empty or zero is NO recorded
-    payment — what a « payée » set by hand before 2026-08-17 may carry —, so
-    « Rouvrir la facture » still reopens it (second review of lot 2: refuse
-    what cannot be read). Reopened, it is « envoyée » with that same amount,
-    and there lateness reads it through balance_of, strictly: a None or
-    empty one is refused by name
-    (test_an_issued_invoices_none_or_empty_amount_paid_is_refused_by_name —
-    third review of lot 2: this docstring said nothing that always could
-    was locked)."""
+    """REWRITTEN on 2026-11-12 by the lawyer's decision. It was
+    « test_a_hand_set_payee_reopens_whatever_reads_as_no_payment »: a
+    payée's transitions read an absent, None, empty or zero amount_paid as
+    NO recorded payment — what a « payée » set by hand before 2026-08-17
+    may carry —, so « Rouvrir la facture » reopened all four. Reopened,
+    though, it is an issued invoice whose lateness reads its balance
+    through balance_of, strictly: a None or empty amount_paid would leave
+    a balance never to be judged. That reopen is refused by name now
+    (montant_illisible), nothing written, as the send of such a
+    brouillon is; an absent or zero one, which balance_of reads as 0,
+    still reopens."""
     doc = _invoice(status="payée")
     if paid == "absent":
         del doc["amount_paid"]
@@ -575,9 +576,19 @@ def test_a_hand_set_payee_reopens_whatever_reads_as_no_payment(
         doc["amount_paid"] = paid
     fake.seed(f"invoices/{INV}", doc)
     _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
-    assert invoice_model.update_status(INV, "envoyée", expected_etag=ETAG) == (
-        True, "")
-    assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
+    before = fake.peek(f"invoices/{INV}")
+    written, errors = invoice_model.update_status_report(
+        INV, "envoyée", expected_etag=ETAG)
+    if paid in ("absent", 0):
+        assert errors == []
+        assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
+    else:
+        assert written is None
+        assert errors == [
+            "Le montant payé enregistré sur cette facture est illisible : "
+            "une fois rouverte, son solde ne pourrait jamais être jugé, et "
+            "rien n'a été écrit. La facture doit d'abord être réparée."]
+        assert fake.peek(f"invoices/{INV}") == before
 
 
 def test_a_brouillon_whose_amount_due_cannot_be_read_is_never_sent(

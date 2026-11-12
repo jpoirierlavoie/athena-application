@@ -949,8 +949,10 @@ def test_the_texts_say_where_an_unreadable_amount_is_refused_now():
                       if line.startswith("| `invoice_refused` |")]
     assert "A brouillon's unreadable `amount_due` refuses nothing" not in (
         invoice_row)
-    assert ("The SEND (`status`, « brouillon → envoyée »): refused when "
-            "`balance_of` cannot read the brouillon at all") in invoice_row
+    assert ("The SEND and the REOPEN (`status`, « brouillon → envoyée » and "
+            "« payée → envoyée », the reopen of a « payée » set by hand): "
+            "refused when `balance_of` cannot read the invoice at all"
+            ) in invoice_row
     assert ("The VOID (`void`): refused on the same field as the transitions "
             "(`invoice.unreadable_transition_field`), before anything is "
             "written") in invoice_row
@@ -964,8 +966,11 @@ def test_the_texts_say_where_an_unreadable_amount_is_refused_now():
     assert "`mcp.handlers.UnreadableAmount`" in mcp_row
     status_doc = " ".join(invoice_model.update_status_report.__doc__.split())
     assert "so an unreadable one locks none" not in status_doc
-    assert ("« brouillon → envoyée » is refused by name (``montant_illisible``) "
-            "when :func:`balance_of` cannot read the brouillon") in status_doc
+    assert ("« brouillon → envoyée » and « payée → envoyée » are refused by "
+            "name (``montant_illisible``) when :func:`balance_of` cannot "
+            "read the invoice") in status_doc
+    assert "a « payée » set by hand reopens only when its balance can be read" in (
+        status_doc)
     moves_doc = " ".join(
         invoice_model.unreadable_transition_field.__doc__.split())
     assert "locks none of theirs" not in moves_doc

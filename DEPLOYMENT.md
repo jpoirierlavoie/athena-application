@@ -5993,7 +5993,9 @@ Notes:
      error. `update_status_report` now refuses « brouillon → envoyée » by
      name when `balance_of` cannot read the brouillon — its `amount_due`,
      or a None or empty `amount_paid` —: sent, it would be an issued
-     invoice whose balance is never judged. **This reverses lot 2's « a
+     invoice whose balance is never judged. The reopen of a « payée » set
+     by hand (« payée → envoyée ») is refused the same way, by the
+     lawyer's decision. **This reverses lot 2's « a
      brouillon's unreadable `amount_due` never locks brouillon →
      envoyée »**, on the web as through the connector. The void, a draft
      correction and a same-status call are refused by the handler first,

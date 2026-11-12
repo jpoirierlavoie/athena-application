@@ -2485,13 +2485,15 @@ def update_status_report(
     lot 2; the second found every status's ``amount_paid`` still read
     there, a read older than the lot). No transition reads a brouillon's
     ``amount_due``, and the absent, None or empty ``amount_paid`` of a
-    brouillon, a payée or an annulée reads as no payment, as it always did
-    — a « payée » set by hand reopens. The SEND is judged on more
-    (2026-11-12, reversing lot 2's « an unreadable ``amount_due`` locks
-    none »): « brouillon → envoyée » is refused by name
-    (``montant_illisible``) when :func:`balance_of` cannot read the
-    brouillon (:func:`unreadable_balance_field` — its ``amount_due``, or a
-    None or empty ``amount_paid``), since sent it would be an issued
+    brouillon, a payée or an annulée reads as no payment, as it always did.
+    The SEND and the REOPEN are judged on more (2026-11-12: the send
+    reversing lot 2's « an unreadable ``amount_due`` locks none », the
+    reopen by the lawyer's decision): « brouillon → envoyée » and « payée
+    → envoyée » are refused by name (``montant_illisible``) when
+    :func:`balance_of` cannot read the invoice
+    (:func:`unreadable_balance_field` — its ``amount_due``, or a None or
+    empty ``amount_paid``: a « payée » set by hand reopens only when its
+    balance can be read), since sent or reopened it would be an issued
     invoice whose balance is never judged; it used to commit the send, and
     the connector's answer then failed after the commit, its ERROR
     traceback quoting the value. An ISSUED invoice's None or empty
@@ -2536,18 +2538,22 @@ def update_status_report(
                 unreadable,
                 f"{judged} ne peut pas être jugé, et rien n'a été écrit"),
                 "montant_illisible")
-        # The send (2026-11-12, reversing lot 2): « envoyée », the invoice's
-        # lateness reads its balance, strictly — a brouillon whose balance
-        # cannot be read would become an issued invoice whose balance is
-        # never judged. A brouillon's transitions read neither its
-        # amount_due nor a None or empty amount_paid, so the send judges
-        # them here, by name, before any write.
-        if current == "brouillon" and new_status == "envoyée":
-            unsendable = unreadable_balance_field(invoice)
-            if unsendable is not None:
+        # The send and the reopen (2026-11-12: the send reversing lot 2,
+        # the reopen by the lawyer's decision) both make an issued invoice,
+        # whose lateness reads its balance, strictly — one whose balance
+        # cannot be read would be an issued invoice whose balance is never
+        # judged. Neither a brouillon's nor a payée's transitions read its
+        # amount_due or a None or empty amount_paid (« no payment »), so
+        # every move INTO an issued status judges them here, by name,
+        # before any write.
+        if current not in _ISSUED_STATUSES and new_status in _ISSUED_STATUSES:
+            unissuable = unreadable_balance_field(invoice)
+            if unissuable is not None:
+                once = ("une fois envoyée" if current == "brouillon"
+                        else "une fois rouverte")
                 raise _StatusRefused(unreadable_amount_message(
-                    unsendable,
-                    "une fois envoyée, son solde ne pourrait jamais être "
+                    unissuable,
+                    f"{once}, son solde ne pourrait jamais être "
                     "jugé, et rien n'a été écrit"),
                     "montant_illisible")
         if new_status not in available_transitions(invoice, today=today_mtl()):

@@ -828,11 +828,15 @@ def test_the_runbook_says_where_the_connector_meets_montant_illisible():
     assert '"montant_illisible"' in void_source
     assert "_payment_recorded(invoice)" in void_source
     assert 'int(invoice.get("amount_paid", 0) or 0)' not in void_source
-    # The send: the balance's authority, on « brouillon → envoyée » alone.
+    # The send and the reopen (the lawyer's decision of 2026-11-12): the
+    # balance's authority, on every move INTO an issued status.
     status_source = inspect.getsource(invoice_model.update_status_report)
-    assert ('if current == "brouillon" and new_status == "envoyée":'
-            in status_source)
-    assert "unsendable = unreadable_balance_field(invoice)" in status_source
+    assert ("if current not in _ISSUED_STATUSES and new_status in "
+            "_ISSUED_STATUSES:" in status_source)
+    assert "unissuable = unreadable_balance_field(invoice)" in status_source
+    assert '"une fois rouverte"' in status_source
+    assert ("The reopen of a « payée » set by hand (« payée → envoyée ») is "
+            "refused the same way, by the lawyer's decision.") in now
     # The handler refuses first every call whose answer the model's refusal
     # does not cover: the void, a draft correction, a same-status call.
     for door in (handlers._void_invoice, handlers._edit_invoice_draft,
