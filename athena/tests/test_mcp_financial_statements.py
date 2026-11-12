@@ -397,9 +397,13 @@ def test_it_is_an_ordinary_read():
 
 
 def _event(id_, day, amount, gst, qst, *, kind="radiation", reverses=""):
+    # A radiation's credit note number (lot 3b): the year, the id's digits.
+    number = ({"credit_note_number": f"{day.year}-NC{int(id_[1:]):03d}"}
+              if kind == "radiation" else {})
     return {"id": id_, "kind": kind, "date": day, "amount": amount,
             "gst_amount": gst, "qst_amount": qst, "tax_claimed": bool(gst or qst),
-            "reason": "", "reverses_id": reverses, "created_at": day, "created_via": "web"}
+            "reason": "", "reverses_id": reverses, "created_at": day, "created_via": "web",
+            **number}
 
 
 def _write_off(fake) -> tuple:
@@ -441,12 +445,18 @@ def test_a_write_off_reaches_the_connector_in_the_page_s_rows(fake):
                     for r in mine["rows"]] == [
                 (r["key"], r["label"], r["level"], r["style"], r["values"])
                 for r in page["rows"]]
-    assert "radiations" not in {r["key"] for r in _section(august, "resultats")["rows"]}
+    assert "creances_irrecouvrables" not in {
+        r["key"] for r in _section(august, "resultats")["rows"]}
     kpis = {k["key"]: k["value_cents"] for k in august["kpis"]}
     assert kpis["comptes_clients"] == 77849 + 68985
-    down = _row(_section(september, "resultats"), "radiations")
-    assert down["values_cents"] == [-(77849 - gst - qst)] and down["level"] == 1
-    assert down["values_display"] == [tools.format_cents(-(77849 - gst - qst))]
+    # Lot 3b: the bad debt, an expense among the direct costs; nothing taken
+    # off revenue any more (no « radiations » row).
+    resultats = _section(september, "resultats")
+    assert "radiations" not in {r["key"] for r in resultats["rows"]}
+    bad = _row(resultats, "creances_irrecouvrables")
+    assert bad["values_cents"] == [77849 - gst - qst] and bad["level"] == 1
+    assert bad["values_display"] == [tools.format_cents(77849 - gst - qst)]
+    assert bad["label"] == "Créances irrécouvrables"
     taxes = _section(september, "taxes")
     assert _row(taxes, "tps_creances_irrecouvrables")["values_cents"] == [-gst]
     assert _row(taxes, "tvq_creances_irrecouvrables")["values_cents"] == [-qst]
@@ -459,10 +469,17 @@ def test_a_write_off_reaches_the_connector_in_the_page_s_rows(fake):
 
 
 def test_the_revenue_sentence_names_the_write_off_rows_the_model_prints(fake):
+    """Lot 3b: the sentence says the write-off takes nothing off revenue —
+    a bad-debt expense, « Créances irrécouvrables » — and names the rows the
+    model prints, never lot 3a's retired `radiations`."""
     _write_off(fake)
     (september,) = _call(periods=["2031-09"])["periods"]
     printed = {r["key"] for s in september["sections"] for r in s["rows"]}
     description = tools.TOOLS[TOOL]["description"]
-    assert "write-offs" in description and "radiation" in description
-    for key in ("radiations", "tps_creances_irrecouvrables", "tvq_creances_irrecouvrables"):
+    assert "write-off" in description and "radiation" in description
+    assert "takes nothing off it" in description and "EXPENSE" in description
+    assert "« Créances irrécouvrables »" in description
+    for key in ("creances_irrecouvrables", "tps_creances_irrecouvrables",
+                "tvq_creances_irrecouvrables"):
         assert f"`{key}`" in description and key in printed, key
+    assert "`radiations`" not in description and "radiations" not in printed

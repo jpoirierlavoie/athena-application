@@ -86,6 +86,14 @@ def _invoice(**over) -> dict:
     return doc
 
 
+def _credit_note(eid: str, day: date) -> str:
+    """The credit note number a fixture radiation carries (lot 3b): the year
+    of its day, then the digits ending its id — « rad-2 » → « 2031-NC002 »,
+    so two radiations of one invoice never share one."""
+    digits = "".join(ch for ch in eid if ch.isdigit()) or "1"
+    return f"{day.year}-NC{int(digits):03d}"
+
+
 def _radiation(eid: str = "rad-1", *, amount: int = TOTAL, gst: int = GST,
                qst: int = QST, claimed: bool = True,
                day: date = date(2031, 3, 5), **over) -> dict:
@@ -94,6 +102,7 @@ def _radiation(eid: str = "rad-1", *, amount: int = TOTAL, gst: int = GST,
         "amount": amount, "gst_amount": gst if claimed else 0,
         "qst_amount": qst if claimed else 0, "tax_claimed": claimed,
         "reason": "", "reverses_id": "",
+        "credit_note_number": _credit_note(eid, day),
         "created_at": datetime(2031, 3, 5, 15, tzinfo=UTC), "created_via": "web",
     }
     doc.update(over)
@@ -224,6 +233,24 @@ _MALFORMED = {
     "cancelled-before-written": [_RAD, _contre_passation(_RAD, day=date(2031, 3, 4))],
     "cancelling-a-cancellation": [_RAD, _contre_passation(_RAD),
                                   _contre_passation(_contre_passation(_RAD), "cp-2")],
+    # Lot 3b: a radiation's credit note number — « AAAA-NC### », the year of
+    # its own date, once per invoice — and none on a contre_passation.
+    "unnumbered": [{k: v for k, v in _RAD.items() if k != "credit_note_number"}],
+    "number-not-a-text": [{**_RAD, "credit_note_number": 1}],
+    "number-blank": [{**_RAD, "credit_note_number": ""}],
+    "number-an-invoices": [{**_RAD, "credit_note_number": "2031-F001"}],
+    "number-two-digits": [{**_RAD, "credit_note_number": "2031-NC01"}],
+    "number-lowercase": [{**_RAD, "credit_note_number": "2031-nc001"}],
+    "number-short-year": [{**_RAD, "credit_note_number": "31-NC001"}],
+    "number-padded": [{**_RAD, "credit_note_number": " 2031-NC001"}],
+    "number-trailing": [{**_RAD, "credit_note_number": "2031-NC001\n"}],
+    "number-other-digits": [{**_RAD, "credit_note_number": "2031-NC\u0661\u0662\u0663"}],
+    "number-other-year": [{**_RAD, "credit_note_number": "2030-NC001"}],
+    "number-twice": [_RAD, _radiation("rad-2", credit_note_number="2031-NC001")],
+    "numbered-contre-passation": [_RAD, {**_contre_passation(_RAD),
+                                         "credit_note_number": "2031-NC002"}],
+    "blank-numbered-contre-passation": [_RAD, {**_contre_passation(_RAD),
+                                               "credit_note_number": ""}],
 }
 
 
@@ -387,13 +414,19 @@ def test_the_whole_remainder_is_written_off_and_settles_the_invoice(fake, caplog
         "radiation", 56231, 2445, 4878, True)
     assert event["date"] == _utc_midnight(date(2031, 3, 10))
     assert (event["reason"], event["reverses_id"]) == ("Client introuvable.", "")
+    # Lot 3b: its credit note's number, the year's first.
+    assert event["credit_note_number"] == "2031-NC001"
     assert stored["status"] == "payée"
     assert stored["amount_paid"] == 30000            # never touched
     assert invoice_model.balance_of(stored) == 0
     assert invoice_model.settlement_label(stored) == "Payée en partie — solde radié"
-    # ONE commit, the invoice only; every read inside the transaction.
+    # ONE commit — the year's credit-note counter WITH the invoice (lot 3b;
+    # the invoice alone before it: pin rewritten deliberately); every read
+    # inside the transaction.
     assert len(fake.commits) == 1
-    assert fake.commits[0].ops == (("update", f"invoices/{INV}"),)
+    assert sorted(fake.commits[0].ops) == [("set", "counters/notes-credit-2031"),
+                                           ("update", f"invoices/{INV}")]
+    assert fake.peek("counters/notes-credit-2031")["seq"] == 1
     assert fake.reads_outside_transactions() == []
     # The report is the invoice AS WRITTEN.
     assert report["invoice"]["etag"] == stored["etag"] != ETAG
@@ -683,6 +716,11 @@ def test_a_cancellation_reopens_en_retard_and_a_second_is_refused(fake, caplog):
         "contre_passation", radiation["id"], "Le client a payé.")
     assert [cancel[k] for k in ("amount", "gst_amount", "qst_amount", "tax_claimed")] == [
         radiation[k] for k in ("amount", "gst_amount", "qst_amount", "tax_claimed")]
+    # Lot 3b: the cancellation takes no number, and moves no counter; the
+    # radiation keeps its own.
+    assert "credit_note_number" not in cancel
+    assert first["credit_note_number"] == "2031-NC001"
+    assert fake.peek("counters/notes-credit-2031")["seq"] == 1
     assert cancel["date"] == _utc_midnight(date(2031, 3, 10))
     assert stored["status"] == "en_retard"
     assert invoice_model.balance_of(stored) == TOTAL
@@ -817,6 +855,8 @@ def test_a_retry_over_its_own_landed_commit_writes_once_and_says_so(
     expected = 1 if door == "write_off" else 2
     assert len(stored["write_offs"]) == expected            # written ONCE
     assert report["write_off"] == stored["write_offs"][-1]
+    # Lot 3b: one number consumed, by the radiation's one commit.
+    assert fake.peek("counters/notes-credit-2031")["seq"] == 1
     event = ("invoice_written_off" if door == "write_off"
              else "invoice_write_off_reversed")
     assert [l["event"] for l in _invoice_lines(caplog)] == [event]
@@ -866,6 +906,8 @@ def test_a_failed_commit_that_did_not_land_says_nothing_was_written(fake, monkey
         report, errors = _write_off(fake)
     assert (report, errors) == (None, [invoice_model.WRITE_OFF_NOT_WRITTEN])
     assert "write_offs" not in _stored(fake)
+    # Lot 3b: the counter commits with the invoice or not at all.
+    assert fake.peek("counters/notes-credit-2031") is None
     assert _invoice_lines(caplog) == []
 
 
@@ -1183,19 +1225,40 @@ def _check13(*invoices) -> tuple[list, list]:
 
 
 def test_check_13_is_quiet_on_what_the_doors_write():
-    cancelled = [_RAD, _contre_passation(_RAD)]
+    """Each radiation its own credit note number, as the counter gives them
+    (lot 3b) — the cancelled ones keeping theirs."""
+    fourth, fifth = _radiation("rad-4"), _radiation("rad-5")
     assert _check13(
         _invoice(status="payée", write_offs=[_radiation()]),
         _invoice(status="payée", amount_paid=30000,
-                 write_offs=[_radiation(amount=56231, gst=2445, qst=4878)]),
-        _invoice(write_offs=[_radiation(amount=56231, gst=2445, qst=4878)]),
-        _invoice(write_offs=cancelled),
-        _invoice(status="annulée", write_offs=cancelled),
+                 write_offs=[_radiation("rad-2", amount=56231, gst=2445, qst=4878)]),
+        _invoice(write_offs=[_radiation("rad-3", amount=56231, gst=2445, qst=4878)]),
+        _invoice(write_offs=[fourth, _contre_passation(fourth)]),
+        _invoice(status="annulée", write_offs=[fifth, _contre_passation(fifth)]),
         _invoice(status="payée", amount_paid=TOTAL),
         _invoice(status="envoyée", amount_paid=30000),
         _invoice(status="payée"),                        # hand-set, nothing recorded
         _invoice(status="brouillon"),
     ) == ([], [])
+
+
+def test_check_13_names_a_credit_note_number_borne_by_two_invoices():
+    """Lot 3b: the judge sees one invoice at a time, so a number borne by
+    the radiations of two invoices is check 13's to name — a cancelled
+    radiation's number counts too: it is never reused."""
+    first = _radiation(day=date(2031, 3, 5))
+    again = _radiation(day=date(2031, 4, 2))           # « 2031-NC001 » too
+    problems, notes = _check13(
+        _invoice(id="a", invoice_number="2031-F040", status="payée", write_offs=[first]),
+        _invoice(id="b", invoice_number="2031-F041",
+                 write_offs=[again, _contre_passation(again, day=date(2031, 4, 3))]),
+        _invoice(id="c", invoice_number="2031-F042", status="payée",
+                 write_offs=[_radiation("rad-2")]))
+    assert notes == []
+    assert problems == [
+        "note de crédit 2031-NC001: portée par les radiations de 2 factures "
+        "(facture 2031-F040, facture 2031-F041) — un numéro de note de crédit "
+        "ne sert qu'une fois, même annulé"]
 
 
 def test_check_13_names_a_malformed_array():
@@ -1265,3 +1328,114 @@ def test_a_repair_script_refuses_any_write_off_or_interest_charge():
     assert invoice_model.repair_script_refusal(
         _invoice(write_offs=[_RAD], interest_charges=[{"n": 1}])).startswith(
         "porte une radiation et un avis d'intérêts")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 13. The credit note's number (lot 3b — the lawyer's decision 8)
+# ══════════════════════════════════════════════════════════════════════
+
+INV2 = "inv-radiation-2"
+STALE = "eeeeeeee-1111-4222-8333-444444444444"
+
+
+def _seed_second(fake) -> None:
+    """A second overdue invoice of the same fictitious year."""
+    fake.seed(f"invoices/{INV2}", _invoice(id=INV2, invoice_number="2031-F043"))
+
+
+def _write_off_second(fake):
+    return invoice_model.write_off_remainder(
+        INV2, expected_etag=fake.peek(f"invoices/{INV2}")["etag"])
+
+
+def _counter(fake, year: int):
+    return fake.peek(f"counters/notes-credit-{year}")
+
+
+def test_two_write_offs_in_a_year_take_nc001_and_nc002(fake):
+    _seed(fake)
+    _seed_second(fake)
+    first, errors = _write_off(fake)
+    assert errors == []
+    second, errors = _write_off_second(fake)
+    assert errors == []
+    assert [first["write_off"]["credit_note_number"],
+            second["write_off"]["credit_note_number"]] == ["2031-NC001", "2031-NC002"]
+    assert [fake.peek(f"invoices/{i}")["write_offs"][0]["credit_note_number"]
+            for i in (INV, INV2)] == ["2031-NC001", "2031-NC002"]
+    assert _counter(fake, 2031)["seq"] == 2
+    assert vai._check_write_offs([_stored(fake), fake.peek(f"invoices/{INV2}")]) == ([], [])
+
+
+def test_a_cancelled_radiation_keeps_its_number_never_reused(fake):
+    """« Annuler la radiation », then « Radier le solde » again: the second
+    radiation takes the NEXT number; the first keeps its own for ever, its
+    credit note « annulée » — derived, its radiation no longer standing."""
+    _seed(fake)
+    first, _ = _write_off(fake)
+    _reverse(fake, first["write_off"]["id"])
+    second, errors = _write_off(fake)
+    assert errors == []
+    stored = _stored(fake)
+    assert [(e["kind"], e.get("credit_note_number")) for e in stored["write_offs"]] == [
+        ("radiation", "2031-NC001"), ("contre_passation", None),
+        ("radiation", "2031-NC002")]
+    assert [e["credit_note_number"] for e in invoice_model.standing_write_offs(stored)] == [
+        "2031-NC002"]
+    assert _counter(fake, 2031)["seq"] == 2
+
+
+def test_a_refused_write_off_consumes_no_number(fake):
+    """Refused before the transaction (no version), inside it (stale, not
+    overdue): the counter is never even written — the next write-off takes
+    the year's first number."""
+    _seed(fake, status="envoyée", due_date=_utc_midnight(date(2031, 4, 3)))
+    assert _write_off(fake)[1][0].startswith("L'échéance de cette facture n'est pas passée")
+    _seed(fake)
+    assert _write_off(fake, expected_etag=STALE) == (None, [concurrency.STALE_ETAG_ERROR])
+    assert invoice_model.write_off_remainder(INV, expected_etag=None) == (
+        None, [invoice_model.WRITE_OFF_VERSION_REQUIRED])
+    assert _counter(fake, 2031) is None
+    report, errors = _write_off(fake)
+    assert errors == [] and report["write_off"]["credit_note_number"] == "2031-NC001"
+
+
+def test_the_year_turns_on_montreals_clock(fake, monkeypatch):
+    """The Montréal year of the radiation's date, never the UTC year: at
+    23:30 on 31 December in Montréal it is already 1 January in UTC."""
+    _seed(fake)
+    _seed_second(fake)
+    freeze_deadlines(monkeypatch, datetime(2032, 1, 1, 4, 30, tzinfo=UTC))
+    late, errors = _write_off(fake)
+    assert errors == []
+    freeze_deadlines(monkeypatch, datetime(2032, 1, 1, 5, 30, tzinfo=UTC))
+    early, errors = _write_off_second(fake)
+    assert errors == []
+    assert (late["write_off"]["date"], late["write_off"]["credit_note_number"]) == (
+        _utc_midnight(date(2031, 12, 31)), "2031-NC001")
+    assert (early["write_off"]["date"], early["write_off"]["credit_note_number"]) == (
+        _utc_midnight(date(2032, 1, 1)), "2032-NC001")
+    assert (_counter(fake, 2031)["seq"], _counter(fake, 2032)["seq"]) == (1, 1)
+
+
+def test_the_series_rolls_past_999(fake):
+    fake.seed("counters/notes-credit-2031", {"seq": 999})
+    _seed(fake)
+    report, errors = _write_off(fake)
+    assert errors == [] and report["write_off"]["credit_note_number"] == "2031-NC1000"
+    assert invoice_model.standing_write_offs(_stored(fake)) == [report["write_off"]]
+    assert _counter(fake, 2031)["seq"] == 1000
+
+
+def test_an_unreadable_counter_writes_nothing_never_a_guessed_number(fake, caplog):
+    fake.seed("counters/notes-credit-2031", {"seq": "dix"})
+    _seed(fake)
+    before = _stored(fake)
+    with caplog.at_level(logging.INFO):
+        report, errors = _write_off(fake)
+    assert (report, errors) == (None, [invoice_model.WRITE_OFF_NOT_WRITTEN])
+    assert _stored(fake) == before
+    assert _counter(fake, 2031) == {"seq": "dix"}
+    (failed,) = [r for r in caplog.records
+                 if r.getMessage() == "invoice write-off failed"]
+    assert failed.json_fields["commit_attempted"] is False

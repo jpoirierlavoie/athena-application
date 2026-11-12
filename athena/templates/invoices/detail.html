@@ -48,6 +48,17 @@
         Note d'honoraires (Word)
       </button>
       {% endif %}
+      {# « Radier le solde » (lot 3b) : offert seulement quand le modèle
+         radierait le solde aujourd'hui — la route calcule can_write_off
+         (invoice.write_off_refusal, jour de Montréal) ; ce gabarit ne compare
+         aucune date. Il ouvre la page de la radiation, qui montre le solde,
+         sa TPS, sa TVQ, et ne réserve aucun numéro. 44 px (py-3, règle 9). #}
+      {% if can_write_off %}
+      <a href="{{ url_for('invoices.invoice_write_off_form', invoice_id=invoice.id) }}"
+         class="px-3 py-3 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+        Radier le solde
+      </a>
+      {% endif %}
       {# La réouverture sort de la boucle : elle DÉFAIT un statut là où les
          autres en posent un, et elle est la seule à mériter une confirmation.
          available_transitions ne l'offre que sur un « payée » posé à la main —
@@ -153,8 +164,10 @@
   } %}
   <div class="flex items-center gap-3 mb-1">
     <h1 class="text-xl font-semibold text-gray-900">Facture {{ invoice.invoice_number }}</h1>
+    {# Le libellé vient de la route (lot 3b, invoice.settlement_label) : une
+       « payée » dit si une radiation l'a soldée. #}
     <span class="text-xs px-2 py-0.5 rounded-full {{ status_colors.get(invoice.status, 'bg-gray-100 text-gray-600') }}">
-      {{ status_labels.get(invoice.status, invoice.status) }}
+      {{ status_label or status_labels.get(invoice.status, invoice.status) }}
     </span>
     {# La provenance de la CRÉATION (created_via) — pas de la dernière
        écriture : une facture créée par le connecteur le reste, même après
@@ -388,6 +401,15 @@
         <dd class="text-green-700 text-right">-{{ invoice.amount_paid | cents_fr }}</dd>
       </div>
       {% endif %}
+      {# Ce que les radiations en vigueur retranchent (lot 3b ; la route le
+         calcule, invoice.written_off_of) : sans cette ligne, le solde nul
+         d'une facture radiée ne se lirait pas. #}
+      {% if written_off %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Radié (notes de crédit)</dt>
+        <dd class="text-gray-900 text-right">-{{ written_off | cents_fr }}</dd>
+      </div>
+      {% endif %}
       {# The live figure. amount_due is FROZEN at issuance and stays non-zero
          on a fully paid invoice — it is not a balance, so it never carries
          that label here. #}
@@ -443,8 +465,15 @@
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm mb-4">
     Aucun paiement inscrit en comptabilité pour cette facture.
     {# Aucun paiement offert sur un montant illisible (2026-11-12) : la
-       facture doit d'abord être réparée. #}
-    {% if invoice.status not in ('brouillon', 'annulée') and not avis_illisible %}
+       facture doit d'abord être réparée. Ni sous une radiation en vigueur
+       (lot 3b) : les registres refusent l'encaissement (facture_radiee), et
+       la facture n'est pas dans leur liste. #}
+    {% if radiation_debout %}
+    <span class="block mt-2">
+      Une radiation est en vigueur : si le client paie, annulez d'abord la
+      radiation (ci-dessous), puis inscrivez l'encaissement.
+    </span>
+    {% elif invoice.status not in ('brouillon', 'annulée') and not avis_illisible %}
     <span class="block mt-2">
       Un encaissement se saisit dans
       <a href="{{ url_for('admin_ledger.entry_new') }}"
@@ -452,6 +481,74 @@
       en choisissant cette facture dans la liste.
     </span>
     {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Radiations (lot 3b) ───────────────────────────────────────
+     Chaque radiation et chaque annulation, dans l'ordre où elles ont été
+     inscrites, telles que le modèle les lit (invoice.write_off_events) : la
+     route calcule chaque rangée — sa date (strftime d'une date seule, jamais
+     to_mtl), sa note de crédit, « en vigueur » ou « annulée ». Une radiation
+     en vigueur offre « Annuler la radiation », avec un motif facultatif, la
+     version de la facture et une confirmation ; la porte rejuge tout. Des
+     radiations illisibles se disent — jamais une absence. Cibles de 44 px
+     (py-3, règle 9). #}
+  {% if radiations is none %}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Radiations</h2>
+  <div class="bg-white rounded-xl border border-gray-200 p-5 text-sm text-red-700 mb-4">
+    Les radiations enregistrées sur cette facture sont illisibles : la facture
+    doit d'abord être réparée.
+  </div>
+  {% elif radiations %}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Radiations</h2>
+  <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 mb-4">
+    {% for r in radiations %}
+    <div class="p-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-sm font-medium text-gray-900">
+          {{ r.kind_label }} · note de crédit {{ r.credit_note_number }}
+        </p>
+        {% if r.radiation %}
+        <span class="text-xs px-2 py-0.5 rounded-full {{ 'bg-amber-100 text-amber-800' if r.standing else 'bg-gray-200 text-gray-600' }}">{{ r.state }}</span>
+        {% endif %}
+      </div>
+      <dl class="mt-2 space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Date</dt>
+          <dd class="text-gray-900 text-right">{{ r.date }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Montant (taxes comprises)</dt>
+          <dd class="text-gray-900 text-right">{{ r.amount | cents_fr }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">TPS{% if not r.tax_claimed %} (non réclamée){% endif %}</dt>
+          <dd class="text-gray-900 text-right">{{ r.gst | cents_fr }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">TVQ{% if not r.tax_claimed %} (non réclamée){% endif %}</dt>
+          <dd class="text-gray-900 text-right">{{ r.qst | cents_fr }}</dd>
+        </div>
+      </dl>
+      {% if r.reason %}
+      <p class="mt-2 text-sm text-gray-700 whitespace-pre-line wrap-anywhere">{{ r.reason }}</p>
+      {% endif %}
+      {% if r.can_cancel %}
+      <form method="post" action="{{ url_for('invoices.invoice_write_off_reversal', invoice_id=invoice.id, event_id=r.id) }}" class="mt-3"
+            data-confirm="Annuler la radiation de {{ r.amount | cents_fr }} ? La note de crédit {{ r.credit_note_number }} gardera son numéro, annulée ; la facture redeviendra en retard, et son solde dû.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {{ etag_field(invoice) }}
+        <label for="motif-{{ r.id }}" class="block text-xs font-medium text-gray-700 mb-1">Motif de l'annulation (facultatif)</label>
+        <textarea id="motif-{{ r.id }}" name="reason" rows="2"
+                  class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2"></textarea>
+        <button type="submit"
+                class="mt-2 px-4 py-3 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+          Annuler la radiation
+        </button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
   </div>
   {% endif %}
 

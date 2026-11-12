@@ -477,14 +477,18 @@ def test_rows_follow_the_calendar_day_then_the_register_order():
 
 def test_a_standing_write_off_prints_after_the_payments_of_its_day():
     """Lot 3a (D2, a forgiveness shown to the client): each standing
-    write-off is a « Radiation » row, its amount taxes included, after the
+    write-off is a row of its own, its amount taxes included, after the
     encaissements of its own day — it wrote off what they left —, the rows
-    oldest first; the balance printed under them is zero."""
+    oldest first; the balance printed under them is zero. Since lot 3b (the
+    lawyer's decision 8: a price reduction its credit note documents) its
+    source names the credit note — « Note de crédit 2031-NC001 », no longer
+    « Radiation »."""
     receipts = [_receipt(10000, _dt(2031, 3, 1), sequence=2),
                 _receipt(5000, _dt(2031, 3, 10), method="chèque", sequence=6)]
     write_offs = [{"id": "rad-1", "kind": "radiation", "date": _dt(2031, 3, 10),
                    "amount": 71231, "gst_amount": 3098, "qst_amount": 6180,
-                   "tax_claimed": True, "reason": "", "reverses_id": ""}]
+                   "tax_claimed": True, "reason": "", "reverses_id": "",
+                   "credit_note_number": "2031-NC001"}]
     ctx = _build(_paid_invoice(status="payée", amount_paid=15000), [],
                  payments=InvoicePayments(receipts=receipts, balance_cents=0,
                                           write_offs=write_offs))
@@ -492,7 +496,7 @@ def test_a_standing_write_off_prints_after_the_payments_of_its_day():
             for r in ctx.rows[PAYMENT_REGION]] == [
         ("1er mars 2031", "Virement", f"(100,00){NBSP}$"),
         ("10 mars 2031", "Chèque", f"(50,00){NBSP}$"),
-        ("10 mars 2031", "Radiation", f"(712,31){NBSP}$"),
+        ("10 mars 2031", "Note de crédit 2031-NC001", f"(712,31){NBSP}$"),
     ]
     assert ctx.conditions[PAYMENT_FLAG] is True
     assert ctx.values["facture.solde_restant"] == f"0,00{NBSP}$"
@@ -519,7 +523,8 @@ def test_the_row_fields_are_the_keys_every_payment_row_carries():
     rows = _payment_rows({"retainer_applied": 1, "date": _dt(2031, 1, 2)},
                          [_receipt(1, _dt(2031, 1, 3), trust=True),
                           _receipt(1, _dt(2031, 1, 4))],
-                         [{"date": _dt(2031, 1, 5), "amount": 1}])
+                         [{"date": _dt(2031, 1, 5), "amount": 1,
+                           "credit_note_number": "2031-NC001"}])
     assert len(rows) == 4 and all(tuple(r) == PAYMENT_ROW_FIELDS for r in rows)
 
 

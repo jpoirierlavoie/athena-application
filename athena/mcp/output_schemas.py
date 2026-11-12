@@ -2908,6 +2908,13 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "reverses_id": _str(
                     "'' on a radiation; on a contre_passation, the id of the "
                     "radiation it cancels (same figures)."),
+                # Lot 3b (2026-11-12): always present — required, in this
+                # READ output.
+                "credit_note_number": _str(
+                    "A radiation's credit note number, « AAAA-NC### » (a "
+                    "yearly series, never reused); '' on a contre_passation. "
+                    "A cancelled radiation's credit note keeps its number, "
+                    "annulée."),
                 "reason": _str("The lawyer's stated reason, verbatim; '' when "
                                "none."),
             }), (

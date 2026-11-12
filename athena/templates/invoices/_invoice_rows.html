@@ -21,8 +21,10 @@
           'en_retard': 'bg-red-100 text-red-700',
           'annulée': 'bg-gray-200 text-gray-500 line-through'
         } %}
+        {# Le libellé annoté côté route (lot 3b, invoice.settlement_label) :
+           une « payée » soldée par radiation le dit. #}
         <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ status_colors.get(inv.status, 'bg-gray-100 text-gray-600') }}">
-          {{ status_labels.get(inv.status, inv.status) }}
+          {{ inv._status_label or status_labels.get(inv.status, inv.status) }}
         </span>
       </div>
       <div class="flex items-center gap-2 text-xs text-gray-500">

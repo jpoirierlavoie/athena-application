@@ -1086,6 +1086,10 @@ def test_billing_snapshot_still_conforms_after_the_shared_row_grew(monkeypatch):
 
 
 def _write_off_event(eid: str, kind: str, day: int, reverses: str = "") -> dict:
+    # A radiation carries its credit note's number (lot 3b); a
+    # contre_passation, none.
+    number = ({"credit_note_number": f"2031-NC{int(eid[-1]):03d}"}
+              if kind == "radiation" else {})
     return {"id": eid, "kind": kind,
             "date": datetime(2031, 3, day, tzinfo=UTC),
             "amount": 64975, "gst_amount": 2826, "qst_amount": 5636,
@@ -1093,7 +1097,7 @@ def _write_off_event(eid: str, kind: str, day: int, reverses: str = "") -> dict:
             "reason": "Cliente introuvable." if kind == "radiation" else "",
             "reverses_id": reverses,
             "created_at": datetime(2031, 3, day, 15, tzinfo=UTC),
-            "created_via": "web"}
+            "created_via": "web", **number}
 
 
 def _written_off_doc() -> dict:
@@ -1117,11 +1121,11 @@ def test_a_written_off_invoice_reads_and_conforms(monkeypatch):
     assert (inv["amount_paid_cents"], inv["written_off_cents"],
             inv["balance_cents"]) == (50000, 64975, 0)
     assert inv["settlement_label"] == "Payée en partie — solde radié"
-    assert [(w["id"], w["kind"], w["date"], w["reverses_id"])
+    assert [(w["id"], w["kind"], w["date"], w["reverses_id"], w["credit_note_number"])
             for w in inv["write_offs"]] == [
-        ("rad-1", "radiation", "2031-03-05", ""),
-        ("cp-1", "contre_passation", "2031-03-06", "rad-1"),
-        ("rad-2", "radiation", "2031-03-10", ""),
+        ("rad-1", "radiation", "2031-03-05", "", "2031-NC001"),
+        ("cp-1", "contre_passation", "2031-03-06", "rad-1", ""),
+        ("rad-2", "radiation", "2031-03-10", "", "2031-NC002"),
     ]
     first = inv["write_offs"][0]
     assert (first["amount_cents"], first["gst_amount_cents"],
@@ -1165,12 +1169,15 @@ def test_the_new_keys_are_required_in_the_reads_and_in_no_write():
     found, _ = OUTPUT_SCHEMAS["get_invoice"]["anyOf"]
     assert row_keys | {"settlement_label", "write_offs"} <= set(
         found["properties"]["invoice"]["required"])
+    # Lot 3b: each event's credit note number — '' on a contre_passation.
+    event = found["properties"]["invoice"]["properties"]["write_offs"]["items"]
+    assert "credit_note_number" in event["required"]
     assert row_keys <= set(
         OUTPUT_SCHEMAS["list_invoices"]["properties"]["items"]["items"]["required"])
     snapshot = OUTPUT_SCHEMAS["get_billing_snapshot"]["anyOf"][0]
     assert row_keys <= set(
         snapshot["properties"]["outstanding_invoices"]["items"]["required"])
-    new_keys = row_keys | {"settlement_label", "write_offs"}
+    new_keys = row_keys | {"settlement_label", "write_offs", "credit_note_number"}
     for name in tools.WRITE_TOOLS:
         assert not new_keys & _required_keys(OUTPUT_SCHEMAS[name]), name
 

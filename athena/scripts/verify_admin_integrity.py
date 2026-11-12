@@ -69,8 +69,12 @@ module deliberately does not have (balances are computed at read). Checks:
      from check 8's sweep (which does not change): the events are
      well-formed — the vocabulary, the ids, the integer cents, the dates,
      and every contre_passation naming an earlier radiation of the same
-     invoice with the same figures, none cancelled twice: the model's ONE
-     judge, ``invoice.write_off_events``; what stands written off never
+     invoice with the same figures, none cancelled twice, every radiation
+     numbered « AAAA-NC### » (lot 3b): the model's ONE judge,
+     ``invoice.write_off_events``; no credit note number borne by the
+     radiations of two invoices (lot 3b — the judge sees one invoice at a
+     time; a cancelled radiation keeps its number); what stands written off
+     never
      exceeds what is due less what is paid; a radiation stands only on a
      billed invoice (envoyée, en retard, payée); and wherever a settlement
      is recorded (``amount_paid`` > 0 or any write-off event), a billed
@@ -127,12 +131,16 @@ def _account_transactions(account_id: str) -> list[dict]:
 
 
 def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
-    """Check 13 (lot 3a) over *invoices* — every invoice read, its document
-    id in ``id``. PURE; ``(problems, notes)`` — see the module docstring.
-    Amounts print in cents, as check 8's do; the reason of an event never
-    prints."""
+    """Check 13 (lot 3a; the credit note numbers since lot 3b) over
+    *invoices* — every invoice read, its document id in ``id``. PURE;
+    ``(problems, notes)`` — see the module docstring. Amounts print in
+    cents, as check 8's do; the reason of an event never prints."""
     problems: list[str] = []
     notes: list[str] = []
+    # Lot 3b: each credit note number, with the invoices whose radiations
+    # bear it — the model's judge already refuses a number twice within ONE
+    # invoice, so a number found twice here is borne by two invoices.
+    bearers: dict[str, list[str]] = {}
     for inv in invoices:
         label = f"facture {inv.get('invoice_number') or inv.get('id') or '?'}"
         try:
@@ -140,6 +148,9 @@ def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
         except invoice_model.WriteOffsUnreadable as exc:
             problems.append(f"{label}: radiations mal formées — {exc}")
             continue
+        for event in events:
+            if event["kind"] == "radiation":
+                bearers.setdefault(event["credit_note_number"], []).append(label)
         try:
             due = int(inv.get("amount_due", 0))
             paid = int(inv.get("amount_paid", 0))
@@ -178,6 +189,12 @@ def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
                 f"{label}: « {status} » avec un solde de {balance} cents — dès "
                 f"qu'un règlement est inscrit, une facture est « payée » "
                 f"exactement quand son solde est nul (I4)")
+    for number, labels in sorted(bearers.items()):
+        if len(labels) > 1:
+            problems.append(
+                f"note de crédit {number}: portée par les radiations de "
+                f"{len(labels)} factures ({', '.join(labels)}) — un numéro de "
+                f"note de crédit ne sert qu'une fois, même annulé")
     return problems, notes
 
 

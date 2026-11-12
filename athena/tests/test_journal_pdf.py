@@ -333,11 +333,14 @@ def _day(y: int, m: int, d: int) -> datetime:
 
 def _event(eid: str, kind: str, day: int, reverses: str = "") -> dict:
     """A write-off event as the model's doors store it (the figures of a
-    remainder of 712,31 $, its TPS and TVQ claimed)."""
+    remainder of 712,31 $, its TPS and TVQ claimed) — a radiation with its
+    credit note's number (lot 3b)."""
+    number = ({"credit_note_number": f"2031-NC{int(eid[-1]):03d}"}
+              if kind == "radiation" else {})
     return {"id": eid, "kind": kind, "date": _day(2031, 3, day),
             "amount": 71231, "gst_amount": 3098, "qst_amount": 6180,
             "tax_claimed": True, "reason": "", "reverses_id": reverses,
-            "created_at": _day(2031, 3, day), "created_via": "web"}
+            "created_at": _day(2031, 3, day), "created_via": "web", **number}
 
 
 def _invoice(**over) -> dict:

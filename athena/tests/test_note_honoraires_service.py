@@ -1118,12 +1118,14 @@ def test_a_written_off_invoice_prints_its_radiation_and_a_zero_balance(
     """The radiation is a row of the template's own payment row, after the
     payment it followed: TOTAL APRÈS TAXES less the rows gives the balance,
     which reaches zero — the note never refuses a written-off invoice
-    (payments_print_defect accepts it)."""
+    (payments_print_defect accepts it). Since lot 3b the row names the
+    credit note the door numbered (« Note de crédit 2031-NC001 »)."""
     db, bucket, _template = store
     _print_payments(store)
     _overdue_with_a_payment(db, monkeypatch)
     radiation = _write_off(db)
     assert radiation["amount"] == 51739 - 15000
+    assert radiation["credit_note_number"] == "2031-NC001"
 
     note = _generate(today=WRITE_OFF_DAY)
 
@@ -1132,7 +1134,7 @@ def test_a_written_off_invoice_prints_its_radiation_and_a_zero_balance(
     assert _table(_printed(db, bucket, note)) == [
         ["TOTAL APRÈS TAXES", format_cents_fr(51739)],
         ["20 février 2031 — Virement", format_cents_fr_parens(15000)],
-        ["10 mars 2031 — Radiation", format_cents_fr_parens(36739)],
+        ["10 mars 2031 — Note de crédit 2031-NC001", format_cents_fr_parens(36739)],
         ["SOLDE", format_cents_fr(0)],
     ]
 
@@ -1153,7 +1155,7 @@ def test_a_cancelled_radiation_prints_neither_row(store, monkeypatch):
     text = _printed(db, bucket, note)
     assert note.invoice["status"] == "en_retard"
     assert note.counts["rows_paiement"] == 1
-    assert "Radiation" not in text
+    assert "Radiation" not in text and "Note de crédit" not in text
     assert _table(text) == [
         ["TOTAL APRÈS TAXES", format_cents_fr(51739)],
         ["20 février 2031 — Virement", format_cents_fr_parens(15000)],

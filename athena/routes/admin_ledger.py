@@ -208,16 +208,19 @@ def _factures_impayees() -> list[dict]:
     recette may pay the invoice of ANY dossier, so no dossier cascade (the
     invoice determines the dossier, not the reverse). Only what the model's
     transactional verification will accept: issued statuses, live balance
-    > 0. Fails OPEN to [] — a picker aid, never the verdict. Each row
-    carries the invoice's client, as the invoice froze it at issuance
-    (``client_name``, "" on an imported one): the pre-fill of an
-    encaissement's counterparty."""
-    from models.invoice import balance_of, list_invoices
+    > 0, and no radiation standing (lot 3b — the model refuses it,
+    ``facture_radiee``, until « Annuler la radiation »). Fails OPEN to [] —
+    a picker aid, never the verdict. Each row carries the invoice's client,
+    as the invoice froze it at issuance (``client_name``, "" on an imported
+    one): the pre-fill of an encaissement's counterparty."""
+    from models.invoice import balance_of, list_invoices, standing_write_offs
 
     out = []
     try:
         for status in ("envoyée", "en_retard"):
             for inv in list_invoices(status_filter=status):
+                if standing_write_offs(inv):
+                    continue
                 solde = balance_of(inv)
                 if solde <= 0:
                     continue

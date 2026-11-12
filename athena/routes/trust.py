@@ -452,15 +452,19 @@ def _factures_emises(dossier_id) -> list[dict]:
     """
     if not dossier_id:
         return []
-    from models.invoice import balance_of, list_invoices
+    from models.invoice import balance_of, list_invoices, standing_write_offs
 
     # balance_of (amount_due − amount_paid), never the frozen amount_due:
     # the figure shown must be the one the transactional cap enforces, or
     # the picker itself invites an over-transfer of the client's funds on a
     # partially paid invoice (2026-08-13 review). Fully paid → not offered.
+    # Nor an invoice where a radiation stands (lot 3b): the transaction
+    # refuses it (facture_radiee) until « Annuler la radiation ».
     out = []
     for inv in list_invoices(dossier_id=dossier_id):
         if inv.get("status") not in trust._ISSUED_INVOICE_STATUSES:
+            continue
+        if standing_write_offs(inv):
             continue
         solde = balance_of(inv)
         if solde <= 0:

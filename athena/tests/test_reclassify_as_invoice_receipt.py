@@ -495,8 +495,11 @@ def _alter_invoice(**fields):
 # off, and the invoice is still refused (it carries one).
 _RADIATION = {"id": "rad-1", "kind": "radiation", "date": _d(3, 5),
               "amount": 1000, "gst_amount": 0, "qst_amount": 0,
-              "tax_claimed": False, "reason": "", "reverses_id": ""}
-_CANCELLED = [_RADIATION, {**_RADIATION, "id": "cp-1", "kind": "contre_passation",
+              "tax_claimed": False, "reason": "", "reverses_id": "",
+              "credit_note_number": "2031-NC001"}
+_CANCELLED = [_RADIATION, {**{k: v for k, v in _RADIATION.items()
+                              if k != "credit_note_number"},
+                           "id": "cp-1", "kind": "contre_passation",
                            "date": _d(3, 6), "reverses_id": "rad-1"}]
 
 

@@ -6221,6 +6221,110 @@ Notes:
      delivered, nothing to send.
   Nothing to check on the phone: there is no entry point yet.
   A rollback is the code alone: no write-off can exist before lot 3b.
+- **Invoices: « Radier le solde » from the sheet — the numbered credit
+  note, the bad debt among the expenses — lot 3b (2026-11-12).** Lot 3b of
+  the lawyer's plan « Factures : retard, radiation, intérêts », on his
+  decision 8 of 2026-11-12, which refines D2: toward the client a write-off
+  is a PRICE REDUCTION documented by a credit note, and in the books a BAD
+  DEBT. Lot 3a's two doors get their first entry point — the web app only:
+  the connector still reaches neither.
+  1. *The credit note's number* (`models/invoice.py`). `write_off_remainder`
+     takes it INSIDE its own transaction from `counters/notes-credit-{year}`
+     — the Montréal year of the radiation's date —, as `create_invoice`
+     takes an invoice's from `counters/invoices-{year}`: « 2026-NC001 »,
+     « 2026-NC002 »… (four digits past 999), read LAST, once nothing is left
+     to refuse, and written with the invoice: an abort leaves the counter
+     where it was, and nothing is ever reserved. The radiation stores it
+     (`credit_note_number`); a contre_passation takes none and moves no
+     counter; a cancelled radiation's credit note keeps its number for ever,
+     « annulée » — derived, its radiation no longer standing.
+     `invoice.write_off_events` now requires the number on a radiation (its
+     form, the year of its own date, once per invoice) and refuses one on a
+     contre_passation — no write-off exists, so no legacy shape is accepted;
+     check 13 of `scripts/verify_admin_integrity` also names a number borne
+     by two invoices. The Word « Note de crédit » itself is lot 3d.
+  2. *The bad debt in the books* (`models/financial_statements`, pure).
+     Revenue stays as billed: lot 3a's « Radiations de comptes clients »
+     row (`radiations`) is gone. Each write-off net of the TPS/TVQ it claims
+     is an EXPENSE, « Créances irrécouvrables » (`creances_irrecouvrables`),
+     among the direct costs — `admin_ledger.cost_class` classes every cost
+     linked to a dossier so, and a write-off always is one —, printed when
+     not zero, inside « Total — coûts directs ». The gross margin and the
+     net income are lot 3a's to the cent; the TPS/TVQ bad-debt rows,
+     « Redressements » and the rollforward do not move; a world without a
+     write-off presents exactly what it did (the forty digests of 77fd14c).
+  3. *The web actions* (`routes/invoices.py`, `templates/invoices/`).
+     « Radier le solde » (`/factures/<id>/radiation`), offered on the sheet
+     only while `write_off_refusal` answers '' on `today_mtl` (the route
+     computes the flag): a page showing the remainder, its TPS and TVQ as
+     the model computes them, the day, and the credit note's series — the
+     number is given when it is recorded —, a « Motif » (500 characters at
+     most, refused beyond) and « Réclamer la TPS/TVQ (créance
+     irrécouvrable) », checked by default, under the version the page
+     showed (the door requires it); a refusal re-renders at 200 with its
+     reason — a stale one with the amber banner and the current figures —,
+     and a page whose invoice can no longer be written off goes back to the
+     sheet saying why. « Annuler la radiation »
+     (`…/radiation/<event_id>/annulation`), on each standing radiation: an
+     optional reason, the version, a confirmation; back to the sheet either
+     way. The sheet reads its status from `settlement_label`, gains a
+     « Radié (notes de crédit) » line in its totals and a « Radiations »
+     section listing every event (date, kind, amount, TPS, TVQ, credit note
+     number, « en vigueur » or « annulée », reason), and offers no payment
+     while a radiation stands; the list's rows read « Soldée par radiation »
+     or « Payée en partie — solde radié ». The two payment pickers
+     (`admin_ledger._factures_impayees`, `trust._factures_emises`) skip an
+     invoice where a radiation stands — the models refuse it,
+     `facture_radiee`.
+  4. *The note d'honoraires and the connector's reads.* A standing
+     radiation's `ligne_paiement` row prints « Note de crédit 2026-NC001 »
+     as its `{{p.source}}`, no longer « Radiation » (GABARITS_PLACEHOLDERS.md,
+     hence `/gabarits/aide`); `get_invoice`'s `write_offs[]` gains
+     `credit_note_number` ('' on a contre_passation), required in that READ
+     output and in no write output; `get_invoice`'s and
+     `get_financial_statements`' descriptions say it.
+  Change Impact: item 1 — touched, reads only: one key in `get_invoice`'s
+  `write_offs[]`, two descriptions; no tool, input schema, disclosure
+  promise or consent text moved (the consent screen already names
+  « facturation »), and `mcp/disclosure` still forbids both doors to every
+  connector module; `exporter_plugin_athena --check`: registry
+  `f38e98b4dbf7` unchanged, plugin 1.9.2 up to date — nothing to deliver.
+  Item 2 — not touched (invoices are not DAV-exposed). Item 3 — touched:
+  the payment row's source, by string substitution, no new part; a note
+  carrying a credit-note row must open in Word without repair (step 3).
+  Item 4 — no new event: `invoice_written_off` and
+  `invoice_write_off_reversed` now come from the sheet (`via` `web`); the
+  number is no log field; an unreadable counter is the doors' existing
+  `unexpected` line; `rows_paiement` counts the credit-note rows —
+  OBSERVABILITY.md says so. Item 5 — touched: three routes on the
+  CSRF-protected `invoices` blueprint, each `@login_required`, the token in
+  each form; no exemption, prefix, header or setting. Item 6 — touched: a
+  new template and two changed ones, compiled classes only (no
+  recompile, checked against the artifact by test); the new controls are
+  44 px (`py-3`). Item 7 — not touched: the counter is one document read
+  by its key inside the transaction — no query, no index. In order:
+  1. *The push* — no index, no consent train, no migration: no write-off
+     exists in production.
+  2. *On the phone at 375 px*: an overdue invoice's sheet shows « Radier le
+     solde »; its page shows the remainder, the TPS and the TVQ, the box
+     checked — « Abandonner »: nothing is written until « Radier le solde »
+     is pressed.
+  3. *The first real write-off*: the sheet reads « Soldée par radiation »
+     (or « Payée en partie — solde radié »), and its « Radiations » section
+     « note de crédit AAAA-NC001 », « en vigueur »;
+     `python -m scripts.verify_admin_integrity` — check 13 clean; the
+     statements (« Finances ») of its period show « Créances
+     irrécouvrables » among the direct costs, revenue as billed, and
+     « Redressements » its row with the TPS and TVQ claimed; a note
+     d'honoraires generated from it, with a gabarit that prints the
+     payments, opens in Word without repair, its row « Note de crédit
+     AAAA-NC001 ».
+  4. *The plugin*: not bumped — the registry did not move; 1.9.2 stays
+     delivered.
+  A rollback is the code alone: lot 3a's judge does not read
+  `credit_note_number`, so a radiation written here still reads there (its
+  statements then take it off revenue again, lot 3a's way); the counter
+  stays, and a later deploy continues its series.
 
 ## 16. Troubleshooting
 

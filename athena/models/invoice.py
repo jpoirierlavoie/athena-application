@@ -80,7 +80,24 @@ migration). Each event::
      "reverses_id": <'' on a radiation; on a contre_passation, the id of
                      the radiation it cancels, whose four figures it
                      repeats>,
+     "credit_note_number": <a radiation only — « AAAA-NC### », its credit
+                            note's number (lot 3b); absent on a
+                            contre_passation>,
      "created_at": <instant>, "created_via": <provenance.VALID_VIA>}
+
+CREDIT NOTES (lot 3b — the lawyer's decision 8 of 2026-11-12, which refines
+D2): toward the client a write-off is a PRICE REDUCTION documented by a
+credit note, and in the books a BAD DEBT (``models/financial_statements``:
+an expense « Créances irrécouvrables », revenue staying as billed). Each
+radiation takes its credit note's number from a yearly series
+« AAAA-NC### » — the Montréal year of the event's date, a sequence of 3
+digits rolling to 4 and more past 999 — read and incremented in the
+door's own transaction from ``counters/notes-credit-{year}``, exactly as an
+invoice's number comes from ``counters/invoices-{year}``: never reused,
+never decremented. A cancelled radiation's credit note keeps its number for
+ever, and is « annulée » — derived: its radiation no longer stands. A
+contre_passation takes no number. (The credit note's Word document is lot
+3d; the note d'honoraires' row names it.)
 
 An event is never edited and never removed, so it carries no etag (Rule 7);
 a radiation STANDS while no contre_passation names it. :func:`write_off_events`
@@ -92,7 +109,8 @@ write the events, each ONE transaction against the invoice's etag
 (required): :func:`write_off_remainder` writes off the WHOLE remainder of an
 overdue invoice (:func:`write_off_refusal`, judged on ``today_mtl``), its
 TPS/TVQ parts in proportion of the invoice's ``total``
-(:func:`write_off_tax_parts`), and settles it « payée » — no new status: a
+(:func:`write_off_tax_parts`), numbers its credit note, and settles it
+« payée » — no new status: a
 derived label says how (:func:`settlement_label`); :func:`reverse_write_off`
 cancels one standing radiation by a « contre_passation » dated that day,
 which reopens it « en_retard ». While a radiation stands, a payment is
@@ -103,6 +121,7 @@ The one-shot repair scripts refuse an invoice that carries one
 """
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -2125,6 +2144,12 @@ _WRITE_OFF_FIGURES = ("amount", "gst_amount", "qst_amount", "tax_claimed")
 #: truncated (the void's own).
 WRITE_OFF_REASON_MAX_LENGTH = 500
 
+#: The form of a credit note's number (lot 3b, module docstring): « AAAA-NC »
+#: — the Montréal year of its radiation — then a sequence of three digits or
+#: more (:func:`_next_credit_note_number`). ASCII digits only, matched whole;
+#: linear (CWE-1333).
+CREDIT_NOTE_NUMBER_RE = re.compile(r"[0-9]{4}-NC[0-9]{3,}")
+
 
 class WriteOffsUnreadable(ValueError):
     """The stored ``write_offs`` is not the shape its two doors write.
@@ -2171,12 +2196,17 @@ def write_off_events(invoice: dict) -> list[dict]:
     False); and a text ``reverses_id`` — ``''`` on a radiation, and on a
     contre_passation the id of a radiation EARLIER in the array, dated no
     later, whose four figures (:data:`_WRITE_OFF_FIGURES`) it repeats — no
-    radiation cancelled twice. The reason and the stamps move no figure and
+    radiation cancelled twice. Since lot 3b, a radiation carries its credit
+    note's ``credit_note_number`` (:data:`CREDIT_NOTE_NUMBER_RE`, the year of
+    its own date, no other radiation of the invoice bearing it), and a
+    contre_passation carries none — no write-off existed before, so no
+    legacy shape is accepted. The reason and the stamps move no figure and
     are not judged here."""
     events = invoice.get("write_offs", [])
     if not isinstance(events, list):
         raise WriteOffsUnreadable("les radiations ne sont pas une liste")
     seen: set[str] = set()
+    numbers: set[str] = set()
     radiations: dict[str, tuple[date, dict]] = {}
     cancelled: set[str] = set()
     for position, event in enumerate(events, start=1):
@@ -2217,8 +2247,25 @@ def write_off_events(invoice: dict) -> list[dict]:
         if kind == _RADIATION:
             if reverses:
                 raise WriteOffsUnreadable(f"{where} : une radiation ne contre-passe rien")
+            number = event.get("credit_note_number")
+            if not (isinstance(number, str)
+                    and CREDIT_NOTE_NUMBER_RE.fullmatch(number)):
+                raise WriteOffsUnreadable(
+                    f"{where} : numéro de note de crédit illisible (AAAA-NC###)")
+            if number[:4] != f"{day.year:04d}":
+                raise WriteOffsUnreadable(
+                    f"{where} : numéro de note de crédit d'une autre année que "
+                    "la radiation")
+            if number in numbers:
+                raise WriteOffsUnreadable(
+                    f"{where} : numéro de note de crédit en double")
+            numbers.add(number)
             radiations[event_id] = (day, event)
             continue
+        if "credit_note_number" in event:
+            raise WriteOffsUnreadable(
+                f"{where} : une contre-passation ne porte aucun numéro de note "
+                "de crédit")
         original = radiations.get(reverses)
         if original is None:
             raise WriteOffsUnreadable(
@@ -2388,8 +2435,9 @@ def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optio
 
     The note d'honoraires lists the standing encaissements imputed on the
     invoice (``models.admin_ledger.receipt_stands``) and, since lot 3a, its
-    standing write-offs (:func:`standing_write_offs`, a « Radiation » row
-    each) above its live balance (:func:`balance_of`, which subtracts
+    standing write-offs (:func:`standing_write_offs`, a « Note de crédit
+    <n°> » row each, « Radiation » before lot 3b) above its live balance
+    (:func:`balance_of`, which subtracts
     them): on paper, TOTAL APRÈS TAXES less the rows must give that
     balance. Two states break the sum, and the note refuses rather than
     print figures that do not close (``services/note_honoraires``):
@@ -2404,9 +2452,9 @@ def payments_print_defect(invoice: dict, standing_receipts: list[dict]) -> Optio
       :func:`payment_updates` and the write-off doors settle « payée » only
       at a zero balance. The note would print a balance owing under the
       lawyer's own « payée ». A « payée » a standing write-off settles has
-      no balance left: its note prints, the « Radiation » row bringing it to
-      zero (the lawyer's decision D2 — a forgiveness shown to the client,
-      never refused).
+      no balance left: its note prints, the credit note's row bringing it
+      to zero (the lawyer's decision D2 — a forgiveness shown to the
+      client, never refused).
 
     PURE: the caller reads the rows (strictly) and keeps the standing ones.
     ``amount_paid`` reads as :func:`_payment_recorded` reads it — absent,
@@ -3581,6 +3629,29 @@ def _write_off_day(today: date) -> datetime:
     return datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
 
 
+# Credit-note numbers (lot 3b, module docstring) — « AAAA-NC### », the
+# Montréal year of the radiation's date, from the monotonic transactional
+# counter ``counters/notes-credit-{year}``: read and written INSIDE
+# write_off_remainder's own transaction, as an invoice's number is inside
+# create_invoice's (CLAUDE.md « Sequence numbers come from counters/{scope}
+# inside the writing transaction, never reused »). A write-off that aborts,
+# for any reason, leaves the counter where it was; a cancelled radiation
+# keeps its number for ever. No seed, unlike the invoices': no credit note
+# was ever numbered before the counter existed.
+
+
+def _credit_note_counter_ref(year: int):
+    """The transactional counter of *year*'s « AAAA-NC » series."""
+    return db.collection(COUNTERS_COLLECTION).document(f"notes-credit-{year:04d}")
+
+
+def _next_credit_note_number(counter_snapshot, year: int) -> tuple[str, int]:
+    """``(number, next_seq)`` from *year*'s counter as read INSIDE the
+    write-off's transaction — :func:`_next_invoice_number`'s rule, unseeded:
+    « 2026-NC001 », « 2026-NC002 », … « 2026-NC1000 » past 999."""
+    return _next_invoice_number(counter_snapshot, 0, f"{year:04d}-NC")
+
+
 def _landed_report(invoice: dict, event_id: str) -> dict:
     """The report of a write whose commit landed — the STORED invoice and
     this call's event in it."""
@@ -3639,11 +3710,12 @@ def write_off_remainder(
     report::
 
         {"invoice": <the invoice as WRITTEN, its new etag included>,
-         "write_off": <the radiation appended>}
+         "write_off": <the radiation appended, its credit_note_number
+                       included>}
 
-    No entry point in this lot: lot 3b's web action calls it. The connector
-    never may — ``mcp/disclosure``'s « invoice_paid » promise forbids the
-    name.
+    Its one entry point is the invoice sheet's « Radier le solde »
+    (``routes/invoices``, lot 3b). The connector never may —
+    ``mcp/disclosure``'s « invoice_paid » promise forbids the name.
 
     Judged before anything is read: *claim_tax* must be a bool (a caller's
     bug raises ``TypeError``); *expected_etag* — the version the lawyer saw —
@@ -3663,13 +3735,17 @@ def write_off_remainder(
     * the administration and the trust rows that name it, read as
       :func:`void_invoice_report` reads them, and the two register drifts of
       :func:`_register_drift` refused (``encaissements_discordants``,
-      ``fideicommis_sans_encaissement``).
+      ``fideicommis_sans_encaissement``);
+    * LAST, once nothing is left to refuse, the counter of the year's credit
+      notes (lot 3b): ``counters/notes-credit-{year}``, the Montréal year of
+      today (:func:`_next_credit_note_number`).
 
     Then ``W = balance_of`` — computed here, never typed —, its TPS and TVQ
     parts when *claim_tax* (:func:`write_off_tax_parts`, on the invoice's
     ``total``; a tax figure it cannot read refuses, ``taxes_illisibles``),
-    the radiation dated today (Montréal, at midnight UTC) appended to
-    ``write_offs``, the invoice settled through :func:`_settled_status`
+    the radiation dated today (Montréal, at midnight UTC), numbered
+    (``credit_note_number``), appended to ``write_offs``, the counter
+    written with it, the invoice settled through :func:`_settled_status`
     (« payée »), a fresh etag and the writer's stamps (Rule 7).
     ``amount_paid`` is never touched.
 
@@ -3721,6 +3797,11 @@ def write_off_remainder(
                     "peut pas être calculée, et rien n'a été écrit. La "
                     "facture doit d'abord être réparée.",
                     "taxes_illisibles") from None
+        # The last READ (lot 3b): the year's credit-note counter, once
+        # nothing is left to refuse, and written below WITH the invoice.
+        counter_ref = _credit_note_counter_ref(today.year)
+        number, next_seq = _next_credit_note_number(
+            counter_ref.get(transaction=transaction), today.year)
         now = datetime.now(timezone.utc)
         event = {
             "id": event_id,
@@ -3732,6 +3813,7 @@ def write_off_remainder(
             "tax_claimed": claim_tax,
             "reason": text,
             "reverses_id": "",
+            "credit_note_number": number,
             "created_at": now,
             "created_via": provenance.current_via(),
         }
@@ -3744,6 +3826,7 @@ def write_off_remainder(
         updates: dict = {"write_offs": events, **provenance.update_fields(now)}
         if settled is not None:
             updates["status"] = settled
+        transaction.set(counter_ref, {"seq": next_seq, "updated_at": now})
         transaction.update(ref, updates)
         attempted["commit"] = True
         return {"invoice": {**invoice, **updates}, "write_off": event}
@@ -3803,6 +3886,8 @@ def reverse_write_off(
     """Cancel one standing radiation — « Annuler la radiation » (lot 3a) —
     by a ``contre_passation`` DATED TODAY that repeats its four figures
     (:data:`_WRITE_OFF_FIGURES`); the radiation itself is never edited.
+    The contre_passation takes no credit-note number, and the radiation's
+    credit note keeps its own for ever — « annulée », derived (lot 3b).
     The way back when the client pays after all: cancel the radiation,
     record the payment, then write off any new remainder. Returns
     ``(report, errors)`` — the report of :func:`write_off_remainder`, its

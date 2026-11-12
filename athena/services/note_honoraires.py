@@ -39,9 +39,11 @@ surfaces log identically:
    must never be a blip —, and the standing ones refused when they do not
    explain its payment state, ``models.invoice.payments_print_defect``:
    ``payments_mismatch``, ``paid_by_hand``; since lot 3a, its STANDING
-   write-offs too, ``models.invoice.standing_write_offs`` — one
-   « Radiation » row each, a forgiveness shown to the client (the lawyer's
-   decision D2 of 2026-11-11, never a refusal): the printed balance reaches
+   write-offs too, ``models.invoice.standing_write_offs`` — one « Note de
+   crédit <n°> » row each since lot 3b, a forgiveness shown to the client
+   (the lawyer's decision D2 of 2026-11-11, refined by his decision 8:
+   a price reduction its credit note documents; never a refusal): the
+   printed balance reaches
    zero, and a cancelled write-off prints neither row; a template without a
    payment field reads nothing, and keeps the context and fingerprint it
    always had), the client's trust balance when the template prints it

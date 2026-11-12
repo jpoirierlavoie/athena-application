@@ -900,7 +900,8 @@ def test_an_encaissement_records_the_payment_in_the_same_operation(fake):
 # words. Invented amounts.
 _RADIATION = {"id": "rad-1", "kind": "radiation", "date": _d(2026, 9, 15),
               "amount": 100000, "gst_amount": 0, "qst_amount": 0,
-              "tax_claimed": False, "reason": "", "reverses_id": ""}
+              "tax_claimed": False, "reason": "", "reverses_id": "",
+              "credit_note_number": "2026-NC001"}
 
 
 @pytest.mark.parametrize("state", ["payee", "reopened"])

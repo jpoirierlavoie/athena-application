@@ -491,11 +491,14 @@ def _radiation(eid: str, amount: int) -> dict:
     return {"id": eid, "kind": "radiation",
             "date": datetime(2031, 3, 5, tzinfo=UTC), "amount": amount,
             "gst_amount": 0, "qst_amount": 0, "tax_claimed": False,
-            "reason": "", "reverses_id": ""}
+            "reason": "", "reverses_id": "",
+            # Its credit note's number (lot 3b): « r1 » → « 2031-NC001 ».
+            "credit_note_number": f"2031-NC{int(eid[1:]):03d}"}
 
 
 def _cancelled(radiation: dict) -> list[dict]:
-    return [radiation, {**radiation, "id": f"cp-{radiation['id']}",
+    figures = {k: v for k, v in radiation.items() if k != "credit_note_number"}
+    return [radiation, {**figures, "id": f"cp-{radiation['id']}",
                         "kind": "contre_passation",
                         "date": datetime(2031, 3, 6, tzinfo=UTC),
                         "reverses_id": radiation["id"]}]

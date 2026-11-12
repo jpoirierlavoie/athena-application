@@ -3088,13 +3088,16 @@ def _write_off_row(event: dict) -> dict:
     """One write-off event of an invoice (lot 3a) — a « radiation » of its
     remainder, or the « contre_passation » that cancels one —, as the model
     validated it (``invoice.write_off_events``). Its reason is the lawyer's
-    own text, served as stored; its stamps stay out."""
+    own text, served as stored; its stamps stay out. Since lot 3b, a
+    radiation's credit note number — ``''`` on a contre_passation, which
+    takes none."""
     row = {
         "id": event["id"],
         "kind": event["kind"],
         "date": date_str(event["date"]),
         "tax_claimed": event["tax_claimed"],
         "reverses_id": event["reverses_id"],
+        "credit_note_number": str(event.get("credit_note_number") or ""),
         "reason": str(event.get("reason") or ""),
     }
     _money(row, "amount", event["amount"])

@@ -114,17 +114,23 @@ def _invoice(id_, day, *, status="envoyée", fees=10000, expenses=0, retainer=0,
 
 
 def _event(id_, day, amount, *, gst=0, qst=0, claimed=None):
-    """A radiation as ``invoice.write_off_remainder`` writes it (lot 3a)."""
+    """A radiation as ``invoice.write_off_remainder`` writes it (lot 3a), its
+    credit note numbered (lot 3b): the year of its day, then the digits of
+    its id — two radiations of one invoice never share one."""
+    digits = "".join(ch for ch in id_ if ch.isdigit()) or "1"
     return {"id": id_, "kind": "radiation", "date": day, "amount": amount,
             "gst_amount": gst, "qst_amount": qst,
             "tax_claimed": bool(gst or qst) if claimed is None else claimed,
-            "reason": "", "reverses_id": "", "created_at": day + timedelta(hours=15),
-            "created_via": "web"}
+            "reason": "", "reverses_id": "",
+            "credit_note_number": f"{day.year}-NC{int(digits):03d}",
+            "created_at": day + timedelta(hours=15), "created_via": "web"}
 
 
 def _cancel(id_, radiation, day):
-    """The contre_passation of *radiation*, dated *day* — its four figures."""
-    return {**radiation, "id": id_, "kind": "contre_passation", "date": day,
+    """The contre_passation of *radiation*, dated *day* — its four figures,
+    and no credit note number of its own (lot 3b)."""
+    figures = {k: v for k, v in radiation.items() if k != "credit_note_number"}
+    return {**figures, "id": id_, "kind": "contre_passation", "date": day,
             "reverses_id": radiation["id"], "created_at": day + timedelta(hours=15)}
 
 
@@ -1203,14 +1209,20 @@ def test_every_displayed_statement_foots(seed):
         assert bilan["Avoir net (actif − passif)"] == [opening.net, closing.net]
         income = {r["label"]: r["values"][0] for r in _rows(view, "resultats")}
         assert income["Bénéfice net"] == st.sections["resultats"]["net_income"]
-        # Lot 3a: the products foot their total, write-downs included; the
-        # tax table's lines foot its net tax, the bad-debt relief included;
-        # « Redressements » lists exactly the relief that table takes.
+        # The products foot their total — as billed since lot 3b, the bad
+        # debts being an expense (each class foots its own total:
+        # test_every_cost_line_foots_its_class_and_its_heading) — and the
+        # statement foots its net income; the tax table's lines foot its net
+        # tax, the bad-debt relief included; « Redressements » lists exactly
+        # the relief that table takes.
         products = [r for r in _rows(view, "resultats")]
         keys = [r["key"] for r in products]
+        totals = [r["values"][0] for r in products if r["key"].startswith("total:")]
         products = products[keys.index("produits") + 1:keys.index("total_produits")]
         assert all(r["level"] == 1 for r in products)
+        assert "radiations" not in keys
         assert sum(r["values"][0] for r in products) == income["Total des produits"]
+        assert income["Total des produits"] - sum(totals) == income["Bénéfice net"]
         tax_rows = _rows(view, "taxes")
         tax_keys = [r["key"] for r in tax_rows]
         net_lines = tax_rows[tax_keys.index("solde_debut") + 1:tax_keys.index("taxe_nette")]
@@ -1238,7 +1250,10 @@ def test_the_figures_agree_with_the_ledgers_own_authorities(seed):
                    if r["sign"] < 0 else r for r in sliced]
         statement = al.results_statement(stamped)
         income = st.sections["resultats"]
-        assert sum(income["cost_totals"].values()) == sum(statement["expenses_net"].values())
+        # The ledger's costs, and the bad debts beside them (lot 3b: the
+        # write-offs are no ledger entry).
+        assert sum(income["cost_totals"].values()) - income["bad_debts"] == sum(
+            statement["expenses_net"].values())
         taxes = st.sections["taxes"]
         assert (taxes["cti"], taxes["rti"]) == (statement["gst"], statement["qst"])
         for aid, cents in st.sections["bilan"]["closing"].cash.items():
@@ -1532,21 +1547,31 @@ def test_the_write_off_signs_are_the_models_vocabulary():
     assert tuple(fs.WRITE_OFF_SIGNS) == inv_model.WRITE_OFF_KINDS
 
 
-def test_a_write_off_takes_its_amount_less_its_claimed_tax_off_revenue_on_its_day():
+def test_a_write_off_is_a_bad_debt_expense_of_its_day_revenue_staying_as_billed():
+    """Lot 3b (the lawyer's decision 8): the amount less the TPS/TVQ claimed
+    is an EXPENSE, « Créances irrécouvrables », among the direct costs —
+    no longer taken off revenue (lot 3a's « Radiations de comptes clients »
+    row is gone); the gross margin and the net income are lot 3a's."""
     snap = _written_off()
     assert inv_model.write_off_tax_parts(snap.invoices[0], 74975) == (3260, 6505)
     may = _compute(snap, "2031-05")
     income = may.sections["resultats"]
-    assert income["write_downs"] == 74975 - 3260 - 6505 == 65210
-    assert (income["fees"], income["revenue"], income["net_income"]) == (0, -65210, -65210)
+    assert income["bad_debts"] == 74975 - 3260 - 6505 == 65210
+    assert (income["fees"], income["revenue"], income["net_income"]) == (0, 0, -65210)
+    assert income["cost_totals"] == {"direct": 65210, "variable": 0, "fixe": 0}
+    assert income["gross_margin"] == -65210
+    assert fs.BAD_DEBT_CLASS == "direct"
     rows = _rows(fs.present(may), "resultats")
     keys = [r["key"] for r in rows]
-    assert keys[keys.index("autres_produits") + 1:keys.index("total_produits")] == [
-        "radiations"]
-    row = rows[keys.index("radiations")]
+    assert "radiations" not in keys
+    assert keys[keys.index("autres_produits") + 1] == "total_produits"
+    assert keys[keys.index("classe:direct") + 1:keys.index("total:direct")] == [
+        "creances_irrecouvrables"]
+    row = rows[keys.index("creances_irrecouvrables")]
     assert (row["label"], row["values"], row["level"], row["style"]) == (
-        "Radiations de comptes clients", [-65210], 1, "line")
-    assert any(n.startswith("Radiations de comptes clients :")
+        "Créances irrécouvrables", [65210], 1, "line")
+    assert rows[keys.index("total:direct")]["values"] == [65210]
+    assert any(n.startswith("Créances irrécouvrables :")
                for n in next(s for s in fs.present(may)["sections"]
                              if s["key"] == "resultats")["notes"])
     taxes = may.sections["taxes"]
@@ -1566,8 +1591,8 @@ def test_a_write_off_takes_its_amount_less_its_claimed_tax_off_revenue_on_its_da
     assert bilan["closing"].net - bilan["opening"].net == -65210
     assert may.sections["avoir"]["unexplained"] == 0
     march = _compute(snap, "2031-03")
-    assert march.sections["resultats"]["write_downs"] == 0
-    assert "radiations" not in _view_rows(march, "resultats")
+    assert march.sections["resultats"]["bad_debts"] == 0
+    assert "creances_irrecouvrables" not in _view_rows(march, "resultats")
     assert "tps_creances_irrecouvrables" not in _view_rows(march, "taxes")
     assert march.sections["avoir"]["unexplained"] == 0
 
@@ -1601,15 +1626,15 @@ def test_a_payee_short_of_its_payments_and_write_offs_presumes_only_the_rest_set
     may = _compute(snap, "2031-05")
     assert may.sections["bilan"]["opening"].receivables == 50000
     assert may.sections["bilan"]["closing"].receivables == 0
-    assert may.sections["resultats"]["write_downs"] == 50000
+    assert may.sections["resultats"]["bad_debts"] == 50000
     for st in (march, may):
         assert st.sections["avoir"]["unexplained"] == 0
 
 
-def test_a_tax_not_claimed_stays_inside_the_write_down():
+def test_a_tax_not_claimed_stays_inside_the_bad_debt():
     may = _compute(_written_off(claimed=False), "2031-05")
-    assert may.sections["resultats"]["write_downs"] == 74975
-    assert _view_rows(may, "resultats")["radiations"]["values"] == [-74975]
+    assert may.sections["resultats"]["bad_debts"] == 74975
+    assert _view_rows(may, "resultats")["creances_irrecouvrables"]["values"] == [74975]
     taxes = may.sections["taxes"]
     assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"], taxes["net"]) == (0, 0, 0)
     assert not {"tps_creances_irrecouvrables", "tvq_creances_irrecouvrables"} & set(
@@ -1625,9 +1650,9 @@ def test_a_tax_not_claimed_stays_inside_the_write_down():
 def test_a_cancelled_write_off_gives_everything_back_in_the_period_it_is_cancelled():
     snap = _written_off(status="en_retard", cancel_on=_d(2031, 6, 3))
     may, june = _compute(snap, "2031-05"), _compute(snap, "2031-06")
-    assert may.sections["resultats"]["write_downs"] == 65210
-    assert june.sections["resultats"]["write_downs"] == -65210
-    assert _view_rows(june, "resultats")["radiations"]["values"] == [65210]
+    assert may.sections["resultats"]["bad_debts"] == 65210
+    assert june.sections["resultats"]["bad_debts"] == -65210
+    assert _view_rows(june, "resultats")["creances_irrecouvrables"]["values"] == [-65210]
     taxes = june.sections["taxes"]
     assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"]) == (-3260, -6505)
     tax_rows = _view_rows(june, "taxes")
@@ -1637,8 +1662,8 @@ def test_a_cancelled_write_off_gives_everything_back_in_the_period_it_is_cancell
     assert (bilan["opening"].receivables, bilan["closing"].receivables) == (0, 74975)
     assert bilan["closing"].tax_payable == may.sections["bilan"]["opening"].tax_payable
     quarter = _compute(snap, "2031-T2")
-    assert quarter.sections["resultats"]["write_downs"] == 0
-    assert "radiations" not in _view_rows(quarter, "resultats")
+    assert quarter.sections["resultats"]["bad_debts"] == 0
+    assert "creances_irrecouvrables" not in _view_rows(quarter, "resultats")
     assert "tps_creances_irrecouvrables" not in _view_rows(quarter, "taxes")
     for st in (may, june, quarter):
         assert st.sections["avoir"]["unexplained"] == 0
@@ -1674,8 +1699,8 @@ def test_a_write_off_counts_from_its_own_day_never_the_day_before():
     early["write_offs"] = [_event("w2", _d(2031, 6, 1), 114975, gst=5000, qst=9975)]
     snap = _snapshot(invoices=[late, early])
     may, june = _compute(snap, "2031-05"), _compute(snap, "2031-06")
-    assert may.sections["resultats"]["write_downs"] == 100000
-    assert june.sections["resultats"]["write_downs"] == 100000
+    assert may.sections["resultats"]["bad_debts"] == 100000
+    assert june.sections["resultats"]["bad_debts"] == 100000
     assert [e.id for _i, e in may.sections["redressements"]["write_offs"]] == ["w1"]
     assert [e.id for _i, e in june.sections["redressements"]["write_offs"]] == ["w2"]
     assert may.sections["bilan"]["opening"].receivables == 2 * 114975       # 30 April
@@ -1691,10 +1716,13 @@ def test_a_write_off_dated_before_its_invoice_counts_from_the_invoice_date():
     inv["write_offs"] = [_event("w1", _d(2031, 5, 20), 114975, gst=5000, qst=9975)]
     snap = _snapshot(invoices=[inv])
     may, june = _compute(snap, "2031-05"), _compute(snap, "2031-06")
-    assert may.sections["resultats"]["write_downs"] == 0
+    assert may.sections["resultats"]["bad_debts"] == 0
     assert may.sections["redressements"]["write_offs"] == []
-    assert june.sections["resultats"]["write_downs"] == 100000
-    assert june.sections["resultats"]["revenue"] == 0
+    assert june.sections["resultats"]["bad_debts"] == 100000
+    # Billed in June, written off in June: revenue as billed (lot 3b), the
+    # net income nil — as lot 3a's write-down left it.
+    assert june.sections["resultats"]["revenue"] == 100000
+    assert june.sections["resultats"]["net_income"] == 0
     assert _view_rows(june, "redressements")["radiation:w1"]["label"] == (
         "2031-F001 — radiation du 20 mai 2031")
     assert june.sections["bilan"]["closing"].receivables == 0
@@ -1811,12 +1839,36 @@ def test_the_write_offs_agree_with_an_independent_count(seed):
                 gst += sign * e["gst_amount"]
                 qst += sign * e["qst_amount"]
                 keys.add(f"radiation:{e['id']}")
-        assert st.sections["resultats"]["write_downs"] == down, (seed, slug)
+        assert st.sections["resultats"]["bad_debts"] == down, (seed, slug)
         taxes = st.sections["taxes"]
         assert (taxes["bad_debt_gst"], taxes["bad_debt_qst"]) == (gst, qst), (seed, slug)
         shown = {r["key"] for r in _rows(fs.present(st), "redressements")
                  if r["key"].startswith("radiation:")}
         assert shown == keys, (seed, slug)
+
+
+def test_the_bad_debts_leave_revenue_as_billed_and_the_net_income_as_lot_3a_left_it():
+    """Lot 3b moves the write-offs from revenue to the expenses: revenue is
+    what was billed (and the « autres produits »), the direct costs carry
+    the bad debts beside the ledger's, and the gross margin and the net
+    income are lot 3a's to the cent — the write-down off revenue, the
+    ledger's costs. Over 20 random worlds, most of which move a bad debt
+    in one of the seven periods (never vacuous)."""
+    moved = set()
+    for seed in range(20):
+        snap = _random_world(random.Random(3141 + seed))
+        for slug in _ROLLFORWARD_PERIODS:
+            income = _compute(snap, slug).sections["resultats"]
+            ledger = {cls: sum(v.values()) for cls, v in income["costs"].items()}
+            bad = income["bad_debts"]
+            if bad:
+                moved.add(seed)
+            assert income["revenue"] == (income["fees"] + income["billed_expenses"]
+                                         + income["other_total"]), (seed, slug)
+            assert income["cost_totals"] == {**ledger, "direct": ledger["direct"] + bad}
+            assert income["gross_margin"] == income["revenue"] - bad - ledger["direct"]
+            assert income["net_income"] == income["revenue"] - bad - sum(ledger.values())
+    assert len(moved) >= 15, sorted(moved)
 
 
 def _digest(snapshot) -> str:

@@ -30,12 +30,13 @@ payment rows are read and formatted, never summed here.
 
 A write-off (« radiation », lot 3a of « Factures : retard, radiation,
 intérêts ») is a forgiveness SHOWN TO THE CLIENT — the lawyer's decision D2
-of 2026-11-11: each one that stands prints as a row of its own, source
-« Radiation », its amount taxes included, and brings the printed balance to
-zero. A cancelled one prints neither row, its nor its cancellation's (the
-caller passes ``models.invoice.standing_write_offs``). The row is the
-template's own ``ligne_paiement`` row, filled once more: no new part, no new
-field.
+of 2026-11-11, refined by his decision 8 of 2026-11-12: a price reduction
+documented by a credit note. Each one that stands prints as a row of its
+own, source « Note de crédit <its number> » (lot 3b — « Radiation » until
+then), its amount taxes included, and brings the printed balance to zero. A
+cancelled one prints neither row, its nor its cancellation's (the caller
+passes ``models.invoice.standing_write_offs``). The row is the template's
+own ``ligne_paiement`` row, filled once more: no new part, no new field.
 
 So does the client's trust balance, ``facture.solde_fideicommis``
 (2026-11-08): given only for a template that prints it
@@ -82,8 +83,11 @@ PAYMENT_FIELDS = PAYMENT_ROW_FIELDS + ("facture.solde_restant",)
 #: (``trust_transaction_id`` set) — and of an imported invoice's provision.
 PAYMENT_SOURCE_TRUST = "Fidéicommis"
 #: ``p.source`` of a standing write-off of the invoice's remainder
-#: (« radiation », lot 3a): a forgiveness shown to the client (D2).
-PAYMENT_SOURCE_WRITE_OFF = "Radiation"
+#: (« radiation », lot 3a): a forgiveness shown to the client (D2) as a price
+#: reduction documented by a credit note (decision 8, lot 3b) — this
+#: wording, a space, then the credit note's number (« Note de crédit
+#: 2026-NC001 »: :func:`_write_off_source`).
+PAYMENT_SOURCE_CREDIT_NOTE = "Note de crédit"
 #: ``p.source`` of every other encaissement, by its ``method`` (the module
 #: docstring declares this vocabulary). A method outside it prints the
 #: « autre » wording: the row is a payment either way.
@@ -255,6 +259,14 @@ def _payment_source(receipt: dict) -> str:
         receipt.get("method") or "", PAYMENT_SOURCE_LABELS["autre"])
 
 
+def _write_off_source(write_off: dict) -> str:
+    """« Note de crédit 2026-NC001 » — a standing radiation's row source
+    (lot 3b). The caller passes the events the model validated
+    (``models.invoice.standing_write_offs``), each numbered: a radiation
+    without its number never reaches this row — the model raises first."""
+    return f"{PAYMENT_SOURCE_CREDIT_NOTE} {write_off['credit_note_number']}"
+
+
 def _payment_rows(
     invoice: dict, receipts: list[dict], write_offs: Iterable[dict] = (),
 ) -> list[dict[str, str]]:
@@ -265,7 +277,8 @@ def _payment_rows(
     invoice's date, drawn from trust), so that the region REPLACES the
     Avances line and TOTAL APRÈS TAXES less the rows gives the balance;
     then each standing encaissement, in the caller's ``(date, sequence)``
-    order; then each standing write-off (lot 3a), « Radiation », its amount
+    order; then each standing write-off (lot 3a), « Note de crédit <its
+    number> » (lot 3b), its amount
     taxes included, dated the day it was recorded — it wrote off what the
     encaissements left. The sort is stable on the calendar day: the
     provision stays first on its day, the register's order holds within a
@@ -280,7 +293,7 @@ def _payment_rows(
         entries.append((_as_date(receipt.get("date")), _payment_source(receipt),
                         int(receipt.get("amount", 0) or 0)))
     for write_off in write_offs:
-        entries.append((_as_date(write_off.get("date")), PAYMENT_SOURCE_WRITE_OFF,
+        entries.append((_as_date(write_off.get("date")), _write_off_source(write_off),
                         int(write_off.get("amount", 0) or 0)))
     entries.sort(key=lambda entry: entry[0] or date.min)
     return [

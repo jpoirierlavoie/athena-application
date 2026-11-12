@@ -513,21 +513,24 @@ def _written_off_inv1(**event) -> dict:
     inv["write_offs"] = [{"id": "w1", "kind": "radiation", "date": _d(2031, 8, 25),
                           "amount": 77849, "gst_amount": gst, "qst_amount": qst,
                           "tax_claimed": True, "reason": "", "reverses_id": "",
+                          "credit_note_number": "2031-NC001",
                           "created_at": _d(2031, 8, 25), "created_via": "web", **event}]
     return inv
 
 
 def test_a_write_off_prints_on_the_page_and_in_the_pdf(client, fake):
-    """The page and the PDF print the rows the model presents: the
-    write-down, the TPS/TVQ it claims, the event in « Redressements »."""
+    """The page and the PDF print the rows the model presents: the bad debt
+    among the expenses (lot 3b — revenue stays as billed), the TPS/TVQ it
+    claims, the event in « Redressements »."""
     inv = _written_off_inv1()
     fake.seed("invoices/inv1", inv)
     (event,) = inv["write_offs"]
     gst, qst = event["gst_amount"], event["qst_amount"]
     page = _plain(_page(client, "/finances/?periode=2031-08"))
     income = _section(page, "État des résultats")
-    assert "Radiations de comptes clients" in income
-    assert _money(-(77849 - gst - qst)) in income
+    assert "Créances irrécouvrables" in income
+    assert "Radiations de comptes clients" not in income
+    assert _money(77849 - gst - qst) in income
     taxes = _section(page, "TPS/TVQ de la période")
     assert "TPS des créances irrécouvrables (radiations de la période)" in taxes
     assert "TVQ des créances irrécouvrables (radiations de la période)" in taxes
@@ -536,7 +539,7 @@ def test_a_write_off_prints_on_the_page_and_in_the_pdf(client, fake):
     assert "2031-F001 — radiation du 25 août 2031" in adjustments
     assert _money(gst) in adjustments and _money(qst) in adjustments
     text = _pdf_text(client.get("/finances/pdf?periode=2031-08").data)
-    for label in ("Radiations de comptes clients", "TPS des créances irrécouvrables",
+    for label in ("Créances irrécouvrables", "TPS des créances irrécouvrables",
                   "TVQ des créances irrécouvrables", "2031-F001 — radiation du 25 août 2031"):
         assert label in text, label
 

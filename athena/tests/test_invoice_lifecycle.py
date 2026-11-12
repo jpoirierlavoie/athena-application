@@ -883,13 +883,14 @@ def _radiation_2031(montant: int) -> dict:
     return {"id": "rad-1", "kind": "radiation",
             "date": datetime(2031, 3, 10, tzinfo=timezone.utc),
             "amount": montant, "gst_amount": 0, "qst_amount": 0,
-            "tax_claimed": False, "reason": "", "reverses_id": ""}
+            "tax_claimed": False, "reason": "", "reverses_id": "",
+            "credit_note_number": "2031-NC001"}
 
 
 def test_une_facture_soldee_par_radiation_imprime_ses_paiements():
     """Lot 3a (D2, un pardon montré au client) : une « payée » qu'une
     radiation solde n'a plus de solde — la note l'imprime, sa rangée
-    « Radiation » le menant à zéro, et ne la refuse jamais. Ses lignes
+    « Note de crédit » (lot 3b) le menant à zéro, et ne la refuse jamais. Ses lignes
     d'encaissement se vérifient toujours contre amount_paid SEUL : la
     radiation n'en est pas une."""
     lignes = [{"amount": 30000}, {"amount": 12000}]

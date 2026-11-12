@@ -16,6 +16,19 @@ A stored amount the balance cannot read (2026-11-12) is named by the model
 « illisible » where the balance and the lateness would be, and the sheet
 offers no status change and no payment, instead of failing — ``int()``'s
 error quoted the stored value into the error log.
+
+The write-off (lot 3b of « Factures : retard, radiation, intérêts », the
+lawyer's decision 8 of 2026-11-12) has its two web actions here, each the
+request adapter of its model door: « Radier le solde »
+(``/factures/<id>/radiation``, ``invoice.write_off_remainder``) — a form
+that shows the remainder, its TPS and TVQ as the model computes them, and
+says the credit note's number is given when it is recorded, never before —
+and « Annuler la radiation » (``…/radiation/<event_id>/annulation``,
+``invoice.reverse_write_off``). The routes compute every flag the pages
+read — whether the remainder may be written off today
+(``invoice.write_off_refusal`` on ``today_mtl``), which radiation stands,
+how a « payée » was settled (``invoice.settlement_label``) — and no
+template compares a date.
 """
 
 from datetime import datetime, timezone
@@ -51,6 +64,8 @@ from models.invoice import (
     DRAFT_NOTES_MAX_LENGTH,
     STATUS_LABELS,
     VALID_STATUSES,
+    WRITE_OFF_KINDS,
+    WRITE_OFF_REASON_MAX_LENGTH,
     WriteOffsUnreadable,
     # The statuses whose lateness the model judges (is_overdue): the sheet
     # says « illisible » on its « Retard » line for them alone.
@@ -71,11 +86,18 @@ from models.invoice import (
     list_invoices_page,
     list_line_items,
     number_year_warning,
+    reverse_write_off,
+    settlement_label,
+    standing_write_offs,
     unreadable_amount_message,
     unreadable_balance_field,
     update_invoice_draft,
     update_status,
     void_invoice_report,
+    write_off_events,
+    write_off_refusal,
+    write_off_remainder,
+    write_off_tax_parts,
     written_off_of,
 )
 from models.admin_ledger import (
@@ -206,15 +228,22 @@ def invoice_list() -> str:
     # modèle nomme le champ (unreadable_balance_field), et la ligne dit
     # « illisible » à la place du solde, sans « Échue » — au lieu de faire
     # tomber la page, dont l'erreur citait la valeur dans le journal.
+    # Le libellé du statut aussi (lot 3b) : une « payée » soldée par une
+    # radiation se lit « Soldée par radiation » ou « Payée en partie — solde
+    # radié » (invoice.settlement_label), calculé ici, seulement sur un
+    # montant lisible — sinon le libellé nu du statut.
     today = today_mtl()
     for inv in invoices:
         illisible = unreadable_balance_field(inv)
         if illisible is None:
             inv["_balance"] = balance_of(inv)
             inv["_days_overdue"] = days_overdue(inv, today=today)
+            inv["_status_label"] = settlement_label(inv)
         else:
             inv["_balance"] = None
             inv["_days_overdue"] = 0
+            inv["_status_label"] = STATUS_LABELS.get(inv.get("status", ""),
+                                                     inv.get("status", ""))
         inv["_illisible"] = (BALANCE_FIELD_LABELS.get(illisible, illisible)
                              if illisible else "")
 
@@ -458,6 +487,58 @@ def _unreadable_alone(invoice: dict, field: str) -> bool:
     return unreadable_balance_field({field: invoice.get(field, 0)}) is not None
 
 
+#: How the sheet names each write-off kind (``invoice.WRITE_OFF_KINDS``, in
+#: its order — pinned by a test).
+WRITE_OFF_KIND_LABELS = {
+    "radiation": "Radiation",
+    "contre_passation": "Annulation de radiation",
+}
+#: How the sheet names a radiation's credit note, standing or not (lot 3b:
+#: a cancelled radiation's credit note keeps its number, « annulée »).
+CREDIT_NOTE_STANDING, CREDIT_NOTE_CANCELLED = "en vigueur", "annulée"
+
+
+def _write_off_rows(invoice: dict, *, can_cancel: bool) -> Optional[list[dict]]:
+    """The sheet's « Radiations » rows (lot 3b), in stored order — every
+    event, as the model validated it (``invoice.write_off_events``): its
+    kind, its date (a date-only value: strftime, never ``to_mtl``), its
+    amounts, its credit note's number (a contre_passation shows the one it
+    cancels), whether that credit note is « en vigueur » or « annulée »
+    (its radiation standing or not — ``invoice.standing_write_offs``), its
+    reason, and ``can_cancel`` on each standing radiation when the sheet
+    offers « Annuler la radiation » at all (*can_cancel*). ``None`` when the
+    events cannot be read: the sheet then says so, never « none »."""
+    try:
+        events = write_off_events(invoice)
+        standing = {e["id"] for e in standing_write_offs(invoice)}
+    except WriteOffsUnreadable:
+        return None
+    numbers = {e["id"]: e["credit_note_number"] for e in events
+               if e["kind"] == "radiation"}
+    rows = []
+    for event in events:
+        radiation = event["kind"] == "radiation"
+        stands = radiation and event["id"] in standing
+        rows.append({
+            "id": event["id"],
+            "radiation": radiation,
+            "kind_label": WRITE_OFF_KIND_LABELS[event["kind"]],
+            "date": event["date"].strftime("%Y-%m-%d"),
+            "amount": event["amount"],
+            "gst": event["gst_amount"],
+            "qst": event["qst_amount"],
+            "tax_claimed": event["tax_claimed"],
+            "credit_note_number": numbers.get(
+                event["id"] if radiation else event["reverses_id"], ""),
+            "state": ((CREDIT_NOTE_STANDING if stands else CREDIT_NOTE_CANCELLED)
+                      if radiation else ""),
+            "standing": stands,
+            "can_cancel": can_cancel and stands,
+            "reason": str(event.get("reason") or ""),
+        })
+    return rows
+
+
 @invoices_bp.route("/<invoice_id>")
 @login_required
 def invoice_detail(invoice_id: str) -> str:
@@ -530,8 +611,23 @@ def invoice_detail(invoice_id: str) -> str:
         retard_depuis = first_overdue_day(invoice) if retard_jours else None
         # amount_due is frozen at issuance; the live balance is derived.
         balance = balance_of(invoice)
+        # La radiation (lot 3b) : le libellé d'une « payée » dit comment elle
+        # a été soldée ; le radié en vigueur a sa ligne aux totaux ;
+        # « Radier le solde » n'est offert que si le modèle l'accepterait
+        # aujourd'hui (write_off_refusal, sur le jour de Montréal — le
+        # gabarit ne compare aucune date, règle 5).
+        status_label = settlement_label(invoice)
+        written_off = written_off_of(invoice)
+        can_write_off = not write_off_refusal(invoice, today=today)
     else:
         transitions, retard_jours, retard_depuis, balance = (), 0, None, None
+        status_label = STATUS_LABELS.get(invoice.get("status", ""),
+                                         invoice.get("status", ""))
+        written_off, can_write_off = 0, False
+    # Chaque radiation et chaque annulation, lues par le modèle ; « Annuler
+    # la radiation » sur chaque radiation en vigueur, quand la fiche peut
+    # juger la facture (la porte refuse un montant illisible).
+    radiations = _write_off_rows(invoice, can_cancel=illisible is None)
 
     ctx = _template_context()
     ctx.update(
@@ -542,6 +638,13 @@ def invoice_detail(invoice_id: str) -> str:
         retard_jours=retard_jours,
         retard_depuis=retard_depuis,
         balance=balance,
+        status_label=status_label,
+        written_off=written_off,
+        can_write_off=can_write_off,
+        radiations=radiations,
+        # Une radiation en vigueur ferme la porte à tout encaissement
+        # (facture_radiee) : la fiche ne renvoie pas à « Administration ».
+        radiation_debout=any(r["standing"] for r in radiations or ()),
         # The unreadable amount, when there is one: the notice names it in
         # French; the « Retard » line says « illisible » where the model
         # judges lateness; each amount the sheet prints itself (« Montant dû
@@ -818,6 +921,169 @@ def invoice_void(invoice_id: str) -> str:
     if errors:
         return _back_to_detail(invoice_id, erreur=errors[0])
     return _back_to_detail(invoice_id, message=_void_outcome_message(report))
+
+
+# ── Write-offs: « Radier le solde », « Annuler la radiation » (lot 3b) ──
+
+
+def _write_off_unavailable(invoice: dict, today) -> str:
+    """Why *invoice*'s remainder cannot be written off on *today* — ``''``
+    when it can: a stored amount the balance cannot read, named, never
+    quoted (``invoice.unreadable_amount_message``), else the model's own
+    refusal (``invoice.write_off_refusal``), the one the door judges again
+    inside its transaction."""
+    illisible = unreadable_balance_field(invoice)
+    if illisible is not None:
+        return unreadable_amount_message(
+            illisible, "son solde ne peut pas être radié")
+    return write_off_refusal(invoice, today=today)
+
+
+def _write_off_form_values(invoice_id: str, invoice: dict) -> dict:
+    """The form as a fresh page fills it: the version shown, no reason, and
+    the TPS/TVQ claimed — the box CHECKED by default (D3)."""
+    return {"id": invoice_id, "etag": invoice.get("etag") or "",
+            "reason": "", "claim_tax": True}
+
+
+def _render_write_off_form(
+    invoice: dict,
+    form: dict,
+    *,
+    today,
+    errors: Optional[list[str]] = None,
+    conflict: Optional[dict] = None,
+) -> str:
+    """The « Radier le solde » page, every figure computed HERE by the model
+    on the invoice as read: the remainder (``invoice.balance_of`` — never
+    typed), its TPS and TVQ (``invoice.write_off_tax_parts``, ``None`` when
+    the invoice's own tax figures cannot be read: the page says so), the
+    day it will carry and its credit note's series — the number itself is
+    given when the radiation is recorded, inside its transaction, never
+    reserved here. The caller has checked the remainder may be written off
+    (:func:`_write_off_unavailable`)."""
+    remainder = balance_of(invoice)
+    try:
+        gst_part, qst_part = write_off_tax_parts(invoice, remainder)
+    except ValueError:
+        gst_part = qst_part = None
+    ctx = _template_context()
+    ctx.update(
+        invoice=invoice,
+        form=form,
+        errors=errors or [],
+        conflict=conflict,
+        remainder=remainder,
+        gst_part=gst_part,
+        qst_part=qst_part,
+        write_off_day=today.strftime("%Y-%m-%d"),
+        credit_note_series=f"{today.year:04d}-NC",
+        reason_max=WRITE_OFF_REASON_MAX_LENGTH,
+    )
+    return render_template("invoices/radiation.html", **ctx)
+
+
+@invoices_bp.route("/<invoice_id>/radiation")
+@login_required
+def invoice_write_off_form(invoice_id: str) -> str:
+    """« Radier le solde » — the form, offered only when the model would
+    write the remainder off today; otherwise back to the sheet, with why."""
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return redirect(url_for("invoices.invoice_list"))
+    invoice = {**invoice, "id": invoice_id}
+    today = today_mtl()
+    refusal = _write_off_unavailable(invoice, today)
+    if refusal:
+        return _back_to_detail(invoice_id, erreur=refusal)
+    return _render_write_off_form(
+        invoice, _write_off_form_values(invoice_id, invoice), today=today)
+
+
+@invoices_bp.route("/<invoice_id>/radiation", methods=["POST"])
+@login_required
+def invoice_write_off(invoice_id: str) -> str:
+    """Write off the invoice's whole remainder (``invoice.write_off_remainder``)
+    against the version the page showed — its ``expected_etag``, which the
+    door requires.
+
+    Success goes back to the sheet, naming the credit note's number. A
+    refusal re-renders the form at 200 with the French reason and what the
+    lawyer submitted (Architecture Rule 8; htmx swaps only a 2xx) — a stale
+    one with the amber banner and the CURRENT version and figures
+    (``routes/edit_conflict``) —, unless the invoice can no longer be
+    written off at all (settled in the meantime, say): then its sheet, with
+    the door's reason and the model's.
+    """
+    expected = edit_conflict.submitted_etag()
+    f = request.form
+    reason = f.get("reason", "")
+    claim_tax = f.get("claim_tax") == "on"
+    report, errors = write_off_remainder(
+        invoice_id, expected_etag=expected, reason=reason, claim_tax=claim_tax)
+    if not errors:
+        number = str(report["write_off"].get("credit_note_number") or "")
+        return _back_to_detail(
+            invoice_id, message=f"Solde radié : note de crédit {number}.")
+
+    errors, conflict, etag = edit_conflict.resolve_refusal(
+        errors,
+        submitted=expected,
+        reread=lambda: get_invoice(invoice_id),
+        compare_url=url_for("invoices.invoice_detail", invoice_id=invoice_id),
+    )
+    current = get_invoice(invoice_id)
+    if not current:
+        return _back_to_detail(invoice_id, erreur=" ".join(errors))
+    current = {**current, "id": invoice_id}
+    today = today_mtl()
+    unavailable = _write_off_unavailable(current, today)
+    if unavailable:
+        # dict.fromkeys: the door's own refusal is often the model's same
+        # sentence — said once.
+        return _back_to_detail(
+            invoice_id, erreur=" ".join(dict.fromkeys([*errors, unavailable])))
+    form = {"id": invoice_id, "etag": etag, "reason": reason,
+            "claim_tax": claim_tax}
+    return _render_write_off_form(current, form, today=today, errors=errors,
+                                  conflict=conflict)
+
+
+def _cancelled_credit_note(report: dict) -> str:
+    """The number of the credit note a committed reversal cancelled — its
+    radiation's, found in the invoice as written."""
+    cancelled = report["write_off"].get("reverses_id")
+    for event in report["invoice"].get("write_offs") or ():
+        if isinstance(event, dict) and event.get("id") == cancelled:
+            return str(event.get("credit_note_number") or "")
+    return ""
+
+
+@invoices_bp.route("/<invoice_id>/radiation/<event_id>/annulation", methods=["POST"])
+@login_required
+def invoice_write_off_reversal(invoice_id: str, event_id: str) -> str:
+    """« Annuler la radiation » — cancel one standing radiation
+    (``invoice.reverse_write_off``) against the version the sheet showed,
+    with an optional reason; the sheet's own confirmation precedes it. Its
+    credit note keeps its number, « annulée ». Back to the sheet either way:
+    the button lives there (a refusal as ``?erreur=``, Rule 8)."""
+    expected = edit_conflict.submitted_etag()
+    report, errors = reverse_write_off(
+        invoice_id, event_id, expected_etag=expected,
+        reason=request.form.get("reason", ""))
+    if errors:
+        return _back_to_detail(invoice_id, erreur=" ".join(errors))
+    number = _cancelled_credit_note(report)
+    written = report["invoice"]
+    try:
+        label = settlement_label(written)
+    except (TypeError, ValueError):
+        # After the commit, never a 500 over a label: the bare status's.
+        label = STATUS_LABELS.get(written.get("status", ""), written.get("status", ""))
+    return _back_to_detail(
+        invoice_id,
+        message=(f"Radiation annulée : la note de crédit {number} est annulée, "
+                 f"et la facture est « {label} »."))
 
 
 @invoices_bp.route("/<invoice_id>/delete", methods=["POST"])

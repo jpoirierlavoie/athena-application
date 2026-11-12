@@ -61,15 +61,19 @@ The rules (the plan of 2026-11-07, « The rules (Lot B) »):
   there (billed, dated on or before it) and the event is dated on or
   before it; a period takes the events that START counting in it
   (:func:`_period_write_offs`) — for the income, the TPS/TVQ table and
-  « Redressements » alike. Revenue loses each event's amount less the
-  TPS/TVQ it claims (« Radiations de comptes clients », printed when not
-  zero; a fraction not claimed stays inside it); the receivables lose the
-  amount, the TPS/TVQ payable the claimed parts (« créances
-  irrécouvrables »); a « contre_passation » counts the same figures with
-  the opposite sign, on its own day. « Redressements » lists each event of
-  the period with its TPS and TVQ — the lawyer's list for the tax return.
-  The rollforward takes no term of its own: a write-off moves the net
-  assets by exactly its effect on net income.
+  « Redressements » alike. Since lot 3b (the lawyer's decision 8 of
+  2026-11-12: a price reduction documented to the client by a credit note,
+  booked as a BAD DEBT), revenue stays as billed: each event's amount less
+  the TPS/TVQ it claims is an EXPENSE, « Créances irrécouvrables » (row
+  ``creances_irrecouvrables``, printed when not zero; a fraction not claimed
+  stays inside it), among the direct costs (:data:`BAD_DEBT_CLASS`); the
+  gross margin and the net income are lot 3a's to the cent. The
+  receivables lose the amount, the TPS/TVQ payable the claimed parts
+  (« créances irrécouvrables »); a « contre_passation » counts the same
+  figures with the opposite sign, on its own day. « Redressements » lists
+  each event of the period with its TPS and TVQ — the lawyer's list for the
+  tax return. The rollforward takes no term of its own: a write-off moves
+  the net assets by exactly its effect on net income.
 * **Days.** A stored date-only value counts on its UTC calendar day; an
   instant (``voided_at``, ``created_at``, now) on its Montréal day
   (Architecture Rule 5). A period never starts before ``BOOKS_START``;
@@ -388,6 +392,14 @@ def _tax_credits(row: dict) -> tuple:
 #: (``invoice.WRITE_OFF_KINDS``: a radiation, then the contre_passation that
 #: cancels one), in its order; pinned by a test.
 WRITE_OFF_SIGNS = dict(zip(invoice_model.WRITE_OFF_KINDS, (1, -1)))
+
+#: The cost class (``admin_ledger.COST_CLASSES``) of the bad debts, the
+#: expense « Créances irrécouvrables » (lot 3b): DIRECT, as
+#: ``admin_ledger.cost_class`` classes every cost linked to a dossier — a
+#: write-off always is, through its invoice. So the gross margin, and not
+#: only the net income, is what lot 3a computed when it took them off
+#: revenue.
+BAD_DEBT_CLASS = "direct"
 
 
 @dataclass(frozen=True)
@@ -828,17 +840,19 @@ def _income(admin: _Admin, invoices: _Invoices, start: date, end: date,
             bucket[category] = bucket.get(category, 0) + _cost(r)
     other.sort(key=lambda r: (r["_day"], r.get("id") or ""))
     other_total = sum(_signed(r) for r in other)
-    # The period's write-offs (lot 3a): each one's amount less the TPS/TVQ
-    # it claims — a fraction not claimed stays in the write-down; a
-    # contre-passation gives it back.
-    write_downs = sum(e.sign * (e.amount - e.gst - e.qst)
-                      for _inv, e in _period_write_offs(invoices, start, end))
+    # The period's bad debts (lot 3a's write-offs, an expense since lot 3b):
+    # each one's amount less the TPS/TVQ it claims — a fraction not claimed
+    # stays in the bad debt; a contre-passation gives it back. Revenue stays
+    # as billed.
+    bad_debts = sum(e.sign * (e.amount - e.gst - e.qst)
+                    for _inv, e in _period_write_offs(invoices, start, end))
     totals = {cls: sum(v.values()) for cls, v in costs.items()}
-    revenue = fees + billed_expenses + other_total - write_downs
+    totals[BAD_DEBT_CLASS] += bad_debts
+    revenue = fees + billed_expenses + other_total
     gross = revenue - totals["direct"]
     net = gross - totals["variable"] - totals["fixe"]
     return {"fees": fees, "billed_expenses": billed_expenses,
-            "other": other, "other_total": other_total, "write_downs": write_downs,
+            "other": other, "other_total": other_total, "bad_debts": bad_debts,
             "marks": {r["id"]: marks[r["id"]] for r in other if r["id"] in marks},
             "costs": costs, "cost_totals": totals,
             "revenue": revenue, "gross_margin": gross, "net_income": net}
@@ -1438,14 +1452,14 @@ def _present_income(data: dict) -> dict:
             _row("Autres produits", data["other_total"], key="autres_produits", level=1)]
     notes = ["Base facturée : factures envoyées, en retard ou payées, à la date de "
              "la facture, avant taxes. Coûts nets de TPS/TVQ."]
-    if data["write_downs"]:
-        # Printed when not zero (lot 3a): a period without a write-off shows
+    if data["bad_debts"]:
+        # Printed when not zero (lot 3b): a period without a write-off shows
         # the rows it always showed.
-        rows.append(_row("Radiations de comptes clients", -data["write_downs"],
-                         key="radiations", level=1))
-        notes.append("Radiations de comptes clients : les soldes radiés à la date "
-                     "de la radiation, moins la TPS/TVQ réclamée — une part non "
-                     "réclamée y reste ; une annulation de radiation les rétablit.")
+        notes.append("Créances irrécouvrables : les soldes radiés (une note de "
+                     "crédit chacun) à la date de la radiation, moins la "
+                     "TPS/TVQ réclamée — une part non réclamée y reste ; une "
+                     "annulation de radiation les rétablit. Les produits "
+                     "restent ceux qui ont été facturés.")
     rows.append(_row("Total des produits", data["revenue"], key="total_produits",
                      style="subtotal"))
     for cls in al.COST_CLASSES:
@@ -1454,6 +1468,9 @@ def _present_income(data: dict) -> dict:
             heading += " (dépenses liées à un dossier)"
         rows.append(_row(heading, None, key=f"classe:{cls}", style="heading"))
         rows.extend(_cost_rows(cls, data["costs"][cls]))
+        if cls == BAD_DEBT_CLASS and data["bad_debts"]:
+            rows.append(_row("Créances irrécouvrables", data["bad_debts"],
+                             key="creances_irrecouvrables", level=1))
         rows.append(_row(f"Total — {al.COST_CLASS_LABELS[cls].lower()}",
                          data["cost_totals"][cls], key=f"total:{cls}", style="subtotal"))
         if cls == "direct":

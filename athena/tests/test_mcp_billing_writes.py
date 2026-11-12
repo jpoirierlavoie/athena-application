@@ -1014,7 +1014,7 @@ def test_a_payee_settled_by_a_radiation_names_the_lawyers_way_back(world):
                  "date": datetime(2026, 9, 25, tzinfo=UTC),
                  "amount": invoice["amount_due"], "gst_amount": 0,
                  "qst_amount": 0, "tax_claimed": False, "reason": "",
-                 "reverses_id": ""}
+                 "reverses_id": "", "credit_note_number": "2026-NC001"}
     world.external_write(f"invoices/{iid}", {**world.peek(f"invoices/{iid}"),
                                              "status": "payée",
                                              "write_offs": [radiation]})

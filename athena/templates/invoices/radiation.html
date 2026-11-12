@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Radier le solde {{ invoice.invoice_number }} — Pallas Athena{% endblock %}
+
+{# « Radier le solde » (lot 3b du plan « Factures : retard, radiation,
+   intérêts » ; décision 8 de l'avocat, 2026-11-12) : la radiation du solde
+   ENTIER d'une facture en retard — une réduction du prix que documente au
+   client une note de crédit numérotée « AAAA-NC### », et une créance
+   irrécouvrable aux états financiers. Rien ne s'y tape que le motif et la
+   case des taxes : le solde, sa TPS et sa TVQ sont calculés par le modèle
+   (invoice.balance_of, invoice.write_off_tax_parts), et le numéro de la note
+   de crédit est attribué à l'enregistrement, dans la transaction — jamais
+   réservé d'avance. La route calcule tout ce que la page affiche ; ce
+   gabarit ne compare aucune date (règle 5). Un refus revient ici à 200 avec
+   sa raison (règle 8). Classes déjà compilées (tests/test_compiled_classes.py)
+   et cibles d'au moins 44 px (règle 9) : le bouton py-3, la case dans une
+   étiquette py-3. #}
+
+{% block content %}
+{# Importé DANS le bloc : un test qui ne rend que ce bloc ne verrait pas un
+   import de niveau racine (components/_edit_conflict.html). #}
+{% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('invoices.invoice_detail', invoice_id=invoice.id) }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    {{ ms('chevron_left', 16) }}
+    Facture {{ invoice.invoice_number }}
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Radier le solde de la facture {{ invoice.invoice_number }}</h1>
+  <p class="text-sm text-gray-500 mb-6">{{ invoice.client_name }}</p>
+
+  {{ conflict_banner(conflict) }}
+
+  {% if errors %}
+  <div role="alert" class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    {% for err in errors %}
+    <p class="text-red-600 text-sm wrap-anywhere">{{ err }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('invoices.invoice_write_off', invoice_id=invoice.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(form) }}
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">La radiation</h2>
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-900 font-medium flex-shrink-0">Solde à radier (taxes comprises)</dt>
+          <dd class="text-gray-900 text-right font-bold text-base">{{ remainder | cents_fr }}</dd>
+        </div>
+        {% if gst_part is none %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">dont TPS et TVQ</dt>
+          <dd class="text-red-700 text-right font-medium">illisibles</dd>
+        </div>
+        {% else %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">dont TPS</dt>
+          <dd class="text-gray-900 text-right">{{ gst_part | cents_fr }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">dont TVQ</dt>
+          <dd class="text-gray-900 text-right">{{ qst_part | cents_fr }}</dd>
+        </div>
+        {% endif %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Date de la radiation</dt>
+          <dd class="text-gray-900 text-right">{{ write_off_day }} (aujourd'hui)</dd>
+        </div>
+        <div class="flex justify-between gap-4 border-t border-gray-100 pt-2">
+          <dt class="text-gray-500 flex-shrink-0">Note de crédit</dt>
+          <dd class="text-gray-900 text-right">son numéro sera attribué à l'enregistrement : le suivant de la série {{ credit_note_series }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <label class="flex items-center gap-3 py-3 text-sm text-gray-700 cursor-pointer">
+        <input type="checkbox" name="claim_tax"
+               {% if form.claim_tax %}checked{% endif %}
+               class="w-5 h-5 text-indigo-600 border-gray-300 rounded">
+        Réclamer la TPS/TVQ (créance irrécouvrable)
+      </label>
+      <p class="text-xs text-gray-500">
+        Décochée, la radiation ne réclame ni TPS ni TVQ : elles restent à
+        remettre, et le solde radié entier compte aux créances irrécouvrables.
+        {% if gst_part is none %}
+        La TPS ou la TVQ de cette facture est illisible : cochée, la radiation
+        sera refusée — décochez-la, ou faites d'abord réparer la facture.
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <label for="reason" class="block text-xs font-medium text-gray-700 mb-1">Motif (facultatif, {{ reason_max }} caractères au plus)</label>
+      <textarea id="reason" name="reason" rows="3"
+                class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{{ form.reason }}</textarea>
+    </div>
+
+    <p class="text-xs text-gray-500 mb-6">
+      La radiation solde la facture : elle devient « payée », lue « Soldée par
+      radiation » ou « Payée en partie — solde radié ». Le client la voit comme
+      une réduction du prix, documentée par la note de crédit ; aux états
+      financiers, c'est une créance irrécouvrable. Le numéro de la note de
+      crédit ne se réutilise jamais, même si la radiation est annulée —
+      « Annuler la radiation », sur la fiche, rouvre la facture en retard.
+    </p>
+
+    <div class="flex flex-wrap justify-end gap-3">
+      <a href="{{ url_for('invoices.invoice_detail', invoice_id=invoice.id) }}"
+         class="px-4 py-3 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+        Abandonner
+      </a>
+      <button type="submit"
+              class="px-6 py-3 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors">
+        Radier le solde
+      </button>
+    </div>
+  </form>
+
+</div>
+{% endblock %}
