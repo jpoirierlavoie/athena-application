@@ -5943,6 +5943,34 @@ Notes:
   made before the due date. A rollback of the code takes `cron.yaml`'s job
   with it.
 
+- **The counterparty suggestions (2026-11-12).** Both entry forms' counterparty
+  field suggests names as the lawyer types, by the entry's type
+  (`admin_ledger.ENTRY_TYPES`, `trust.PURPOSE_TYPES`): an expense, its refund
+  and a trust payment to a third party, the suppliers and the professionals
+  (never a client); a client's money, the clients, the dossier's first; an
+  encaissement, the invoice's client first; TPS/TVQ, the tax authorities; a
+  virement interne, « Compte en fidéicommis ». The names the entry points to
+  show on focus, the contacts from two typed letters (« starts with » before
+  « contains », eight rows, then « précisez »). A pick writes the trade name,
+  else the legal name — never « Me » — and, on an expense or its refund, the
+  supplier's usual category if the category is empty. The field stays free
+  text. One component (`templates/components/_champ_contrepartie.html`): 44 px
+  rows, Down arrow to the list, Escape to close; a failed read, an expired
+  session or a network failure says « Suggestions indisponibles — saisissez
+  le nom. ». Change Impact: item 4 (the existing `unexpected` event, register
+  and type only — never what was typed); item 5 (`/administration/
+  counterparty-suggest` joins the trust one, both behind login; htmx carries
+  App Check); item 6 (compiled classes only); item 7 (one `in` equality on
+  `contact_role`, served by the single-field index, capped at 500); items 1
+  to 3 not touched.
+  In order:
+  1. *The push.*
+  2. *A new dépense* (desktop, then the phone): type three letters of a
+     supplier — the list shows it with its role; pick it — the name, and its
+     usual category if the category was empty.
+  3. *A trust « Déboursé à un tiers »*: the same names, never a client.
+  A rollback is the code alone.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |

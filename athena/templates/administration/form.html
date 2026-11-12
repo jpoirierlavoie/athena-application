@@ -12,6 +12,7 @@
      bandeau ambre (routes/edit_conflict). Import DANS le bloc, la règle du
      composant. #}
   {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {% from "components/_champ_contrepartie.html" import champ_contrepartie %}
   {{ conflict_banner(conflict) }}
 
   {% if errors %}
@@ -76,7 +77,13 @@
           profile: function (k) { return (this.entryTypes.kinds || {})[k] || {}; },
           invoiceClient: function () { let s = this.$refs.invoice; let o = s ? s.selectedOptions[0] : null; return (o &amp;&amp; o.dataset.client) || ''; },
           prefillFor: function (k) { let p = this.profile(k); return p.from_invoice ? this.invoiceClient() : (p.prefill || ''); },
-          applyPrefill: function (value) { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = value; this.lastPrefill = value; } }
+          applyPrefill: function (value) { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = value; this.lastPrefill = value; } },
+          {# Les suggestions (lot 6, components/_champ_contrepartie.html) : un
+             rang choisi inscrit son nom — plus jamais remplacé par un
+             préremplissage — et, sur une dépense ou son remboursement, la
+             catégorie habituelle du fournisseur si la catégorie est vide. #}
+          cpOpen: false, cpSkip: false, cpEmpty: true, cpStatus: '',
+          pickCounterparty: function (b) { let f = this.$refs.counterparty; f.value = b.dataset.counterparty; this.lastPrefill = null; let c = this.$refs.category; if (b.dataset.category &amp;&amp; c &amp;&amp; !c.value &amp;&amp; this.categoryKinds.includes(this.kind)) { c.value = b.dataset.category; } this.cpOpen = false; this.cpSkip = true; f.focus(); }
         }"
         x-init="let sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; } $watch('kind', function (k) { applyPrefill(prefillFor(k)); }); applyPrefill(prefillFor(kind));"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
@@ -243,24 +250,23 @@
       <p class="text-xs text-gray-400 mt-1">Un déboursé refacturable au client s'inscrit aussi dans Dépenses (/temps) — ce registre ne crée pas la dépense au dossier.</p>
     </div>
 
-    <div>
-      {# Le champ de contrepartie suit le TYPE (admin_ledger.ENTRY_TYPES,
-         décisions de l'avocat du 2026-11-11) : son libellé et son exemple —
-         un virement interne nomme le COMPTE de l'autre côté, hors de ce
-         registre (le fidéicommis, un compte d'épargne), jamais un
-         fournisseur. Le texte rendu suit le type initial ; Alpine le suit
-         ensuite. Sur une NOUVELLE écriture, le champ se préremplit selon le
-         type (D6) — le nom de l'avocat, l'administration fiscale, le client
-         de la facture choisie —, seulement s'il est vide ou porte encore le
-         dernier préremplissage : jamais un nom saisi ni arrivé avec la page.
-         Pas de x-model : il écraserait la valeur rendue par le serveur. #}
-      <label class="block text-sm font-medium text-gray-700 mb-1"
-             x-text="profile(kind).payee_label || entryTypes.payee_label_fallback || ''">{{ counterparty_label }}</label>
-      <input type="text" name="counterparty" required autocomplete="off" x-ref="counterparty" value="{{ entry.counterparty if entry else '' }}"
-             placeholder="{{ counterparty_placeholder }}"
-             :placeholder="profile(kind).placeholder || ''"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-    </div>
+    {# Le champ de contrepartie suit le TYPE (admin_ledger.ENTRY_TYPES,
+       décisions de l'avocat du 2026-11-11) : son libellé et son exemple —
+       un virement interne nomme le COMPTE de l'autre côté, hors de ce
+       registre (le fidéicommis, un compte d'épargne), jamais un
+       fournisseur. Le texte rendu suit le type initial ; Alpine le suit
+       ensuite. Sur une NOUVELLE écriture, le champ se préremplit selon le
+       type (D6) — le nom de l'avocat, l'administration fiscale, le client
+       de la facture choisie —, seulement s'il est vide ou porte encore le
+       dernier préremplissage : jamais un nom saisi ni arrivé avec la page.
+       Ses suggestions (lot 6) suivent le type, le dossier et la facture
+       choisis (components/_champ_contrepartie.html). #}
+    {{ champ_contrepartie(url_for('admin_ledger.counterparty_suggest'),
+                          "[name='kind'], [name='dossier_id'], [name='invoice_id']",
+                          entry.counterparty if entry else '', counterparty_label,
+                          "profile(kind).payee_label || entryTypes.payee_label_fallback || ''",
+                          placeholder=counterparty_placeholder,
+                          placeholder_bind="profile(kind).placeholder || ''") }}
 
     {# ── N° de facture du fournisseur : une dépense, son remboursement et
        une autre recette (supplierRefKinds, admin_ledger.SUPPLIER_REF_KINDS)
@@ -280,7 +286,7 @@
     <div x-show="categoryKinds.includes(kind)" x-cloak class="space-y-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
-        <select name="category" :disabled="!categoryKinds.includes(kind)" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <select name="category" :disabled="!categoryKinds.includes(kind)" x-ref="category" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
           <option value="">Choisir…</option>
           {% for c in valid_categories %}
           <option value="{{ c }}" {% if entry and entry.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>

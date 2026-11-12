@@ -60,6 +60,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     from models import admin_ledger as al
     from models import fee_payment
+    from models import partie as pm
     from models import trust
     import routes.admin_ledger as ra
     import routes.dossiers as dossiers_routes
@@ -538,7 +539,11 @@ ADMIN_ALPINE_LINES = (
     "profile: function (k) { return (this.entryTypes.kinds || {})[k] || {}; },",
     "invoiceClient: function () { let s = this.$refs.invoice; let o = s ? s.selectedOptions[0] : null; return (o &amp;&amp; o.dataset.client) || ''; },",
     "prefillFor: function (k) { let p = this.profile(k); return p.from_invoice ? this.invoiceClient() : (p.prefill || ''); },",
-    "applyPrefill: function (value) { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = value; this.lastPrefill = value; } }",
+    "applyPrefill: function (value) { let f = this.$refs.counterparty; if (!this.entryTypes.prefill_on || !f) { return; } if (f.value.trim() === '' || f.value === this.lastPrefill) { f.value = value; this.lastPrefill = value; } },",
+    # Lot 6: the suggestions' state and the pick (a supplier's usual
+    # category fills an EMPTY category only, on a dépense or its refund).
+    "cpOpen: false, cpSkip: false, cpEmpty: true, cpStatus: '',",
+    "pickCounterparty: function (b) { let f = this.$refs.counterparty; f.value = b.dataset.counterparty; this.lastPrefill = null; let c = this.$refs.category; if (b.dataset.category &amp;&amp; c &amp;&amp; !c.value &amp;&amp; this.categoryKinds.includes(this.kind)) { c.value = b.dataset.category; } this.cpOpen = false; this.cpSkip = true; f.focus(); }",
 )
 ADMIN_X_INIT = (
     "let sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) "
@@ -559,16 +564,19 @@ def test_the_page_s_alpine_reads_the_profiles(client, fake):
         assert pinned in lines, pinned
     assert re.search(r'x-init="([^"]*)"', src).group(1) == ADMIN_X_INIT
     assert "if (profile(kind).from_invoice) { applyPrefill(invoiceClient()); }" in src
-    assert 'x-text="profile(kind).payee_label || entryTypes.payee_label_fallback || \'\'"' in src
-    assert ':placeholder="profile(kind).placeholder || \'\'"' in src
-    # The refs: the counterparty input and the invoice select, nothing else.
-    counterparty = re.search(r'<input type="text" name="counterparty"[^>]*>', src).group(0)
+    # The field itself lives in components/_champ_contrepartie.html (lot 6):
+    # its bindings are checked on the rendered page.
+    page = client.get("/administration/nouvelle").get_data(as_text=True)
+    assert 'x-text="profile(kind).payee_label || entryTypes.payee_label_fallback || \'\'"' in page
+    assert ':placeholder="profile(kind).placeholder || \'\'"' in page
+    # The refs: the counterparty input, the invoice and category selects.
+    counterparty = re.search(r'<input type="text" name="counterparty"[^>]*>', page).group(0)
     assert 'x-ref="counterparty"' in counterparty and "x-model" not in counterparty
     invoice = re.search(r'<select name="invoice_id"[^>]*', src).group(0)
     assert 'x-ref="invoice"' in invoice
-    assert src.count('x-ref="counterparty"') == src.count('x-ref="invoice"') == 1
+    assert 'x-ref="category"' in re.search(r'<select name="category"[^>]*', src).group(0)
+    assert page.count('x-ref="counterparty"') == page.count('x-ref="invoice"') == 1
     # The contract: every key the code reads is in the route's data block.
-    page = client.get("/administration/nouvelle").get_data(as_text=True)
     block = _json_block(page, "admin-entry-types")
     assert {"kinds", "prefill_on", "payee_label_fallback"} <= set(block)
     for profile in block["kinds"].values():
@@ -899,18 +907,23 @@ def test_the_trust_prefill_data_and_its_switch(client, fake):
     for pinned in TRUST_ALPINE_LINES:
         assert pinned in lines, pinned
     assert re.search(r'x-init="([^"]*)"', src).group(1) == TRUST_X_INIT
-    # The label follows the direction; the bank follows the account.
+    # The label follows the direction; the bank follows the account. (The
+    # field lives in components/_champ_contrepartie.html since lot 6: its
+    # bindings are checked on the rendered page.)
     assert ('x-text="(entryTypes.payee_labels || {})[direction] '
-            '|| entryTypes.payee_label_fallback') in src
+            '|| entryTypes.payee_label_fallback') in page
     assert ("@change=\"institution = $event.target.selectedOptions.length ? "
             "($event.target.selectedOptions[0].dataset.institution || '') : ''; "
             "applyPrefill()\"") in src
     # The refs: the FREE counterparty input (never the fee payment's select)
     # and the account select.
-    free = re.search(r'<input type="text" name="counterparty"[^>]*>', src).group(0)
+    free = re.search(r'<input type="text" name="counterparty"[^>]*>', page).group(0)
     assert 'x-ref="counterparty"' in free and "x-model" not in free
     assert 'x-ref="account"' in re.search(r'<select name="account_id"[^>]*', src).group(0)
-    assert src.count('x-ref="counterparty"') == 1
+    assert page.count('x-ref="counterparty"') == 1
+    assert ("pickCounterparty: function (b) { let f = this.$refs.counterparty; "
+            "f.value = b.dataset.counterparty; this.lastPrefill = null; "
+            "this.cpOpen = false; this.cpSkip = true; f.focus(); },") in lines
     # The contract: the keys the code reads, and the clients' « name ».
     assert {"client_prefill", "bank_prefill", "prefill_on", "payee_labels",
             "payee_label_fallback", "optional_dossier"} <= set(block)
@@ -990,3 +1003,168 @@ def test_the_trust_label_helper_never_blanks():
     assert trust.payee_label_of({"direction": "recette", "reverses_id": "x"}) == (
         "Bénéficiaire du débours")
     assert trust.PAYEE_LABEL_FALLBACK == dict(trust.BARREAU_COLUMNS)["counterparty"]
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. The suggestions (lot 6)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _contact(pid: str, role: str, **over) -> dict:
+    doc = pm._default_doc()
+    doc.update({"id": pid, "contact_role": role, **over})
+    return doc
+
+
+@pytest.fixture
+def people(fake):
+    for doc in (
+        _contact("s1", "fournisseur", type="organization",
+                 organization_name="Lévesque inc.", categorie_depense_defaut="fournitures"),
+        _contact("h1", "huissier", type="individual", first_name="Jean",
+                 last_name="Lévesque"),
+        _contact("a1", "avocat_adverse", type="individual", prefix="Me",
+                 first_name="Marie", last_name="Lévesque"),
+        _contact("c9", "client", type="individual", first_name="Luc",
+                 last_name="Lévesque"),
+        _contact("t1", "fournisseur", type="organization",
+                 organization_name="Société Légale inc.", trade_name="Papeterie Levant"),
+    ):
+        fake.seed(f"parties/{doc['id']}", doc)
+    return fake
+
+
+def _suggest(client, url: str):
+    resp = client.get(url)
+    assert resp.status_code == 200
+    assert resp.headers.get("X-Athena-Fragment") == "contreparties"
+    page = resp.get_data(as_text=True)
+    names = [html.unescape(n) for n in re.findall(
+        r'<button type="button"[^>]*data-counterparty="([^"]*)"', page)]
+    return page, names
+
+
+def test_the_fold_is_the_report_s():
+    from utils.rapprochement import plier_contrepartie
+    for sample in ("Lévesque inc.", "O'Brien & « Fils »", "  ÉCOLE  ", "—", ""):
+        assert cp.fold(sample) == plier_contrepartie(sample)
+
+
+def test_the_ranking():
+    pinned = [{"name": "Client Fictif inc.", "detail": "ce dossier"}]
+    fixed = [{"name": "Revenu Québec"}]
+    contacts = [{"name": f"Nom {i}", "alternates": [f"Lévesque{i}"]} for i in range(10)]
+    contacts.append({"name": "Paul Valévesque", "alternates": []})   # contains
+    rows, more = cp.rank(pinned, fixed, contacts, "")
+    assert [r["name"] for r in rows] == ["Client Fictif inc.", "Revenu Québec"] and not more
+    # One letter: no contact searched yet.
+    assert [r["name"] for r in cp.rank(pinned, fixed, contacts, "l")[0]] == [
+        "Client Fictif inc."]
+    rows, more = cp.rank(pinned, fixed, contacts, "lev")
+    assert len(rows) == cp.SUGGESTION_LIMIT and more
+    assert rows[0]["name"] == "Nom 0"               # starts-with before contains
+    rows, _ = cp.rank([], [], contacts[-1:] + contacts[:1], "lev")
+    assert [r["name"] for r in rows] == ["Nom 0", "Paul Valévesque"]
+    # A name already listed (folded) is skipped.
+    rows, _ = cp.rank([{"name": "Lévesque inc."}], [], [{"name": "LEVESQUE INC"}], "lev")
+    assert [r["name"] for r in rows] == ["Lévesque inc."]
+
+
+def test_a_pick_writes_the_trade_name_else_the_legal_name_never_a_title():
+    from utils import civilite
+    assert civilite.payee_name({"type": "organization", "organization_name": "Société Légale inc.",
+                                "trade_name": "Papeterie Levant"}) == "Papeterie Levant"
+    assert civilite.payee_name({"type": "organization",
+                                "organization_name": "Lévesque inc."}) == "Lévesque inc."
+    assert civilite.payee_name({"type": "individual", "prefix": "Me",
+                                "first_name": "Marie", "last_name": "Lévesque"}) == "Marie Lévesque"
+
+
+def test_the_reader_by_role_is_strict_and_capped(people, monkeypatch):
+    for bad in ((), ("",), ("inconnu",), ("fournisseur", "x")):
+        with pytest.raises(ValueError):
+            pm.list_by_roles_strict(bad)
+    rows, truncated = pm.list_by_roles_strict(("fournisseur",))
+    assert sorted(r["id"] for r in rows) == ["s1", "t1"] and not truncated
+    rows, truncated = pm.list_by_roles_strict(("fournisseur",), limit=1)
+    assert len(rows) == 1 and truncated
+
+
+def test_a_depense_suggests_suppliers_and_professionals_never_a_client(client, people):
+    """F — the administration form suggested nothing."""
+    page, names = _suggest(client, "/administration/counterparty-suggest?kind=d%C3%A9pense&counterparty=lev")
+    assert set(names) == {"Lévesque inc.", "Jean Lévesque", "Marie Lévesque",
+                          "Papeterie Levant"}
+    assert "Luc Lévesque" not in names and "Me " not in page
+    assert 'data-category="fournitures"' in page          # the supplier's usual one
+    _page, names = _suggest(client, "/administration/counterparty-suggest?kind=d%C3%A9pense&counterparty=xyz")
+    assert names == []
+
+
+def test_an_encaissement_lists_the_invoice_s_client_first(client, people):
+    page, names = _suggest(client, "/administration/counterparty-suggest"
+                                   "?kind=encaissement_facture&invoice_id=inv1&counterparty=")
+    assert names[0] == CLIENT and "client de la facture" in page
+
+
+def test_a_drawing_or_an_unknown_type_reads_no_contact(client, people, monkeypatch):
+    calls = []
+    real = pm.list_by_roles_strict
+    monkeypatch.setattr(pm, "list_by_roles_strict",
+                        lambda *a, **k: calls.append(a) or real(*a, **k))
+    for kind in ("pr%C3%A9l%C3%A8vement", "inconnu", ""):
+        page, names = _suggest(client, f"/administration/counterparty-suggest?kind={kind}&counterparty=lev")
+        assert names == [] and page == ""
+    assert calls == []
+
+
+def test_a_failed_read_says_unavailable_and_logs_no_name(client, people, monkeypatch, caplog):
+    def broken(*_a, **_k):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(pm, "list_by_roles_strict", broken)
+    canary = "Zéphyrin Canari"
+    page, names = _suggest(client, f"/administration/counterparty-suggest?kind=d%C3%A9pense&counterparty={canary}")
+    assert "Suggestions indisponibles — saisissez le nom." in page and names == []
+    assert "Aucun" not in page
+    logged = " ".join(r.getMessage() + str(getattr(r, "json_fields", "")) for r in caplog.records)
+    assert "counterparty suggestions failed" in logged and canary not in logged
+
+
+def test_names_are_escaped_and_eight_rows_say_precisez(client, fake):
+    fake.seed("parties/x1", _contact("x1", "fournisseur", type="organization",
+                                     organization_name='O\'Brien & "Fils" <x>'))
+    for i in range(10):
+        fake.seed(f"parties/n{i}", _contact(f"n{i}", "notaire", type="individual",
+                                            first_name="Ophélie", last_name=f"Obrien{i}"))
+    page, names = _suggest(client, "/administration/counterparty-suggest?kind=d%C3%A9pense&counterparty=ob")
+    assert len(names) == cp.SUGGESTION_LIMIT and "précisez" in page
+    page, names = _suggest(client, "/administration/counterparty-suggest?kind=d%C3%A9pense&counterparty=o%27b")
+    assert '<x>' not in page and "&lt;x&gt;" in page
+    assert 'O\'Brien & "Fils" <x>' in names
+
+
+def test_a_trust_payment_to_a_third_party_never_offers_a_client(client, people):
+    """F — the trust form offered the dossier's clients and opposing parties
+    for every purpose, and ignored what was typed."""
+    _page, names = _suggest(client, "/fideicommis/counterparty-suggest"
+                                    "?purpose=d%C3%A9bours%C3%A9_tiers&dossier_id=dos1&counterparty=lev")
+    assert set(names) == {"Lévesque inc.", "Jean Lévesque", "Marie Lévesque", "Papeterie Levant"}
+    _page, names = _suggest(client, "/fideicommis/counterparty-suggest"
+                                    "?purpose=avance_honoraires&dossier_id=dos1&counterparty=")
+    assert names == [CLIENT]
+    _page, names = _suggest(client, "/fideicommis/counterparty-suggest"
+                                    "?purpose=r%C3%A8glement&dossier_id=dos1&counterparty=zzz")
+    assert names == []
+    # A page rendered before lot 6 (no purpose): the dossier's parties.
+    _page, names = _suggest(client, "/fideicommis/counterparty-suggest?dossier_id=dos1&counterparty=zzz")
+    assert names == [CLIENT]
+
+
+def test_an_unknown_name_still_saves(client, fake):
+    resp = client.post("/administration/", data=_admin_form("dépense", category="fournitures",
+                                                             counterparty="Nom jamais vu"))
+    assert resp.status_code == 302
+    (stored,) = fake.peek_collection("admin_transactions").values()
+    assert stored["counterparty"] == "Nom jamais vu"

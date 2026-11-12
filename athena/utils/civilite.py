@@ -157,3 +157,12 @@ def full_name(partie: dict, *, honorific: bool) -> str:
         _part(partie.get("last_name", "")),
     ]
     return " ".join(p for p in parts if p).strip()
+
+
+def payee_name(partie: dict) -> str:
+    """The name a counterparty pick writes (the lawyer's decision of
+    2026-11-11): the trade name (« Nom d'emprunt ») if any, else the legal
+    name of an organization or the person's first and last names — never a
+    title such as « Me »."""
+    return _part(partie.get("trade_name", "")).strip() or full_name(
+        partie, honorific=False)

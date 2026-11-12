@@ -1330,18 +1330,22 @@ def test_dossier_search_inputs_send_a_query_param():
 
 
 def test_client_and_counterparty_lookups_send_dossier_id():
-    """client_search / counterparty_suggest read dossier_id from the query
-    string; the input must carry a mechanism that sends it."""
-    tags = [
-        t for t in _input_tags(_template("form.html"))
-        if "client_search" in t or "counterparty_suggest" in t
-    ]
-    assert tags, "form.html: expected client/counterparty lookup inputs"
-    for tag in tags:
-        assert "dossier_id" in tag, (
-            "form.html: a lookup input does not send dossier_id "
-            "(needs hx-include=\"[name='dossier_id']\" or hx-vals)"
-        )
+    """counterparty_suggest reads dossier_id from the query string; the
+    input must carry a mechanism that sends it. Since lot 6 (2026-11-11)
+    the input lives in components/_champ_contrepartie.html: its hx-include
+    is the caller's, and the trust form's call must name the dossier (and
+    the purpose, which picks the suggestions)."""
+    component = os.path.join(os.path.dirname(_TRUST_TEMPLATES), "components",
+                             "_champ_contrepartie.html")
+    with open(component, encoding="utf-8") as fh:
+        tags = [t for t in _input_tags(fh.read()) if 'name="counterparty"' in t]
+    assert len(tags) == 1 and 'hx-include="{{ include|safe }}"' in tags[0]
+    call = _template("form.html").split("champ_contrepartie(url_for('trust.counterparty_suggest')", 1)
+    assert len(call) == 2, "form.html: the counterparty field is the component"
+    include = call[1].split(")", 1)[0]
+    assert "[name='dossier_id']" in include and "[name='purpose']" in include, (
+        "form.html: the counterparty lookup does not send dossier_id "
+        "(needs it in the component's include)")
 
 
 def test_no_results_div_closes_itself_on_the_click_that_opens_it():

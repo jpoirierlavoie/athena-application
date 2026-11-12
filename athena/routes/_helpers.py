@@ -34,6 +34,8 @@ blueprints had each hand-written — some of them wrongly:
 * ``with_query`` — a banner merged into a target's query string, percent-
   encoded (never ``markupsafe.escape``, which cut « n'a » at its
   apostrophe), moved here from ``routes/trust._redirect_with``.
+* ``counterparty_suggestions`` — the counterparty field's suggestions, for
+  both registers' entry forms (lot 6 of 2026-11-11).
 
 Also home to ``theme_context``, the template context processor of the
 display theme: ``main.py`` registers it, and so can a test's bare app, with
@@ -44,7 +46,9 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flask import Response, has_request_context, redirect, request
+from flask import (
+    Response, has_request_context, make_response, redirect, render_template, request,
+)
 from markupsafe import escape
 from werkzeug.urls import iri_to_uri
 
@@ -231,3 +235,110 @@ def enrich_dossier_labels(
     data["dossier_file_number"] = ""
     data["dossier_title"] = ""
     return data, []
+
+
+
+# ── Counterparty suggestions (lot 6 of 2026-11-11) ──────────────────────────
+#: Every answer carries it: the page drops any answer without it — an expired
+#: session's sign-in page, an error — and says the suggestions are
+#: unavailable instead.
+SUGGESTION_HEADER = "X-Athena-Fragment"
+SUGGESTION_HEADER_VALUE = "contreparties"
+
+
+def _suggestion_response(body: str) -> Response:
+    resp = make_response(body, 200)
+    resp.headers[SUGGESTION_HEADER] = SUGGESTION_HEADER_VALUE
+    return resp
+
+
+def no_counterparty_suggestions() -> Response:
+    """An empty list: a type whose field suggests nothing (read nothing)."""
+    return _suggestion_response("")
+
+
+def _contact_roles_of(sources) -> tuple:
+    from utils import contact_roles
+    from utils import contreparties as cp
+    roles: list[str] = []
+    if cp.SOURCE_CLIENTS in sources:
+        roles.append("client")
+    if cp.SOURCE_SUPPLIERS in sources:
+        roles.extend(contact_roles.SUPPLIER_ROLES)
+    if cp.SOURCE_PROFESSIONALS in sources:
+        roles.extend(contact_roles.PROFESSIONAL_ROLES)
+    return tuple(dict.fromkeys(roles))
+
+
+def counterparty_suggestions(register: str, kind: str, sources, typed: str, *,
+                             dossier_id: str = "", invoice_id: str = "") -> Response:
+    """The suggestions of a counterparty field whose type suggests from
+    *sources* (``utils/contreparties``), as the fragment the field shows.
+
+    The names the entry points to — the invoice's client, the dossier's
+    clients or parties — and the fixed names show on focus; the contacts
+    (clients, suppliers, professionals) are searched from
+    ``contreparties.MIN_TYPED`` typed characters (``partie.list_by_roles_
+    strict``). A pick writes ``civilite.payee_name`` for a contact (never a
+    title) and a snapshot name without its title. Every read is strict: a
+    failure answers « Suggestions indisponibles — saisissez le nom. », never
+    an empty list, and logs the register and the type only — never what
+    was typed. An id Firestore cannot address counts as none. Always 200,
+    with ``SUGGESTION_HEADER``. The field stays free text: nothing here
+    refuses a name."""
+    from models import dossier as dossier_model
+    from models import invoice as invoice_model
+    from models import partie as partie_model
+    from models.record_ids import is_addressable_id
+    from utils import civilite, contact_roles
+    from utils import contreparties as cp
+    from utils.logging_setup import log_unexpected
+
+    sources = tuple(sources)
+    typed = (typed or "")[:200]
+    pinned: list[dict] = []
+    fixed: list[dict] = []
+    contacts: list[dict] = []
+    truncated = False
+    try:
+        if cp.SOURCE_INVOICE_CLIENT in sources and is_addressable_id(invoice_id):
+            invoice = invoice_model.get_invoice_strict(invoice_id) or {}
+            if invoice.get("client_name"):
+                pinned.append({"name": civilite.strip_prefix(invoice["client_name"]),
+                               "detail": "client de la facture"})
+            dossier_id = dossier_id or invoice.get("dossier_id") or ""
+        groups = []
+        if cp.SOURCE_DOSSIER_CLIENTS in sources or cp.SOURCE_DOSSIER_PARTIES in sources:
+            groups.append("clients")
+        if cp.SOURCE_DOSSIER_PARTIES in sources:
+            groups.append("opposing_parties")
+        if groups and is_addressable_id(dossier_id):
+            dossier = dossier_model.get_dossier_strict(dossier_id) or {}
+            for group in groups:
+                for party in dossier.get(group) or []:
+                    name = civilite.strip_prefix(party.get("name") or "")
+                    if name:
+                        pinned.append({"name": name, "detail": "ce dossier"})
+        if cp.SOURCE_TRUST_ACCOUNT in sources:
+            fixed.append({"name": cp.TRUST_ACCOUNT_NAME})
+        if cp.SOURCE_TAX_AUTHORITIES in sources:
+            fixed.extend({"name": name} for name in cp.TAX_AUTHORITIES)
+        roles = _contact_roles_of(sources)
+        if roles and len(cp.fold(typed)) >= cp.MIN_TYPED:
+            rows, truncated = partie_model.list_by_roles_strict(roles)
+            for row in rows:
+                contacts.append({
+                    "name": civilite.payee_name(row),
+                    "detail": contact_roles.role_label(row.get("contact_role") or ""),
+                    "category": row.get("categorie_depense_defaut") or "",
+                    "alternates": [civilite.as_text(row.get(k, "")) for k in (
+                        "trade_name", "organization_name", "first_name", "last_name")],
+                })
+            contacts.sort(key=lambda c: cp.fold(c["name"]))
+    except Exception:
+        log_unexpected("counterparty suggestions failed", register=register, kind=kind)
+        return _suggestion_response(render_template(
+            "components/_suggestions_contrepartie.html", unavailable=True))
+    rows, more = cp.rank(pinned, fixed, contacts, typed)
+    return _suggestion_response(render_template(
+        "components/_suggestions_contrepartie.html", rows=rows, more=more or truncated))

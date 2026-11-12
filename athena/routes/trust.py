@@ -55,8 +55,10 @@ from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
 from routes._helpers import (
+    counterparty_suggestions,
     dossier_search_fragment,
     is_htmx,
+    no_counterparty_suggestions,
     parse_date_input,
     redirect_after_post,
     standard_dossier_row,
@@ -252,25 +254,25 @@ def client_search() -> str:
 
 @trust_bp.route("/counterparty-suggest")
 @login_required
-def counterparty_suggest() -> str:
-    """Suggest the dossier's parties as TEXT (stored as a string, never a FK)."""
-    dossier_id = request.args.get("dossier_id", "").strip()
-    dossier = get_dossier(dossier_id) if dossier_id else None
-    names = []
-    if dossier:
-        for group in ("clients", "opposing_parties"):
-            names.extend(p.get("name", "") for p in dossier.get(group, []))
-    names = [n for n in names if n]
-    if not names:
-        return ""
-    parts = ['<ul class="divide-y divide-gray-100">']
-    for n in names:
-        parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f' data-counterparty="{escape(n)}">{escape(n)}</li>'
-        )
-    parts.append("</ul>")
-    return "\n".join(parts)
+def counterparty_suggest():
+    """The counterparty field's suggestions for the « Objet » chosen — its
+    sources in the declared table (``trust.PURPOSE_TYPES``, lot 6 of
+    2026-11-11), with the dossier the form shows; TEXT, stored as typed,
+    never a key. A request without a purpose (a page rendered before lot
+    6) gets the dossier's parties, as before. A purpose the table ignores,
+    or one that suggests nothing, answers an empty list and reads nothing."""
+    purpose = request.args.get("purpose", "")
+    typed = request.args.get("counterparty", "")
+    if not purpose:
+        sources, typed = (cp.SOURCE_DOSSIER_PARTIES,), ""
+    else:
+        purpose_type = trust.PURPOSE_TYPES.get(purpose)
+        if purpose_type is None or not purpose_type.sources:
+            return no_counterparty_suggestions()
+        sources = purpose_type.sources
+    return counterparty_suggestions(
+        "trust", purpose or "sans_objet", sources, typed,
+        dossier_id=request.args.get("dossier_id", "").strip())
 
 
 # ── Journal de caisse ──────────────────────────────────────────────────────
