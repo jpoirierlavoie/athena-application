@@ -24,6 +24,12 @@ def _neutralize_formula(text: str) -> str:
     return text
 
 
+def neutralize_formula(text: str) -> str:
+    """Public :func:`_neutralize_formula`, for a CSV written outside a
+    response (``scripts/rapport_contreparties.py``)."""
+    return _neutralize_formula(text)
+
+
 def export_csv(
     rows: list[dict],
     columns: list[tuple[str, str]],

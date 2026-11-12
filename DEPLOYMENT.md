@@ -5553,6 +5553,30 @@ Notes:
   A rollback is the code alone: the older code keeps the four fields through
   its merge, without showing them.
 
+- **The past payees, read-only (2026-11-11).** `scripts/rapport_contreparties.py`
+  helps the lawyer add his suppliers by hand: it lists the payees his past
+  entries name (administration dépense and remboursement, trust déboursé à
+  un tiers), grouped by folded name with their spellings, their counts
+  (reversed entries apart, corrections left out), main category and first
+  and last dates, and whether a contact already matches — by name, legal
+  name or trade name, one leading title (« Me », « L'hon. »…) aside —,
+  flagging a match whose role the forms will not suggest
+  (`contact_roles.PAYEE_ROLES`); an entry whose name holds no letter or
+  digit is left out and counted. A second file lists the spellings used on
+  drawings, contributions, TPS/TVQ remittances and refunds, and internal
+  transfers. Both are semicolon-separated with every cell quoted, UTF-8
+  with a BOM: a double-click opens them in French Excel. One read-only
+  transaction: a failed or truncated read writes nothing; a path inside the
+  repository (public) is refused; the terminal prints counts and sha256
+  only. It writes nothing in Athena. Change Impact: item 7 (strict whole-collection reads, run
+  locally); nothing deployed reads it; items 1 to 6 not touched.
+  In order:
+  1. *Run it* from `athena/` against production (§4, the variables
+     inline), `--sortie` outside the repository.
+  2. *Open the CSV* in Excel: add the suppliers by hand in « Impliqués » and
+     change the role of each flagged contact.
+  3. *Delete both files* once done: they hold names.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |
