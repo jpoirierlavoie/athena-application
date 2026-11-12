@@ -276,8 +276,32 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
     return value
 
 
+class UnreadableAmount(ValueError):
+    """A stored amount that every tool's money reader (:func:`_money`,
+    through :func:`_cents`) or an invoice path's read of the balance or the
+    transitions cannot read as integer cents. Its message is the FIELD NAME
+    alone (2026-11-12): ``int()``'s own error quotes the stored value, and
+    every traceback that carried it reached Cloud Logging — the endpoint's
+    catch-all and ``run_write``'s post-commit line keep theirs (CLAUDE.md
+    « Do not log PII »). Raised OUTSIDE the failed conversion, so it chains
+    no context that would quote it either. A ValueError, as the
+    conversion's own error was. (This module's other direct ``int()`` reads
+    are unchanged.)"""
+
+
+def _cents(key: str, cents: Any) -> int:
+    """*cents* as integer cents — an absent, None or empty one as 0 — or
+    :class:`UnreadableAmount` naming *key*, never the value."""
+    try:
+        return int(cents or 0)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    # Outside the except block: no __context__ carries int()'s error.
+    raise UnreadableAmount(key)
+
+
 def _money(payload: dict, key: str, cents: Any) -> None:
-    value = int(cents or 0)
+    value = _cents(key, cents)
     payload[f"{key}_cents"] = value
     payload[f"{key}_display"] = format_cents(value)
 
@@ -618,6 +642,46 @@ def _dossier_row(d: dict) -> dict:
     }
 
 
+#: What a read refused over an unreadable amount says it could not do — and
+#: that it answers nothing rather than a row without its balance.
+_UNREADABLE_READ = (
+    "son solde et son retard ne peuvent pas être lus, et rien n'est rendu")
+#: What ``update_invoice`` refused over one says — before any write.
+_UNREADABLE_WRITE = "son solde ne peut pas être lu, et rien n'a été écrit"
+
+
+def _refuse_unreadable_amount(invoice: dict, consequence: str) -> None:
+    """Refuse BY NAME an invoice whose balance the model cannot read
+    (``invoice.unreadable_balance_field``, the strictest read of its stored
+    amounts): its number and the amount's French name, never the value
+    (2026-11-12). Every invoice payload of this module reads both amounts,
+    the balance and the lateness; ``int()``'s error quoted the stored value,
+    which the endpoint's catch-all logged in its traceback — and, after
+    ``update_invoice``'s commit, its answer failed on a write that had
+    landed. A read refuses its whole answer, never a row short of its
+    balance; ``update_invoice`` refuses before any write."""
+    field = invoice_model.unreadable_balance_field(invoice)
+    if field is None:
+        return
+    number = str(invoice.get("invoice_number") or invoice.get("id") or "")
+    raise ToolArgumentError(
+        invoice_model.unreadable_amount_message(field, consequence,
+                                                number=number),
+        reason="invoice_refused")
+
+
+def _invoice_balance(invoice: dict) -> int:
+    """``invoice.balance_of``, or :class:`UnreadableAmount` naming the field
+    it cannot read — never ``int()``'s error, which quotes the value. The
+    callers refuse an unreadable invoice by name first
+    (:func:`_refuse_unreadable_amount`, or the model's own refusal before a
+    commit); this keeps a traceback field-only if one ever slips through."""
+    field = invoice_model.unreadable_balance_field(invoice)
+    if field is not None:
+        raise UnreadableAmount(field)
+    return invoice_model.balance_of(invoice)
+
+
 def _invoice_row(inv: dict, *, today: date) -> dict:
     """One invoice line. SHARED with get_billing_snapshot.outstanding_invoices
     — one row shape must not drift between the register and the snapshot, so
@@ -630,7 +694,12 @@ def _invoice_row(inv: dict, *, today: date) -> dict:
     ``is_overdue`` / ``days_overdue`` (2026-11-11) are the MODEL's lateness
     (``invoice.is_overdue``) on *today*, the caller's one Montréal day
     (``deadlines.today_mtl``) — never a comparison of the raw due date here.
+
+    An invoice whose balance the model cannot read is REFUSED by name
+    (2026-11-12): the read answers nothing, rather than a raw failure whose
+    traceback quoted the stored value.
     """
+    _refuse_unreadable_amount(inv, _UNREADABLE_READ)
     row = {
         "id": inv.get("id", ""),
         "invoice_number": inv.get("invoice_number", ""),
@@ -656,7 +725,7 @@ def _invoice_row(inv: dict, *, today: date) -> dict:
     _money(row, "total", inv.get("total", 0))
     _money(row, "amount_due", inv.get("amount_due", 0))
     _money(row, "amount_paid", inv.get("amount_paid", 0))
-    _money(row, "balance", invoice_model.balance_of(inv))
+    _money(row, "balance", _invoice_balance(inv))
     return row
 
 
@@ -2582,8 +2651,13 @@ def get_billing_snapshot(args: dict) -> dict:
         # lecture pour rien, et surtout laisserait deux mécanismes se
         # contredire dans une seule charge. La somme porte sur TOUTES les
         # lignes, jamais sur les 50 affichées — un total tronqué serait faux.
+        # Une facture dont le solde ne se lit pas est refusée par son nom
+        # AVANT la somme (2026-11-12) : jamais un total sans elle, jamais
+        # l'erreur de int() qui citait la valeur.
+        for inv in outstanding_rows:
+            _refuse_unreadable_amount(inv, _UNREADABLE_READ)
         _money(payload, "outstanding",
-               sum(invoice_model.balance_of(inv) for inv in outstanding_rows))
+               sum(_invoice_balance(inv) for inv in outstanding_rows))
         by_dossier, by_dossier_truncated = _unbilled_by_dossier()
         payload["by_dossier"] = by_dossier
         payload["by_dossier_truncated"] = by_dossier_truncated
@@ -6706,7 +6780,13 @@ def _connector_transitions(invoice: dict, *, today: date) -> list[str]:
     only while ``invoice.is_overdue``, back to « envoyée » only while not —
     the handler keeps no clock or due-date test of its own. Judged on the
     invoice alone: a payment standing in the registers is re-read by the
-    void's own transaction."""
+    void's own transaction. An amount the model cannot read raises
+    :class:`UnreadableAmount`, naming its field — never ``int()``'s error,
+    which quotes the value; its callers refuse such an invoice by name
+    first (2026-11-12)."""
+    field = invoice_model.unreadable_transition_field(invoice)
+    if field is not None:
+        raise UnreadableAmount(field)
     current = invoice.get("status", "")
     out: list[str] = []
     for target in invoice_model.available_transitions(invoice, today=today):
@@ -7117,8 +7197,13 @@ def _invoice_edit_payload(
         void_reason=(str(invoice.get("void_reason") or "")
                      if invoice.get("status") == "annulée" else None),
     )
+    # Built AFTER the commit on every applied path: each amount read here
+    # fails field-only (_money, _invoice_balance, _connector_transitions),
+    # never quoting the stored value into run_write's post-commit traceback
+    # (2026-11-12). Every path refuses such an invoice by name BEFORE its
+    # write — the model's status door, or _refuse_unreadable_amount.
     _money(entity, "amount_paid", invoice.get("amount_paid", 0))
-    _money(entity, "balance", invoice_model.balance_of(invoice))
+    _money(entity, "balance", _invoice_balance(invoice))
     return {
         "updated": True,
         "mode": mode,
@@ -7153,7 +7238,10 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
     current = invoice.get("status", "")
     if current == target:
         # Before the etag: a replay of a promotion that succeeded is a
-        # no-op, never a false conflict.
+        # no-op, never a false conflict. Its answer reads the amounts: an
+        # invoice whose balance cannot be read is refused by name instead
+        # of int()'s raw error, which quoted the value (2026-11-12).
+        _refuse_unreadable_amount(invoice, _UNREADABLE_WRITE)
         return _invoice_edit_payload(
             "status", invoice, previous_status=current, applied=False,
             warnings=[f"La facture est déjà « {current} » : rien n'a été "
@@ -7189,7 +7277,9 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
         raise ToolArgumentError(message, reason="invoice_refused")
     # Lateness — « en_retard » only while overdue, « envoyée » again only
     # while not — is judged by the MODEL, inside its transaction, on its own
-    # Montréal day; its refusal names the day lateness begins.
+    # Montréal day; its refusal names the day lateness begins. So is an
+    # amount it cannot read, by name (montant_illisible) — since 2026-11-12
+    # the send's too —, so a committed move's answer reads every amount.
     wanted = _stale_invoice(args, invoice)
     written, errors = invoice_model.update_status_report(
         invoice_id, target, expected_etag=wanted)
@@ -7213,7 +7303,9 @@ def _set_invoice_status(args: dict, invoice: dict, target: str) -> dict:
             ("gst_amount", "gst_number", "TPS"),
             ("qst_amount", "qst_number", "TVQ"),
         ):
-            if int(written.get(amount_key) or 0) > 0 and not str(
+            # Field-only on failure (_cents): after the commit, a traceback
+            # never quotes a stored amount (2026-11-12).
+            if _cents(amount_key, written.get(amount_key)) > 0 and not str(
                     written.get(number_key) or "").strip():
                 warnings.append(
                     f"La facture porte la {label} sans numéro d'inscription "
@@ -7240,6 +7332,9 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
     if reason_errors:
         raise ToolArgumentError("; ".join(reason_errors))
     if current == "annulée":
+        # Its answer reads the amounts: refused by name if it cannot
+        # (2026-11-12), as every same-status call.
+        _refuse_unreadable_amount(invoice, _UNREADABLE_WRITE)
         return _invoice_edit_payload(
             "void", invoice, previous_status=current, applied=False,
             warnings=["La facture est déjà annulée : rien n'a été écrit."])
@@ -7256,6 +7351,12 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
             "comptables : reverse_register_entry). Rien n'a été "
             "annulé.", reason="invoice_refused")
     wanted = _stale_invoice(args, invoice)
+    # The answer reads the balance, strictly; the void's own rule
+    # (invoice.unreadable_transition_field) reads only what its judgment
+    # needs — never a brouillon's amount_due, and a brouillon's None or
+    # empty amount_paid as no payment. Refused here by name, before any
+    # write — never a void committed whose answer then fails (2026-11-12).
+    _refuse_unreadable_amount(invoice, _UNREADABLE_WRITE)
     report, errors = invoice_model.void_invoice_report(
         invoice_id, expected_etag=wanted, reason=reason)
     _raise_invoice_errors(errors, invoice_id)
@@ -7319,6 +7420,10 @@ def _edit_invoice_draft(args: dict, invoice: dict) -> dict:
             "Aucune modification demandée : refresh_billing_address false ne "
             "change rien."
         )
+    # The correction reads no amount, but its answer does: an invoice whose
+    # balance cannot be read is refused by name, before any write — never a
+    # correction committed whose answer then fails (2026-11-12).
+    _refuse_unreadable_amount(invoice, _UNREADABLE_WRITE)
     doc, errors, changed = invoice_model.update_invoice_draft(
         invoice_id, changes,
         expected_etag=str(args.get("expected_etag") or ""),

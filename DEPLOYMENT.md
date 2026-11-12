@@ -5834,7 +5834,10 @@ Notes:
   a brouillon, or either amount on an envoyée or an en_retard — a move of
   `_CONNECTOR_STATUS_MOVES`, the void excepted —, never on a « payée »,
   whose every move the handler refuses before the model, as before the
-  lot; two keys REQUIRED in three READ outputs, none in a
+  lot (*superseded on 2026-11-12*: the send is refused over a brouillon's
+  unreadable balance too, and the void by name — « Invoices: an unreadable
+  stored amount is named, never fatal », below); two keys REQUIRED in
+  three READ outputs, none in a
   write's; no tool, input schema, disclosure promise or consent text
   moved; lot 2 leaves the registry fingerprint and the plugin's build
   unchanged — no version beyond lot 1's 1.9.2, which waits for its
@@ -5942,6 +5945,90 @@ Notes:
   already made stay, as facts; « Retirer le retard » only corrects a mark
   made before the due date. A rollback of the code takes `cron.yaml`'s job
   with it.
+
+- **Invoices: an unreadable stored amount is named, never fatal
+  (2026-11-12).** Four defects older than lot 2, fixed on the lawyer's
+  decision of 2026-11-12 — preventively: a read-only scan of production
+  that day read 100 invoices and found none whose `amount_due` or
+  `amount_paid` `int()` cannot read. An invoice stores its amounts in
+  integer cents; one holding anything else (« 150,00 $ », None, an empty
+  string — a hand edit in the console, a script gone wrong) made
+  `invoice.balance_of` and `available_transitions` raise, and `int()`'s
+  own error QUOTES the stored value: every traceback logged it (CLAUDE.md
+  « Do not log PII »). The model already named such a field —
+  `invoice.unreadable_balance_field` for the balance,
+  `unreadable_transition_field` for the transitions —; every surface below
+  now asks it first and names the amount in French, never its value, in
+  one sentence family (`invoice.unreadable_amount_message`, its names in
+  `invoice.BALANCE_FIELD_LABELS`):
+  1. *The web.* The sheet (`/factures/<id>`) and the list (`/factures/`)
+     answered 500. The routes now compute no balance, lateness or
+     transition for such an invoice: its list row says « illisible » where
+     its balance would be, with no « Échue · N j »; its sheet says
+     « illisible » on its « Solde » line (on its « Retard » line too when
+     it is issued, and on the amount's own line, « Montant dû à
+     l'émission » or « Encaissé »), offers no status change and no
+     payment, and shows a notice — « Le montant payé enregistré sur cette
+     facture est illisible : son solde et son statut ne peuvent pas être
+     jugés. La facture doit d'abord être réparée. »
+  2. *The connector's reads.* `get_invoice`, `list_invoices` and
+     `get_billing_snapshot` (which shares their row and sums its balance)
+     raised the raw error: « internal error » to Claude, the value in the
+     endpoint's traceback. They refuse such an invoice by name now — a
+     -32602 naming its number and the amount —. Every tool's money reader
+     (`_money`) and the invoice paths' reads of the balance, the
+     transitions and the send's tax amounts raise `UnreadableAmount`, whose
+     message is the field's name alone: none of them puts a stored amount
+     in a traceback, even one logged after a commit. (The other tools'
+     direct `int()` reads are unchanged.)
+  3. *The void.* `void_invoice_report` read `amount_paid` itself; it
+     judges it through the authority now: `unreadable_transition_field`
+     refuses by name (`montant_illisible`) before anything is written, and
+     `_payment_recorded` says whether a payment is recorded.
+  4. *`update_invoice`'s answer*, built after its commit, read the amounts
+     strictly: a send over an unreadable `amount_due`, and a void over a
+     None or empty `amount_paid`, COMMITTED, then answered « ENREGISTRÉE —
+     NE PAS RÉESSAYER » beside an `unexpected` line whose traceback quoted
+     the amount; asking the status the invoice already had raised the raw
+     error. `update_status_report` now refuses « brouillon → envoyée » by
+     name when `balance_of` cannot read the brouillon — its `amount_due`,
+     or a None or empty `amount_paid` —: sent, it would be an issued
+     invoice whose balance is never judged. The reopen of a « payée » set
+     by hand (« payée → envoyée ») is refused the same way, by the
+     lawyer's decision. **This reverses lot 2's « a
+     brouillon's unreadable `amount_due` never locks brouillon →
+     envoyée »**, on the web as through the connector. The void, a draft
+     correction and a same-status call are refused by the handler first,
+     by name: their answer reads the balance.
+  Still raising on such an amount, outside this release and never met in
+  production: the note d'honoraires when the active gabarit prints the
+  payments, the « Journal des honoraires » PDF, an administration entry's
+  « Solde dû actuel », and the two registers' invoice pickers and payment
+  caps (an encaissement, a trust fee payment), on the web and through the
+  connector. Change Impact: item 1 — touched:
+  `update_invoice` refuses more, never less (the send over an unreadable
+  balance; the void, a draft correction and a same-status call over one),
+  and three reads refuse such an invoice by name instead of failing; no
+  tool, input or output schema, description, disclosure promise or
+  consent text moved; the registry is unchanged
+  (`exporter_plugin_athena --check`: `f38e98b4dbf7`), and the plugin with
+  it. Item 2 — not touched (invoices are not DAV-exposed). Item 3 — not
+  touched. Item 4 — no new event: `invoice_refused`'s `montant_illisible`
+  now covers the send and the void too, and `mcp_write_refused`'s
+  `invoice_refused` the handler's refusals (OBSERVABILITY.md); a read's
+  refusal is logged nowhere, as every read refusal; on these paths no line
+  carries a stored amount any more. Item 5 — not touched: no route,
+  header, CSRF exemption, prefix or setting. Item 6 — two invoice
+  templates, compiled classes only (the existing notices', the « Retard »
+  line's): no recompile, no new target. Item 7 — no query, no index. In
+  order:
+  1. *The push* — no index, no consent train, and no data to migrate: the
+     scan of 2026-11-12 found no unreadable invoice.
+  2. *On the phone (375 px)*: a normal invoice's sheet is unchanged — its
+     « Solde », its « Retard » line when it is late, its status buttons,
+     and the « Administration » hint while no payment is recorded —, and
+     the list shows its balance and « Échue · N j » as before.
+  A rollback is the code alone.
 
 ## 16. Troubleshooting
 

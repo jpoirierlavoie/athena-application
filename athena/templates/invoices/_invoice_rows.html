@@ -40,6 +40,12 @@
     <div class="flex flex-col items-end leading-tight flex-shrink-0">
       {% if inv.status == 'annulée' %}
       <span class="text-sm font-semibold text-gray-400">{{ inv.total | cents_fr }}</span>
+      {# Un montant enregistré que le solde ne sait pas lire (2026-11-12) :
+         `_illisible` nomme le champ (annoté côté route, par le modèle) ; ni
+         solde ni retard n'ont été calculés. #}
+      {% elif inv._illisible %}
+      <span class="text-sm font-semibold text-red-700" title="Le {{ inv._illisible }} enregistré est illisible : la facture doit d'abord être réparée.">illisible</span>
+      <span class="text-xs text-gray-500">sur {{ inv.total | cents_fr }}</span>
       {% else %}
       <span class="text-sm font-semibold text-gray-900">{{ inv._balance | cents_fr }}</span>
       {% if inv._balance != inv.total %}
