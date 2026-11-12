@@ -47,8 +47,8 @@ one authority: an issued invoice (envoyée or en_retard) with a balance owing
 (:data:`LATENESS_REGIME` — a due date on a Saturday, a Sunday or a public
 holiday is payable until the next business day), fell before today in
 Montréal (``utils.deadlines.is_past_due``). The stored « en_retard » follows
-it: the nightly sweep (``routes/taches_factures``, behind
-``Config.FACTURES_RETARD_ACTIF``) marks an overdue « envoyée » through
+it: the daily sweep at 09:00, Montréal time (``routes/taches_factures``,
+behind ``Config.FACTURES_RETARD_ACTIF``) marks an overdue « envoyée » through
 :func:`update_status_report`, and :func:`available_transitions` offers
 « Marquer en retard » only while the invoice is overdue and « Retirer le
 retard » only while it is not — the correction of a mark made before the
@@ -244,8 +244,8 @@ STATUS_LABELS = {
 #
 # « en_retard » ↔ « envoyée » suit l'échéance depuis le 2026-11-11 (lot 2 du
 # plan « Factures : retard, radiation, intérêts ») : le retard est un FAIT,
-# dérivé par is_overdue, et le balayage nocturne le pose de lui-même. La
-# table garde les deux arêtes ; available_transitions n'offre « en_retard »
+# dérivé par is_overdue, et le balayage quotidien de 9 h le pose de lui-même.
+# La table garde les deux arêtes ; available_transitions n'offre « en_retard »
 # que tant que la facture est en retard, et le retour à « envoyée » — « Retirer
 # le retard » — que tant qu'elle ne l'est PAS : la correction d'une marque
 # posée avant l'échéance, jamais une dispense (décision de l'avocat).
@@ -1845,7 +1845,7 @@ def list_invoices_strict(transaction) -> list[dict]:
 
 def list_sent_invoices_strict() -> list[dict]:
     """Every « envoyée » invoice — STRICT and capped (``models/full_reads``),
-    one plain query outside any transaction: the read of the nightly
+    one plain query outside any transaction: the read of the daily
     lateness sweep (``routes/taches_factures``) and of its preview
     (``scripts/apercu_factures_echues``), where a failed or truncated read
     must never pass for « nothing is late ». One equality on ``status`` and
@@ -1859,9 +1859,9 @@ def list_sent_invoices_strict() -> list[dict]:
     )
 
 
-#: The most invoices one run of the nightly sweep marks « en_retard »: each
+#: The most invoices one run of the daily sweep marks « en_retard »: each
 #: mark is its own transaction, and the cron targets the default service
-#: (gunicorn --timeout 60). The rest waits for the next night, counted
+#: (gunicorn --timeout 60). The rest waits for the next run, counted
 #: (``remaining``), never dropped — the ``_PLAFOND_MUTATIONS`` precedent of
 #: ``routes/taches_outlook``. The preview names it too.
 OVERDUE_SWEEP_CAP = 100
@@ -1872,7 +1872,7 @@ def overdue_among(
 ) -> tuple[list[dict], list[str]]:
     """The invoices of *invoices* that are late on *today*
     (:func:`is_overdue`), the longest-late first (:func:`first_overdue_day`,
-    then the id) — the order the nightly sweep marks them in and its preview
+    then the id) — the order the daily sweep marks them in and its preview
     lists them in, so the two can never disagree — and the ids of those whose
     lateness could not be judged (a stored amount :func:`balance_of` cannot
     read), each logged by its id, the exception's class and the amount's
@@ -2094,10 +2094,11 @@ def unreadable_transition_field(invoice: dict) -> Optional[str]:
     (:func:`unreadable_balance_field`: ``amount_due``, then ``amount_paid`` —
     a None or empty one is unreadable there); every invoice's transitions
     read whether a payment is recorded (:func:`_payment_recorded`:
-    ``amount_paid``, an absent, None or empty one read as none — which, on
-    an issued invoice, the strict balance read has already refused). No
-    transition reads the ``amount_due`` of a brouillon, a payée or an
-    annulée, so an unreadable one locks none of theirs. What
+    ``amount_paid``, an absent, None or empty one read as none — a None or
+    empty one, which on an issued invoice the strict balance read has
+    already refused). No transition reads the ``amount_due`` of a
+    brouillon, a payée or an annulée, so an unreadable one locks none of
+    theirs. What
     :func:`update_status_report` refuses by name (``montant_illisible``)
     rather than fail generically, its traceback quoting the value (second
     review of lot 2)."""
@@ -2368,12 +2369,12 @@ def update_status(
 
 #: What caused a status change, as ``invoice_status_changed`` records it:
 #: ``manuel`` — someone asked for it (the sheet, the connector, a script);
-#: ``echeance`` — the due date, through the nightly lateness sweep
+#: ``echeance`` — the due date, through the daily lateness sweep
 #: (``routes/taches_factures``), the only caller that names it.
 STATUS_CAUSES = ("manuel", "echeance")
 
 #: :func:`update_status_report`'s answer when its transaction RAISED — the
-#: one error that is not a refusal of the change itself (the nightly sweep
+#: one error that is not a refusal of the change itself (the daily sweep
 #: counts it apart). Nothing is known to be written: a commit whose answer
 #: was lost may have landed, which a re-read settles. Its ERROR line names
 #: the invoice (``invoice_id``): one request of the sweep marks up to
@@ -2442,7 +2443,7 @@ def update_status_report(
     overdue, back to « envoyée » only while it is not
     (:func:`available_transitions`), each refusal naming the day lateness
     begins (:func:`first_overdue_day`). *cause* — ``manuel`` or, from the
-    nightly sweep alone, ``echeance`` (:data:`STATUS_CAUSES`) — is what the
+    daily sweep alone, ``echeance`` (:data:`STATUS_CAUSES`) — is what the
     ``invoice_status_changed`` line records beside the writer's path; a
     cause outside it, or ``echeance`` for any status but « en_retard », is a
     caller's bug and raises before anything is read.

@@ -777,23 +777,51 @@ def test_a_payee_never_reaches_the_models_amount_refusal(
 
 
 def test_the_runbook_says_where_the_connector_meets_montant_illisible():
-    """THIRD review of lot 2. 9a21512's commit message, which cannot change,
-    said update_invoice received montant_illisible on a « payée »; the lot 2
-    entry of DEPLOYMENT.md §15, which can, now says where it does — the
-    statuses the connector moves out of, read from _CONNECTOR_STATUS_MOVES
-    — and that a « payée » never reaches the model
-    (test_a_payee_never_reaches_the_models_amount_refusal)."""
+    """THIRD review of lot 2, corrected by the review of 9968616. 9a21512's
+    commit message, which cannot change, said update_invoice received
+    montant_illisible on a « payée »; the lot 2 entry of DEPLOYMENT.md §15,
+    which can, says where it does. 9968616 wrote « on a brouillon, an
+    envoyée or an en_retard, the statuses the connector moves out of » —
+    too wide twice: a brouillon's move reads only its amount_paid (no
+    transition reads a brouillon's amount_due), and the void reads
+    amount_paid itself (int(… or 0)), never refusing by that name. The
+    entry now says: over its amount_paid on a brouillon, or either amount
+    on an envoyée or an en_retard — a move of _CONNECTOR_STATUS_MOVES, the
+    void excepted —, never on a « payée »
+    (test_a_payee_never_reaches_the_models_amount_refusal). Each fact the
+    sentence states is pinned to the code below."""
     text = " ".join((_ATHENA.parent / "DEPLOYMENT.md").read_text(
         encoding="utf-8").split())
     entry = text[text.index(
         "**Invoices: lateness follows the due date (2026-11-11).**"):]
     item1 = entry[entry.index("Change Impact: item 1"):entry.index("Item 2 —")]
-    assert ("(`montant_illisible`, under `invoice_refused`) on a brouillon, an "
-            "envoyée or an en_retard, the statuses the connector moves out of "
-            "— never on a « payée », whose every move the handler refuses "
-            "before the model") in item1
-    assert {current for current, _target in handlers._CONNECTOR_STATUS_MOVES
-            } == {"brouillon", "envoyée", "en_retard"}
+    assert ("(`montant_illisible`, under `invoice_refused`) over its "
+            "`amount_paid` on a brouillon, or either amount on an envoyée or "
+            "an en_retard — a move of `_CONNECTOR_STATUS_MOVES`, the void "
+            "excepted —, never on a « payée », whose every move the handler "
+            "refuses before the model") in item1
+    assert "the statuses the connector moves out of" not in item1
+    moves = handlers._CONNECTOR_STATUS_MOVES
+    assert {current for current, _target in moves} == {
+        "brouillon", "envoyée", "en_retard"}
+    # The void is no move of that table: it goes through void_invoice_report,
+    # which reads amount_paid itself and never refuses by that name.
+    assert all(target != "annulée" for _current, target in moves)
+    void_source = inspect.getsource(invoice_model.void_invoice_report)
+    assert "montant_illisible" not in void_source
+    assert "unreadable_transition_field" not in void_source
+    # A brouillon's move reads its amount_paid only; an issued invoice's,
+    # either amount.
+    unreadable = invoice_model.unreadable_transition_field
+    assert unreadable({"status": "brouillon", "amount_due": "x",
+                       "amount_paid": 0}) is None
+    assert unreadable({"status": "brouillon", "amount_due": 100,
+                       "amount_paid": "x"}) == "amount_paid"
+    for status in ("envoyée", "en_retard"):
+        assert unreadable({"status": status, "amount_due": "x",
+                           "amount_paid": 0}) == "amount_due"
+        assert unreadable({"status": status, "amount_due": 100,
+                           "amount_paid": "x"}) == "amount_paid"
 
 
 def test_the_connector_refusal_row_states_the_models_lateness_rule():
@@ -852,25 +880,29 @@ def _clause(text: str, start: int) -> str:
     return text[start:min(ends, default=len(text))]
 
 
-def test_the_texts_hold_whether_the_nightly_job_is_on_or_off():
+def test_the_texts_hold_whether_the_daily_job_is_on_or_off():
     """FACTURES_RETARD_ACTIF ships "false", and switching it off is the
-    rollback: a served text that says, unqualified, that a nightly job marks
-    an overdue invoice is false for as long as it is off — a claude.ai
-    session would tell the lawyer an invoice « will be marked tonight »
-    (review of lot 2). Every mention of the job in tools/list — descriptions
-    and output schemas alike — says « when active » in the same clause (the
-    Outlook mirror's precedent), and update_invoice names is_overdue as the
-    authority, never the stored status."""
+    rollback: a served text that says, unqualified, that the job marks an
+    overdue invoice is false for as long as it is off — a claude.ai session
+    would tell the lawyer an invoice « will be marked at 9 » (review of
+    lot 2). Every mention of the job in tools/list — descriptions and output
+    schemas alike — says « when active » in the same clause (the Outlook
+    mirror's precedent) and names its hour, 09:00 Montréal time since the
+    lawyer's decision of 2026-11-12; none still speaks of a nightly job.
+    update_invoice names is_overdue as the authority, never the stored
+    status."""
     served = json.dumps(tools.list_tool_descriptors(None), ensure_ascii=False)
+    assert "nightly" not in served and "tonight" not in served
     mentions = []
-    at = served.find("nightly")
+    at = served.find("daily job")
     while at != -1:
         mentions.append(_clause(served, at))
-        at = served.find("nightly", at + 1)
+        at = served.find("daily job", at + 1)
     # update_invoice's description, and is_overdue in get_invoice,
     # list_invoices and get_billing_snapshot.
     assert len(mentions) == 4, mentions
     assert all("when active" in clause for clause in mentions), mentions
+    assert all("09:00 Montréal time" in clause for clause in mentions), mentions
     (update,) = [d for d in tools.list_tool_descriptors(None)
                  if d["name"] == "update_invoice"]
     assert "is_overdue" in update["description"]

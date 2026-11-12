@@ -216,11 +216,11 @@ it in `BOOKINGS_SUBJECT_KEYWORDS` **without** adding it to that map falls back
 to « consultation » — logged, but only in the logs. Editing `config.py` is the
 only way to change it today.
 
-#### Invoices — the nightly lateness sweep
+#### Invoices — the daily lateness sweep
 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
-| `FACTURES_RETARD_ACTIF` | ○ | `true` | Kill switch for the nightly sweep that marks an overdue « envoyée » invoice « en_retard » (`routes/taches_factures`, `cron.yaml`, 2026-11-11). ⚠ The default is `true` (the `MIROIR_OUTLOOK_ACTIF` precedent), but `app.yaml` ships `"false"` until the lawyer has reviewed `python -m scripts.apercu_factures_echues` (§15 « Invoices: lateness follows the due date »). `false`: the cron answers `{"actif": false}` and reads and writes nothing |
+| `FACTURES_RETARD_ACTIF` | ○ | `true` | Kill switch for the daily sweep, at 09:00 Montréal time, that marks an overdue « envoyée » invoice « en_retard » (`routes/taches_factures`, `cron.yaml`, 2026-11-11). ⚠ The default is `true` (the `MIROIR_OUTLOOK_ACTIF` precedent), but `app.yaml` ships `"false"` until the lawyer has reviewed `python -m scripts.apercu_factures_echues` (§15 « Invoices: lateness follows the due date »). `false`: the cron answers `{"actif": false}` and reads and writes nothing |
 
 #### The `portail` service — set in `portail.yaml`
 
@@ -5463,8 +5463,8 @@ Notes:
   retard » (en_retard → envoyée) only while it is not — the correction of
   a mark made before the due date. `update_status_report` judges both with
   `today_mtl` inside its transaction, and its refusal names the first late
-  day. A nightly sweep marks the overdue « envoyée » invoices:
-  `GET /taches/factures/retards` (`routes/taches_factures`), its own
+  day. A daily sweep, at 09:00 Montréal time, marks the overdue « envoyée »
+  invoices: `GET /taches/factures/retards` (`routes/taches_factures`), its own
   machine blueprint, CSRF-exempt, 403 without `X-Appengine-Cron`, stamped
   `cron`, behind the kill switch `FACTURES_RETARD_ACTIF` (§4.1 — read from
   the environment, default true, as `MIROIR_OUTLOOK_ACTIF`; `app.yaml`
@@ -5475,8 +5475,10 @@ Notes:
   edited since is refused, never overwritten), at most
   `invoice.OVERDUE_SWEEP_CAP` (100) a run, the longest-late first, counts
   the rest, always answers 200 JSON and logs ONE line,
-  `invoice_overdue_sweep`. `cron.yaml` gains its job: `every day 00:20`,
-  `America/Montreal`, target `default`; with it the table passes Cloud
+  `invoice_overdue_sweep`. `cron.yaml` gains its job: `every day 09:00`,
+  `America/Toronto` — Montréal's canonical tz zone, of which
+  `America/Montreal` is only a backward alias; 09:00 is the lawyer's
+  decision of 2026-11-12 —, target `default`; with it the table passes Cloud
   Scheduler's free tier (three free jobs a billing account) — about
   US$0.10 a month more. Every text that counted the jobs (`cron.yaml`'s header, §1,
   §3, §7, the deployment inventory and probe) now names none:
@@ -5484,9 +5486,10 @@ Notes:
   the invoices imported from the previous system included — hence the
   switch shipped off and the read-only preview,
   `python -m scripts.apercu_factures_echues` (the same strict read, the
-  same rule, the same order — on the day the NEXT run judges, the night it
-  names, never its own day: an invoice payable all day is late by that
-  night's run). Display: the invoice list shows
+  same rule, the same order — on the day the NEXT run judges, which it
+  names, never its own: run after 09:00, it names the next day's run, by
+  which an invoice payable all day today is late). Display: the invoice
+  list shows
   « Échue · N j » under the balance of an overdue invoice — an envoyée one
   too, before the sweep marks it —, the sheet a « Retard » line (« N jours
   (depuis le AAAA-MM-JJ) »), and an early mark's button reads « Retirer le
@@ -5496,18 +5499,20 @@ Notes:
   the raw due date broke Rule 5): the model judges, and its refusal reaches
   the caller. `update_invoice`'s description says lateness is automatic,
   `is_overdue` its authority and never the stored status, and that the
-  nightly job marks an overdue invoice only when active — the switch ships
-  off, and off is the rollback too (`is_overdue`'s description likewise);
+  daily job, at 09:00 Montréal time, marks an overdue invoice only when
+  active — the switch ships off, and off is the rollback too
+  (`is_overdue`'s description likewise);
   the rows of `get_invoice`, `list_invoices` and
   `get_billing_snapshot.outstanding_invoices` gain `is_overdue` and
   `days_overdue`. Change Impact: item 1 — touched: a write narrowed in
   place, never widened (« en_retard » now waits for the prorogued due date,
   and « envoyée » back is closed once overdue); a status move over a stored
   amount the model cannot read answers `update_invoice` by name
-  (`montant_illisible`, under `invoice_refused`) on a brouillon, an
-  envoyée or an en_retard, the statuses the connector moves out of — never
-  on a « payée », whose every move the handler refuses before the model,
-  as before the lot; two keys REQUIRED in three READ outputs, none in a
+  (`montant_illisible`, under `invoice_refused`) over its `amount_paid` on
+  a brouillon, or either amount on an envoyée or an en_retard — a move of
+  `_CONNECTOR_STATUS_MOVES`, the void excepted —, never on a « payée »,
+  whose every move the handler refuses before the model, as before the
+  lot; two keys REQUIRED in three READ outputs, none in a
   write's; no tool, input schema, disclosure promise or consent text
   moved; the registry fingerprint is unchanged
   (`45319ee6ddf9`) and the plugin's build with it — no new version (1.9.1
@@ -5541,60 +5546,69 @@ Notes:
      before any deploy.
   2. *Cloud Scheduler lists the new job*: the console's Cloud Scheduler
      page, tab « App Engine Cron jobs », shows `/taches/factures/retards`,
-     `every day 00:20`, America/Montreal, beside the others (a Cloud Build
-     whose cron step failed leaves the old table in place). The next
-     morning, its first run answered 200 `{"actif": false}` and logged
-     nothing in `pallas.invoice`:
+     `every day 09:00`, America/Toronto, beside the others (a Cloud Build
+     whose cron step failed leaves the old table in place). After its first
+     09:00, that run answered 200 `{"actif": false}` and logged nothing in
+     `pallas.invoice`:
      `gcloud logging read 'resource.type="gae_app" AND protoPayload.resource="/taches/factures/retards"' --project=$PROJECT --freshness=1d --format="value(timestamp,protoPayload.status)"`.
      On the phone (375 px) and the desktop: the invoice list shows
      « Échue · N j » under each overdue balance, an overdue invoice's sheet
      its « Retard » line.
-  3. *The preview*, from `athena/`, the day the switch commit is pushed and
-     AFTER 00:20 — never between midnight and 00:20, when the run it names
-     is minutes away (the report then says so):
+  3. *The preview*, from `athena/`, AFTER 09:00 on the day the switch
+     commit is pushed — never before 09:00, when the run it names is that
+     very morning's (the report then says so):
      `python -m scripts.apercu_factures_echues` — READ-ONLY, it reads
-     production through ADC and writes nothing. It judges the night of the
-     next run, which it names (« la nuit du AAAA-MM-JJ au AAAA-MM-JJ, à
-     00 h 20 »), never its own day: an invoice payable all that day is late
-     by the night, and listed (« Dont N payable(s) jusqu'au … »). The lawyer
-     reviews its list: number, due date, prorogued due date, days late that
-     night, balance, imported flag — what that night would mark (at most
-     100, the rest the following nights) if the switch SERVES by its 00:20
-     (step 4). An invoice whose lateness could not be judged (a stored
-     amount it cannot read) is listed apart, by id: the sweep would count it
-     in `errors` every night and never mark it, so it is repaired first,
-     then the preview run again — a repaired invoice that is late joins its
-     list. An invoice that turns « envoyée » before the night joins it too
-     (a brouillon sent, an invoice reopened, an early mark withdrawn by
-     « Retirer le retard »): late that night, it would be marked without
+     production through ADC and writes nothing. It judges the day of the
+     next run, which it names (« le AAAA-MM-JJ, à 9 h (heure de
+     Montréal) »), never its own: run after 09:00, that run is the next
+     day's, by which an invoice payable all day today is late — and listed
+     (« Dont N payable(s) jusqu'au … »). The lawyer reviews its list:
+     number, due date, prorogued due date, days late on that day, balance,
+     imported flag — what that run would mark (at most 100, the rest by the
+     following runs) if the switch SERVES by its 09:00 (step 4). An invoice
+     whose lateness could not be judged (a stored amount it cannot read) is
+     listed apart, by id: the sweep would count it in `errors` at every run
+     and never mark it, so it is repaired first, then the preview run again
+     — once repaired, an invoice that is late joins the preview's list. An
+     invoice that turns « envoyée » before that run joins it too (a
+     brouillon sent, an invoice reopened, an early mark withdrawn by
+     « Retirer le retard »): late on that day, it would be marked without
      ever being listed, so the preview is run again after any such change.
-     Its LAST run before the night is the list step 5 checks.
+     Its LAST run before that 09:00 is the list step 5 checks.
   4. *The switch on*: a one-line commit sets `FACTURES_RETARD_ACTIF: "true"`
-     in `athena/app.yaml`, pushed on his « push » the same day, early enough
-     to SERVE before the 00:20 the preview named: Cloud Build runs the whole
-     suite before it deploys, about a quarter of an hour from push to
-     serving, so never late in the evening. It serves once
+     in `athena/app.yaml`, pushed on his « push » the same day, after the
+     preview. Any hour of that day works, provided the version SERVES
+     before the 09:00 the preview named, the next day's: Cloud Build runs
+     the whole suite before it deploys, about a quarter of an hour from
+     push to serving. It serves once
      `gcloud app versions list --service=default` shows the commit's short
-     SHA at 1.00. If it does not serve by then (a late push, a slow or
-     failed build), its first run is a later night's, which also marks the
-     invoices fallen due in between: run the preview again after that 00:20
-     (step 3) and review its list before the night it names. That line
-     alone: the suite checks its form, never its value
-     (`tests/test_taches_factures.py`), so Cloud Build's test step passes.
-  5. *The morning after the night the preview named*, the
+     SHA at 1.00. If it does not serve by then (a slow or failed build), its
+     first run is a later day's, and the invoices fallen due in between are
+     marked too, that day or the following ones (past the cap, the
+     longest-late go first): run the preview again after that 09:00 (step
+     3) and review its list before the run it names. That line alone: the
+     suite checks its form, never its value (`tests/test_taches_factures.py`),
+     so Cloud Build's test step passes.
+  5. *After 09:00 on the day the preview named*, the
      `invoice_overdue_sweep` line:
      `gcloud logging read 'jsonPayload.event="invoice_overdue_sweep"' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.outcome,jsonPayload.marked,jsonPayload.refused,jsonPayload.errors,jsonPayload.remaining)"`
      — `success`, `marked` the count of the preview's last run before that
-     night (capped at 100, `remaining` the rest), give or take the invoices
-     whose state changed since that run: less by those paid or voided, more
-     by any sent, reopened, unmarked or repaired (step 3 runs the preview
-     again after each); `refused` and `errors` 0. NO line at all: the switch
-     was not serving yet at that 00:20 — a run with the switch off answers
-     `{"actif": false}` and logs nothing (step 2) —, so its first run is a
-     later night's: check the serving version (step 4), run the preview
-     again and read this line the morning after the night it names. A
-     `failure` (`reason` `lecture`) wrote nothing; the next night retries. A
-     non-zero `errors` names its invoices, one `unexpected` line each with
+     09:00 (capped at 100, `remaining` the rest), give or take the invoices
+     whose state changed since that run: less by those paid or voided, or
+     marked « en retard » by hand (the sheet's « Marquer en retard » or the
+     connector's `update_invoice`: no longer « envoyée », the sweep never
+     reads them), more by any sent, reopened, unmarked or repaired (step 3
+     runs the preview again after each); `refused` and `errors` 0. NO line
+     at all: the switch was not serving yet at that 09:00 — a run with the
+     switch off answers `{"actif": false}` and logs nothing (step 2) —, so
+     its first run is a later day's: check the serving version (step 4),
+     run the preview again and read this line after the run it names. A
+     `failure` (`reason` `lecture`) wrote nothing and reads like no line:
+     the next run is the first to mark, and the invoices fallen due in
+     between, never listed, are marked too, that day or the following ones
+     — run the preview again before that run, then read this line after the
+     run it names. A non-zero `errors` names its invoices, one `unexpected`
+     line each with
      its `invoice_id`:
      `gcloud logging read 'jsonPayload.event="unexpected" AND jsonPayload.invoice_id:*' --project=$PROJECT --freshness=1d --format="value(timestamp,jsonPayload.message,jsonPayload.invoice_id,jsonPayload.field)"`
      — « invoice lateness unreadable » (its `field` names the amount to
@@ -5602,7 +5616,7 @@ Notes:
      mark may have landed) or « invoice overdue sweep: mark raised » (a
      defect).
   A rollback is the switch: a one-line commit sets it back to `"false"`,
-  and the job answers `{"actif": false}` from the next night. The marks
+  and the job answers `{"actif": false}` from its next run. The marks
   already made stay, as facts; « Retirer le retard » only corrects a mark
   made before the due date. A rollback of the code takes `cron.yaml`'s job
   with it.

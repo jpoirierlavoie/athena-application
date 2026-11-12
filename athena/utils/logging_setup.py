@@ -831,7 +831,7 @@ AdminLedgerOutcome = Literal["success", "refused", "failure"]
 # Lot 3a (2026-09-28) adds the creation and the draft correction — the two
 # writes that decide what an invoice says before it leaves.
 # 2026-11-11 (lot 2 of « Factures : retard, radiation, intérêts »): the
-# nightly lateness sweep's one counter line, emitted by its own helper,
+# daily lateness sweep's one counter line, emitted by its own helper,
 # log_invoice_overdue_sweep — a run has no invoice of its own.
 InvoiceEvent = Literal[
     "invoice_created",
@@ -1323,7 +1323,7 @@ def log_invoice_overdue_sweep(
     reason: Optional[str] = None,
     **counts: Any,
 ) -> None:
-    """Emit the nightly lateness sweep's ONE line — logger ``pallas.invoice``,
+    """Emit the daily lateness sweep's ONE line — logger ``pallas.invoice``,
     event ``invoice_overdue_sweep`` (``routes/taches_factures``, 2026-11-11).
 
     ``success`` emits at INFO with the run's counts (``seen``, ``overdue``,

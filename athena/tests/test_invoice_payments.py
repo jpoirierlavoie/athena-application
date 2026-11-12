@@ -380,10 +380,10 @@ def test_available_transitions_est_la_seule_autorite():
 
 def test_en_retard_garde_une_sortie_avant_l_echeance(store, monkeypatch):
     """« Retirer le retard » (réécrit le 2026-11-11). Le retard est
-    désormais un FAIT que le balayage nocturne pose de lui-même ; mais une
-    marque posée à la main AVANT l'échéance doit encore se corriger
-    autrement qu'en annulant la facture (ce qui libérerait toutes ses
-    heures). Le refus du retard avéré est épinglé par
+    désormais un FAIT que le balayage quotidien de 9 h pose de lui-même ;
+    mais une marque posée à la main AVANT l'échéance doit encore se
+    corriger autrement qu'en annulant la facture (ce qui libérerait toutes
+    ses heures). Le refus du retard avéré est épinglé par
     tests/test_invoice_lateness.py."""
     monkeypatch.setattr(imod, "today_mtl", lambda: _JOUR)
     store["doc"] = _invoice(status="en_retard", due_date=_A_VENIR)

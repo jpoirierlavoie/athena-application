@@ -203,7 +203,7 @@ def create_app() -> Flask:
     app.register_blueprint(taches_outlook_bp)
     csrf.exempt(taches_outlook_bp)
 
-    # ── Factures échues (2026-11-11): the nightly lateness sweep, GET
+    # ── Factures échues (2026-11-11): the daily lateness sweep, GET
     # /taches/factures/retards, guarded by X-Appengine-Cron and switched by
     # FACTURES_RETARD_ACTIF. Same machine-blueprint discipline: its OWN
     # blueprint, never a browser one widened.

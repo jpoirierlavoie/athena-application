@@ -28,9 +28,13 @@ cron:
   schedule: every 10 minutes
   target: default
 # Livrée avec FACTURES_RETARD_ACTIF à "false" (app.yaml) : tant qu'il l'est,
-# la tâche répond {"actif": false} sans rien lire ni écrire.
+# la tâche répond {"actif": false} sans rien lire ni écrire. Chaque jour à
+# 9 h, heure de Montréal (décision de l'avocat du 2026-11-12) ;
+# America/Toronto est le fuseau canonique de Montréal, dont America/Montreal
+# n'est qu'un alias. L'aperçu (scripts/apercu_factures_echues) redit cette
+# heure : un test l'épingle à celle-ci.
 - description: factures — balayage des factures échues (« en retard » suit l'échéance)
   url: /taches/factures/retards
-  schedule: every day 00:20
-  timezone: America/Montreal
+  schedule: every day 09:00
+  timezone: America/Toronto
   target: default

@@ -48,8 +48,8 @@
       {# Le retard sous le solde qu'il concerne (2026-11-11) : `_days_overdue`
          est annoté côté route (invoice.days_overdue, 0 hors retard) — ce
          gabarit ne compare aucune date (règle 5). Une facture envoyée en
-         retard le montre aussi, avant même que le balayage nocturne la
-         marque. #}
+         retard le montre aussi, avant même que le balayage quotidien de 9 h
+         la marque. #}
       {% if inv._days_overdue %}
       <span class="text-xs font-medium text-red-700">Échue · {{ inv._days_overdue }} j</span>
       {% endif %}

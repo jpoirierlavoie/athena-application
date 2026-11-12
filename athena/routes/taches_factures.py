@@ -1,7 +1,9 @@
-"""The nightly lateness sweep — « en_retard » follows the due date.
+"""The daily lateness sweep — « en_retard » follows the due date.
 
 MACHINE blueprint — no @login_required, CSRF-exempt (main.py), reachable
-only by App Engine cron (cron.yaml: every day at 00:20, America/Montreal).
+only by App Engine cron (cron.yaml: every day at 09:00, America/Toronto —
+Montréal's canonical tz zone, of which America/Montreal is only a backward
+alias; 09:00 since the lawyer's decision of 2026-11-12).
 The ``X-Appengine-Cron: true`` header is STRIPPED from all external traffic,
 so the in-handler guard is proof of origin — the fact
 ``security.is_appengine_internal_request`` relies on too. The module lives in
@@ -14,15 +16,15 @@ list's ``/taches`` prefix, whose two-segment rules all end in ``edit``,
 whichever order the two blueprints are registered.
 
 Lot 2 of « Factures : retard, radiation, intérêts » (the lawyer's decisions
-of 2026-11-11): lateness is a FACT. Every night, each « envoyée » invoice
-``models/invoice.is_overdue`` says is late — a balance owing, and its due
-date, prorogued to the next business day on the CIVIL calendar, past in
-Montréal — is marked « en_retard » through ``invoice.update_status_report``:
-the door of the sheet's button and of the connector's ``update_invoice``,
-which judges lateness again inside its own transaction. Each mark is made
-against the etag the sweep read, so an invoice paid or edited since is
-refused, never overwritten; its ``invoice_status_changed`` line carries the
-cause ``echeance``.
+of 2026-11-11): lateness is a FACT. Every day at 09:00, each « envoyée »
+invoice ``models/invoice.is_overdue`` says is late — a balance owing, and
+its due date, prorogued to the next business day on the CIVIL calendar,
+past in Montréal — is marked « en_retard » through
+``invoice.update_status_report``: the door of the sheet's button and of the
+connector's ``update_invoice``, which judges lateness again inside its own
+transaction. Each mark is made against the etag the sweep read, so an
+invoice paid or edited since is refused, never overwritten; its
+``invoice_status_changed`` line carries the cause ``echeance``.
 
 Bounded, and honest about what it did:
 
@@ -34,7 +36,7 @@ Bounded, and honest about what it did:
   line — never « nothing is late »;
 * at most ``invoice.OVERDUE_SWEEP_CAP`` marks a run, the longest-late first
   (``invoice.overdue_among``, the preview's order too); the rest is counted
-  (``remaining``) and waits for the next night;
+  (``remaining``) and waits for the next run;
 * idempotent: a marked invoice is no longer « envoyée », so the next run
   never reads it again;
 * it always answers 200 with JSON — a 5xx would only make the scheduler
@@ -109,7 +111,7 @@ def retards():
         if not errors:
             counts["marked"] += 1
         elif errors == [invoice_model.STATUS_UPDATE_FAILED]:
-            # The transaction raised: the next night re-reads and settles it.
+            # The transaction raised: the next run re-reads and settles it.
             counts["errors"] += 1
         else:
             # Refused by the model — paid, edited or no longer late since

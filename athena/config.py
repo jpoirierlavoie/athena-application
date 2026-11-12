@@ -212,8 +212,8 @@ class Config:
         os.environ.get("MIROIR_OUTLOOK_LOOKBACK_DAYS", "30")
     )
 
-    # The nightly lateness sweep (2026-11-11, lot 2 of « Factures : retard,
-    # radiation, intérêts »): every night at 00:20, Montréal time (cron.yaml),
+    # The daily lateness sweep (2026-11-11, lot 2 of « Factures : retard,
+    # radiation, intérêts »): every day at 09:00, Montréal time (cron.yaml),
     # routes/taches_factures marks « en_retard » each « envoyée » invoice
     # models/invoice.is_overdue says is late. The MIROIR_OUTLOOK_ACTIF
     # precedent, to the letter: read from the environment, default true —

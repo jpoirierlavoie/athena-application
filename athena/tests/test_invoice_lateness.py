@@ -147,14 +147,19 @@ def test_art_82_days_are_business_days_for_an_invoice():
 def test_the_evening_band_is_still_the_due_day_in_montreal(monkeypatch):
     """21:30 in Montréal on Monday 3 March 2031 (EST) is already the 4th in
     UTC: the invoice due on the 3rd is NOT late until Montréal's midnight —
-    judged on today_mtl, never on a UTC day."""
+    judged on today_mtl, never on a UTC day. Pinned at the minute before
+    Montréal's midnight and at the midnight itself: whatever the sweep's
+    hour (09:00 since 2026-11-12), lateness begins there."""
     inv = _invoice(due=date(2031, 3, 3))
     freeze_deadlines(monkeypatch, datetime(2031, 3, 4, 2, 30, tzinfo=UTC))
     assert deadlines.today_utc() == date(2031, 3, 4)
     assert deadlines.today_mtl() == date(2031, 3, 3)
     assert not invoice_model.is_overdue(inv, today=deadlines.today_mtl())
-    freeze_deadlines(monkeypatch, datetime(2031, 3, 4, 5, 20, tzinfo=UTC))
-    assert deadlines.today_mtl() == date(2031, 3, 4)          # 00:20 EST
+    freeze_deadlines(monkeypatch, datetime(2031, 3, 4, 4, 59, tzinfo=UTC))
+    assert deadlines.today_mtl() == date(2031, 3, 3)          # 23:59 EST
+    assert not invoice_model.is_overdue(inv, today=deadlines.today_mtl())
+    freeze_deadlines(monkeypatch, datetime(2031, 3, 4, 5, 0, tzinfo=UTC))
+    assert deadlines.today_mtl() == date(2031, 3, 4)          # 00:00 EST
     assert invoice_model.is_overdue(inv, today=deadlines.today_mtl())
 
 
@@ -237,8 +242,8 @@ def test_the_sweep_order_is_the_longest_late_first():
 def test_an_unreadable_amount_is_named_never_judged(caplog, field, value):
     """Named by its id, the exception's class and the amount's FIELD — never
     by a traceback, whose last line quoted the stored value (int()'s own
-    error) into Cloud Logging every night (review of lot 2: no log carries an
-    amount, CLAUDE.md « Do not log PII »)."""
+    error) into Cloud Logging at every run (review of lot 2: no log carries
+    an amount, CLAUDE.md « Do not log PII »)."""
     good = _invoice(due=date(2031, 3, 3), id="good")
     bad = _invoice(due=date(2031, 3, 3), id="bad", **{field: value})
     with caplog.at_level(logging.ERROR):
@@ -440,13 +445,13 @@ def test_retirer_le_retard_corrects_a_mark_made_before_the_due_date(fake, monkey
 
 def test_the_write_judges_on_montreals_day_in_the_evening_band(fake, monkeypatch):
     """At 21:30 in Montréal on the due day (02:30 UTC the next day), the
-    status write refuses « en_retard »; at 00:20 the next morning — the
-    sweep's hour — it takes it."""
+    status write refuses « en_retard »; from Montréal's midnight — 05:00
+    UTC, hours before the sweep's 09:00 run — it takes it."""
     fake.seed(f"invoices/{INV}", _invoice(due=date(2031, 3, 3)))
     _at(monkeypatch, datetime(2031, 3, 4, 2, 30, tzinfo=UTC))
     ok, error = invoice_model.update_status(INV, "en_retard")
     assert ok is False and "à compter du 2031-03-04" in error
-    _at(monkeypatch, datetime(2031, 3, 4, 5, 20, tzinfo=UTC))
+    _at(monkeypatch, datetime(2031, 3, 4, 5, 0, tzinfo=UTC))
     assert invoice_model.update_status(INV, "en_retard") == (True, "")
 
 
@@ -793,8 +798,8 @@ def test_the_pages_judge_on_montreals_day_in_the_evening_band(
     assert "Retard" not in flat and 'value="en_retard"' not in page
     assert "Échue" not in _row(client.get("/factures/").get_data(as_text=True),
                                "2031-F017")
-    # Montréal's midnight: late.
-    _at(monkeypatch, datetime(2031, 3, 4, 5, 20, tzinfo=UTC))
+    # Montréal's midnight (05:00 UTC): late, hours before the sweep's run.
+    _at(monkeypatch, datetime(2031, 3, 4, 5, 0, tzinfo=UTC))
     assert 'value="en_retard"' in _sheet(client, INV)
     assert "Échue · 1 j" in _row(client.get("/factures/").get_data(as_text=True),
                                  "2031-F017")
