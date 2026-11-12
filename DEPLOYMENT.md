@@ -5423,6 +5423,42 @@ Notes:
   size still match; a clean checkout ships none — as before. Its effect shows in the same
   `/_ah/warmup` latency.
 
+- **The Documents landing reads the page it shows (2026-11-12).** The
+  Bibliothèque's Documents tab with no dossier chosen streamed every
+  document of the firm — 2,267 — and sorted them in Python to show
+  fifteen: p50 4.2 s on 2026-11-11. It now reads one page, newest first,
+  in Firestore's own order (`models/document.list_documents_page`, STRICT,
+  cursor-paged like the dossiers list), with its COUNT
+  (`count_documents_page`, fail-open) and a completeness count that says
+  how many documents the date order cannot list — none on 2026-11-12, the
+  ordered and unordered counts both 2,267. A failed read — an outage, an
+  index missing or still building — answers at 200 « La liste des
+  documents n'a pas pu être lue », never « Aucun document ». The search box
+  and the « Nom » and « Taille » sorts keep the whole read. The dossier
+  picker reads four fields per dossier
+  (`models/dossier.list_dossiers_for_picker`) and says « indisponible » if
+  its read fails; the search box gains `hx-sync`. Change Impact: item 7 —
+  the composite `(category ASC, created_at DESC)` on `documents`, for the
+  category filter, created in production BEFORE the code by `gcloud
+  firestore indexes composite create` (READY in about four minutes); the
+  unfiltered order rides the automatic `created_at` index, proved by its
+  COUNT run in production; item 4 — two `log_unexpected` lines,
+  registered; `list_documents` is unchanged, so the connector (item 1),
+  the zip builder and the dossier tab read as before; items 2, 3, 5 and 6
+  not touched (classes already compiled, the `error` glyph already in the
+  subset).
+  In order:
+  1. *The index*, before the push — done: `gcloud firestore indexes
+     composite list --project=$PROJECT` shows 38 READY.
+  2. *The push.*
+  3. *On the desktop and the phone (375 px)*: Bibliothèque → Documents
+     opens fast, newest first, « Page 1 / N »; the category filter pages;
+     « Nom » and « Taille » still sort every document; a search still
+     finds.
+  4. *The request log*: `/documents/` without `dossier_id`, its p50
+     against 4.2 s.
+  A rollback is the code alone; the index can stay.
+
 ## 16. Troubleshooting
 
 | Symptom | Likely cause |
