@@ -338,15 +338,12 @@ def test_the_plan_marks_the_irreversible_steps():
 # passage la règle qui compte. Relever sa sortie (DEPLOYMENT.md §15, la
 # commande en lecture seule), la verser au corpus, puis la retirer d'ici :
 # le test suivant refuse une entrée périmée.
-_CORPUS_EN_ATTENTE: set = {"index-composites"}
-# « index-composites » en attente depuis le 2026-11-12 : la page Documents
-# déclare (category ASC, created_at DESC) sur `documents`, le 38e composite.
-# La sortie relevée le 2026-09-13 (37 READY) ne décrit plus un déploiement
-# complet, et y AJOUTER un READY serait fabriquer la preuve. Une fois l'index
-# déployé et « Enabled », relever la sortie réelle de la sonde (`gcloud
-# firestore indexes composite list --project=… --format=value(state)`), la
-# verser au corpus, puis retirer la clé d'ici.
-# Vide du 2026-11-08 au 2026-11-12 : les ressources de la surveillance de sécurité
+_CORPUS_EN_ATTENTE: set = set()
+# Vide depuis le 2026-11-12 : « index-composites » relevé ce jour-là sur le
+# déploiement vivant, une fois « Enabled » le 38e composite — (category ASC,
+# created_at DESC) sur `documents`, la page Documents —, par la commande en
+# lecture seule de la sonde, et versé au corpus.
+# Avant : vide du 2026-11-08 au 2026-11-12 : les ressources de la surveillance de sécurité
 # (DEPLOYMENT.md §6.10) ont été relevées ce jour-là sur le déploiement vivant
 # par les commandes en lecture seule de la sonde — les compteurs à nouveau,
 # avec leur filtre, quand la sonde s'est mise à le comparer —, et versées au

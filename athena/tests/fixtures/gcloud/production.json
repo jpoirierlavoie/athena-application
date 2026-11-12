@@ -66,5 +66,9 @@
   "alerte-appspot-bloque": {
     "ok": true,
     "stdout": "projects/projet-temoin/alertPolicies/333333333333333333\tTrue\tprojects/projet-temoin/notificationChannels/999999999999999999"
+  },
+  "index-composites": {
+    "ok": true,
+    "stdout": "READY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY\nREADY"
   }
 }
