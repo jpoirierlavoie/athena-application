@@ -777,19 +777,19 @@ def test_a_payee_never_reaches_the_models_amount_refusal(
 
 
 def test_the_runbook_says_where_the_connector_meets_montant_illisible():
-    """THIRD review of lot 2, corrected by the review of 9968616. 9a21512's
-    commit message, which cannot change, said update_invoice received
-    montant_illisible on a « payée »; the lot 2 entry of DEPLOYMENT.md §15,
-    which can, says where it does. 9968616 wrote « on a brouillon, an
-    envoyée or an en_retard, the statuses the connector moves out of » —
-    too wide twice: a brouillon's move reads only its amount_paid (no
-    transition reads a brouillon's amount_due), and the void reads
-    amount_paid itself (int(… or 0)), never refusing by that name. The
-    entry now says: over its amount_paid on a brouillon, or either amount
-    on an envoyée or an en_retard — a move of _CONNECTOR_STATUS_MOVES, the
-    void excepted —, never on a « payée »
-    (test_a_payee_never_reaches_the_models_amount_refusal). Each fact the
-    sentence states is pinned to the code below."""
+    """REWRITTEN on 2026-11-12 (« Invoices: an unreadable stored amount is
+    named, never fatal »). Since the review of 9968616 it pinned lot 2's
+    entry — over a brouillon's amount_paid, or either amount on an envoyée
+    or an en_retard, « the void excepted », never on a « payée » — and that
+    fact of the code: the void read amount_paid itself (int(… or 0)), never
+    refusing by that name. Both changed by the lawyer's decision: the void
+    judges its amounts through unreadable_transition_field and refuses by
+    name, and the send refuses a brouillon whose balance cannot be read.
+    The lot 2 entry keeps its sentence, the record of that release, marked
+    superseded; the new entry says where the connector meets the refusal
+    now, and each fact it states is pinned to the code below. The payée
+    stays as it was (test_a_payee_never_reaches_the_models_amount_refusal);
+    tests/test_invoice_unreadable_amounts.py proves the behaviour."""
     text = " ".join((_ATHENA.parent / "DEPLOYMENT.md").read_text(
         encoding="utf-8").split())
     entry = text[text.index(
@@ -799,17 +799,46 @@ def test_the_runbook_says_where_the_connector_meets_montant_illisible():
             "`amount_paid` on a brouillon, or either amount on an envoyée or "
             "an en_retard — a move of `_CONNECTOR_STATUS_MOVES`, the void "
             "excepted —, never on a « payée », whose every move the handler "
-            "refuses before the model") in item1
+            "refuses before the model, as before the lot (*superseded on "
+            "2026-11-12*: the send is refused over a brouillon's unreadable "
+            "balance too, and the void by name — « Invoices: an unreadable "
+            "stored amount is named, never fatal », below)") in item1
     assert "the statuses the connector moves out of" not in item1
+    now = text[text.index("**Invoices: an unreadable stored amount is named, "
+                          "never fatal (2026-11-12).**"):
+               text.index("## 16. Troubleshooting")]
+    assert ("`update_status_report` now refuses « brouillon → envoyée » by "
+            "name when `balance_of` cannot read the brouillon — its "
+            "`amount_due`, or a None or empty `amount_paid` —") in now
+    assert ("**This reverses lot 2's « a brouillon's unreadable `amount_due` "
+            "never locks brouillon → envoyée »**") in now
+    assert ("The void, a draft correction and a same-status call are refused "
+            "by the handler first, by name: their answer reads the "
+            "balance.") in now
+    assert ("`unreadable_transition_field` refuses by name "
+            "(`montant_illisible`) before anything is written") in now
     moves = handlers._CONNECTOR_STATUS_MOVES
     assert {current for current, _target in moves} == {
         "brouillon", "envoyée", "en_retard"}
     # The void is no move of that table: it goes through void_invoice_report,
-    # which reads amount_paid itself and never refuses by that name.
+    # which now judges its amounts through the authority, by name.
     assert all(target != "annulée" for _current, target in moves)
     void_source = inspect.getsource(invoice_model.void_invoice_report)
-    assert "montant_illisible" not in void_source
-    assert "unreadable_transition_field" not in void_source
+    assert "unreadable_transition_field(invoice)" in void_source
+    assert '"montant_illisible"' in void_source
+    assert "_payment_recorded(invoice)" in void_source
+    assert 'int(invoice.get("amount_paid", 0) or 0)' not in void_source
+    # The send: the balance's authority, on « brouillon → envoyée » alone.
+    status_source = inspect.getsource(invoice_model.update_status_report)
+    assert ('if current == "brouillon" and new_status == "envoyée":'
+            in status_source)
+    assert "unsendable = unreadable_balance_field(invoice)" in status_source
+    # The handler refuses first every call whose answer the model's refusal
+    # does not cover: the void, a draft correction, a same-status call.
+    for door in (handlers._void_invoice, handlers._edit_invoice_draft,
+                 handlers._set_invoice_status):
+        assert "_refuse_unreadable_amount(invoice, _UNREADABLE_WRITE)" in (
+            inspect.getsource(door)), door.__name__
     # A brouillon's move reads its amount_paid only; an issued invoice's,
     # either amount.
     unreadable = invoice_model.unreadable_transition_field

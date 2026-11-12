@@ -354,7 +354,8 @@ def days_overdue(invoice: dict, *, today: date) -> int:
 
 def _payment_recorded(invoice: dict) -> bool:
     """Whether a payment is RECORDED on *invoice* (``amount_paid`` > 0) —
-    how :func:`available_transitions` reads it to that end, on every status:
+    how :func:`available_transitions` and, since 2026-11-12,
+    :func:`void_invoice_report` read it to that end, on every status:
     an absent, None, empty or zero amount is none (what a « payée » set by
     hand before 2026-08-17 may carry). Not its only reading: an issued
     invoice's lateness reads ``amount_paid`` through :func:`balance_of`,
@@ -2097,11 +2098,13 @@ def unreadable_transition_field(invoice: dict) -> Optional[str]:
     ``amount_paid``, an absent, None or empty one read as none — a None or
     empty one, which on an issued invoice the strict balance read has
     already refused). No transition reads the ``amount_due`` of a
-    brouillon, a payée or an annulée, so an unreadable one locks none of
-    theirs. What
-    :func:`update_status_report` refuses by name (``montant_illisible``)
+    brouillon, a payée or an annulée — though, since 2026-11-12,
+    :func:`update_status_report` refuses to SEND a brouillon whose balance
+    it cannot read, by its own rule: sent, it would be an issued invoice
+    whose balance is never judged. What :func:`update_status_report` and
+    :func:`void_invoice_report` refuse by name (``montant_illisible``)
     rather than fail generically, its traceback quoting the value (second
-    review of lot 2)."""
+    review of lot 2; the void since 2026-11-12)."""
     if invoice.get("status", "") in _ISSUED_STATUSES:
         return unreadable_balance_field(invoice)
     try:
@@ -2411,6 +2414,28 @@ def _lateness_refusal(invoice: dict, new_status: str) -> Optional[_StatusRefused
     return None
 
 
+#: The French name of each stored amount :func:`unreadable_balance_field`
+#: can name — what a ``montant_illisible`` refusal says, never the value,
+#: which ``int()``'s own error quotes. One per field of ``_BALANCE_FIELDS``
+#: (``tests/test_invoice_unreadable_amounts`` pins the two together); read
+#: by the refusals below, the invoice sheet and list, and the connector
+#: (2026-11-12).
+BALANCE_FIELD_LABELS = {"amount_due": "montant dû", "amount_paid": "montant payé"}
+
+
+def unreadable_amount_message(field: str, consequence: str, *,
+                              number: str = "") -> str:
+    """The ``montant_illisible`` sentence, in French: the stored amount
+    *field* named — never its value —, what cannot be judged
+    (*consequence*), and the repair it calls for. *number* names the invoice
+    when given (the connector, whose reads list many), « cette facture »
+    otherwise. One sentence family for every surface (2026-11-12)."""
+    where = f"la facture {number}" if number else "cette facture"
+    return (f"Le {BALANCE_FIELD_LABELS.get(field, field)} enregistré sur "
+            f"{where} est illisible : {consequence}. La facture doit d'abord "
+            "être réparée.")
+
+
 def update_status_report(
     invoice_id: str,
     new_status: str,
@@ -2458,13 +2483,20 @@ def update_status_report(
     ``montant_illisible``, the field in French), never judged — and never
     the generic failure, whose traceback quoted the value (reviews of
     lot 2; the second found every status's ``amount_paid`` still read
-    there, a read older than the lot). Nothing more is refused: no
-    transition reads a brouillon's ``amount_due``, so an unreadable one
-    locks none (« brouillon → envoyée » proceeds, as before lot 2), and the
-    absent, None or empty ``amount_paid`` of a brouillon, a payée or an
-    annulée reads as no payment, as it always did — a « payée » set by hand
-    reopens. An ISSUED invoice's None or empty ``amount_paid`` is refused,
-    by contrast (an absent one reads as 0): its balance cannot be read, so
+    there, a read older than the lot). No transition reads a brouillon's
+    ``amount_due``, and the absent, None or empty ``amount_paid`` of a
+    brouillon, a payée or an annulée reads as no payment, as it always did
+    — a « payée » set by hand reopens. The SEND is judged on more
+    (2026-11-12, reversing lot 2's « an unreadable ``amount_due`` locks
+    none »): « brouillon → envoyée » is refused by name
+    (``montant_illisible``) when :func:`balance_of` cannot read the
+    brouillon (:func:`unreadable_balance_field` — its ``amount_due``, or a
+    None or empty ``amount_paid``), since sent it would be an issued
+    invoice whose balance is never judged; it used to commit the send, and
+    the connector's answer then failed after the commit, its ERROR
+    traceback quoting the value. An ISSUED invoice's None or empty
+    ``amount_paid`` is refused, by contrast (an absent one reads as 0):
+    its balance cannot be read, so
     neither « envoyée → en_retard » nor « en_retard → envoyée », which went
     through on it before lot 2, can be judged (third review of lot 2: this
     docstring said every None or empty one read as no payment).
@@ -2498,15 +2530,26 @@ def update_status_report(
         # traceback.
         unreadable = unreadable_transition_field(invoice)
         if unreadable is not None:
-            label = ("montant dû" if unreadable == "amount_due"
-                     else "montant payé")
             judged = ("son retard" if current in _ISSUED_STATUSES
                       else "son changement de statut")
-            raise _StatusRefused(
-                f"Le {label} enregistré sur cette facture est illisible : "
-                f"{judged} ne peut pas être jugé, et rien n'a été écrit. "
-                "La facture doit d'abord être réparée.",
+            raise _StatusRefused(unreadable_amount_message(
+                unreadable,
+                f"{judged} ne peut pas être jugé, et rien n'a été écrit"),
                 "montant_illisible")
+        # The send (2026-11-12, reversing lot 2): « envoyée », the invoice's
+        # lateness reads its balance, strictly — a brouillon whose balance
+        # cannot be read would become an issued invoice whose balance is
+        # never judged. A brouillon's transitions read neither its
+        # amount_due nor a None or empty amount_paid, so the send judges
+        # them here, by name, before any write.
+        if current == "brouillon" and new_status == "envoyée":
+            unsendable = unreadable_balance_field(invoice)
+            if unsendable is not None:
+                raise _StatusRefused(unreadable_amount_message(
+                    unsendable,
+                    "une fois envoyée, son solde ne pourrait jamais être "
+                    "jugé, et rien n'a été écrit"),
+                    "montant_illisible")
         if new_status not in available_transitions(invoice, today=today_mtl()):
             # Nommer la voie plutôt que de refuser sèchement : la seule raison
             # qu'une facture payée ait de rester fermée est qu'un encaissement
@@ -2626,6 +2669,16 @@ def void_invoice_report(
     (it is the source of truth of that pair, and reverses the linked admin
     receipt itself), « Administration » otherwise.
 
+    The stored amounts are judged through their authority (2026-11-12): one
+    the void cannot read (:func:`unreadable_transition_field` — an issued
+    invoice's balance, any other's ``amount_paid``) is refused by name
+    (``montant_illisible``, the field in French), and a recorded payment is
+    :func:`_payment_recorded`. The void read ``amount_paid`` itself: a value
+    ``int()`` could not read fell into the generic failure, its traceback
+    quoting it, and an issued invoice's None or empty one read as no payment
+    — the void committed, and the connector's answer, which reads the
+    balance, then failed after the commit.
+
     It NEVER refuses because of a source. A source whose ``invoice_id`` is
     empty is released — rewritten only if it is still flagged invoiced, so
     an already-released row keeps its etag; one that names ANOTHER invoice
@@ -2706,11 +2759,22 @@ def void_invoice_report(
                 "annulé.",
                 "paiement_fideicommis",
             )
-        amount_paid = int(invoice.get("amount_paid", 0) or 0)
-        if amount_paid > 0:
+        # The amounts through their authority (2026-11-12): one the void's
+        # judgment cannot read is refused by name, never judged — int()'s
+        # error quoted the stored value, and the catch-all below logged it
+        # in its traceback.
+        unreadable = unreadable_transition_field(invoice)
+        if unreadable is not None:
+            raise _VoidRefused(unreadable_amount_message(
+                unreadable,
+                "son annulation ne peut pas être jugée, et rien n'a été "
+                "annulé"),
+                "montant_illisible")
+        if _payment_recorded(invoice):
             raise _VoidRefused(
                 f"Cette facture porte un encaissement de "
-                f"{format_cents_fr(amount_paid)} : contre-passez l'écriture "
+                f"{format_cents_fr(invoice.get('amount_paid', 0))} : "
+                "contre-passez l'écriture "
                 "dans « Administration », puis annulez la facture — sinon ses "
                 "heures redeviendraient facturables alors que le paiement "
                 "resterait sur une facture annulée. Rien n'a été annulé.",

@@ -326,9 +326,11 @@ def test_the_status_door_names_a_field_exactly_when_the_transitions_cannot_read(
     status reads whether a payment is recorded (amount_paid — absent, None
     or empty read as none, where the balance read has not already refused
     it: third review of lot 2). So nothing falls into the door's
-    generic failure, whose traceback quoted the stored value, and nothing
-    more is refused: a brouillon's amount_due, read by no transition, locks
-    none (second review of lot 2)."""
+    generic failure, whose traceback quoted the stored value. A brouillon's
+    amount_due, read by no transition, is no field of this one — though
+    since 2026-11-12 the door refuses to SEND a brouillon whose balance it
+    cannot read, by its own rule
+    (test_a_brouillon_whose_amount_due_cannot_be_read_is_never_sent)."""
     absent = object()
     values = [absent, *_STORED_AMOUNTS]
     for status in (*invoice_model.VALID_STATUSES, ""):
@@ -578,20 +580,33 @@ def test_a_hand_set_payee_reopens_whatever_reads_as_no_payment(
     assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
 
 
-def test_a_brouillon_is_sent_whatever_its_amount_due_reads(fake, monkeypatch):
-    """RENAMED and narrowed by the second review of lot 2 (it was « …whatever
-    its amounts read », which only amount_due bore out). No transition reads
-    a brouillon's amount_due — lateness reads an issued invoice's balance —,
-    so an unreadable one locks nothing: « brouillon → envoyée » proceeds,
-    before lot 2 as after. Its amount_paid is another matter: every
-    transition reads it, and an unreadable one is refused by name
-    (test_an_unreadable_amount_paid_refuses_any_status_write_by_name)."""
+def test_a_brouillon_whose_amount_due_cannot_be_read_is_never_sent(
+        fake, monkeypatch, caplog):
+    """REWRITTEN on 2026-11-12, reversing lot 2 by the lawyer's decision. It
+    was « test_a_brouillon_is_sent_whatever_its_amount_due_reads »: no
+    transition reads a brouillon's amount_due, so lot 2 let an unreadable
+    one through « brouillon → envoyée ». Sent, the invoice is an issued one
+    whose lateness reads its balance, strictly — a balance never to be
+    judged —, and the connector's answer, built after the commit, failed on
+    it, its ERROR traceback quoting the stored value. The send is refused by
+    name now (montant_illisible), nothing written; its other cases live in
+    tests/test_invoice_unreadable_amounts.py."""
     fake.seed(f"invoices/{INV}", _invoice(status="brouillon",
                                           amount_due="1 234,56"))
     _at(monkeypatch, datetime(2031, 3, 10, 15, tzinfo=UTC))
-    assert invoice_model.update_status(INV, "envoyée", expected_etag=ETAG) == (
-        True, "")
-    assert fake.peek(f"invoices/{INV}")["status"] == "envoyée"
+    before = fake.peek(f"invoices/{INV}")
+    fake.reset_logs()
+    with caplog.at_level(logging.INFO):
+        assert invoice_model.update_status(
+            INV, "envoyée", expected_etag=ETAG) == (
+            False,
+            "Le montant dû enregistré sur cette facture est illisible : une "
+            "fois envoyée, son solde ne pourrait jamais être jugé, et rien "
+            "n'a été écrit. La facture doit d'abord être réparée.")
+    assert fake.peek(f"invoices/{INV}") == before and fake.commits == []
+    (line,) = [r.json_fields for r in caplog.records if r.name == "pallas.invoice"]
+    assert (line["event"], line["reason"]) == ("invoice_refused",
+                                               "montant_illisible")
 
 
 @pytest.mark.parametrize("status,target,due", [

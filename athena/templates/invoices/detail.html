@@ -133,6 +133,12 @@
   {% if message %}
   <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800 wrap-anywhere">{{ message }}</div>
   {% endif %}
+  {# Un montant enregistré illisible (2026-11-12) : la route n'a calculé ni
+     solde, ni retard, ni transition ; l'avis nomme le champ, jamais sa
+     valeur, et la fiche n'offre ni changement de statut ni paiement. #}
+  {% if avis_illisible %}
+  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800 wrap-anywhere">{{ avis_illisible }}</div>
+  {% endif %}
 
   {# ── Note-d'honoraires generation result (HTMX target) ─────── #}
   <div id="note-docx-result"></div>
@@ -180,8 +186,14 @@
         {# Le retard (2026-11-11), dérivé côté route — invoice.days_overdue et
            first_overdue_day, sur l'échéance reportée au jour ouvrable suivant
            (calendrier civil) : ce gabarit ne compare aucune date (règle 5).
-           Rien tant que la facture n'est pas en retard. #}
-        {% if retard_jours %}
+           Rien tant que la facture n'est pas en retard. « illisible » quand
+           un montant enregistré empêche de le juger (2026-11-12). #}
+        {% if retard_illisible %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Retard</dt>
+          <dd class="text-red-700 text-right font-medium">illisible</dd>
+        </div>
+        {% elif retard_jours %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Retard</dt>
           <dd class="text-red-700 text-right font-medium">{{ retard_jours }} jour{% if retard_jours > 1 %}s{% endif %} (depuis le {{ retard_depuis.strftime('%Y-%m-%d') }})</dd>
@@ -349,12 +361,26 @@
         <dt class="text-gray-500 flex-shrink-0">Provision appliquée</dt>
         <dd class="text-green-700 text-right">-{{ invoice.retainer_applied | cents_fr }}</dd>
       </div>
+      {% endif %}
+      {# Un montant que la route dit illisible (2026-11-12) ne passe jamais
+         par le filtre des cents, dont le int() lèverait : il s'affiche
+         « illisible » sur sa propre ligne. #}
+      {% if invoice.retainer_applied or du_illisible %}
       <div class="flex justify-between gap-4">
         <dt class="text-gray-500 flex-shrink-0">Montant dû à l'émission</dt>
+        {% if du_illisible %}
+        <dd class="text-red-700 text-right font-medium">illisible</dd>
+        {% else %}
         <dd class="text-gray-900 text-right">{{ invoice.amount_due | cents_fr }}</dd>
+        {% endif %}
       </div>
       {% endif %}
-      {% if invoice.amount_paid %}
+      {% if paye_illisible %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Encaissé</dt>
+        <dd class="text-red-700 text-right font-medium">illisible</dd>
+      </div>
+      {% elif invoice.amount_paid %}
       <div class="flex justify-between gap-4">
         <dt class="text-gray-500 flex-shrink-0">
           Encaissé{% if invoice.paid_date %} <span class="text-gray-400">({{ invoice.paid_date.strftime('%Y-%m-%d') }})</span>{% endif %}
@@ -367,7 +393,11 @@
          that label here. #}
       <div class="flex justify-between gap-4 border-t border-gray-200 pt-2">
         <dt class="text-gray-900 font-bold flex-shrink-0">Solde</dt>
+        {% if avis_illisible %}
+        <dd class="text-red-700 text-right font-bold text-base">illisible</dd>
+        {% else %}
         <dd class="text-gray-900 text-right font-bold text-base">{{ balance | cents_fr }}</dd>
+        {% endif %}
       </div>
     </dl>
   </div>
@@ -412,7 +442,9 @@
   {% else %}
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm mb-4">
     Aucun paiement inscrit en comptabilité pour cette facture.
-    {% if invoice.status not in ('brouillon', 'annulée') %}
+    {# Aucun paiement offert sur un montant illisible (2026-11-12) : la
+       facture doit d'abord être réparée. #}
+    {% if invoice.status not in ('brouillon', 'annulée') and not avis_illisible %}
     <span class="block mt-2">
       Un encaissement se saisit dans
       <a href="{{ url_for('admin_ledger.entry_new') }}"

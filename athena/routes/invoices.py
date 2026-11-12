@@ -10,6 +10,12 @@ through the model's one authority (``invoice.is_overdue`` and its
 ``days_overdue`` / ``first_overdue_day``): the list's « Échue · N j » and
 the sheet's « Retard » line read the flags these routes annotate, and no
 template compares a date (Architecture Rule 5).
+
+A stored amount the balance cannot read (2026-11-12) is named by the model
+(``invoice.unreadable_balance_field``): the list and the sheet then say
+« illisible » where the balance and the lateness would be, and the sheet
+offers no status change and no payment, instead of failing — ``int()``'s
+error quoted the stored value into the error log.
 """
 
 from datetime import datetime, timezone
@@ -40,10 +46,14 @@ from utils.cabinet import cabinet_dict
 from utils.deadlines import today_mtl, today_utc
 from utils.format_fr import format_rate_fr
 from models.invoice import (
+    BALANCE_FIELD_LABELS,
     DRAFT_FIELDS,
     DRAFT_NOTES_MAX_LENGTH,
     STATUS_LABELS,
     VALID_STATUSES,
+    # The statuses whose lateness the model judges (is_overdue): the sheet
+    # says « illisible » on its « Retard » line for them alone.
+    _ISSUED_STATUSES,
     available_transitions,
     balance_of,
     billing_address_from,
@@ -60,6 +70,8 @@ from models.invoice import (
     list_invoices_page,
     list_line_items,
     number_year_warning,
+    unreadable_amount_message,
+    unreadable_balance_field,
     update_invoice_draft,
     update_status,
     void_invoice_report,
@@ -188,10 +200,21 @@ def invoice_list() -> str:
     # (Le patron est celui de routes/admin_ledger._balance.)
     # Le retard de même (2026-11-11) : « Échue · N j », dérivé par le modèle
     # sur le jour de Montréal — le gabarit ne compare aucune date (règle 5).
+    # Un montant enregistré que le solde ne sait pas lire (2026-11-12) : le
+    # modèle nomme le champ (unreadable_balance_field), et la ligne dit
+    # « illisible » à la place du solde, sans « Échue » — au lieu de faire
+    # tomber la page, dont l'erreur citait la valeur dans le journal.
     today = today_mtl()
     for inv in invoices:
-        inv["_balance"] = balance_of(inv)
-        inv["_days_overdue"] = days_overdue(inv, today=today)
+        illisible = unreadable_balance_field(inv)
+        if illisible is None:
+            inv["_balance"] = balance_of(inv)
+            inv["_days_overdue"] = days_overdue(inv, today=today)
+        else:
+            inv["_balance"] = None
+            inv["_days_overdue"] = 0
+        inv["_illisible"] = (BALANCE_FIELD_LABELS.get(illisible, illisible)
+                             if illisible else "")
 
     ctx = _template_context()
     ctx.update(
@@ -425,6 +448,14 @@ def invoice_create() -> str:
 # ── Invoice detail ───────────────────────────────────────────────────────
 
 
+def _unreadable_alone(invoice: dict, field: str) -> bool:
+    """Whether the model cannot read *field* of *invoice*, asked ALONE
+    (``unreadable_balance_field`` on that one amount: the others absent,
+    which it reads as 0) — so the sheet can say « illisible » on that
+    amount's own row without hiding another's figure (2026-11-12)."""
+    return unreadable_balance_field({field: invoice.get(field, 0)}) is not None
+
+
 @invoices_bp.route("/<invoice_id>")
 @login_required
 def invoice_detail(invoice_id: str) -> str:
@@ -468,23 +499,37 @@ def invoice_detail(invoice_id: str) -> str:
     # la facture est en retard, « Retirer le retard » tant qu'elle ne l'est
     # pas — le même jour que la ligne « Retard » ci-dessous.
     today = today_mtl()
-    transitions = available_transitions(invoice, today=today, receipts=paiements)
-    if "annulée" in transitions:
-        # Le dernier cas : un paiement d'honoraires du fidéicommis debout
-        # dont la recette d'administration automatique a échoué (fail-open)
-        # — ni montant inscrit ni écriture d'administration, mais
-        # void_invoice_report refuserait. Lu seulement quand « Annuler »
-        # serait autrement offert : une requête de plus, jamais sur une
-        # facture déjà fermée à l'annulation.
+    # Un montant enregistré que le solde ne sait pas lire (2026-11-12) : le
+    # modèle nomme le champ (unreadable_balance_field — la lecture la plus
+    # stricte des deux montants, celle du solde, du retard et des
+    # transitions). La fiche ne calcule alors ni solde, ni retard, ni
+    # transition : « illisible » à leur place, aucun changement de statut ni
+    # paiement offert, et un avis qui nomme le champ, jamais sa valeur — la
+    # page tombait, et l'erreur de int() citait la valeur dans le journal.
+    illisible = unreadable_balance_field(invoice)
+    if illisible is None:
         transitions = available_transitions(
-            invoice, today=today, receipts=paiements,
-            trust_payments=list_invoice_fee_payments(invoice_id),
-        )
-    # La ligne « Retard » de la fiche : le nombre de jours et le premier jour
-    # de retard, dérivés par le modèle — rien quand la facture n'est pas en
-    # retard (jours à 0).
-    retard_jours = days_overdue(invoice, today=today)
-    retard_depuis = first_overdue_day(invoice) if retard_jours else None
+            invoice, today=today, receipts=paiements)
+        if "annulée" in transitions:
+            # Le dernier cas : un paiement d'honoraires du fidéicommis debout
+            # dont la recette d'administration automatique a échoué
+            # (fail-open) — ni montant inscrit ni écriture d'administration,
+            # mais void_invoice_report refuserait. Lu seulement quand
+            # « Annuler » serait autrement offert : une requête de plus,
+            # jamais sur une facture déjà fermée à l'annulation.
+            transitions = available_transitions(
+                invoice, today=today, receipts=paiements,
+                trust_payments=list_invoice_fee_payments(invoice_id),
+            )
+        # La ligne « Retard » de la fiche : le nombre de jours et le premier
+        # jour de retard, dérivés par le modèle — rien quand la facture n'est
+        # pas en retard (jours à 0).
+        retard_jours = days_overdue(invoice, today=today)
+        retard_depuis = first_overdue_day(invoice) if retard_jours else None
+        # amount_due is frozen at issuance; the live balance is derived.
+        balance = balance_of(invoice)
+    else:
+        transitions, retard_jours, retard_depuis, balance = (), 0, None, None
 
     ctx = _template_context()
     ctx.update(
@@ -494,8 +539,20 @@ def invoice_detail(invoice_id: str) -> str:
         transitions=transitions,
         retard_jours=retard_jours,
         retard_depuis=retard_depuis,
-        # amount_due is frozen at issuance; the live balance is derived.
-        balance=balance_of(invoice),
+        balance=balance,
+        # The unreadable amount, when there is one: the notice names it in
+        # French; the « Retard » line says « illisible » where the model
+        # judges lateness; each amount the sheet prints itself (« Montant dû
+        # à l'émission », « Encaissé ») is asked of the model ALONE, so one
+        # unreadable amount never hides the other's figure, nor reaches the
+        # cents filter, whose int() would raise.
+        avis_illisible=(unreadable_amount_message(
+            illisible, "son solde et son statut ne peuvent pas être jugés")
+            if illisible else ""),
+        retard_illisible=(illisible is not None
+                          and invoice.get("status", "") in _ISSUED_STATUSES),
+        du_illisible=_unreadable_alone(invoice, "amount_due"),
+        paye_illisible=_unreadable_alone(invoice, "amount_paid"),
         # Rates as STORED on this invoice (GST ×100, QST ×1000) rather than
         # today's statutory rates hardcoded in the markup — an invoice issued
         # under a different rate must read back under that rate.
