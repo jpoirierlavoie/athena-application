@@ -248,7 +248,7 @@ def _contexte_rdv() -> dict:
     under ``erreur_rdv``). ``heures_synchro`` is what the tab's footnote
     quotes for the import hours (``utils.cron_schedule``).
     """
-    heures = cron_schedule.runs_fr()
+    heures = cron_schedule.cadence_fr("bookings")
     try:
         rdvs = rendez_vous.lister_en_attente()
         divergences = rendez_vous.lister_divergences()

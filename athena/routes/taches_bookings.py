@@ -5,7 +5,7 @@ by App Engine cron: the ``X-Appengine-Cron: true`` header is STRIPPED from all
 external traffic, so the in-handler guard is proof of origin (the
 before_request bypasses in security.py rely on the same fact).
 
-At every cron run (three a day, cron.yaml) it reads « Bookings with me »
+Every 10 minutes during office hours (cron.yaml) it reads « Bookings with me »
 reservations from the juriste's mailbox and upserts them as hearings gated behind ``confirmation="à_confirmer"``
 (invisible to DAV/MCP/Calendar-DavX5 until the juriste confirms in Réception).
 Idempotent: every write is conditioned on a real change, so a re-run writes

@@ -69,7 +69,7 @@ Firestore     Firestore      Firebase Storage  Firebase Auth  Secret Manager
 
 **There are TWO App Engine services, not one**, plus a `dispatch.yaml` that
 routes the portal host to the second and a `cron.yaml` running three jobs
-three times a day (the hours: `athena/utils/cron_schedule.CRON_HOURS`).
+during office hours only (`athena/utils/cron_schedule.py`).
 This diagram showed one until 2026-09-12, which is how an adopter learns the
 `portail` service exists only when their first CI build fails deploying it.
 Its infrastructure — the least-privilege service account, the quarantine
@@ -107,15 +107,15 @@ grants — is §6.9.
 
 | Component | Ballpark |
 |---|---|
-| App Engine F2, `min_instances: 0` (as deployed) | Billed per **instance-hour** while an instance is up — until about 15 minutes after its last request —, never per request. The free tier is 28 F1-hours a day for both services together; an F2 hour counts as two. Until 2026-11-12 the crons, every 10–15 minutes, kept one instance up around the clock (about 24 F2-hours a day, measured): about US$30–42/mo after the free tier (estimate). They now run three times a day (`cron.yaml`): about 12 F2-hours a day (estimated from a week of request logs), inside the free tier while the portal stays light, at the price of cold starts (about 8 s) after each idle stretch. The exact figure: Billing → Reports |
+| App Engine F2, `min_instances: 0` (as deployed) | Billed per **instance-hour** while an instance is up — until about 15 minutes after its last request —, never per request. The free tier is 28 F1-hours a day for both services together; an F2 hour counts as two. Until 2026-11-12 the crons, every 10–15 minutes, kept one instance up around the clock (about 24 F2-hours a day, measured): about US$30–42/mo after the free tier (estimate). They now run only from 9 h to 17 h (`cron.yaml`): about 14 F2-hours a day (estimated from a week of request logs), at the edge of the free tier, warm during office hours and with cold starts (about 8 s) only outside them. The exact figure: Billing → Reports |
 | App Engine F2, `min_instances: 1` | one always-on instance, no cold starts: about US$30–42/mo after the free tier (estimate) |
 | App Engine F1 — the **`portail` service** | a few $/mo (also `min_instances: 0`; it only moves JSON, never file bytes) |
 | Firestore (native) — **two databases** | cents–low $/mo at single-user volume |
-| Cloud Tasks + Cloud Scheduler | the free tier covers the one queue; Cloud Scheduler bills US$0.10 per job a month beyond 3 free per billing account, and `cron.yaml` holds nine entries (three jobs × three hours): at most about US$0.60/mo, if App Engine cron entries count as jobs |
+| Cloud Tasks + Cloud Scheduler | free tier covers one queue and three cron jobs |
 | Quarantine bucket (client uploads) | pennies/mo + egress; lifecycle purges at 90 / 365 days |
 | Firebase Storage | pennies/mo + egress |
 | Secret Manager | negligible |
-| Artifact Registry — the deploy images (`gae-standard`) | US$0.10 per GB-month beyond 0.5 GB free. App Engine stores one image per service per deploy and never deletes them: 21.3 GB on 2026-11-12 (about US$2/mo, growing about 2.7 GB a month), until the cleanup policy of §15 (« Three cron runs a day… ») keeps only the ten newest of each package |
+| Artifact Registry — the deploy images (`gae-standard`) | US$0.10 per GB-month beyond 0.5 GB free. App Engine stores one image per service per deploy and never deletes them: 21.3 GB on 2026-11-12 (about US$2/mo, growing about 2.7 GB a month), until the cleanup policy of §15 (« Office-hours crons… ») keeps only the ten newest of each package |
 | reCAPTCHA Enterprise | free tier is generous for one user |
 | **Cloudflare Pro** | **~US$25/mo (required)** |
 | Domain | ~US$10–20/yr |
@@ -230,7 +230,7 @@ above and must be set **again** there.
 | `PORTAIL_SECRET_KEY` → secret `portail-secret-key` | ✔ **hard** (portal) | — | The portal's session key, **distinct** from the main one. The service does not boot without it |
 | `PORTAIL_HOST` | ○ | ⚠ `portail.poirierlavoie.ca` — the **original owner's** host | Used to build the fallback link in every invitation email |
 | `PORTAIL_BUCKET` | ○ | `{FIREBASE_PROJECT_ID}-portail-quarantaine` | Derived, so it follows your project id by itself |
-| `TASKS_LOCATION` | ○ | ⚠ `northamerica-northeast1` (Montréal) | **Must equal your App Engine region** (`gcloud app describe`). It is not derived: deploy elsewhere and leave it, and every `signaler()` raises `NOT_FOUND` at finalization — a failure the portal swallows **by design** (the envelope is the durable truth), so the only symptom is lots arriving in Réception late, at the next run of the reconciliation cron (three a day, `cron.yaml`) |
+| `TASKS_LOCATION` | ○ | ⚠ `northamerica-northeast1` (Montréal) | **Must equal your App Engine region** (`gcloud app describe`). It is not derived: deploy elsewhere and leave it, and every `signaler()` raises `NOT_FOUND` at finalization — a failure the portal swallows **by design** (the envelope is the durable truth), so the only symptom is lots arriving in Réception late, at the next run of the reconciliation cron (every 15 minutes during office hours, `cron.yaml`) |
 
 ### 4.2 The six Secret Manager secrets (production)
 
@@ -5318,53 +5318,60 @@ Notes:
   edits (« Rétablir », Claude's rename or new file) are refused « Type de
   gabarit invalide ».
 
-- **Three cron runs a day, one Secret Manager client, a fuller warmup
-  (2026-11-12).** The lawyer's decision: the portal reconciliation, the
-  Bookings sync and the Outlook mirror run at 6 h, 12 h and 18 h, Montréal
-  time (`cron.yaml`: nine entries, `timezone: America/Toronto`), no longer
-  every 10 to 15 minutes, which kept one F2 instance up around the clock.
-  Measured over 5–12 November and simulated with the new hours: about 12
-  instance-hours a day instead of 24, inside the free tier while the
-  portal stays light, and about 20 cold starts a day of about 8 s each —
-  some of them the lawyer's own first page after a quiet stretch, about
-  five a day a DAVx5 sync. The hours live in `utils/cron_schedule.py`
-  (`CRON_HOURS`), which every text promising a delay quotes — Réception's
-  footnote and refusal, three connector messages, `update_hearing`'s
-  description — and `tests/test_cron_schedule.py` pins `cron.yaml` to it.
-  What waits for the next run: a « Bookings with me » reservation's arrival
-  in Réception; a hearing created, moved or cancelled in Athéna reaching
-  the Outlook calendar, so a client can book over a court date entered since
-  the last run; a client's cancellation reaching Athéna; a portal batch
-  whose Cloud Task failed; and an Outlook backlog, which drains at 80
-  mutations a run (`_PLAFOND_MUTATIONS`). Beside it, `config.py` and
-  `client/config.py` read every secret through ONE Secret Manager client per
-  process (five clients per worker before); `/_ah/warmup` — sent only when
-  App Engine starts an instance ahead of traffic, never on a wake from
-  zero — also opens the « portail » Firestore channel, imports the two
-  Firebase modules loaded on first use and compiles `base.html` and the
-  dashboard. Change Impact: item 1 lightly (texts only — the registry's
-  fingerprint covers names and input schemas, unchanged, so plugin 1.9.0
-  stays current); item 2 not touched in what syncs (DAVx5 pulls, and what
-  the crons write is invisible to DAV until confirmed), but a sync after a
-  sleep waits for the start; item 4 not touched (no event; the cadence's
-  mentions in `athena/OBSERVABILITY.md` corrected); item 5 lightly (how the
-  same five secrets are fetched, with the same failure policy); items 3, 6
-  and 7 not touched.
+- **Office-hours crons, one Secret Manager client, a fuller warmup
+  (2026-11-12).** The lawyer's decision: the portal reconciliation (every
+  15 minutes), the Bookings sync and the Outlook mirror (every 10 minutes)
+  run from 9 h to 17 h, Montréal time, only (`cron.yaml`, `timezone:
+  America/Toronto`) — no longer around the clock, which kept one F2
+  instance up day and night. Their runs keep the instance warm during
+  office hours; outside them only real use wakes it. App Engine's cron
+  syntax cannot limit an interval to weekdays, so weekends keep the same
+  hours. Measured over 5–12 November and simulated with the new window:
+  about 14 instance-hours a day instead of 24, and about 13 cold starts a
+  day of about 8 s — about 4 of them the lawyer's own first page, before
+  9 h or after 17 h, about 5 DAVx5 syncs and 3 connector calls; inside
+  office hours, only a deploy's. The cadences live in
+  `utils/cron_schedule.py`, which every text promising a delay quotes —
+  Réception's footnote and refusal, three connector messages,
+  `update_hearing`'s description — and `tests/test_cron_schedule.py` pins
+  `cron.yaml` to it. Outside office hours, what waits until 9 h: a
+  « Bookings with me » reservation's arrival in Réception; a hearing
+  created, moved or cancelled in Athéna reaching the Outlook calendar — so
+  a client can book over a court date entered after 17 h until the next
+  morning's first run; a client's cancellation reaching Athéna; a portal
+  batch whose Cloud Task failed. Beside it, `config.py` and
+  `client/config.py` read every secret through ONE Secret Manager client
+  per process (five clients per worker before), and `/_ah/warmup` — sent
+  only when App Engine starts an instance ahead of traffic, never on a
+  wake from zero — also opens the « portail » Firestore channel without
+  reading an invitation, imports the two Firebase modules loaded on first
+  use and compiles `base.html` and the dashboard. Change Impact: item 1
+  lightly (texts only — the registry's fingerprint covers names and input
+  schemas, unchanged, so plugin 1.9.0 stays current); item 2 not touched
+  in what syncs (DAVx5 pulls, and what the crons write is invisible to DAV
+  until confirmed), but a sync that wakes the instance waits for its
+  start; item 4 not touched (no event; the cadence's mentions in
+  `athena/OBSERVABILITY.md` corrected); item 5 lightly (how the same five
+  secrets are fetched, with the same failure policy); items 3, 6 and 7 not
+  touched.
   In order:
   1. *The push* — Cloud Build deploys `cron.yaml`, which replaces the whole
      table. App Engine's cron jobs are not Cloud Scheduler API jobs
      (`gcloud scheduler jobs list` shows none): the console's App Engine →
-     Cron jobs page lists the nine.
-  2. *The first runs*, after 12:00 and 18:00: the request log shows
-     `/taches/` only at those hours —
+     Cron jobs page lists the three, with their window.
+  2. *The first day*: the request log shows `/taches/` only from 9 h to
+     17 h — and whether 17:00 itself has a run, which the documentation
+     does not say:
      `gcloud logging read 'resource.type="gae_app" AND protoPayload.resource:"/taches/"' --project=$PROJECT --freshness=1d --format='value(protoPayload.startTime,protoPayload.resource,protoPayload.status)'`.
-  3. *The sleep*: the next morning, `protoPayload.wasLoadingRequest=true`
-     lines on ordinary requests — the instance stopped and started again.
-  4. *On the phone*, early in the morning: pull to refresh in DAVx5 — the
-     sync completes, its first request about 10 s slower than before.
+  3. *The sleep*: `protoPayload.wasLoadingRequest=true` on ordinary
+     requests before 9 h or after 17 h — the instance stopped and started
+     again.
+  4. *On the phone*, before 9 h or late in the evening: pull to refresh in
+     DAVx5 — the sync completes, its first request about 10 s slower than
+     during the day.
   5. *A week later*: Billing → Reports, App Engine instance hours.
   A rollback is `cron.yaml`'s old schedules (`every 15 minutes`,
-  `every 10 minutes`, `every 10 minutes`) with the code.
+  `every 10 minutes`, `every 10 minutes`, no timezone) with the code.
 
   **The deploy images** (same day, by `gcloud`, not by the push): App
   Engine keeps every build's image in Artifact Registry (`gae-standard`,
@@ -5378,12 +5385,13 @@ Notes:
   {"type": "Keep"}, "mostRecentVersions": {"keepCount": 10}}` and
   `{"name": "supprimer-anciennes-images", "action": {"type": "Delete"},
   "condition": {"tagState": "any", "olderThan": "86400s"}}` — a Keep rule
-  always wins over a Delete rule. It was set in DRY-RUN on 2026-11-12
-  (nothing deleted; `describe` shows `cleanupPolicyDryRun: true`); the same
-  command with `--no-dry-run` enforces it, and
+  always wins over a Delete rule. It was set in dry-run on 2026-11-12,
+  then ENFORCED on the lawyer's go the same day — the same command with
+  `--no-dry-run` —, and
   `gcloud artifacts packages delete app/chat --repository=gae-standard --location=northamerica-northeast1 --project=$PROJECT`
-  removes the deleted service's images outright. Both await the lawyer's
-  go. A deleted image cannot be restored; a version whose image is gone
+  removed the deleted service's 40 images. Artifact Registry applies the
+  policy in a background pass about once a day. A deleted image cannot be
+  restored; a version whose image is gone
   is redeployed from its commit.
 
 ## 16. Troubleshooting

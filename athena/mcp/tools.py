@@ -4090,7 +4090,7 @@ TOOLS: dict[str, dict] = {
             "omitted hour keeps the stored wall-clock hour, an omitted end "
             "keeps the duration. `status` annulée drops the event from "
             "get_agenda and removes its Outlook copy at the mirror's next "
-            f"run ({_cron.runs_24h('or')}, Montréal; the phone shows it "
+            f"run ({_cron.cadence_en('outlook')}, Montréal; the phone shows it "
             "cancelled at once). `dossier_id` MOVES it "
             "(\"\" = « Général ») — a series occurrence moves only with "
             "detach_from_series true. A pending or refused Bookings request "

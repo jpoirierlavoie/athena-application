@@ -61,8 +61,8 @@ outside the practice's own stores:
 the Outlook meeting of a pending Bookings request (Graph ``/cancel``, with
 the service's fixed text) — and a « never » of the registry forbids any
 other. (An edited event's copy in the lawyer's own Outlook calendar follows
-through the Outlook mirror cron — three runs a day — never through this
-code.)
+through the Outlook mirror cron — every 10 minutes during office hours —
+never through this code.)
 
 The versioned-drafts family (``save_draft``/``revise_draft``/``get_draft``/
 ``list_drafts``) LEFT this connector on 2026-09-02 with the internal chat
@@ -8932,8 +8932,8 @@ _BOOKINGS_OPEN_ARGS = frozenset({"dossier_id", "notes", "notes_append"})
 _HEARING_SLOT_ARGS = ("date", "start_time", "end_time", "all_day")
 _HEARING_CANCELLED = (
     "L'événement est annulé : il sort de get_agenda, sa copie dans votre "
-    "calendrier Outlook est retirée au prochain passage du miroir (à "
-    f"{cron_schedule.runs_fr('ou')}), "
+    "calendrier Outlook est retirée au prochain passage du miroir ("
+    f"{cron_schedule.cadence_fr('outlook')}), "
     "et le téléphone le montre annulé."
 )
 # The other direction, said as loudly: a status that takes an event OUT of
@@ -9058,8 +9058,8 @@ def _refuse_locked_booking_change(args: dict, changed: list[str]) -> None:
         "fait foi — le connecteur n'en change que le dossier (dossier_id) "
         "et les notes (notes, notes_append). Pour le reporter ou l'annuler, "
         "faites-le dans Outlook : le report ou l'annulation y est repéré par "
-        "la prochaine synchronisation Bookings (à "
-        f"{cron_schedule.runs_fr('ou')}) et signalé dans la "
+        "la prochaine synchronisation Bookings ("
+        f"{cron_schedule.cadence_fr('bookings')}) et signalé dans la "
         "Réception (onglet « Rendez-vous »), d'où on l'applique à Athéna. "
         "Tout autre changement se fait dans l'application, dont le "
         "formulaire n'est pas restreint — la réunion Outlook, elle, ne suit "
@@ -9455,8 +9455,8 @@ _RDV_REFUSALS = {
 _REFUS_NON_INSCRIT_MCP = (
     "La réunion Outlook a été annulée et le client prévenu, mais le refus "
     "n'a pas pu être inscrit dans Athéna. N'appelez PAS decide_rendez_vous "
-    "de nouveau : la prochaine synchronisation Bookings (à "
-    f"{cron_schedule.runs_fr('ou')}) marquera "
+    "de nouveau : la prochaine synchronisation Bookings ("
+    f"{cron_schedule.cadence_fr('bookings')}) marquera "
     "la demande « annulée par le client », et la réception pourra alors la "
     "retirer."
 )

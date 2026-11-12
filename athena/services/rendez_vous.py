@@ -1,6 +1,6 @@
 """Bookings rendez-vous — Réception today, the MCP connector from lot 1b.
 
-A « Bookings with me » reservation is imported, three times a day, by the
+A « Bookings with me » reservation is imported during office hours by the
 Bookings sync
 (``routes/taches_bookings.py``) as a hearing gated behind
 ``confirmation == "à_confirmer"`` — invisible to DAV, the connector and the
@@ -114,8 +114,8 @@ ANNULATION_OUTLOOK_INCERTAINE = (
 REFUS_NON_INSCRIT = (
     "La réunion Outlook a été annulée et le client notifié, mais le refus "
     "n'a pas pu être inscrit dans Athéna. Ne cliquez pas « Refuser » de "
-    "nouveau : la prochaine synchronisation Bookings (à "
-    f"{cron_schedule.runs_fr('ou')}) le marquera "
+    "nouveau : la prochaine synchronisation Bookings ("
+    f"{cron_schedule.cadence_fr('bookings')}) le marquera "
     "« Annulé par le client » ; retirez-le alors."
 )
 SYNCHRO_NON_AVERTIE = (

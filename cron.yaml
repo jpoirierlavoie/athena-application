@@ -4,67 +4,37 @@
 # cron de l'application. Toute entrée future FUSIONNE dans CE fichier et
 # redéploie le fichier COMPLET — le remplacer par une entrée unique
 # arrêterait silencieusement les autres tâches. La table compte TROIS
-# tâches — réconciliation portail, synchro Bookings, miroir Outlook —,
-# chacune à 6 h, 12 h et 18 h, heure de Montréal : neuf entrées.
-# (Une quatrième tâche, le répartiteur des tâches planifiées du clavardage,
+# entrées : réconciliation portail, synchro Bookings, miroir Outlook.
+# (Une quatrième, le répartiteur des tâches planifiées du clavardage,
 # est partie avec le clavardage le 2026-09-02.)
 #
-# Trois passages par jour (décision de l'avocat du 2026-11-12) : entre deux
-# passages, l'instance peut s'endormir. Avant, toutes les 10 à 15 minutes,
-# les tâches la tenaient éveillée jour et nuit. Les mêmes heures sont dans
-# athena/utils/cron_schedule.CRON_HOURS, que les textes de l'application
-# citent ; tests/test_cron_schedule.py exige que les deux concordent.
-#
-# Une entrée par heure : la syntaxe « every 6 hours from 06:00 to 18:00 »
-# ne dit pas si l'heure de fin a son passage. `America/Toronto` est le
-# fuseau de Montréal (`America/Montreal` n'en est qu'un alias dans la base
-# tz) ; l'heure avancée suit.
+# Heures de bureau seulement (décision de l'avocat du 2026-11-12) : de 9 h
+# à 17 h, heure de Montréal, les passages tiennent l'instance éveillée —
+# elle le reste une quinzaine de minutes après une requête ; hors de ces
+# heures, seul un usage réel la réveille. Avant, toutes les 10 à 15 minutes
+# jour et nuit, ces tâches la tenaient éveillée sans arrêt. La syntaxe
+# d'App Engine ne limite pas un intervalle aux jours de semaine : la fin
+# de semaine garde les mêmes heures. Les cadences sont dans
+# athena/utils/cron_schedule.py, que les textes de l'application citent ;
+# tests/test_cron_schedule.py exige que les deux concordent.
+# `America/Toronto` est le fuseau de Montréal (`America/Montreal` n'en est
+# qu'un alias dans la base tz) ; l'heure avancée suit.
 #
 # Le gestionnaire vérifie X-Appengine-Cron: true (retiré de tout trafic
 # externe par App Engine) ; le pare-feu doit autoriser 0.1.0.2/32.
 cron:
-- description: portail — réconciliation des soumissions (spec L1 §8.4), 6 h
+- description: portail — réconciliation des soumissions (spec L1 §8.4)
   url: /taches/portail/reconciliation
-  schedule: every day 06:00
+  schedule: every 15 minutes from 09:00 to 17:00
   timezone: America/Toronto
   target: default
-- description: portail — réconciliation des soumissions (spec L1 §8.4), 12 h
-  url: /taches/portail/reconciliation
-  schedule: every day 12:00
-  timezone: America/Toronto
-  target: default
-- description: portail — réconciliation des soumissions (spec L1 §8.4), 18 h
-  url: /taches/portail/reconciliation
-  schedule: every day 18:00
-  timezone: America/Toronto
-  target: default
-- description: bookings — synchronisation « Bookings with me » (spec L2 §4.1), 6 h
+- description: bookings — synchronisation « Bookings with me » (spec L2 §4.1)
   url: /taches/bookings/sync
-  schedule: every day 06:00
+  schedule: every 10 minutes from 09:00 to 17:00
   timezone: America/Toronto
   target: default
-- description: bookings — synchronisation « Bookings with me » (spec L2 §4.1), 12 h
-  url: /taches/bookings/sync
-  schedule: every day 12:00
-  timezone: America/Toronto
-  target: default
-- description: bookings — synchronisation « Bookings with me » (spec L2 §4.1), 18 h
-  url: /taches/bookings/sync
-  schedule: every day 18:00
-  timezone: America/Toronto
-  target: default
-- description: outlook — miroir des audiences vers le calendrier du juriste, 6 h
+- description: outlook — miroir des audiences vers le calendrier du juriste
   url: /taches/outlook/sync
-  schedule: every day 06:00
-  timezone: America/Toronto
-  target: default
-- description: outlook — miroir des audiences vers le calendrier du juriste, 12 h
-  url: /taches/outlook/sync
-  schedule: every day 12:00
-  timezone: America/Toronto
-  target: default
-- description: outlook — miroir des audiences vers le calendrier du juriste, 18 h
-  url: /taches/outlook/sync
-  schedule: every day 18:00
+  schedule: every 10 minutes from 09:00 to 17:00
   timezone: America/Toronto
   target: default

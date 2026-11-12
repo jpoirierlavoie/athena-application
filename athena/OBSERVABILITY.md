@@ -348,7 +348,7 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 
 ### `log_bookings_event(event, outcome='success', *, hearing_id=None, reason=None, **extra)` — logger `pallas.bookings`
 
-Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confirmer pipeline — plus the **miroir Outlook** (2026-07-29, same mailbox, same cron runs — three a day since 2026-11-12). `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR**. Same PII discipline as `pallas.portail`: **IDs, opaque Graph identifiers and counts only** — a client's name or a meeting subject must NEVER appear (the `RedactionFilter` scrubs full email addresses but not names/subjects). Counters travel in `**extra`.
+Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confirmer pipeline — plus the **miroir Outlook** (2026-07-29, same mailbox, same cron runs — every 10 minutes during office hours since 2026-11-12). `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR**. Same PII discipline as `pallas.portail`: **IDs, opaque Graph identifiers and counts only** — a client's name or a meeting subject must NEVER appear (the `RedactionFilter` scrubs full email addresses but not names/subjects). Counters travel in `**extra`.
 
 | `event` | Typical outcome | Notes |
 |---|---|---|

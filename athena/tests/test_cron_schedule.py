@@ -1,12 +1,13 @@
 """cron.yaml, utils/cron_schedule and the texts that promise a delay.
 
 The lawyer's decision of 2026-11-12: the three cron jobs (portal
-reconciliation, Bookings sync, Outlook mirror) run at 6 h, 12 h and 18 h,
-Montréal time, instead of every 10 to 15 minutes, so the instance can sleep
-between uses. ``cron.yaml`` (repository root) is what App Engine runs;
-``utils.cron_schedule.CRON_HOURS`` is what the application's texts quote — to
-the lawyer in Réception, to Claude through the connector. One changed without
-the other promises a delay the platform does not keep.
+reconciliation, Bookings sync, Outlook mirror) run during office hours only,
+from 9 h to 17 h Montréal time, instead of around the clock — their runs keep
+the instance warm while he works, and it sleeps the rest of the time.
+``cron.yaml`` (repository root) is what App Engine runs;
+``utils.cron_schedule`` is what the application's texts quote — to the lawyer
+in Réception, to Claude through the connector. One changed without the other
+promises a delay the platform does not keep.
 """
 
 import os
@@ -38,8 +39,6 @@ from utils import cron_schedule  # noqa: E402
 from utils.icons import ms  # noqa: E402
 
 CRON_YAML = ATHENA.parent / "cron.yaml"
-JOBS = ("/taches/portail/reconciliation", "/taches/bookings/sync",
-        "/taches/outlook/sync")
 
 
 def _entries() -> list[dict]:
@@ -58,17 +57,15 @@ def _entries() -> list[dict]:
     return entries
 
 
-def test_each_job_runs_exactly_at_the_hours_the_texts_quote():
+def test_each_job_runs_during_office_hours_at_the_cadence_the_texts_quote():
     entries = _entries()
-    assert sorted({e["url"] for e in entries}) == sorted(JOBS)
-    expected = sorted(f"every day {hour:02d}:00" for hour in cron_schedule.CRON_HOURS)
-    for url in JOBS:
-        mine = [e for e in entries if e["url"] == url]
-        assert sorted(e["schedule"] for e in mine) == expected, url
-        assert {e.get("timezone") for e in mine} == {"America/Toronto"}, url
-        assert {e.get("target") for e in mine} == {"default"}, url
-    assert len(entries) == len(JOBS) * len(cron_schedule.CRON_HOURS)
-    assert len({e["description"] for e in entries}) == len(entries)
+    by_url = {e["url"]: e for e in entries}
+    assert len(by_url) == len(entries) == len(cron_schedule.JOBS)
+    for job, (url, _minutes) in cron_schedule.JOBS.items():
+        entry = by_url[url]
+        assert entry["schedule"] == cron_schedule.cadence_en(job), job
+        assert entry.get("timezone") == "America/Toronto", job
+        assert entry.get("target") == "default", job
 
 
 def test_the_cron_time_zone_is_montreals_daylight_saving_included():
@@ -78,25 +75,25 @@ def test_the_cron_time_zone_is_montreals_daylight_saving_included():
         assert noon.replace(tzinfo=toronto).utcoffset() == noon.replace(tzinfo=MTL).utcoffset()
 
 
-def test_the_hours_read_in_french_and_in_24_hour_form():
-    assert cron_schedule.runs_fr() == "6 h, 12 h et 18 h"
-    assert cron_schedule.runs_fr("ou") == "6 h, 12 h ou 18 h"
-    assert cron_schedule.runs_24h("or") == "06:00, 12:00 or 18:00"
+def test_the_cadences_read_in_french_and_in_english():
+    assert cron_schedule.cadence_fr("bookings") == "toutes les 10 minutes, de 9 h à 17 h"
+    assert cron_schedule.cadence_fr("portail") == "toutes les 15 minutes, de 9 h à 17 h"
+    assert cron_schedule.cadence_en("outlook") == "every 10 minutes from 09:00 to 17:00"
 
 
 @pytest.mark.parametrize("text, quoted", [
-    (rendez_vous.REFUS_NON_INSCRIT, cron_schedule.runs_fr("ou")),
-    (handlers._HEARING_CANCELLED, cron_schedule.runs_fr("ou")),
-    (handlers._REFUS_NON_INSCRIT_MCP, cron_schedule.runs_fr("ou")),
-    (tools.TOOLS["update_hearing"]["description"], cron_schedule.runs_24h("or")),
+    (rendez_vous.REFUS_NON_INSCRIT, cron_schedule.cadence_fr("bookings")),
+    (handlers._HEARING_CANCELLED, cron_schedule.cadence_fr("outlook")),
+    (handlers._REFUS_NON_INSCRIT_MCP, cron_schedule.cadence_fr("bookings")),
+    (tools.TOOLS["update_hearing"]["description"], cron_schedule.cadence_en("outlook")),
 ], ids=["reception-refus", "mcp-annulation", "mcp-refus", "mcp-update_hearing"])
-def test_every_text_that_promises_a_delay_quotes_the_hours(text, quoted):
+def test_every_text_that_promises_a_delay_quotes_the_cadence(text, quoted):
     assert quoted in text
-    assert "10 min" not in text and "10-minute" not in text
+    assert "au plus" not in text and "10-minute" not in text
 
 
 @pytest.mark.parametrize("read_fails", [False, True])
-def test_the_reception_footnote_quotes_the_hours(monkeypatch, read_fails):
+def test_the_reception_footnote_quotes_the_cadence(monkeypatch, read_fails):
     def lister():
         if read_fails:
             raise rendez_vous.LectureImpossible("test")
@@ -112,14 +109,15 @@ def test_the_reception_footnote_quotes_the_hours(monkeypatch, read_fails):
         html = render_template("reception/_rdv.html", feature_intake=True,
                                **reception._contexte_rdv())
     flat = " ".join(html.split())
-    assert f"importés automatiquement à {cron_schedule.runs_fr()}." in flat
+    assert (f"importés automatiquement {cron_schedule.cadence_fr('bookings')}."
+            in flat)
 
 
 def test_no_source_still_promises_the_old_cadence():
-    """The promise « 10 minutes au plus » outlived the cron it described
-    in five places; none may come back."""
-    stale = ("10 minutes au plus", "10 min au plus", "toutes les 10 minutes",
-             "10-minute cycle", "10-minute mirror", "every 10 minutes")
+    """The promise « 10 minutes au plus » outlived the cron it described in
+    five places, and night runs no longer exist; none may come back."""
+    stale = ("10 minutes au plus", "10 min au plus", "10-minute cycle",
+             "10-minute mirror")
     offenders = []
     for path in ATHENA.rglob("*"):
         if path.suffix not in {".py", ".html", ".md"} or "tests" in path.parts:

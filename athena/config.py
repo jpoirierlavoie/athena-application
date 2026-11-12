@@ -202,7 +202,7 @@ class Config:
         return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
 
     # Miroir Outlook (2026-07-29). Pushes confirmed Athéna hearings into the
-    # juriste's DEFAULT Outlook calendar three times a day (they then count toward
+    # juriste's DEFAULT Outlook calendar during office hours (they then count toward
     # Exchange free/busy, so « Bookings with me » stops offering slots over a
     # court date). One-way, Firestore-read-only; loop-proof against the
     # Bookings sync via the extended-property marker (utils/graph_calendrier).

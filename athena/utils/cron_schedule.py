@@ -1,27 +1,34 @@
 """When the cron jobs run — the one source the application's texts quote.
 
 ``cron.yaml`` (repository root, deployed by Cloud Build on every push) runs
-the portal reconciliation, the Bookings sync and the Outlook mirror at these
-Montréal hours, once each — the lawyer's decision of 2026-11-12: three runs a
-day, so the instance can sleep between them instead of being woken every 10
-to 15 minutes. ``tests/test_cron_schedule.py`` pins ``cron.yaml`` to
-:data:`CRON_HOURS`, and the texts that promise a delay to this module.
+the portal reconciliation, the Bookings sync and the Outlook mirror during
+office hours only — the lawyer's decision of 2026-11-12. Their runs keep the
+instance warm from 9 h to 17 h (an instance stays up about 15 minutes after
+its last request); outside those hours only real use wakes it. App Engine's
+cron syntax cannot limit an interval to weekdays, so weekends keep the same
+hours. ``tests/test_cron_schedule.py`` pins ``cron.yaml`` to this module, and
+the texts that promise a delay to it.
 """
 
-#: Montréal hours of the three daily runs, in order.
-CRON_HOURS = (6, 12, 18)
+#: Montréal hours of the window: its first run, and its last run's bound.
+OFFICE_HOURS = (9, 17)
+
+#: Each job: its URL, and the minutes between two of its runs.
+JOBS = {
+    "portail": ("/taches/portail/reconciliation", 15),
+    "bookings": ("/taches/bookings/sync", 10),
+    "outlook": ("/taches/outlook/sync", 10),
+}
 
 
-def _joined(labels: list, conjunction: str) -> str:
-    return f"{', '.join(labels[:-1])} {conjunction} {labels[-1]}"
+def cadence_fr(job: str) -> str:
+    """« toutes les 10 minutes, de 9 h à 17 h » — for the French texts."""
+    start, end = OFFICE_HOURS
+    return f"toutes les {JOBS[job][1]} minutes, de {start} h à {end} h"
 
 
-def runs_fr(conjunction: str = "et") -> str:
-    """The run hours in French: « 6 h, 12 h et 18 h » (or « … ou 18 h »)."""
-    return _joined([f"{hour} h" for hour in CRON_HOURS], conjunction)
-
-
-def runs_24h(conjunction: str = "and") -> str:
-    """The run hours for the connector's English texts: « 06:00, 12:00 and
-    18:00 »."""
-    return _joined([f"{hour:02d}:00" for hour in CRON_HOURS], conjunction)
+def cadence_en(job: str) -> str:
+    """« every 10 minutes from 09:00 to 17:00 » — the job's ``cron.yaml``
+    schedule, word for word, and the connector's English texts."""
+    start, end = OFFICE_HOURS
+    return f"every {JOBS[job][1]} minutes from {start:02d}:00 to {end:02d}:00"

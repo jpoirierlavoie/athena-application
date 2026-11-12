@@ -301,7 +301,7 @@ def _construire_manifeste(bucket, inv_id: str, batch: str,
 
 # A batch whose newest object stopped moving this long ago is considered
 # abandoned rather than in flight (a 1 GiB upload on a slow link stays well
-# inside this window; the cron runs three times a day, cron.yaml).
+# inside this window; the cron runs every 15 minutes during office hours).
 _ABANDON_APRES = timedelta(hours=2)
 
 

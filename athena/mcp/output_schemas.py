@@ -3931,7 +3931,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "enum": ["follows", "removed", "not_mirrored", "unchanged"],
                 "description": (
                     "What the Outlook mirror of confirmed events (when "
-                    "active; three runs a day; events 30 days back to 365 "
+                    "active; it runs during office hours; events 30 days "
+                    "back to 365 "
                     "ahead) does with this write: follows = its copy is "
                     "created or updated at its next run; removed = status "
                     "annulée, "

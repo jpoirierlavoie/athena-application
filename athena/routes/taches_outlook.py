@@ -4,7 +4,7 @@ MACHINE blueprint — no @login_required, CSRF-exempt (main.py), reachable only
 by App Engine cron: the ``X-Appengine-Cron: true`` header is STRIPPED from all
 external traffic, so the in-handler guard is proof of origin.
 
-At every cron run (three a day, cron.yaml) it reconciles the confirmed
+Every 10 minutes during office hours (cron.yaml) it reconciles the confirmed
 hearings against the mirrored
 events in the juriste's DEFAULT Outlook calendar (create / patch / delete by
 diff). One-way: Athéna is authoritative, an Outlook-side edit is stomped back
