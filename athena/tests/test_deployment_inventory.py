@@ -1733,6 +1733,48 @@ def test_gemini_md_is_identical_to_claude_md_and_accounting_md_is_linked():
     )
 
 
+def test_security_md_names_all_six_secrets_both_services_and_no_unsafe_recipes():
+    """SECURITY.md doit nommer les six secrets de SECRET_IDS, les deux services
+    et leurs comptes de service, et ne jamais enseigner les formes de rotation
+    dangereuses bannies de DEPLOYMENT.md (mot de passe en argument, print()
+    avec saut de ligne, secrets create)."""
+    sec_path = os.path.join(_ROOT, "SECURITY.md")
+    assert os.path.isfile(sec_path), "SECURITY.md absent"
+    sec = io.open(sec_path, encoding="utf-8").read()
+    for sid in SECRET_IDS:
+        assert f"`{sid}`" in sec, (
+            f"SECURITY.md omet le secret {sid!r} — l'inventaire des secrets "
+            "y a dérivé de utils/deployment_inventory.py"
+        )
+    for attendu in (
+        "athena.poirierlavoie.ca",
+        "portail.poirierlavoie.ca",
+        "athena-pallas@appspot.gserviceaccount.com",
+        "portail-svc@athena-pallas.iam.gserviceaccount.com",
+        "## Data handling",
+        "revoke_mcp_tokens",
+    ):
+        assert attendu in sec, f"SECURITY.md ne mentionne pas {attendu!r}"
+    # Balayer uniquement les blocs de code pour que la prose explicative reste
+    # libre de nommer les anti-patrons qu'elle interdit.
+    blocs = [b for i, b in enumerate(sec.split("```")) if i % 2 == 1]
+    shell = "\n".join(
+        ligne for bloc in blocs for ligne in bloc.splitlines()
+        if not ligne.lstrip().startswith("#")
+    )
+    for interdit in (
+        "NEW_PASSWORD",
+        "YOUR_DAV_PASSWORD",
+        "hashpw(b'",
+        'hashpw(b"',
+        "secrets.token_hex",
+        "secrets create --data-file",
+    ):
+        assert interdit not in shell, (
+            f"SECURITY.md enseigne l'anti-patron {interdit!r} dans un bloc shell"
+        )
+
+
 # ── L'ÉVENTAIL du hachage CSS, et l'ordre bordure-puis-secret ────────────
 #
 # Deux défauts que j'ai moi-même laissés dans ce document, corrigés le
