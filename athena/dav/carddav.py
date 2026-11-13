@@ -222,15 +222,15 @@ def _add_collection_response(
             "Pallas Athena \u2014 Clients"
         )
 
-    # getctag
-    if propfind_requests_prop(body, cs_tag("getctag")):
-        ET.SubElement(prop, cs_tag("getctag")).text = get_ctag(COLLECTION_NAME)
-
-    # sync-token
-    if propfind_requests_prop(body, dav_tag("sync-token")):
-        ET.SubElement(prop, dav_tag("sync-token")).text = (
-            f"data:,{get_sync_token(COLLECTION_NAME)}"
-        )
+    # getctag & sync-token share the same underlying value — fetch once.
+    want_ctag = propfind_requests_prop(body, cs_tag("getctag"))
+    want_sync = propfind_requests_prop(body, dav_tag("sync-token"))
+    if want_ctag or want_sync:
+        ctag = get_ctag(COLLECTION_NAME)
+        if want_ctag:
+            ET.SubElement(prop, cs_tag("getctag")).text = ctag
+        if want_sync:
+            ET.SubElement(prop, dav_tag("sync-token")).text = f"data:,{ctag}"
 
     # supported-report-set
     if propfind_requests_prop(body, dav_tag("supported-report-set")):

@@ -4,8 +4,8 @@
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-6"
      x-data="{
-       activeGroup: '{{ initial_group|default('finances') }}',
-       activeLeaf: '{{ initial_tab|default('temps') }}',
+       activeGroup: '{{ initial_group|default('apercu') }}',
+       activeLeaf: '{{ initial_tab|default('apercu') }}',
        deleteOpen: false,
        scrollLeaf(slug) {
          this.$nextTick(() => {
@@ -211,7 +211,7 @@
 
     {# Tab content area — initial leaf honours the ?tab= query param. #}
     <div id="tab-content" class="p-5" role="tabpanel"
-         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=initial_tab|default('temps')) }}"
+         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=initial_tab|default('apercu')) }}"
          hx-trigger="load"
          hx-swap="innerHTML">
       <div class="flex items-center justify-center py-8">

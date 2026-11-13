@@ -1081,6 +1081,17 @@ def test_revoke_refresh_revokes_family_and_unknown_token_is_200(client, fake):
     assert client.post("/oauth/revoke", data={"token": "unknown"}).status_code == 200
 
 
+def test_revoke_evicts_warm_bearer_cache_immediately(client, fake):
+    tokens = _issue_tokens(client, fake)
+    access = tokens["access_token"]
+    # Populate the in-process success cache on /mcp.
+    assert _mcp_ping(client, access).status_code == 200
+
+    # Revoke without clearing brake/cache manually.
+    assert client.post("/oauth/revoke", data={"token": access}).status_code == 200
+    assert _mcp_ping(client, access).status_code == 401
+
+
 # ── Bearer validation on /mcp ───────────────────────────────────────────
 
 def _mcp_ping(client, token, headers=None):

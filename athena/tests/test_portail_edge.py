@@ -214,7 +214,7 @@ def test_the_resolver_reads_the_environment_outside_production(monkeypatch):
         "", "cf_origin_secret_unset")
 
 
-def test_the_resolver_fails_open_in_production_and_says_why(monkeypatch):
+def test_the_resolver_fails_closed_in_production(monkeypatch):
     monkeypatch.setenv("ENV", "production")
 
     class PermissionDenied(Exception):
@@ -224,8 +224,13 @@ def test_the_resolver_fails_open_in_production_and_says_why(monkeypatch):
         raise PermissionDenied("no accessor")
 
     monkeypatch.setattr(pconfig, "_from_secret_manager", _denied)
-    assert pconfig.cf_origin_secret() == pconfig.OriginSecret(
-        "", "cf_origin_secret_unreadable", "PermissionDenied")
+    with pytest.raises(PermissionDenied):
+        pconfig.cf_origin_secret()
+
+    monkeypatch.setattr(pconfig, "_from_secret_manager", lambda _s: "")
+    with pytest.raises(RuntimeError, match="Empty required secret"):
+        pconfig.cf_origin_secret()
+
     monkeypatch.setattr(pconfig, "_from_secret_manager", lambda _s: SECRET)
     assert pconfig.cf_origin_secret() == pconfig.OriginSecret(SECRET, "")
 

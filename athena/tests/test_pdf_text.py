@@ -348,6 +348,25 @@ def test_docx_without_document_xml_raises():
         extract_docx_text(buffer.getvalue())
 
 
+def test_docx_spoofed_header_oversized_stream_raises(monkeypatch):
+    xml = "<w:document><w:body><w:p><w:r><w:t>" + ("A" * 200) + "</w:t></w:r></w:p></w:body></w:document>"
+    data = _docx(xml)
+    # Lower the cap temporarily so the real stream exceeds MAX_DOCX_XML_BYTES
+    # while ZipInfo.file_size appears below a naive/spoofed check.
+    monkeypatch.setattr(pdf_text, "MAX_DOCX_XML_BYTES", 50)
+    orig_getinfo = zipfile.ZipFile.getinfo
+
+    def _spoofed_getinfo(self, name):
+        info = orig_getinfo(self, name)
+        info.file_size = 10
+        return info
+
+    monkeypatch.setattr(zipfile.ZipFile, "getinfo", _spoofed_getinfo)
+    with pytest.raises(DocumentTextError) as excinfo:
+        extract_docx_text(data)
+    assert excinfo.value.reason == "invalid_docx"
+
+
 # ── The CWE-1333 tripwire (docx_fill doctrine) ─────────────────────────────
 
 def test_regex_linearity_invariant():

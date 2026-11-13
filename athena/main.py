@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.WARNING)
 
 import firebase_admin
 from firebase_admin import credentials
-from flask import Flask, abort, render_template as _render_template, request
+from flask import Flask, abort, render_template as _render_template, request, session
 
 from config import Config
 from security import init_security
@@ -181,6 +181,10 @@ def create_app() -> Flask:
     # never break a page render.
     @app.context_processor
     def inject_reception_badge() -> dict:
+        if not session.get("user_id"):
+            return {"reception_count": None}
+        if request.headers.get("HX-Request") == "true" and not request.headers.get("HX-Boosted"):
+            return {"reception_count": None}
         try:
             return {"reception_count": compteur_reception()}
         except Exception:

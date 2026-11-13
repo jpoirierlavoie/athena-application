@@ -131,3 +131,34 @@ def test_cf_origin_secret_fails_closed_in_production_and_stays_optional_in_dev(
             "CF_ORIGIN_SECRET",
             required=module._is_production(),
         )
+
+
+def test_portail_prefetch_secrets_warms_all_startup_secrets_through_one_client(
+    clients, monkeypatch
+):
+    built, _state = clients
+    module = _fresh("client.config")
+    monkeypatch.setenv("ENV", "production")
+    try:
+        module._prefetch_secrets()
+        values = {
+            sid: module._from_secret_manager(sid)
+            for sid in module._PORTAIL_STARTUP_SECRET_IDS
+        }
+    finally:
+        _fresh("client.config")
+    assert len(built) == 1
+    assert values == {
+        sid: _path(sid) for sid in module._PORTAIL_STARTUP_SECRET_IDS
+    }
+
+
+def test_portail_prefetch_secrets_is_noop_outside_production(clients, monkeypatch):
+    built, _state = clients
+    module = _fresh("client.config")
+    monkeypatch.setenv("ENV", "development")
+    try:
+        module._prefetch_secrets()
+    finally:
+        _fresh("client.config")
+    assert built == []

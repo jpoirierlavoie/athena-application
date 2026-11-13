@@ -1746,6 +1746,9 @@ def list_documents(
         if category and category in VALID_CATEGORIES:
             query = query.where(filter=FieldFilter("category", "==", category))
 
+        if not search and isinstance(folder_id, str) and folder_id:
+            query = query.where(filter=FieldFilter("folder_id", "==", folder_id))
+
         # Read-time category migration (display). The server-side category
         # filter above still matches the STORED key, so a legacy « entente »
         # doc surfaces under « autre » only after the one-shot script rewrites
@@ -1863,6 +1866,7 @@ def count_documents_unordered(category: Optional[str] = None) -> Optional[int]:
         query = db.collection(COLLECTION)
         if category and category in VALID_CATEGORIES:
             query = query.where(filter=FieldFilter("category", "==", category))
+
         values = aggregation_values(query.count(alias="n").get())
         n = values.get("n")
         return int(n) if n is not None else None

@@ -152,7 +152,17 @@ def _record_success(
         for cached in [d for d, (exp, _s) in _success_cache.items() if exp <= now]:
             del _success_cache[cached]
         if cache_expiry > now:
-            _success_cache[_token_digest(token)] = (cache_expiry, scope)
+            digest = _token_digest(token)
+            if digest not in _success_cache and len(_success_cache) >= _MAX_TRACKED_IPS:
+                oldest = min(_success_cache, key=lambda k: _success_cache[k][0])
+                del _success_cache[oldest]
+            _success_cache[digest] = (cache_expiry, scope)
+
+
+def evict_cached_tokens() -> None:
+    """Clear the in-memory bearer token verification cache on revocation."""
+    with _lock:
+        _success_cache.clear()
 
 
 def reset_brake_state() -> None:

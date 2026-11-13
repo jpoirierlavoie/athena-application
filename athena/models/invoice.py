@@ -4405,7 +4405,7 @@ def get_outstanding_total() -> int:
     return sum(get_outstanding_totals().values())
 
 
-def get_invoice_summary(dossier_id: str) -> dict:
+def get_invoice_summary(dossier_id: str, invoices: Optional[list[dict]] = None) -> dict:
     """Return invoice summary for a dossier — the « Facturation » tab's
     figures and the connector's ``get_dossier`` / ``get_billing_snapshot``
     dossier summaries.
@@ -4418,7 +4418,8 @@ def get_invoice_summary(dossier_id: str) -> dict:
     was never received, and is no longer outstanding either —
     ``total_outstanding`` is what was invoiced less what was paid and
     written off. A malformed ``write_offs`` raises, as the balance does."""
-    invoices = list_invoices(dossier_id=dossier_id)
+    if invoices is None:
+        invoices = list_invoices(dossier_id=dossier_id)
     total_invoiced = 0
     total_paid = 0
     total_written_off = 0

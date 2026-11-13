@@ -120,28 +120,33 @@ def _check_success_cache(username: str, password: str) -> bool:
 def _record_success(ip: str, username: str, password: str) -> None:
     """Reset the IP's failure count and cache the verified credentials."""
     now = time.time()
+    digest = _credentials_digest(username, password)
     with _lock:
         _failed_attempts.pop(ip, None)
         for cached in [d for d, exp in _success_cache.items() if exp <= now]:
             del _success_cache[cached]
-        _success_cache[_credentials_digest(username, password)] = (
-            now + _SUCCESS_CACHE_TTL_SECONDS
-        )
+        if digest not in _success_cache and len(_success_cache) >= _MAX_TRACKED_IPS:
+            oldest = min(_success_cache, key=_success_cache.get)
+            del _success_cache[oldest]
+        _success_cache[digest] = now + _SUCCESS_CACHE_TTL_SECONDS
 
 
 def _check_credentials(username: str, password: str) -> bool:
     """Verify DAV credentials against configured username and bcrypt hash."""
     if not Config.DAV_USERNAME or not Config.DAV_PASSWORD_HASH:
         return False
-    if username != Config.DAV_USERNAME:
-        return False
+    user_ok = hmac.compare_digest(
+        username.encode("utf-8"),
+        Config.DAV_USERNAME.encode("utf-8"),
+    )
     try:
-        return bcrypt.checkpw(
+        pw_ok = bcrypt.checkpw(
             password.encode("utf-8"),
             Config.DAV_PASSWORD_HASH.encode("utf-8"),
         )
     except Exception:
         return False
+    return user_ok and pw_ok
 
 
 def _unauthorized_response() -> Response:

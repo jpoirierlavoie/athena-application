@@ -341,16 +341,14 @@ def _add_collection_props(
             collection_display_name(dossier)
         )
 
-    if propfind_requests_prop(body, cs_tag("getctag")):
-        ET.SubElement(prop, cs_tag("getctag")).text = get_ctag(
-            collection_for(dossier['id'])
-        )
-
-    if propfind_requests_prop(body, dav_tag("sync-token")):
-        sync_name = collection_for(dossier['id'])
-        ET.SubElement(prop, dav_tag("sync-token")).text = (
-            f"data:,{get_sync_token(sync_name)}"
-        )
+    want_ctag = propfind_requests_prop(body, cs_tag("getctag"))
+    want_sync = propfind_requests_prop(body, dav_tag("sync-token"))
+    if want_ctag or want_sync:
+        ctag = get_ctag(collection_for(dossier['id']))
+        if want_ctag:
+            ET.SubElement(prop, cs_tag("getctag")).text = ctag
+        if want_sync:
+            ET.SubElement(prop, dav_tag("sync-token")).text = f"data:,{ctag}"
 
     if propfind_requests_prop(body, caldav_tag("supported-calendar-component-set")):
         sccs = ET.SubElement(prop, caldav_tag("supported-calendar-component-set"))

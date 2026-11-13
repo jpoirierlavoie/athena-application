@@ -14,6 +14,7 @@ encore créée) rendent des états vides et un avertissement, jamais un 500.
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from typing import Optional
@@ -102,6 +103,7 @@ VERSEMENT_DEFAULT_CATEGORY = "pièce"
 
 _BADGE_TTL_SECONDS = 60
 _badge_cache: dict = {"at": 0.0, "n": None}
+_badge_lock = threading.Lock()
 
 
 def _compter_rdv() -> int:
@@ -132,14 +134,18 @@ def compteur_reception() -> Optional[int]:
     et None (les deux indisponibles) → aucune pastille, jamais une page cassée.
     """
     now = time.monotonic()
-    if now - _badge_cache["at"] > _BADGE_TTL_SECONDS:
-        soumises = pi.compter_soumises()
-        rdv = _compter_rdv()
-        if soumises is None and rdv == 0:
-            _badge_cache["n"] = None
-        else:
-            _badge_cache["n"] = (soumises or 0) + rdv
-        _badge_cache["at"] = now
+    if now - _badge_cache["at"] <= _BADGE_TTL_SECONDS:
+        return _badge_cache["n"]
+    with _badge_lock:
+        now = time.monotonic()
+        if now - _badge_cache["at"] > _BADGE_TTL_SECONDS:
+            soumises = pi.compter_soumises()
+            rdv = _compter_rdv()
+            if soumises is None and rdv == 0:
+                _badge_cache["n"] = None
+            else:
+                _badge_cache["n"] = (soumises or 0) + rdv
+            _badge_cache["at"] = now
     return _badge_cache["n"]
 
 

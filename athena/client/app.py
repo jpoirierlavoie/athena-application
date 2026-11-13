@@ -17,6 +17,7 @@ from flask_wtf.csrf import CSRFError, CSRFProtect
 from client import limiter, portail_bp
 from client.config import (
     PORTAIL_SESSION_HOURS,
+    _prefetch_secrets,
     cf_origin_secret,
     firebase_api_key,
     portail_secret_key,
@@ -52,6 +53,7 @@ def _init_firebase(app: Flask) -> None:
 
 
 def create_portail_app() -> Flask:
+    _prefetch_secrets()
     athena_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     app = Flask(
         __name__,

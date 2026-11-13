@@ -225,7 +225,13 @@ def extract_docx_text(data: bytes) -> list[str]:
             raise DocumentTextError(
                 "invalid_docx", "word/document.xml exceeds the size ceiling"
             )
-        xml = archive.read("word/document.xml").decode("utf-8", "replace")
+        with archive.open("word/document.xml") as fh:
+            raw = fh.read(MAX_DOCX_XML_BYTES + 1)
+        if len(raw) > MAX_DOCX_XML_BYTES:
+            raise DocumentTextError(
+                "invalid_docx", "word/document.xml exceeds the size ceiling"
+            )
+        xml = raw.decode("utf-8", "replace")
     except DocumentTextError:
         raise
     except Exception as exc:

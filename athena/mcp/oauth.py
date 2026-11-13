@@ -38,7 +38,7 @@ from mcp import (
     SCOPES_SUPPORTED,
     oauth_bp,
 )
-from mcp import disclosure, store
+from mcp import bearer, disclosure, store
 from security import csrf, limiter, sanitize
 from utils.logging_setup import log_mcp_event, log_unexpected
 
@@ -464,6 +464,7 @@ def _grant_authorization_code() -> tuple[Response, int] | Response:
         family_id = doc.get("family_id")
         if family_id:
             revoked = store.revoke_family(family_id)
+            bearer.evict_cached_tokens()
             log_mcp_event(
                 "mcp_family_revoked",
                 "success",
@@ -490,6 +491,7 @@ def _grant_authorization_code() -> tuple[Response, int] | Response:
         prior_family = consumed.get("family_id")
         if prior_family:
             revoked = store.revoke_family(prior_family)
+            bearer.evict_cached_tokens()
             log_mcp_event(
                 "mcp_family_revoked",
                 "success",
@@ -537,6 +539,7 @@ def _grant_refresh_token() -> tuple[Response, int] | Response:
     if doc.get("revoked"):
         # Replay of a rotated refresh token: revoke the whole family.
         revoked = store.revoke_family(doc.get("family_id", ""))
+        bearer.evict_cached_tokens()
         log_mcp_event(
             "mcp_family_revoked",
             "success",
@@ -555,6 +558,7 @@ def _grant_refresh_token() -> tuple[Response, int] | Response:
     pair, rotate_error = store.rotate_refresh_token(token_hash)
     if pair is None:
         revoked = store.revoke_family(doc.get("family_id", ""))
+        bearer.evict_cached_tokens()
         log_mcp_event(
             "mcp_family_revoked",
             "success",
@@ -596,6 +600,7 @@ def revoke() -> tuple[Response, int] | Response:
         if doc is not None:
             if doc.get("token_type") == "refresh":
                 revoked = store.revoke_family(doc.get("family_id", ""))
+                bearer.evict_cached_tokens()
                 log_mcp_event(
                     "mcp_family_revoked",
                     "success",
@@ -604,6 +609,7 @@ def revoke() -> tuple[Response, int] | Response:
                     revoked_count=revoked,
                 )
             elif store.revoke_token_hash(token_hash):
+                bearer.evict_cached_tokens()
                 log_mcp_event(
                     "mcp_token_revoked",
                     "success",

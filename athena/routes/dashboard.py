@@ -1,6 +1,7 @@
 """Dashboard route — Phase 11: at-a-glance summary after login."""
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 from flask import Blueprint, render_template
@@ -12,6 +13,9 @@ from tz import MTL
 logger = logging.getLogger(__name__)
 
 dashboard_bp = Blueprint("dashboard", __name__)
+
+_DASHBOARD_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="dash")
+_STATS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dash-stats")
 
 # The « Factures impayées » tile's links: one per issued status — the pair
 # invoice.get_outstanding_totals sums (its _ISSUED_STATUSES, pinned equal by
@@ -27,27 +31,20 @@ def index() -> str:
     now = datetime.now(timezone.utc)
     today = now.astimezone(MTL).date()
 
-    # ── Short-term schedule: today's hearings and the next 7 days ─────
-    # From the start of TODAY's civil day, not from the instant `now`: an
-    # all-day hearing is stored at midnight UTC — 20:00/19:00 the evening
-    # before in Montréal — so a window opened at `now` dropped it from the
-    # evening before its own day. See _get_hearings_from_day.
-    short_term_hearings = _get_hearings_from_day(
-        today, now + timedelta(days=7)
-    )
+    # ── Fetch independent dashboard sections concurrently ─────────────
+    f_short_term = _DASHBOARD_POOL.submit(_get_hearings_from_day, today, now + timedelta(days=7))
+    f_long_term = _DASHBOARD_POOL.submit(_get_hearings_in_range, now + timedelta(days=7), now + timedelta(days=60))
+    f_urgent_tasks = _DASHBOARD_POOL.submit(_get_urgent_tasks, now)
+    f_urgent_steps = _DASHBOARD_POOL.submit(_get_urgent_protocol_steps, now)
+    f_prescription = _DASHBOARD_POOL.submit(_get_prescription_alerts, now)
+    f_stats = _DASHBOARD_POOL.submit(_get_quick_stats)
 
-    # ── Long-term planning: hearings in the next 2 months ─────────────
-    long_term_hearings = _get_hearings_in_range(
-        now + timedelta(days=7), now + timedelta(days=60)
-    )
-
-    # ── Urgent items ──────────────────────────────────────────────────
-    urgent_tasks = _get_urgent_tasks(now)
-    urgent_protocol_steps = _get_urgent_protocol_steps(now)
-    prescription_alerts = _get_prescription_alerts(now)
-
-    # ── Quick stats ───────────────────────────────────────────────────
-    stats = _get_quick_stats()
+    short_term_hearings = f_short_term.result()
+    long_term_hearings = f_long_term.result()
+    urgent_tasks = f_urgent_tasks.result()
+    urgent_protocol_steps = f_urgent_steps.result()
+    prescription_alerts = f_prescription.result()
+    stats = f_stats.result()
 
     return render_template(
         "dashboard/index.html",
@@ -234,15 +231,34 @@ def _get_quick_stats() -> dict:
         "trust_total": 0,
         "trust_reconciliation_overdue": False,
     }
-    try:
+    def _load_open():
         from models.dossier import count_open
-        stats["open_dossiers"] = count_open()
+        return count_open()
+
+    def _load_unbilled():
+        from models.time_entry import get_unbilled_totals
+        return get_unbilled_totals()
+
+    def _load_outstanding():
+        from models.invoice import get_outstanding_totals_strict
+        return get_outstanding_totals_strict()
+
+    def _load_trust():
+        from models import trust
+        return trust.get_firm_trust_snapshot()
+
+    f_open = _STATS_POOL.submit(_load_open)
+    f_unbilled = _STATS_POOL.submit(_load_unbilled)
+    f_inv = _STATS_POOL.submit(_load_outstanding)
+    f_trust = _STATS_POOL.submit(_load_trust)
+
+    try:
+        stats["open_dossiers"] = f_open.result()
     except Exception as exc:
         logger.warning("dashboard: open dossiers stat failed: %s", exc)
 
     try:
-        from models.time_entry import get_unbilled_totals
-        totals = get_unbilled_totals()
+        totals = f_unbilled.result()
         stats["unbilled_hours"] = totals.get("hours", 0.0)
         stats["unbilled_amount"] = totals.get("amount", 0)
     except Exception as exc:
@@ -251,11 +267,10 @@ def _get_quick_stats() -> dict:
     by_status: dict = {}
     stats["outstanding_unavailable"] = False
     try:
-        from models.invoice import get_outstanding_totals_strict
         # ONE call for the whole tile: its total and each link's own figure
         # are the same sums, so they never disagree — and the total is what
         # get_outstanding_total gives the connector's get_agenda.
-        by_status = get_outstanding_totals_strict()
+        by_status = f_inv.result()
         stats["outstanding_invoices"] = sum(by_status.values())
     except Exception as exc:
         # A failed read never passes for « nothing is owed »: the tile says
@@ -271,8 +286,7 @@ def _get_quick_stats() -> dict:
     ]
 
     try:
-        from models import trust
-        snapshot = trust.get_firm_trust_snapshot()
+        snapshot = f_trust.result()
         stats["trust_total"] = snapshot.get("total_held_cents", 0)
         stats["trust_reconciliation_overdue"] = snapshot.get("reconciliation_overdue", False)
     except Exception as exc:

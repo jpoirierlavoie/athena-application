@@ -15,6 +15,7 @@ time, which the portal's service account must not need.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import NamedTuple, Optional
 
@@ -142,6 +143,34 @@ def _from_secret_manager(secret_id: str) -> str:
     return response.payload.data.decode("utf-8")
 
 
+_PORTAIL_STARTUP_SECRET_IDS = (
+    "portail-secret-key",
+    "firebase-api-key",
+    "cf-origin-secret",
+)
+
+
+def _prefetch_secrets(
+    secret_ids: tuple[str, ...] = _PORTAIL_STARTUP_SECRET_IDS,
+) -> None:
+    """Warm ``_from_secret_manager`` in parallel on production cold start."""
+    if not _is_production() or not secret_ids:
+        return
+    try:
+        _secret_manager_client()
+    except Exception:
+        return
+
+    def _warm(sid: str) -> None:
+        try:
+            _from_secret_manager(sid)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=len(secret_ids)) as pool:
+        list(pool.map(_warm, secret_ids))
+
+
 def _secret(secret_id: str, env_var: str, required: bool = True,
             errors: Optional[list] = None) -> str:
     """*errors*, when given, receives the CLASS name of a Secret Manager
@@ -149,13 +178,18 @@ def _secret(secret_id: str, env_var: str, required: bool = True,
     from « unset » (cf_origin_secret)."""
     if _is_production():
         try:
-            return _from_secret_manager(secret_id)
+            value = _from_secret_manager(secret_id)
         except Exception as exc:
             if required:
                 raise
             if errors is not None:
                 errors.append(type(exc).__name__)
             return ""
+        if required and not value:
+            raise RuntimeError(
+                f"Empty required secret {secret_id!r} in Secret Manager."
+            )
+        return value
     value = os.environ.get(env_var, "")
     if required and not value:
         raise RuntimeError(
@@ -191,18 +225,15 @@ class OriginSecret(NamedTuple):
 def cf_origin_secret() -> OriginSecret:
     """The SAME `cf-origin-secret` the main service checks (2026-09-30).
 
-    Optional and fail-OPEN, the main service's policy (config.py): unset —
-    local dev — or unreadable, because `portail-svc` holds no accessor on it
-    yet, the check is off and the reason says which, for the one warning
-    the portal logs per process. Read ONCE, by the factory: arming follows a
-    new instance, never a request. Never stripped — the value is compared
-    byte for byte, and a trailing newline is the documented trap.
+    Fail-closed in production (``ENV == "production"``): an unreadable or empty
+    secret aborts startup, matching the main service's policy. Outside
+    production it stays optional so local development runs without a secret.
     """
     # Through `_secret`, like every other secret of this module: the
     # portail.yaml inventory is pinned against these calls, in both directions.
     errors: list = []
-    value = _secret("cf-origin-secret", "CF_ORIGIN_SECRET", required=False,
-                    errors=errors)
+    value = _secret("cf-origin-secret", "CF_ORIGIN_SECRET",
+                    required=_is_production(), errors=errors)
     if errors:
         return OriginSecret("", "cf_origin_secret_unreadable", errors[0])
     return OriginSecret(value, "" if value else "cf_origin_secret_unset")

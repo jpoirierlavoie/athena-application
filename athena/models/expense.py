@@ -698,9 +698,10 @@ def delete_expense(expense_id: str) -> tuple[bool, str]:
 # ── Summary & batch operations ────────────────────────────────────────────
 
 
-def get_expense_summary(dossier_id: str) -> dict:
+def get_expense_summary(dossier_id: str, entries: Optional[list[dict]] = None) -> dict:
     """Return totals for a dossier: total_expenses, unbilled_expenses."""
-    entries = list_expenses(dossier_id=dossier_id)
+    if entries is None:
+        entries = list_expenses(dossier_id=dossier_id)
     total = 0
     unbilled = 0
 

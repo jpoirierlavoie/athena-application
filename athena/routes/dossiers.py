@@ -506,10 +506,10 @@ def dossier_detail(dossier_id: str) -> str:
 
     requested_tab = request.args.get("tab", "").strip()
     requested_tab = _LEGACY_TABS.get(requested_tab, requested_tab)
-    initial_tab = requested_tab if requested_tab in _VALID_TABS else "temps"
+    initial_tab = requested_tab if requested_tab in _VALID_TABS else "apercu"
     # Top-level group of the initial leaf — drives which group is highlighted
     # and which sub-row is shown on first paint.
-    initial_group = _LEAF_GROUP.get(initial_tab, "finances")
+    initial_group = _LEAF_GROUP.get(initial_tab, "apercu")
 
     ctx = _template_context()
     ctx["dossier"] = dossier
@@ -758,8 +758,8 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     if tab_name == "temps":
         ctx["time_entries"] = list_time_entries(dossier_id=dossier_id)
         ctx["expenses"] = list_expenses(dossier_id=dossier_id)
-        ctx["time_summary"] = get_time_summary(dossier_id)
-        ctx["expense_summary"] = get_expense_summary(dossier_id)
+        ctx["time_summary"] = get_time_summary(dossier_id, entries=ctx["time_entries"])
+        ctx["expense_summary"] = get_expense_summary(dossier_id, entries=ctx["expenses"])
         ctx["category_labels"] = EXPENSE_CATEGORY_LABELS
 
     # Load hearing data for the audiences (Calendrier) tab. Forward-looking:
@@ -887,7 +887,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     # Load invoice data for the facturation tab
     if tab_name == "facturation":
         ctx["invoices"] = list_invoices(dossier_id=dossier_id)
-        ctx["invoice_summary"] = get_invoice_summary(dossier_id)
+        ctx["invoice_summary"] = get_invoice_summary(dossier_id, invoices=ctx["invoices"])
         ctx["status_labels"] = INVOICE_STATUS_LABELS
 
     # Load trust data for the fideicommis tab (Phase K)

@@ -866,9 +866,10 @@ def get_unbilled_totals() -> dict:
         return {"hours": 0.0, "amount": 0}
 
 
-def get_time_summary(dossier_id: str) -> dict:
+def get_time_summary(dossier_id: str, entries: Optional[list[dict]] = None) -> dict:
     """Return totals for a dossier: total_hours, total_billable_amount, unbilled_hours, unbilled_amount."""
-    entries = list_time_entries(dossier_id=dossier_id)
+    if entries is None:
+        entries = list_time_entries(dossier_id=dossier_id)
     total_hours = 0.0
     total_billable_amount = 0
     unbilled_hours = 0.0
