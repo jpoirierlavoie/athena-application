@@ -42,7 +42,8 @@ def app():
             application = client_app.create_portail_app()
     application.config["TESTING"] = True
     limiter.enabled = False
-    return application
+    yield application
+    limiter.enabled = True
 
 
 @pytest.fixture()

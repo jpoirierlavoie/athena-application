@@ -37,7 +37,8 @@ def app():
             application = client_app.create_portail_app()
     application.config["TESTING"] = True
     limiter.enabled = False  # per-test counts must not accumulate
-    return application
+    yield application
+    limiter.enabled = True
 
 
 @pytest.fixture()

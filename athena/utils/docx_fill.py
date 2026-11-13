@@ -242,7 +242,11 @@ def _normalize_runs(xml: str) -> str:
     previous implementation looped `re.sub` until stable, which needed one
     pass per fragment in the bridge regime — quadratic, and unbounded.
     """
-    xml = _PROOF_ERR_RE.sub("", xml)
+    if "<w:proofErr" in xml:
+        xml = _PROOF_ERR_RE.sub("", xml)
+    first_wt = xml.find("<w:t")
+    if first_wt == -1 or xml.find("<w:t", first_wt + 4) == -1:
+        return xml
     return _RUN_CHAIN_RE.sub(_fold_run_chain, xml)
 
 # ── Safety caps (§7.3 — zip-bomb defense) ──────────────────────────────

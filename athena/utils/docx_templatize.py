@@ -281,6 +281,18 @@ _TRANSPARENT = frozenset({
 })
 _AC = "mc:AlternateContent"
 _AC_BRANCHES = frozenset({"mc:Choice", "mc:Fallback"})
+_SPECIAL_TAGS = (
+    _TRACKED_CHANGES
+    | _COMMENT_ANCHORS
+    | frozenset({
+        "w:t", "w:noBreakHyphen", "w:softHyphen", "w:fldChar",
+        "w:fldSimple", "w:sdt", _AC, *_AC_BRANCHES, "w:comment",
+    })
+)
+_K_OTHER = 0
+_K_PROP = 1
+_K_TRANSP = 2
+_K_SPECIAL = 3
 
 _MODE_TARGET = "target"
 _MODE_WORD = "word"      # a word/ part, reported only
@@ -724,15 +736,20 @@ def _lex_part(name: str, xml: str, mode: str, budget: _Budget,
 
     token_room = MAX_TOKENS - budget.tokens
     pos = 0
+    t_append = tokens.append
+    s_append = stack.append
+    s_pop = stack.pop
+    tag_cache: dict[str, tuple[str, bool, bool, int]] = {}
     for match in _TOKEN_RE.finditer(xml):
-        if match.start() != pos:
+        m_start, pos_next = match.span()
+        if m_start != pos:
             raise _Malformed
+        pos = pos_next
         tok = match.group()
-        pos = match.end()
         index = len(tokens)
         if index >= token_room:
             raise _TooComplex
-        tokens.append(tok)
+        t_append(tok)
 
         if tok[0] != "<":
             if in_t:
@@ -752,42 +769,60 @@ def _lex_part(name: str, xml: str, mode: str, budget: _Budget,
                     at_boundary = True
             continue
 
-        second = tok[1:2]
-        if in_t and second != "/":
-            # A <w:t> holds text only — a comment, PI or element inside one
-            # is not Word's output, and splitting its text around it would
-            # make the edit drop characters.
-            raise _Malformed
-        if second == "?":
-            if not tok.endswith("?>"):
+        cached_tag = tag_cache.get(tok)
+        if cached_tag is not None:
+            qname, is_close, empty, kind = cached_tag
+            if in_t and not is_close:
                 raise _Malformed
-            continue
-        if second == "!":
-            if tok.startswith("<!--") and tok.endswith("-->"):
+        else:
+            second = tok[1:2]
+            if in_t and second != "/":
+                # A <w:t> holds text only — a comment, PI or element inside one
+                # is not Word's output, and splitting its text around it would
+                # make the edit drop characters.
+                raise _Malformed
+            if second == "?":
+                if not tok.endswith("?>"):
+                    raise _Malformed
                 continue
-            raise _Malformed            # CDATA, DOCTYPE: not Word's output
-        # A « > » inside an attribute value ends the tag early: the quotes
-        # of the token no longer pair up. Word writes double quotes, so the
-        # parity of « " » decides — unless the tag holds an apostrophe,
-        # which is either inside a double-quoted value (« descr="l'avis" »,
-        # legitimate) or opens a single-quoted one (« a='x>y' », which the
-        # tag pattern cut at the « > »): with every complete quoted value
-        # removed, no quote may remain.
-        if "'" in tok:
-            rest = _QUOTED_RE.sub("", tok)
-            if '"' in rest or "'" in rest:
+            if second == "!":
+                if tok.startswith("<!--") and tok.endswith("-->"):
+                    continue
+                raise _Malformed            # CDATA, DOCTYPE: not Word's output
+            # A « > » inside an attribute value ends the tag early: the quotes
+            # of the token no longer pair up. Word writes double quotes, so the
+            # parity of « " » decides — unless the tag holds an apostrophe,
+            # which is either inside a double-quoted value (« descr="l'avis" »,
+            # legitimate) or opens a single-quoted one (« a='x>y' », which the
+            # tag pattern cut at the « > »): with every complete quoted value
+            # removed, no quote may remain.
+            if "'" in tok:
+                rest = _QUOTED_RE.sub("", tok)
+                if '"' in rest or "'" in rest:
+                    raise _Malformed
+            elif tok.count('"') % 2:
                 raise _Malformed
-        elif tok.count('"') % 2:
-            raise _Malformed
-        name_match = _TAG_NAME_RE.match(tok)
-        if name_match is None:
-            raise _Malformed
-        qname = name_match.group(1)
+            name_match = _TAG_NAME_RE.match(tok)
+            if name_match is None:
+                raise _Malformed
+            qname = name_match.group(1)
+            is_close = second == "/"
+            empty = not is_close and tok.endswith("/>")
+            if qname in _PROPERTY_CONTAINERS:
+                kind = _K_PROP
+            elif qname in _TRANSPARENT:
+                kind = _K_TRANSP
+            elif qname in _SPECIAL_TAGS or qname.endswith(":dataBinding"):
+                kind = _K_SPECIAL
+            else:
+                kind = _K_OTHER
+            if root_seen:
+                tag_cache[tok] = (qname, is_close, empty, kind)
 
-        if second == "/":
+        if is_close:
             if not stack or stack[-1] != qname:
                 raise _Malformed
-            stack.pop()
+            s_pop()
             if in_t:
                 # The stack check above guarantees qname == "w:t".
                 if t_text:
@@ -795,19 +830,20 @@ def _lex_part(name: str, xml: str, mode: str, budget: _Budget,
                 in_t = False
                 continue
             if prop_depth:
-                if qname in _PROPERTY_CONTAINERS:
+                if kind == _K_PROP:
                     prop_depth -= 1
                 continue
-            if qname in _TRANSPARENT:
+            if kind == _K_TRANSP:
                 continue
-            if qname == "w:fldSimple":
-                fld_simple = max(0, fld_simple - 1)
-            elif qname == "w:sdt":
-                if sdt_stack:
-                    sdt_stack.pop()
-            elif qname == _AC:
-                if ac_stack:
-                    ac_stack.pop()
+            if kind == _K_SPECIAL:
+                if qname == "w:fldSimple":
+                    fld_simple = max(0, fld_simple - 1)
+                elif qname == "w:sdt":
+                    if sdt_stack:
+                        sdt_stack.pop()
+                elif qname == _AC:
+                    if ac_stack:
+                        ac_stack.pop()
             if not at_boundary:
                 pieces.append(_HARD)
                 char_seg.append(_SEG_HARD)
@@ -816,7 +852,6 @@ def _lex_part(name: str, xml: str, mode: str, budget: _Budget,
             continue
 
         # An opening or empty-element tag.
-        empty = tok.endswith("/>")
         if not root_seen:
             root_seen = True
             declared = _quoted_value(_W_NAMESPACE_RE.search(tok))
@@ -824,73 +859,75 @@ def _lex_part(name: str, xml: str, mode: str, budget: _Budget,
                 note("strict_ooxml")
             elif declared != _TRANSITIONAL_W:
                 note("namespace")
-        if qname in _TRACKED_CHANGES:
-            note("tracked_changes")
-        elif qname in _COMMENT_ANCHORS or (comments_part
-                                            and qname == "w:comment"):
-            note("comments")
+        if kind == _K_SPECIAL:
+            if qname in _TRACKED_CHANGES:
+                note("tracked_changes")
+            elif qname in _COMMENT_ANCHORS or (comments_part
+                                                and qname == "w:comment"):
+                note("comments")
         if not empty:
-            stack.append(qname)
+            s_append(qname)
 
         if prop_depth:
-            if not empty and qname in _PROPERTY_CONTAINERS:
+            if not empty and kind == _K_PROP:
                 prop_depth += 1
-            if qname.endswith(":dataBinding") and sdt_stack:
+            elif kind == _K_SPECIAL and sdt_stack and qname.endswith(":dataBinding"):
                 sdt_stack[-1] = True
             continue
-        if qname in _PROPERTY_CONTAINERS:
+        if kind == _K_PROP:
             if not empty:
                 prop_depth += 1
             continue
-        if qname == "w:t":
-            if not empty:
-                in_t = True
-                t_open = index
-                t_token = -1
-                t_text = ""
-                if field_depth or fld_simple:
-                    t_reason = "field"
-                elif any(sdt_stack):
-                    t_reason = "bound"
-                else:
-                    t_reason = None
-                t_path = tuple((a, b) for a, b in ac_stack)
+        if kind == _K_TRANSP:
             continue
-        if qname in _TRANSPARENT:
-            continue
-        if qname == "w:noBreakHyphen":
-            pieces.append("-")
-            char_seg.append(_SEG_MARKUP)
-            length += 1
-            at_boundary = False
-            continue
-        if qname == "w:softHyphen":
-            pieces.append(_SOFT)
-            char_seg.append(_SEG_SOFT)
-            length += 1
-            at_boundary = False
-            has_soft = True
-            continue
-        if qname == "w:fldChar":
-            kind = _quoted_value(_FLDCHAR_TYPE_RE.search(tok))
-            if kind == "begin":
-                field_depth += 1
-            elif kind == "end":
-                field_depth = max(0, field_depth - 1)
-        elif qname == "w:fldSimple":
-            if not empty:
-                fld_simple += 1
-        elif qname == "w:sdt":
-            if not empty:
-                sdt_stack.append(False)
-        elif qname == _AC:
-            if not empty:
-                ac_counter += 1
-                ac_stack.append([ac_counter, -1])
-                ac_branches[ac_counter] = 0
-        elif qname in _AC_BRANCHES and ac_stack:
-            ac_stack[-1][1] += 1
-            ac_branches[ac_stack[-1][0]] = ac_stack[-1][1] + 1
+        if kind == _K_SPECIAL:
+            if qname == "w:t":
+                if not empty:
+                    in_t = True
+                    t_open = index
+                    t_token = -1
+                    t_text = ""
+                    if field_depth or fld_simple:
+                        t_reason = "field"
+                    elif any(sdt_stack):
+                        t_reason = "bound"
+                    else:
+                        t_reason = None
+                    t_path = tuple((a, b) for a, b in ac_stack)
+                continue
+            if qname == "w:noBreakHyphen":
+                pieces.append("-")
+                char_seg.append(_SEG_MARKUP)
+                length += 1
+                at_boundary = False
+                continue
+            if qname == "w:softHyphen":
+                pieces.append(_SOFT)
+                char_seg.append(_SEG_SOFT)
+                length += 1
+                at_boundary = False
+                has_soft = True
+                continue
+            if qname == "w:fldChar":
+                kind_fld = _quoted_value(_FLDCHAR_TYPE_RE.search(tok))
+                if kind_fld == "begin":
+                    field_depth += 1
+                elif kind_fld == "end":
+                    field_depth = max(0, field_depth - 1)
+            elif qname == "w:fldSimple":
+                if not empty:
+                    fld_simple += 1
+            elif qname == "w:sdt":
+                if not empty:
+                    sdt_stack.append(False)
+            elif qname == _AC:
+                if not empty:
+                    ac_counter += 1
+                    ac_stack.append([ac_counter, -1])
+                    ac_branches[ac_counter] = 0
+            elif qname in _AC_BRANCHES and ac_stack:
+                ac_stack[-1][1] += 1
+                ac_branches[ac_stack[-1][0]] = ac_stack[-1][1] + 1
         if not at_boundary:
             pieces.append(_HARD)
             char_seg.append(_SEG_HARD)
@@ -1403,7 +1440,7 @@ def _run(docx_bytes: bytes, substitutions: Sequence[Substitution], *,
         errors.extend(count_errors)
         warnings.extend(count_warnings)
         if not write or errors:
-            warnings.extend(_source_split_warnings(docx_bytes, part_inserted))
+            warnings.extend(_source_split_warnings(docx_bytes, part_inserted, raw_targets))
             return TemplatizeResult(None, reports, (), tuple(errors),
                                     tuple(warnings))
 
@@ -1424,7 +1461,7 @@ def _run(docx_bytes: bytes, substitutions: Sequence[Substitution], *,
         errors.append(_OUTPUT_CHECK.format(reason=problem))
         return TemplatizeResult(None, reports, (), tuple(errors),
                                 tuple(warnings))
-    warnings.extend(_source_split_warnings(docx_bytes, part_inserted))
+    warnings.extend(_source_split_warnings(docx_bytes, part_inserted, raw_targets))
     return TemplatizeResult(output, reports, (), (), tuple(warnings),
                             tuple(n for n in _target_order(rewritten, parts)))
 
@@ -1596,9 +1633,12 @@ def _check_output(output: bytes, rewritten: dict[str, bytes],
 
 
 def _source_split_warnings(docx_bytes: bytes,
-                           part_inserted: dict[str, dict[str, int]]) -> list[str]:
+                           part_inserted: dict[str, dict[str, int]],
+                           raw_targets: Optional[dict[str, bytes]] = None) -> list[str]:
     """Placeholders the SOURCE already carries fragmented (they will not
     fill until retyped in Word) — named, so the lawyer can fix them."""
+    if raw_targets is not None and not any(b"{" in b for b in raw_targets.values()):
+        return []
     inserted = {n for names in part_inserted.values() for n in names}
     suspects = [n for n in validate_template(docx_bytes).split_run_suspects
                 if n not in inserted]

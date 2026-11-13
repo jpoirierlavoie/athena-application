@@ -238,6 +238,7 @@ def test_the_resolver_fails_closed_in_production(monkeypatch):
 def test_the_factory_arms_the_edge_and_runs_it_first(monkeypatch):
     monkeypatch.setattr(client_app, "cf_origin_secret",
                         lambda: pconfig.OriginSecret(SECRET, ""))
+    monkeypatch.setattr(client_app.limiter, "enabled", True)
     with mock.patch("utils.tracing_setup.init_app"):
         with mock.patch.object(client_app, "_init_firebase"):
             app = client_app.create_portail_app()
