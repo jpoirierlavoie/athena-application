@@ -1733,6 +1733,34 @@ def test_gemini_md_is_identical_to_claude_md_and_accounting_md_is_linked():
     )
 
 
+def _chemins_athena_cites(texte: str) -> set:
+    """Les chemins `(models|services|utils)/….py` nommés entre accents graves."""
+    return set(re.findall(r"`((?:models|services|utils)/[a-z0-9_]+\.py)`", texte))
+
+
+def test_litigation_md_is_linked_and_names_real_modules():
+    """LITIGATION.md doit exister, être référencé par CLAUDE.md/GEMINI.md
+    et README.md, et ne citer que des modules réels d'`athena/`."""
+    lit_path = os.path.join(_ROOT, "LITIGATION.md")
+    assert os.path.isfile(lit_path), "LITIGATION.md absent"
+    lit_text = io.open(lit_path, encoding="utf-8").read()
+    assert lit_text.strip(), "LITIGATION.md est vide"
+
+    claude_text = io.open(os.path.join(_ROOT, "CLAUDE.md"), encoding="utf-8").read()
+    readme_text = io.open(os.path.join(_ROOT, "README.md"), encoding="utf-8").read()
+    assert "LITIGATION.md" in claude_text, "CLAUDE.md ne mentionne pas LITIGATION.md"
+    assert "LITIGATION.md" in readme_text, "README.md ne mentionne pas LITIGATION.md"
+
+    cites = _chemins_athena_cites(lit_text)
+    assert len(cites) >= 10, f"trop peu de modules reconnus dans LITIGATION.md : {sorted(cites)}"
+    absents = sorted(rel for rel in cites if not os.path.isfile(os.path.join(_ATHENA, rel)))
+    assert not absents, f"LITIGATION.md cite des modules introuvables : {absents}"
+    # Et la garde attrape bien un module fictif (CLAUDE.md : « every guard proves it catches something »).
+    faux = _chemins_athena_cites("Voir `utils/module_inexistant_xyz.py`.")
+    assert faux == {"utils/module_inexistant_xyz.py"}
+    assert not os.path.isfile(os.path.join(_ATHENA, next(iter(faux))))
+
+
 def test_security_md_names_all_six_secrets_both_services_and_no_unsafe_recipes():
     """SECURITY.md doit nommer les six secrets de SECRET_IDS, les deux services
     et leurs comptes de service, et ne jamais enseigner les formes de rotation

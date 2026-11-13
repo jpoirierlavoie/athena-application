@@ -1,6 +1,6 @@
 # Accounting, Billing & Financial Statements
 
-This document is the thematic specification for billing, invoicing, Québec sales taxes, trust and administration accounting registers, bank reconciliations, write-offs, and financial statements in Pallas Athena. It complements [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md), [SECURITY.md](SECURITY.md), and [DEPLOYMENT.md](DEPLOYMENT.md).
+This document is the thematic specification for billing, invoicing, Québec sales taxes, trust and administration accounting registers, bank reconciliations, write-offs, and financial statements in Pallas Athena. It complements [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md), [LITIGATION.md](LITIGATION.md), [SECURITY.md](SECURITY.md), and [DEPLOYMENT.md](DEPLOYMENT.md).
 
 Authoritative implementations live in `models/invoice.py`, `models/admin_ledger.py`, `models/fee_payment.py`, `models/releve_conciliation.py`, `models/financial_statements.py`, `services/comptabilite.py`, `services/financial_statements.py`, `services/note_credit.py`, and `utils/format_fr.py`.
 
