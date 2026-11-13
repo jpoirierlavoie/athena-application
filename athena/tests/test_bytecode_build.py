@@ -44,3 +44,10 @@ def test_the_upload_lets_the_bytecode_ship_and_still_leaves_the_tests_out():
 def test_claude_md_names_the_exception():
     first = (REPO / "CLAUDE.md").read_text(encoding="utf-8").split("\n\n")[1]
     assert "no deploy-time build — save the Python bytecode" in first
+
+
+def test_cloudbuild_substitutes_short_sha_rather_than_escaping_it_to_bash():
+    """$SHORT_SHA is a Cloud Build substitution; $$SHORT_SHA passes literal $SHORT_SHA to bash -u."""
+    text = (REPO / "cloudbuild.yaml").read_text(encoding="utf-8")
+    assert "$$SHORT_SHA" not in text
+    assert "$SHORT_SHA" in text

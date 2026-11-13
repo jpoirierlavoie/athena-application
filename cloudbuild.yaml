@@ -11,7 +11,7 @@ steps:
       - '-c'
       - |
         set -euo pipefail
-        if [ -z "$$SHORT_SHA" ]; then
+        if [ -z "$SHORT_SHA" ]; then
           echo "ERROR: SHORT_SHA is empty (pass --substitutions=SHORT_SHA=... for manual builds)." >&2
           exit 1
         fi
@@ -57,8 +57,8 @@ steps:
       - '-c'
       - |
         set -euo pipefail
-        gcloud app services set-traffic default --splits="$$SHORT_SHA=1" --quiet
-        gcloud app services set-traffic portail --splits="$$SHORT_SHA=1" --quiet
+        gcloud app services set-traffic default --splits="$SHORT_SHA=1" --quiet
+        gcloud app services set-traffic portail --splits="$SHORT_SHA=1" --quiet
     waitFor: ['stage-default', 'stage-portail']
     timeout: '120s'
 
