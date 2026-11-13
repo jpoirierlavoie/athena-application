@@ -82,3 +82,16 @@ def test_a_client_that_failed_to_build_is_built_again(clients, name):
     finally:
         _fresh(name)
     assert len(built) == 2
+
+
+def test_prefetch_secrets_warms_all_startup_secrets_through_one_client(clients, monkeypatch):
+    built, _state = clients
+    module = _fresh("config")
+    monkeypatch.setenv("ENV", "production")
+    try:
+        module._prefetch_secrets()
+        values = {sid: module._from_secret_manager(sid) for sid in module._STARTUP_SECRET_IDS}
+    finally:
+        _fresh("config")
+    assert len(built) == 1
+    assert values == {sid: _path(sid) for sid in module._STARTUP_SECRET_IDS}

@@ -615,6 +615,15 @@ def test_every_static_handler_carries_the_full_baseline():
         )
 
 
+def test_static_legal_pages_carry_strict_csp():
+    """The /privacy and /terms static pages carry a tight CSP matching the app."""
+    by_url = {h["url"]: h for h in _yaml_handlers(_read("app.yaml"))}
+    for url in ("/privacy", "/terms"):
+        csp = by_url[url]["headers"].get("Content-Security-Policy", "")
+        assert "default-src 'none'" in csp, f"{url}: missing default-src 'none'"
+        assert "frame-ancestors 'none'" in csp, f"{url}: missing frame-ancestors 'none'"
+
+
 # ── The two fail-open controls now SAY they are off ─────────────────────
 # Until 2026-09-07 `_enforce_origin_secret` logged nothing at all — no log, no
 # metric, not even DEBUG — which is how `cf-origin-secret` came to not exist

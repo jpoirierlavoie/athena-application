@@ -16,11 +16,12 @@ from datetime import time
 #: Montréal hours of the window: its first run, and its last run's bound.
 OFFICE_HOURS = (9, 17)
 
-#: Each job: its URL, and the minutes between two of its runs.
+#: Each job: its URL, the minutes between two of its runs, and the start-minute
+#: offset (rolling 5-minute stagger so cron jobs never fire simultaneously).
 JOBS = {
-    "portail": ("/taches/portail/reconciliation", 15),
-    "bookings": ("/taches/bookings/sync", 10),
-    "outlook": ("/taches/outlook/sync", 10),
+    "portail": ("/taches/portail/reconciliation", 15, 15),
+    "bookings": ("/taches/bookings/sync", 15, 5),
+    "outlook": ("/taches/outlook/sync", 15, 10),
 }
 
 #: Each job run ONCE a day, at the window's first hour: its URL. The
@@ -32,16 +33,17 @@ DAILY_JOBS = {
 
 
 def cadence_fr(job: str) -> str:
-    """« toutes les 10 minutes, de 9 h à 17 h » — for the French texts."""
+    """« toutes les 15 minutes, de 9 h à 17 h » — for the French texts."""
     start, end = OFFICE_HOURS
     return f"toutes les {JOBS[job][1]} minutes, de {start} h à {end} h"
 
 
 def cadence_en(job: str) -> str:
-    """« every 10 minutes from 09:00 to 17:00 » — the job's ``cron.yaml``
+    """« every 15 minutes from 09:10 to 17:10 » — the job's ``cron.yaml``
     schedule, word for word, and the connector's English texts."""
     start, end = OFFICE_HOURS
-    return f"every {JOBS[job][1]} minutes from {start:02d}:00 to {end:02d}:00"
+    _url, minutes, offset = JOBS[job]
+    return f"every {minutes} minutes from {start:02d}:{offset:02d} to {end:02d}:{offset:02d}"
 
 
 def daily_time() -> time:

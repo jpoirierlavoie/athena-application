@@ -62,11 +62,15 @@ def test_each_job_runs_during_office_hours_at_the_cadence_the_texts_quote():
     by_url = {e["url"]: e for e in entries}
     assert len(by_url) == len(entries) == (
         len(cron_schedule.JOBS) + len(cron_schedule.DAILY_JOBS))
-    for job, (url, _minutes) in cron_schedule.JOBS.items():
+    for job, (url, _minutes, _offset) in cron_schedule.JOBS.items():
         entry = by_url[url]
         assert entry["schedule"] == cron_schedule.cadence_en(job), job
         assert entry.get("timezone") == "America/Toronto", job
         assert entry.get("target") == "default", job
+    # Rolling offsets guarantee no two jobs share the same start minute (00/05/10/15).
+    offsets = [cron_schedule.JOBS[job][2] % cron_schedule.JOBS[job][1] for job in cron_schedule.JOBS]
+    assert len(set(offsets)) == len(offsets)
+    assert all(o != cron_schedule.daily_time().minute for o in (offset for _, _, offset in cron_schedule.JOBS.values()))
     # The daily jobs run once, with the first pass (the invoice lateness
     # sweep, the lawyer's decision of 2026-11-12).
     for job, url in cron_schedule.DAILY_JOBS.items():
@@ -84,9 +88,11 @@ def test_the_cron_time_zone_is_montreals_daylight_saving_included():
 
 
 def test_the_cadences_read_in_french_and_in_english():
-    assert cron_schedule.cadence_fr("bookings") == "toutes les 10 minutes, de 9 h à 17 h"
+    assert cron_schedule.cadence_fr("bookings") == "toutes les 15 minutes, de 9 h à 17 h"
     assert cron_schedule.cadence_fr("portail") == "toutes les 15 minutes, de 9 h à 17 h"
-    assert cron_schedule.cadence_en("outlook") == "every 10 minutes from 09:00 to 17:00"
+    assert cron_schedule.cadence_en("bookings") == "every 15 minutes from 09:05 to 17:05"
+    assert cron_schedule.cadence_en("outlook") == "every 15 minutes from 09:10 to 17:10"
+    assert cron_schedule.cadence_en("portail") == "every 15 minutes from 09:15 to 17:15"
     assert cron_schedule.daily_en("factures") == "every day 09:00"
     assert f"{cron_schedule.daily_time():%H:%M}" == "09:00"
     with pytest.raises(KeyError):

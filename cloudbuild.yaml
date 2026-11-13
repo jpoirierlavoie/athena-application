@@ -1,12 +1,20 @@
 steps:
-  # Step 1: Install dependencies and run tests — a failing test aborts the
-  # build before the deploy step runs.
-  - name: 'python:3.13-slim'
+  # Step 1: Fail-fast preflight, install dependencies, run the test gate, and
+  # precompile checked-hash bytecode for App Engine.
+  - id: 'test-suite'
+    name: 'python:3.13-slim'
     entrypoint: 'bash'
+    env:
+      - 'PIP_NO_CACHE_DIR=1'
+      - 'PIP_DISABLE_PIP_VERSION_CHECK=1'
     args:
       - '-c'
       - |
         set -euo pipefail
+        if [ -z "$$SHORT_SHA" ]; then
+          echo "ERROR: SHORT_SHA is empty (pass --substitutions=SHORT_SHA=... for manual builds)." >&2
+          exit 1
+        fi
         pip install --require-hashes --no-deps -r athena/requirements.txt
         pip install -r athena/requirements-dev.txt
         cd athena && python -m pytest tests/ -q
@@ -17,62 +25,91 @@ steps:
         # source's hash before using it, so a stale one never runs, whatever
         # the upload does to file times. Same Python 3.13 as the runtime.
         python -m compileall -q -f --invalidation-mode checked-hash -x '/tests/' .
+    timeout: '900s'
 
-  # Step 2: Deploy the default service
-  - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['app', 'deploy', 'app.yaml', '--quiet', '--version=$SHORT_SHA']
+  # Step 2a: Stage the default service WITH --no-promote so live traffic stays
+  # on the previous version until portail is also built and staged.
+  # (Single-line args format preserved for tests/test_deployment_inventory.py.)
+  - id: 'stage-default'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'gcloud'
+    args: ['app', 'deploy', 'app.yaml', '--quiet', '--no-promote', '--version=$SHORT_SHA']
     dir: 'athena'
+    waitFor: ['test-suite']
+    timeout: '600s'
 
-  # Step 2b: Deploy the « portail » service (portail client L1) — same source
-  # dir, own yaml. MUST come after the default service; requires the portal's
-  # service account and IAM (DEPLOYMENT.md §6.9) or the deploy fails the build.
-  - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['app', 'deploy', 'portail.yaml', '--quiet', '--version=$SHORT_SHA']
+  # Step 2b: Stage the « portail » service WITH --no-promote.
+  # Runs after stage-default so a first-ever project deploy still creates the
+  # default service first, while normal builds can also parallelize if desired.
+  - id: 'stage-portail'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'gcloud'
+    args: ['app', 'deploy', 'portail.yaml', '--quiet', '--no-promote', '--version=$SHORT_SHA']
     dir: 'athena'
+    waitFor: ['stage-default']
+    timeout: '600s'
 
-  # Step 2c: Dispatch rules — AFTER the portail service exists (a rule naming
-  # an undeployed service is refused). ⚠ deploy REPLACES the whole table;
-  # dispatch.yaml at the repo root is the single source of truth.
-  - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['app', 'deploy', 'dispatch.yaml', '--quiet']
-
-  # Step 2d: Cron — ⚠ deploy REPLACES every cron job; cron.yaml at the repo
-  # root is the single complete table (future phases MERGE into it).
-  - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['app', 'deploy', 'cron.yaml', '--quiet']
-
-  # Step 3: Conditional Cleanup (keeps the 3 most recent versions PER SERVICE).
-  # Both services share $SHORT_SHA version ids, so every delete MUST carry
-  # --service: a bare `gcloud app versions delete <id>` targets the id in
-  # EVERY service — it would delete a still-serving portail version (build
-  # failure) or silently prune the wrong service.
-  #
-  # A third service, « chat », was in this list until 2026-09-02. There is
-  # no `set -e` here, so a name that no longer resolves would only print an
-  # error and skip — but a list of services is an inventory, and an
-  # inventory that names something absent is a lie the next reader trusts.
-  - name: 'gcr.io/cloud-builders/gcloud'
+  # Step 2c: Cut live traffic over on BOTH services only after both builds succeeded.
+  - id: 'promote-traffic'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
+        set -euo pipefail
+        gcloud app services set-traffic default --splits="$$SHORT_SHA=1" --quiet
+        gcloud app services set-traffic portail --splits="$$SHORT_SHA=1" --quiet
+    waitFor: ['stage-default', 'stage-portail']
+    timeout: '120s'
+
+  # Step 2d: Dispatch rules — runs in parallel with cron and cleanup once
+  # both services are live. ⚠ deploy REPLACES the whole table.
+  - id: 'deploy-dispatch'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'gcloud'
+    args: ['app', 'deploy', 'dispatch.yaml', '--quiet']
+    waitFor: ['promote-traffic']
+    timeout: '120s'
+
+  # Step 2e: Cron — runs in parallel with dispatch and cleanup.
+  # ⚠ deploy REPLACES every cron job; cron.yaml is the single complete table.
+  - id: 'deploy-cron'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'gcloud'
+    args: ['app', 'deploy', 'cron.yaml', '--quiet']
+    waitFor: ['promote-traffic']
+    timeout: '120s'
+
+  # Step 3: Non-fatal cleanup (keeps the 3 most recent non-serving versions per service).
+  - id: 'cleanup-versions'
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -uo pipefail
         for SERVICE in default portail; do
-          OLD_VERSIONS=$$(gcloud app versions list \
+          if ! ALL_STOPPED=$$(gcloud app versions list \
             --service="$$SERVICE" \
             --filter="traffic_split=0" \
             --format="value(version.id)" \
-            --sort-by="~version.createTime" | tail -n +4)
+            --sort-by="~version.createTime"); then
+            echo "WARNING: could not list versions for $$SERVICE; skipping cleanup." >&2
+            continue
+          fi
 
+          OLD_VERSIONS=$$(printf '%s\n' "$$ALL_STOPPED" | tail -n +4)
           if [ -n "$$OLD_VERSIONS" ]; then
-            gcloud app versions delete --service="$$SERVICE" $$OLD_VERSIONS --quiet
+            # shellcheck disable=SC2086
+            gcloud app versions delete --service="$$SERVICE" $$OLD_VERSIONS --quiet \
+              || echo "WARNING: failed to delete old versions for $$SERVICE (non-fatal)." >&2
           else
             echo "Cleanup skipped for $$SERVICE: no versions beyond the safety buffer."
           fi
         done
+    waitFor: ['promote-traffic']
+    timeout: '180s'
 
 timeout: '1800s'
 options:
   logging: CLOUD_LOGGING_ONLY
-
-substitutions:
-  _SERVICE_NAME: default

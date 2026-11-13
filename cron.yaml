@@ -31,17 +31,17 @@
 cron:
 - description: portail — réconciliation des soumissions (spec L1 §8.4)
   url: /taches/portail/reconciliation
-  schedule: every 15 minutes from 09:00 to 17:00
+  schedule: every 15 minutes from 09:15 to 17:15
   timezone: America/Toronto
   target: default
 - description: bookings — synchronisation « Bookings with me » (spec L2 §4.1)
   url: /taches/bookings/sync
-  schedule: every 10 minutes from 09:00 to 17:00
+  schedule: every 15 minutes from 09:05 to 17:05
   timezone: America/Toronto
   target: default
 - description: outlook — miroir des audiences vers le calendrier du juriste
   url: /taches/outlook/sync
-  schedule: every 10 minutes from 09:00 to 17:00
+  schedule: every 15 minutes from 09:10 to 17:10
   timezone: America/Toronto
   target: default
 # Livrée avec FACTURES_RETARD_ACTIF à "false" (app.yaml) : tant qu'il l'est,

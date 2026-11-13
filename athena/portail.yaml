@@ -12,6 +12,10 @@ automatic_scaling:
   min_instances: 0
   max_instances: 2
   target_cpu_utilization: 0.65
+  # Option 2A: match gunicorn --threads 5 and queue bursts before scaling.
+  max_concurrent_requests: 5
+  min_pending_latency: 5.0s
+  max_pending_latency: 10.0s
 
 # Compte de service à moindre privilège (spec §3) : objectCreator sur le
 # bucket de quarantaine, datastore.viewer conditionné à la base « portail »,
@@ -33,7 +37,7 @@ service_account: portail-svc@athena-pallas.iam.gserviceaccount.com
 # ONE worker × 8 threads since 2026-11-12, as the default service (see
 # app.yaml): the same 8 concurrent requests, one copy to start, half the
 # memory.
-entrypoint: gunicorn -b :$PORT --workers 1 --threads 8 --timeout 60 --graceful-timeout 30 client.wsgi:app
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 5 --timeout 60 --graceful-timeout 30 client.wsgi:app
 
 env_variables:
   ENV: "production"

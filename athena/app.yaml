@@ -20,6 +20,14 @@ automatic_scaling:
   # (Finances, a PDF) has finished — a saving, never a speed-up. Measure
   # it by the request log's pendingTime and instance count.
   target_cpu_utilization: 0.9
+  # Option 2A: keep concurrency to 5 (matches gunicorn --threads 5) and hold
+  # bursts in App Engine's pending queue for 5–10s instead of spinning up a
+  # second instance immediately. max_instances: 2 remains as an emergency cap.
+  max_concurrent_requests: 5
+  min_pending_latency: 5.0s
+  max_pending_latency: 10.0s
+
+service_account: athena-pallas@appspot.gserviceaccount.com
 
 # Ask App Engine to send /_ah/warmup to an instance it starts AHEAD of
 # traffic — a deploy, a second instance (handled in main.py: both
@@ -39,7 +47,7 @@ inbound_services:
 # badge, bearer tokens, App Check keys) shared by all requests; the
 # warmup reaches the only worker. If that process dies, the requests in
 # flight fail and gunicorn starts it again.
-entrypoint: gunicorn -b :$PORT --workers 1 --threads 8 --timeout 60 --graceful-timeout 30 main:app
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 5 --timeout 60 --graceful-timeout 30 main:app
 
 env_variables:
   ENV: "production"
@@ -222,6 +230,7 @@ handlers:
       X-Frame-Options: DENY
       Referrer-Policy: strict-origin-when-cross-origin
       Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+      Content-Security-Policy: "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 
   - url: /terms
     static_files: static/legal/terms.html
@@ -233,6 +242,7 @@ handlers:
       X-Frame-Options: DENY
       Referrer-Policy: strict-origin-when-cross-origin
       Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+      Content-Security-Policy: "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 
   # Vendored fonts need an explicit MIME type: .woff2 is absent from the
   # runtime's default map (it would serve as application/octet-stream) and

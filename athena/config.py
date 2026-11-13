@@ -6,6 +6,7 @@ Google Cloud Secret Manager. Locally, they are read from environment variables
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 
@@ -53,6 +54,37 @@ def _secret(secret_id: str, env_var: str, required: bool = True) -> str:
             f"Set it in your local .env file or shell environment."
         )
     return value
+
+
+_STARTUP_SECRET_IDS = (
+    "flask-secret-key",
+    "firebase-api-key",
+    "dav-password-hash",
+    "cf-origin-secret",
+    "graph-client-secret",
+)
+
+
+def _prefetch_secrets() -> None:
+    """Warm Secret Manager entries concurrently on cold start in production."""
+    if not _is_production():
+        return
+    try:
+        # Build and cache the single shared gRPC client before fanning out.
+        _secret_manager_client()
+    except Exception:
+        return
+    with ThreadPoolExecutor(max_workers=len(_STARTUP_SECRET_IDS)) as pool:
+        futures = [pool.submit(_from_secret_manager, sid) for sid in _STARTUP_SECRET_IDS]
+        for fut in futures:
+            try:
+                fut.result()
+            except Exception:
+                # Required/optional handling remains in _secret() inside Config.
+                pass
+
+
+_prefetch_secrets()
 
 
 class Config:
