@@ -86,7 +86,8 @@ order membership and number, your jurisdiction, and how you intend to use it.
 |---|---|
 | **[DEPLOYMENT.md](DEPLOYMENT.md)** | Standing up your own instance, end to end (once permitted) |
 | **[SECURITY.md](SECURITY.md)** | Security posture, secret management, vulnerability disclosure |
-| **[CLAUDE.md](CLAUDE.md)** | Core design principles and specifications |
+| **[ACCOUNTING.md](ACCOUNTING.md)** | Billing, taxes, trust/admin registers, write-offs, financial statements |
+| **[CLAUDE.md](CLAUDE.md)** / **[GEMINI.md](GEMINI.md)** | Core design principles and specifications (byte-identical) |
 | **[athena/OBSERVABILITY.md](athena/OBSERVABILITY.md)** | Logging events + tracing conventions |
 
 Quick config sanity check for a redeployment: `cd athena && python -m scripts.check_config`.

@@ -1707,6 +1707,32 @@ def test_the_provisioning_script_is_DOCUMENTED_where_someone_will_find_it():
     assert "provision.py" in claude, "CLAUDE.md ne mentionne pas le script"
 
 
+def test_gemini_md_is_identical_to_claude_md_and_accounting_md_is_linked():
+    """GEMINI.md doit rester identique octet pour octet à CLAUDE.md, et
+    ACCOUNTING.md doit exister et y être référencé."""
+    claude_path = os.path.join(_ROOT, "CLAUDE.md")
+    gemini_path = os.path.join(_ROOT, "GEMINI.md")
+    accounting_path = os.path.join(_ROOT, "ACCOUNTING.md")
+    assert os.path.isfile(claude_path), "CLAUDE.md absent"
+    assert os.path.isfile(gemini_path), "GEMINI.md absent"
+    assert os.path.isfile(accounting_path), "ACCOUNTING.md absent"
+    claude_bytes = io.open(claude_path, "rb").read()
+    gemini_bytes = io.open(gemini_path, "rb").read()
+    assert claude_bytes == gemini_bytes, (
+        "GEMINI.md et CLAUDE.md ont divergé — ils doivent rester identiques"
+    )
+    assert len(claude_bytes) <= 23000, (
+        f"CLAUDE.md/GEMINI.md pèse {len(claude_bytes)} octets (> 23 000) "
+        "— risque de troncature au plafond de 24 Ko des règles d'agent"
+    )
+    claude_text = claude_bytes.decode("utf-8")
+    assert "GEMINI.md" in claude_text, "CLAUDE.md ne mentionne pas GEMINI.md"
+    assert "ACCOUNTING.md" in claude_text, "CLAUDE.md ne mentionne pas ACCOUNTING.md"
+    assert io.open(accounting_path, encoding="utf-8").read().strip(), (
+        "ACCOUNTING.md est vide"
+    )
+
+
 # ── L'ÉVENTAIL du hachage CSS, et l'ordre bordure-puis-secret ────────────
 #
 # Deux défauts que j'ai moi-même laissés dans ce document, corrigés le
