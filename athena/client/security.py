@@ -234,12 +234,10 @@ def enforce_edge() -> Optional[Response]:
 
 
 def init_portail_security(app: Flask) -> None:
-    # The edge before App Check, so a request the edge refuses reaches no
-    # check registered here. Not the first hook of the app: flask-wtf's CSRF
-    # check and the rate limiter, registered earlier by create_portail_app,
-    # run before it — a token-less POST to a routed view is a 400 there, on
-    # any host, and the edge never sees it; flask-wtf skips a request no rule
-    # matched, which does reach the edge.
+    # Registered BEFORE csrf.init_app / limiter.init_app in create_portail_app
+    # so enforce_edge (host + X-Origin-Auth) is hook #0: direct-to-origin
+    # requests are rejected with 403/404 before Flask-Limiter touches buckets
+    # keyed on spoofable IP headers or CSRF runs, and before verify_app_check.
     app.before_request(enforce_edge)
     app.before_request(verify_app_check)
     app.after_request(add_security_headers)

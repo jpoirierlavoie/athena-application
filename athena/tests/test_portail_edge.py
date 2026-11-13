@@ -238,6 +238,11 @@ def test_the_factory_arms_the_edge_and_runs_it_first(monkeypatch):
             app = client_app.create_portail_app()
     assert app.config["CF_ORIGIN_SECRET"] == SECRET
     chain = app.before_request_funcs[None]
+    limiter_idx = next(
+        i for i, fn in enumerate(chain)
+        if getattr(fn, "__name__", "") == "_check_request_limit"
+    )
+    assert chain.index(psec.enforce_edge) < limiter_idx
     assert chain.index(psec.enforce_edge) < chain.index(psec.verify_app_check)
     client = app.test_client()
     assert client.get("/sante").status_code == 403

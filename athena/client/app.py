@@ -116,9 +116,9 @@ def create_portail_app() -> Flask:
 
     _init_firebase(app)
 
+    init_portail_security(app)
     csrf.init_app(app)
     limiter.init_app(app)
-    init_portail_security(app)
 
     from client import routes  # noqa: F401 — routes attach to portail_bp
 

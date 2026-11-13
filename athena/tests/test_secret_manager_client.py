@@ -95,3 +95,39 @@ def test_prefetch_secrets_warms_all_startup_secrets_through_one_client(clients, 
         _fresh("config")
     assert len(built) == 1
     assert values == {sid: _path(sid) for sid in module._STARTUP_SECRET_IDS}
+
+
+def test_cf_origin_secret_fails_closed_in_production_and_stays_optional_in_dev(
+    clients, monkeypatch
+):
+    module = _fresh("config")
+    monkeypatch.setenv("ENV", "development")
+    monkeypatch.delenv("CF_ORIGIN_SECRET", raising=False)
+    assert (
+        module._secret(
+            "cf-origin-secret",
+            "CF_ORIGIN_SECRET",
+            required=module._is_production(),
+        )
+        == ""
+    )
+
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setattr(module, "_from_secret_manager", lambda _sid: "")
+    with pytest.raises(RuntimeError, match="Empty required secret"):
+        module._secret(
+            "cf-origin-secret",
+            "CF_ORIGIN_SECRET",
+            required=module._is_production(),
+        )
+
+    def _boom(_sid):
+        raise RuntimeError("secret manager unavailable")
+
+    monkeypatch.setattr(module, "_from_secret_manager", _boom)
+    with pytest.raises(RuntimeError, match="secret manager unavailable"):
+        module._secret(
+            "cf-origin-secret",
+            "CF_ORIGIN_SECRET",
+            required=module._is_production(),
+        )

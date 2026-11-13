@@ -12,7 +12,12 @@ from flask import (
     url_for,
 )
 
-from auth import login_required, verify_and_create_session
+from auth import (
+    is_session_active,
+    login_required,
+    revoke_current_session,
+    verify_and_create_session,
+)
 from security import limiter, safe_internal_redirect
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
@@ -21,8 +26,10 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 @auth_bp.route("/login")
 def login() -> str:
     """Render the login page (or redirect if already authenticated)."""
-    if session.get("user_id"):
+    if is_session_active():
         return redirect(url_for("dashboard.index"))
+    if session.get("user_id"):
+        session.clear()
 
     return render_template("auth/login.html")
 
@@ -84,6 +91,7 @@ def logout() -> str:
     """Clear the session and redirect to login."""
     from utils.logging_setup import log_auth_event
 
+    revoke_current_session()
     session.clear()
     log_auth_event("logout", "success")
     return redirect(url_for("auth.login"))

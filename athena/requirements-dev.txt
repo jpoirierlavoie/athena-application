@@ -2,3 +2,5 @@
 # (.gcloudignore excludes nothing here because this file is only consumed by
 # cloudbuild.yaml's test step and local dev).
 pytest==9.2.0
+pytest-xdist==3.8.0
+execnet==2.1.2

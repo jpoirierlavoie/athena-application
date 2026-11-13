@@ -17,7 +17,7 @@ steps:
         fi
         pip install --require-hashes --no-deps -r athena/requirements.txt
         pip install -r athena/requirements-dev.txt
-        cd athena && python -m pytest tests/ -q
+        cd athena && python -m pytest tests/ -n auto --dist loadfile -q
         # The app's own bytecode, once the tests pass — the one exception
         # to « no deploy-time build » (CLAUDE.md). App Engine's disk is
         # read-only, so without it every worker recompiled the source at
@@ -38,15 +38,15 @@ steps:
     waitFor: ['test-suite']
     timeout: '600s'
 
-  # Step 2b: Stage the « portail » service WITH --no-promote.
-  # Runs after stage-default so a first-ever project deploy still creates the
-  # default service first, while normal builds can also parallelize if desired.
+  # Step 2b: Stage the « portail » service WITH --no-promote in parallel
+  # with stage-default (DEPLOYMENT.md §8 creates the default service first
+  # on a brand-new project).
   - id: 'stage-portail'
     name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'gcloud'
     args: ['app', 'deploy', 'portail.yaml', '--quiet', '--no-promote', '--version=$SHORT_SHA']
     dir: 'athena'
-    waitFor: ['stage-default']
+    waitFor: ['test-suite']
     timeout: '600s'
 
   # Step 2c: Cut live traffic over on BOTH services only after both builds succeeded.
@@ -112,4 +112,5 @@ steps:
 
 timeout: '1800s'
 options:
+  machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY

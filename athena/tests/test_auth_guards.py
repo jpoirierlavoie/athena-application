@@ -73,3 +73,58 @@ def test_normal_token_still_creates_session():
 def test_absent_or_false_claim_passes():
     ok, _ = _attempt(_decoded(portail=False))
     assert ok is True
+
+
+def test_replayed_session_cookie_is_refused_after_logout():
+    from flask import Blueprint, redirect, session
+
+    from routes.auth_routes import auth_bp
+
+    app = _app()
+    app.config["WTF_CSRF_ENABLED"] = False
+    dash_bp = Blueprint("dashboard", __name__)
+
+    @dash_bp.route("/")
+    def index():
+        return "dashboard"
+
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(dash_bp)
+
+    @app.route("/establish")
+    def establish():
+        with mock.patch.object(
+            auth_module.firebase_auth, "verify_id_token", return_value=_decoded(uid="replay-u1")
+        ):
+            ok, msg = auth_module.verify_and_create_session("token")
+            assert ok, msg
+        return "established"
+
+    @app.route("/protected")
+    @auth_module.login_required
+    def protected():
+        return "secret-data"
+
+    client = app.test_client()
+    assert client.get("/establish").status_code == 200
+    assert client.get("/protected").status_code == 200
+
+    # Capture the signed Flask session cookie before logging out.
+    captured_cookie = client.get_cookie("session")
+    assert captured_cookie is not None
+
+    with mock.patch("utils.logging_setup.log_auth_event"):
+        resp = client.post("/auth/logout")
+        assert resp.status_code == 302
+
+    # Replay the captured cookie on a brand-new client: @login_required must
+    # reject it instead of honouring the unexpired stateless cookie.
+    attacker = app.test_client()
+    attacker.set_cookie("session", captured_cookie.value)
+    replayed = attacker.get("/protected")
+    assert replayed.status_code == 302
+    assert "/auth/login" in replayed.headers["Location"]
+
+    # Signing in again mints a fresh login_time above the logout cutoff.
+    assert client.get("/establish").status_code == 200
+    assert client.get("/protected").status_code == 200

@@ -332,10 +332,11 @@ def create_app() -> Flask:
         return json.dumps(data), 200, {"Content-Type": "application/json"}
 
     # ── CSP violation reporting (referenced by report-uri in security.py) ──
-    from security import csrf as _csrf
+    from security import csrf as _csrf, limiter as _limiter
 
     @app.route("/csp-report", methods=["POST"])
     @_csrf.exempt
+    @_limiter.limit("30 per minute")
     def csp_report():  # type: ignore[no-untyped-def]
         """Collect browser CSP violation reports (report-only policy)."""
         try:

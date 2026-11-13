@@ -786,3 +786,94 @@ def test_both_guards_carry_EXACTLY_event_and_reason(caplog):
         rendu = enregistrement.getMessage()
         assert "Tremblay" not in rendu
         assert "203.0.113.9" not in rendu
+
+
+def test_origin_secret_runs_before_rate_limiter_and_csrf():
+    app = _make_app(
+        CF_ORIGIN_SECRET="edge-secret-token",
+        RATELIMIT_ENABLED=True,
+        WTF_CSRF_ENABLED=True,
+    )
+
+    @app.route("/limited-get")
+    @security.limiter.limit("1 per minute")
+    def limited_get():
+        return {"ok": True}
+
+    @app.route("/csrf-post", methods=["POST"])
+    def csrf_post():
+        return {"ok": True}
+
+    client = app.test_client()
+
+    # Unauthenticated direct-to-origin floods with spoofed CF-Connecting-IP
+    # must fail at _enforce_origin_secret (403) before CSRF (400) or Limiter (429).
+    for _ in range(5):
+        r = client.get("/limited-get", headers={"CF-Connecting-IP": "198.51.100.77"})
+        assert r.status_code == 403
+
+    r_post = client.post("/csrf-post", headers={"CF-Connecting-IP": "198.51.100.77"})
+    assert r_post.status_code == 403
+
+    # The spoofed IP's rate-limit bucket was NOT poisoned by the rejected floods.
+    ok_resp = client.get(
+        "/limited-get",
+        headers={
+            "CF-Connecting-IP": "198.51.100.77",
+            "X-Origin-Auth": "edge-secret-token",
+        },
+    )
+    assert ok_resp.status_code == 200
+
+    # A second authenticated request hits the 1/min limit, proving limiter works.
+    throttled = client.get(
+        "/limited-get",
+        headers={
+            "CF-Connecting-IP": "198.51.100.77",
+            "X-Origin-Auth": "edge-secret-token",
+        },
+    )
+    assert throttled.status_code == 429
+
+    # Authenticated POST without CSRF token still fails CSRF (400).
+    csrf_fail = client.post(
+        "/csrf-post",
+        headers={"X-Origin-Auth": "edge-secret-token"},
+    )
+    assert csrf_fail.status_code == 400
+
+
+def test_csp_report_is_rate_limited():
+    import textwrap
+    from tests._real_app_probe import run_probe
+
+    probe_env = {**os.environ}
+    for name in ("ENV", "CF_ORIGIN_SECRET", "RECAPTCHA_ENTERPRISE_SITE_KEY"):
+        probe_env.pop(name, None)
+    probe_env.update({
+        "SECRET_KEY": "test-secret",
+        "FIREBASE_PROJECT_ID": "test-project",
+        "FIREBASE_STORAGE_BUCKET": "test-bucket",
+        "AUTHORIZED_USER_EMAIL": "test@example.com",
+    })
+    probe = textwrap.dedent("""
+        import json
+        import main
+        import security
+
+        main.app.config["CF_ORIGIN_SECRET"] = ""
+        security.limiter.enabled = True
+        client = main.app.test_client()
+        statuses = [
+            client.post(
+                "/csp-report",
+                json={"csp-report": {"blocked-uri": "inline"}},
+                headers={"CF-Connecting-IP": "198.51.100.99"},
+            ).status_code
+            for _ in range(31)
+        ]
+        print("@@RATE@@" + json.dumps({"statuses": statuses}))
+    """)
+    statuses = run_probe(probe, "@@RATE@@", env=probe_env, timeout=30)["statuses"]
+    assert statuses[:30] == [204] * 30
+    assert statuses[30] == 429

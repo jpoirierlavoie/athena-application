@@ -595,11 +595,14 @@ def _verify_app_check() -> Optional[Response]:
 # ---------------------------------------------------------------------------
 def init_security(app: Flask) -> None:
     """Register all security extensions and hooks on the Flask app."""
-    csrf.init_app(app)
-    limiter.init_app(app)
+    # Register edge guards BEFORE csrf/limiter so direct-to-origin requests
+    # missing X-Origin-Auth or exceeding size/App Check are rejected with 403/413
+    # before Flask-Limiter consumes buckets keyed on spoofable CF-Connecting-IP.
     app.before_request(_enforce_origin_secret)
     app.before_request(_enforce_request_size)
     app.before_request(_verify_app_check)
+    csrf.init_app(app)
+    limiter.init_app(app)
     app.after_request(_add_security_headers)
 
     # Expose the per-request CSP nonce to templates so every inline <script>

@@ -51,3 +51,11 @@ def test_cloudbuild_substitutes_short_sha_rather_than_escaping_it_to_bash():
     text = (REPO / "cloudbuild.yaml").read_text(encoding="utf-8")
     assert "$$SHORT_SHA" not in text
     assert "$SHORT_SHA" in text
+
+
+def test_cloudbuild_parallelizes_staging_and_tests():
+    text = (REPO / "cloudbuild.yaml").read_text(encoding="utf-8")
+    assert "-n auto --dist loadfile" in text
+    assert "machineType: 'E2_HIGHCPU_8'" in text
+    assert text.count("waitFor: ['test-suite']") == 2
+    assert "waitFor: ['stage-default']" not in text
