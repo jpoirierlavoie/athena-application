@@ -78,11 +78,24 @@ SENSITIVE_KEYS: set[str] = {
     "dav_password_hash",
     "csrf_token",
     "firebase_token",
-    # Nothing emits this key today. It is a BACKSTOP: matching below is
-    # exact whole-key membership, so `secret` is dropped while `secret_value`
-    # would not be — and a secret-writing surface is exactly where a future
-    # hand would reach for that name.
     "secret_value",
+    # Credentials & secrets defense-in-depth:
+    "client_secret",
+    "cf_origin_secret",
+    "origin_secret",
+    "graph_client_secret",
+    "flask_secret_key",
+    "portail_secret_key",
+    "code_verifier",
+    "code_challenge",
+    "upload_url",
+    "appcheck_debug_token",
+    "debug_token",
+    "app_check_token",
+    "verification_code",
+    "signature",
+    "credential",
+    "credentials",
 }
 
 

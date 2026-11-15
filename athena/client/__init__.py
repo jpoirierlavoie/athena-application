@@ -25,7 +25,10 @@ def _client_ip() -> str:
     # Same trust model as the main service: CF-Connecting-IP is only
     # meaningful because the App Engine firewall admits Cloudflare ranges
     # (plus the internal task/cron address) — see security.py's twin.
-    return request.headers.get("CF-Connecting-IP") or get_remote_address()
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip.split(",")[0].strip()
+    return get_remote_address()
 
 
 # The portal's own limiter instance (in-memory, per instance). Only

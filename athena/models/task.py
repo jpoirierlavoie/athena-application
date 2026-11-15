@@ -13,6 +13,7 @@ import icalendar
 from google.api_core.exceptions import AlreadyExists
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
+from models.record_ids import is_addressable_id
 # The DAV create path's rule of what a client may choose — the resource name
 # and the UID — is shared with models/partie (CardDAV) and lives in
 # models/dav_ids. Re-exported under the names dav/dossier_collections and
@@ -37,6 +38,18 @@ logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "tasks"
+
+_PROTECTED_ON_UPDATE = frozenset({
+    "id",
+    "vtodo_uid",
+    "dav_href",
+    "created_at",
+    "created_via",
+    "updated_at",
+    "updated_via",
+    "mcp_updated_at",
+    "etag",
+})
 
 # Valid enum values
 VALID_PRIORITIES = ("haute", "normale", "basse")
@@ -253,6 +266,8 @@ def get_task_strict(task_id: str) -> Optional[dict]:
     there on a transient read error, where ``create()`` refused it with a
     412 instead of the 503 a client retries.
     """
+    if not is_addressable_id(task_id):
+        return None
     doc = db.collection(COLLECTION).document(task_id).get()
     if doc.exists:
         return doc.to_dict()
@@ -261,6 +276,8 @@ def get_task_strict(task_id: str) -> Optional[dict]:
 
 def get_task(task_id: str) -> Optional[dict]:
     """Fetch a single task by ID (fail-open: ``None`` on a read error)."""
+    if not is_addressable_id(task_id):
+        return None
     try:
         return get_task_strict(task_id)
     except Exception as exc:
@@ -572,7 +589,11 @@ def update_task(
         if refusal:
             return None, [refusal]
 
-    merged = {**existing, **_sanitize_data(data)}
+    clean_data = {
+        key: value for key, value in _sanitize_data(data).items()
+        if key not in _PROTECTED_ON_UPDATE
+    }
+    merged = {**existing, **clean_data}
     phases.apply_sous_phase_default(merged)
 
     # Phase O coherence repair: a caller that supplies a phase WITHOUT a

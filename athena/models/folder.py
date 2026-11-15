@@ -61,6 +61,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
 from models.document import GENERATED_FOLDER_NAME, PORTAL_FOLDER_NAME
+from models.record_ids import is_addressable_id
 from security import sanitize
 from utils.logging_setup import log_dossier_event, log_unexpected, sanitize_log_value
 
@@ -1238,6 +1239,8 @@ def _log_tree_events(
 
 def get_folder(dossier_id: str, folder_id: str) -> Optional[dict]:
     """Fetch a single folder by ID, verifying it belongs to the dossier."""
+    if not is_addressable_id(dossier_id) or not is_addressable_id(folder_id):
+        return None
     try:
         doc = db.collection(COLLECTION).document(folder_id).get()
         if doc.exists:

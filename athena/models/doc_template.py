@@ -74,6 +74,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from werkzeug.utils import secure_filename
 
 from models import concurrency, db, provenance
+from models.document import build_attachment_disposition, sign_blob_url
+from models.record_ids import is_addressable_id
 from security import sanitize
 from utils import storage_identity
 from utils.docx_fill import validate_template
@@ -874,12 +876,17 @@ def get_template(template_id: str, *, strict: bool = False) -> Optional[dict]:
     failure instead — for a caller that must never report « this template
     does not exist » over an outage (the connector's ``list_templates``).
     """
+    if not is_addressable_id(template_id):
+        return None
     try:
         doc = db.collection(COLLECTION).document(template_id).get()
         return doc.to_dict() if doc.exists else None
     except Exception as exc:
         if strict:
-            log_unexpected("template read failed", template_id=template_id)
+            log_unexpected(
+                "template read failed",
+                template_id=sanitize_log_value(template_id),
+            )
             raise TemplateReadError(template_id) from exc
         logger.warning(
             "get_template failed for %s: %s",
@@ -893,7 +900,7 @@ def _read_template_strict(template_id: str) -> Optional[dict]:
 
     For the writers: a read error must never read as « introuvable ».
     """
-    if not template_id:
+    if not is_addressable_id(template_id):
         return None
     doc = db.collection(COLLECTION).document(template_id).get()
     return (doc.to_dict() or {}) if doc.exists else None
@@ -1638,22 +1645,13 @@ def _signed_download_url(
     try:
         bucket = storage.bucket()
         blob = bucket.blob(storage_path)
-
-        # On App Engine Standard, ADC lacks a local private key — sign via
-        # the IAM signBlob API (same approach as models/document.py).
-        signing_creds, _ = google.auth.default()
-        signing_creds.refresh(auth_requests.Request())
-
-        return blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(minutes=expires_in_minutes),
-            method="GET",
-            query_parameters={
-                "response-content-disposition": f'attachment; filename="{filename}"',
+        return sign_blob_url(
+            blob,
+            {
+                "response-content-disposition": build_attachment_disposition(filename),
                 "response-content-type": DOCX_MIME,
             },
-            service_account_email=signing_creds.service_account_email,
-            access_token=signing_creds.token,
+            expiry_minutes=expires_in_minutes,
         )
     except Exception:
         return None

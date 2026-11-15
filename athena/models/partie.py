@@ -786,6 +786,8 @@ def get_parties_bulk(partie_ids: list[str]) -> dict[str, dict]:
 
 def get_partie(partie_id: str) -> Optional[dict]:
     """Fetch a single partie by ID."""
+    if not is_addressable_id(partie_id):
+        return None
     try:
         doc = db.collection(COLLECTION).document(partie_id).get()
         if doc.exists:
@@ -805,6 +807,8 @@ def get_partie_strict(partie_id: str) -> Optional[dict]:
     exists. Same shape as ``get_partie`` (mandataires and a retired
     compliance status migrated); the
     ``dossier.get_dossier_strict`` precedent."""
+    if not is_addressable_id(partie_id):
+        return None
     doc = db.collection(COLLECTION).document(partie_id).get()
     if not doc.exists:
         return None
@@ -1100,7 +1104,11 @@ def _update_partie(
 
     # Identity is the model's (Rules 6 and 11): a vCard PUT carries its UID
     # and a caller may echo an id — neither ever replaces the stored one.
-    for key in ("id", "vcard_uid", "dav_href"):
+    for key in (
+        "id", "vcard_uid", "dav_href", "legacy_ref",
+        "created_at", "created_via", "updated_at", "updated_via",
+        "mcp_updated_at", "etag",
+    ):
         data.pop(key, None)
     data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}

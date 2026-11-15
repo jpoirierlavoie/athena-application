@@ -24,12 +24,24 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, dav_ids, db, provenance
 from models import revision as revision_model
+from models.record_ids import is_addressable_id
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
 COLLECTION = "notes"
+
+_PROTECTED_ON_UPDATE = frozenset({
+    "id",
+    "vjournal_uid",
+    "created_at",
+    "created_via",
+    "updated_at",
+    "updated_via",
+    "mcp_updated_at",
+    "etag",
+})
 
 VALID_CATEGORIES = (
     "rencontre",
@@ -253,6 +265,8 @@ def get_note_strict(note_id: str) -> Optional[dict]:
     create branch: :func:`get_note`'s fail-open ``None`` would route a
     phone EDIT there on a transient read error.
     """
+    if not is_addressable_id(note_id):
+        return None
     doc = db.collection(COLLECTION).document(note_id).get()
     if doc.exists:
         return _migrate_category(doc.to_dict())
@@ -261,6 +275,8 @@ def get_note_strict(note_id: str) -> Optional[dict]:
 
 def get_note(note_id: str) -> Optional[dict]:
     """Fetch a single note by ID (fail-open: ``None`` on a read error)."""
+    if not is_addressable_id(note_id):
+        return None
     try:
         return get_note_strict(note_id)
     except Exception as exc:
@@ -538,6 +554,8 @@ def update_note(
             return None, [concurrency.STALE_ETAG_ERROR]
 
         changes = dict(data)
+        for k in _PROTECTED_ON_UPDATE:
+            changes.pop(k, None)
         changes.pop("is_analyse", None)
         if existing.get("is_analyse"):
             changes.pop("dateless", None)

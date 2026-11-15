@@ -110,6 +110,7 @@ def test_lecture_indisponible_sur_session_donne_503(web, monkeypatch):
     with mock.patch("firebase_admin.auth.verify_id_token", return_value={
         "portail": True, "email_verified": True,
         "email": "client@exemple.com", "uid": "u1",
+        "auth_time": datetime.now(timezone.utc).timestamp(),
     }):
         r = _post_json(web, "/session", {"token": "t", "i": "inv1"})
     assert r.status_code == 503

@@ -433,36 +433,65 @@ class _SanitizingSpanExporter(SpanExporter):
         for span_obj in spans:
             try:
                 attrs = span_obj.attributes
-                if not attrs:
-                    continue
-                # ``ReadableSpan.attributes`` is an immutable mapping
-                # proxy at export time and the SDK exposes no public
-                # setter, so we rebuild the dict and replace the private
-                # ``_attributes`` slot on the readable snapshot.  We
-                # assign a *new* dict — never mutate the underlying
-                # BoundedAttributes shared with the live span.
-                sanitized = {}
-                for k, v in attrs.items():
+                if attrs:
+                    sanitized = {}
+                    for k, v in attrs.items():
+                        try:
+                            sanitized[k] = _sanitize_attribute_value(k, v)
+                        except Exception:
+                            # Fail closed for this attribute alone: the span's
+                            # others keep their scrub. Its key is a field name.
+                            sanitized[k] = _UNSANITIZABLE
+                            logger.error(
+                                "Span attribute sanitization FAILED for %r — "
+                                "replaced by a placeholder",
+                                k,
+                                exc_info=True,
+                            )
+                    span_obj._attributes = sanitized
+
+                # Sanitize status description (never ship raw exception text)
+                status = span_obj.status
+                if status and status.description:
                     try:
-                        sanitized[k] = _sanitize_attribute_value(k, v)
+                        from opentelemetry.trace import Status
+                        span_obj._status = Status(
+                            status.status_code,
+                            _scrub_string(status.description),
+                        )
                     except Exception:
-                        # Fail closed for this attribute alone: the span's
-                        # others keep their scrub. Its key is a field name.
-                        sanitized[k] = _UNSANITIZABLE
                         logger.error(
-                            "Span attribute sanitization FAILED for %r — "
-                            "replaced by a placeholder",
-                            k,
+                            "Span status sanitization FAILED",
                             exc_info=True,
                         )
-                span_obj._attributes = sanitized
+
+                # Sanitize span events (exception events, tracebacks, custom events)
+                events = getattr(span_obj, "events", None)
+                if events:
+                    try:
+                        from opentelemetry.sdk.trace import Event
+                        new_events = []
+                        for ev in events:
+                            ev_attrs = ev.attributes or {}
+                            sanitized_ev_attrs = {
+                                k: _sanitize_attribute_value(k, v)
+                                for k, v in ev_attrs.items()
+                                if not _is_sensitive_key(k)
+                            }
+                            new_events.append(
+                                Event(
+                                    name=ev.name,
+                                    attributes=sanitized_ev_attrs,
+                                    timestamp=ev.timestamp,
+                                )
+                            )
+                        span_obj._events = new_events
+                    except Exception:
+                        logger.error(
+                            "Span events sanitization FAILED",
+                            exc_info=True,
+                        )
             except Exception:  # never block the export
-                # ERROR, not debug: this except is the ONLY thing between a
-                # broken scrub and PII reaching Cloud Trace, and the root
-                # logger sits at INFO in production — a debug line was
-                # invisible exactly where it mattered. The export still
-                # proceeds (tracing must never break the app), so this log
-                # is the sole signal that spans are shipping unsanitized.
                 logger.error(
                     "Span attribute sanitization FAILED — spans may carry "
                     "unsanitized values",
@@ -621,7 +650,10 @@ def span(name: str, **attributes: Any) -> Iterator[Any]:
         except Exception as exc:
             s.record_exception(exc)
             s.set_status(
-                otel_trace.Status(otel_trace.StatusCode.ERROR, str(exc))
+                otel_trace.Status(
+                    otel_trace.StatusCode.ERROR,
+                    _scrub_string(str(exc)),
+                )
             )
             raise
 

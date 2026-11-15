@@ -13,6 +13,7 @@ from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, dav_ids, db, provenance
+from models.record_ids import is_addressable_id
 from security import sanitize
 from tz import MTL, mtl_to_utc, to_mtl
 from utils import deadlines
@@ -478,6 +479,8 @@ def get_hearing_strict(hearing_id: str) -> Optional[dict]:
     answered 412 — a refusal of a legitimate edit — rather than the 503 a
     client retries).
     """
+    if not is_addressable_id(hearing_id):
+        return None
     doc = db.collection(COLLECTION).document(hearing_id).get()
     if doc.exists:
         return _migrate_hearing(doc.to_dict())
@@ -486,6 +489,8 @@ def get_hearing_strict(hearing_id: str) -> Optional[dict]:
 
 def get_hearing(hearing_id: str) -> Optional[dict]:
     """Fetch a single hearing by ID (fail-open: ``None`` on a read error)."""
+    if not is_addressable_id(hearing_id):
+        return None
     try:
         return get_hearing_strict(hearing_id)
     except Exception as exc:

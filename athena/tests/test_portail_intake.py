@@ -158,6 +158,7 @@ def test_session_dirige_vers_la_page_du_type(web, monkeypatch):
     faux.verify_id_token.return_value = {
         "uid": "u1", "portail": True, "email_verified": True,
         "email": "client@exemple.com",
+        "auth_time": datetime.now(timezone.utc).timestamp(),
     }
     monkeypatch.setitem(sys.modules, "firebase_admin",
                         mock.Mock(auth=faux))

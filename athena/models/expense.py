@@ -9,6 +9,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, billing_move, concurrency, db, full_reads, provenance
+from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -244,6 +245,8 @@ def create_expenses_bulk(
 def get_expense_strict(expense_id: str) -> Optional[dict]:
     """One expense — a read failure PROPAGATES; ``None`` only when the store
     answered « no such document » (see ``time_entry.get_time_entry_strict``)."""
+    if not is_addressable_id(expense_id):
+        return None
     doc = db.collection(COLLECTION).document(expense_id).get()
     if doc.exists:
         return doc.to_dict()
@@ -252,6 +255,8 @@ def get_expense_strict(expense_id: str) -> Optional[dict]:
 
 def get_expense(expense_id: str) -> Optional[dict]:
     """Fetch a single expense by ID (fail-open: ``None`` on a read error)."""
+    if not is_addressable_id(expense_id):
+        return None
     try:
         return get_expense_strict(expense_id)
     except Exception as exc:

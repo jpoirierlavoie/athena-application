@@ -36,6 +36,10 @@ def _make_app(**config) -> Flask:
     def offline():
         return "<html><body>hors ligne</body></html>"
 
+    @app.route("/taches/test")
+    def taches_test():
+        return "<html><body>taches</body></html>"
+
     return app
 
 
@@ -443,16 +447,17 @@ def test_origin_secret_bypassed_only_for_internal_dispatch_headers():
     # that App Engine STRIPS from all external traffic — presence proves the
     # dispatch is internal, so the origin secret must not block it. The header
     # VALUE is not trusted here; each machine handler re-checks its own.
+    # Defense-in-depth: scoped to internal task paths (/taches/, /_ah/).
     app = _make_app(CF_ORIGIN_SECRET="s3cret")
     web = app.test_client()
     assert web.get(
-        "/", headers={"X-AppEngine-QueueName": "portail"}
+        "/taches/test", headers={"X-AppEngine-QueueName": "portail"}
     ).status_code == 200
     assert web.get(
-        "/", headers={"X-Appengine-Cron": "true"}
+        "/taches/test", headers={"X-Appengine-Cron": "true"}
     ).status_code == 200
     # A plain external request (no internal header) is still refused.
-    assert web.get("/").status_code == 403
+    assert web.get("/taches/test").status_code == 403
 
 
 def test_origin_secret_bypassed_for_appengine_warmup():

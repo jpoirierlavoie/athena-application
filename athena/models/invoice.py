@@ -1741,6 +1741,8 @@ def create_invoice(
 
 def get_invoice(invoice_id: str) -> Optional[dict]:
     """Fetch a single invoice by ID (without line items)."""
+    if not is_addressable_id(invoice_id):
+        return None
     try:
         doc = db.collection(COLLECTION).document(invoice_id).get()
         if doc.exists:
@@ -1759,7 +1761,7 @@ def get_invoice_strict(invoice_id: str) -> Optional[dict]:
     :func:`get_invoice` swallows an error into ``None``, and « facture
     inconnue » on a read blip is a refusal the lawyer cannot act on. The
     document id is authoritative for ``id``."""
-    if not isinstance(invoice_id, str) or not invoice_id or "/" in invoice_id:
+    if not is_addressable_id(invoice_id):
         return None
     snap = db.collection(COLLECTION).document(invoice_id).get()
     if not snap.exists:

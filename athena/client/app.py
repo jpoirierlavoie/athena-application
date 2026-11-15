@@ -199,6 +199,8 @@ def create_portail_app() -> Flask:
 
     @app.errorhandler(500)
     def _server_error(e):
+        from utils.logging_setup import log_unexpected
+        log_unexpected("portal unhandled exception", exc_info=True)
         return _api_or_page("Une erreur est survenue. Réessayez.", 500)
 
     return app

@@ -30,7 +30,10 @@ def _client_ip() -> str:
     The header is only trustworthy when traffic actually transits
     Cloudflare (enforce with an App Engine firewall / origin secret).
     """
-    return request.headers.get("CF-Connecting-IP") or get_remote_address()
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip.split(",")[0].strip()
+    return get_remote_address()
 
 
 limiter = Limiter(
@@ -339,7 +342,12 @@ def is_appengine_internal_request() -> bool:
     dispatched internally (source 0.1.0.2). This gates the origin-secret and
     appspot-host bypasses; AUTHENTICITY (which queue, cron yes/no) is
     re-checked inside the handlers themselves.
+
+    Defense-in-depth: only paths legitimately targeted by internal tasks
+    (/taches/) or App Engine infrastructure (/_ah/) may claim internal bypass.
     """
+    if not (request.path.startswith("/taches/") or request.path.startswith("/_ah/")):
+        return False
     return bool(
         request.headers.get("X-AppEngine-QueueName")
         or request.headers.get("X-Appengine-Cron")

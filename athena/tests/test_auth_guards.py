@@ -17,6 +17,7 @@ os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
 os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
+import pytest  # noqa: E402
 from flask import Flask  # noqa: E402
 
 import auth as auth_module  # noqa: E402
@@ -34,6 +35,7 @@ def _decoded(**over) -> dict:
     base = {
         "uid": "u1",
         "email": "test@example.com",
+        "email_verified": True,
         "auth_time": datetime.now(timezone.utc).timestamp(),
         "firebase": {},
     }
@@ -128,3 +130,126 @@ def test_replayed_session_cookie_is_refused_after_logout():
     # Signing in again mints a fresh login_time above the logout cutoff.
     assert client.get("/establish").status_code == 200
     assert client.get("/protected").status_code == 200
+
+
+def test_unverified_email_is_refused():
+    ok, message = _attempt(_decoded(email_verified=False))
+    assert ok is False
+    assert message == "Accès non autorisé."
+
+
+def test_missing_email_verified_claim_is_refused():
+    d = _decoded()
+    del d["email_verified"]
+    ok, message = _attempt(d)
+    assert ok is False
+    assert message == "Accès non autorisé."
+
+
+def test_mfa_none_claim_is_refused():
+    app = _app()
+    app.config["REQUIRE_MFA"] = True
+    with app.test_request_context("/auth/verify-token"):
+        with mock.patch.object(
+            auth_module.firebase_auth,
+            "verify_id_token",
+            return_value=_decoded(firebase=None),
+        ):
+            ok, msg = auth_module.verify_and_create_session("token")
+            assert ok is False
+            assert msg == "Vérification en deux étapes requise."
+
+
+def test_mfa_missing_second_factor_is_refused():
+    app = _app()
+    app.config["REQUIRE_MFA"] = True
+    with app.test_request_context("/auth/verify-token"):
+        with mock.patch.object(
+            auth_module.firebase_auth,
+            "verify_id_token",
+            return_value=_decoded(firebase={"sign_in_second_factor": None}),
+        ):
+            ok, msg = auth_module.verify_and_create_session("token")
+            assert ok is False
+            assert msg == "Vérification en deux étapes requise."
+
+
+def test_mfa_valid_second_factor_passes():
+    app = _app()
+    app.config["REQUIRE_MFA"] = True
+    with app.test_request_context("/auth/verify-token"):
+        with mock.patch.object(
+            auth_module.firebase_auth,
+            "verify_id_token",
+            return_value=_decoded(firebase={"sign_in_second_factor": "phone"}),
+        ):
+            ok, msg = auth_module.verify_and_create_session("token")
+            assert ok is True
+            assert msg == ""
+
+
+def test_naive_expires_at_in_session_does_not_raise():
+    app = _app()
+    with app.test_request_context("/"):
+        from flask import session
+        session["user_id"] = "u1"
+        session["expires_at"] = datetime(2030, 1, 1, 0, 0, 0)  # naive future
+        assert auth_module.is_session_active() is True
+
+        session["expires_at"] = datetime(2020, 1, 1, 0, 0, 0)  # naive past
+        assert auth_module.is_session_active() is False
+
+        session["expires_at"] = "invalid-type"
+        assert auth_module.is_session_active() is False
+
+
+@pytest.mark.parametrize("bad_auth_time", [
+    float("nan"),
+    float("inf"),
+    "bad",
+    True,
+    None,
+    0,
+])
+def test_malformed_or_non_finite_auth_time_is_refused(bad_auth_time):
+    claims = _decoded()
+    if bad_auth_time is None:
+        claims.pop("auth_time", None)
+    else:
+        claims["auth_time"] = bad_auth_time
+    ok, msg = _attempt(claims)
+    assert ok is False
+    assert msg == "Session expirée. Veuillez vous reconnecter."
+
+
+def test_revoke_current_session_with_naive_expires_at_does_not_raise():
+    app = _app()
+    with app.test_request_context("/"):
+        from flask import session
+        session["user_id"] = "naive-revoke-u1"
+        session["sid"] = "naive-sid"
+        session["login_time"] = datetime(2026, 1, 1, 0, 0, 0)
+        session["expires_at"] = datetime(2030, 1, 1, 0, 0, 0)
+        auth_module.revoke_current_session()
+        assert auth_module.is_session_active() is False
+
+    # A fresh session lookup must also succeed without TypeError during pruning.
+    with app.test_request_context("/"):
+        from flask import session
+        session["user_id"] = "other-u2"
+        session["expires_at"] = datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        assert auth_module.is_session_active() is True
+
+
+def test_is_appengine_internal_request_scoped_to_internal_paths():
+    from security import is_appengine_internal_request
+    app = _app()
+    with app.test_request_context("/auth/login", headers={"X-AppEngine-QueueName": "default"}):
+        assert is_appengine_internal_request() is False
+    with app.test_request_context("/dossiers", headers={"X-Appengine-Cron": "true"}):
+        assert is_appengine_internal_request() is False
+    with app.test_request_context("/taches/portail/evenement", headers={"X-AppEngine-QueueName": "portail"}):
+        assert is_appengine_internal_request() is True
+    with app.test_request_context("/_ah/warmup", headers={"X-AppEngine-QueueName": "default"}):
+        assert is_appengine_internal_request() is True
+

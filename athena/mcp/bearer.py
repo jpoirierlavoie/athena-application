@@ -84,11 +84,10 @@ _success_cache: dict[bytes, tuple[float, str]] = {}
 
 def _client_ip() -> str:
     """Return the client IP, preferring Cloudflare's CF-Connecting-IP."""
-    return (
-        request.headers.get("CF-Connecting-IP")
-        or request.remote_addr
-        or "unknown"
-    )
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip.split(",")[0].strip()
+    return request.remote_addr or "unknown"
 
 
 def _token_digest(token: str) -> bytes:

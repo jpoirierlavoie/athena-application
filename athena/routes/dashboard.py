@@ -255,14 +255,14 @@ def _get_quick_stats() -> dict:
     try:
         stats["open_dossiers"] = f_open.result()
     except Exception as exc:
-        logger.warning("dashboard: open dossiers stat failed: %s", exc)
+        logger.warning("dashboard: open dossiers stat failed: %s", type(exc).__name__)
 
     try:
         totals = f_unbilled.result()
         stats["unbilled_hours"] = totals.get("hours", 0.0)
         stats["unbilled_amount"] = totals.get("amount", 0)
     except Exception as exc:
-        logger.warning("dashboard: unbilled time stat failed: %s", exc)
+        logger.warning("dashboard: unbilled time stat failed: %s", type(exc).__name__)
 
     by_status: dict = {}
     stats["outstanding_unavailable"] = False
@@ -290,6 +290,6 @@ def _get_quick_stats() -> dict:
         stats["trust_total"] = snapshot.get("total_held_cents", 0)
         stats["trust_reconciliation_overdue"] = snapshot.get("reconciliation_overdue", False)
     except Exception as exc:
-        logger.warning("dashboard: trust stat failed: %s", exc)
+        logger.warning("dashboard: trust stat failed: %s", type(exc).__name__)
 
     return stats

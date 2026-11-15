@@ -11,6 +11,7 @@ Error messages are GENERIC on purpose (« Invitation invalide ou expirée »)
 
 import json
 import logging
+import math
 import re
 from datetime import date, datetime, timezone
 
@@ -25,7 +26,7 @@ from flask import (
 )
 from google.api_core.exceptions import PreconditionFailed
 
-from client import limiter, portail_bp
+from client import _client_ip, limiter, portail_bp
 from client.config import (
     CHUNK_MIB,
     INTAKE_BROUILLON_MAX,
@@ -49,6 +50,7 @@ from utils.validators import normalize_email
 logger = logging.getLogger(__name__)
 
 _MIB = 1024 * 1024
+_MAX_PORTAIL_TOKEN_AGE_SECONDS = 10 * 60
 # Réponse CONSTANTE de /api/renvoi — identique que l'invitation existe ou non,
 # soit active, ou ait épuisé son plafond de renvois (§6.3 anti-énumération).
 # Elle porte le canal de secours (D-5) précisément parce qu'elle ne peut PAS
@@ -329,6 +331,19 @@ def creer_session():
         return _session_refusee("claim_missing")
     if decoded.get("email_verified") is not True:
         return _session_refusee("email_unverified")
+
+    # Replay guard: only tokens from a recent authentication may open a session.
+    auth_time = decoded.get("auth_time")
+    now_ts = datetime.now(timezone.utc).timestamp()
+    if (
+        isinstance(auth_time, bool)
+        or not isinstance(auth_time, (int, float))
+        or not math.isfinite(float(auth_time))
+        or float(auth_time) <= 0
+        or now_ts - float(auth_time) > _MAX_PORTAIL_TOKEN_AGE_SECONDS
+        or float(auth_time) - now_ts > 60
+    ):
+        return _session_refusee("token_stale")
 
     try:
         invitation = invitations.lire(inv_id)
@@ -646,8 +661,7 @@ def api_finaliser():
         "submitted_at": datetime.now(timezone.utc).isoformat(),
         "client": {"email": session.get("email"), "uid": session.get("uid")},
         "http": {
-            "ip": request.headers.get("CF-Connecting-IP")
-            or request.remote_addr or "",
+            "ip": _client_ip() or "",
             "user_agent": (request.user_agent.string or "")[:300],
         },
         "files": propres,
@@ -948,8 +962,7 @@ def api_intake_finaliser():
         "submitted_at": datetime.now(timezone.utc).isoformat(),
         "client": {"email": session.get("email"), "uid": session.get("uid")},
         "http": {
-            "ip": request.headers.get("CF-Connecting-IP")
-            or request.remote_addr or "",
+            "ip": _client_ip() or "",
             "user_agent": (request.user_agent.string or "")[:300],
         },
         "donnees": {

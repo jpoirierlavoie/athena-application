@@ -165,8 +165,10 @@ def _is_appengine_internal_request() -> bool:
 
     App Engine STRIPS every ``X-AppEngine-*`` header from external traffic,
     Cloudflare's included, so their mere presence proves an internal
-    dispatch (source 0.1.0.2).
+    dispatch (source 0.1.0.2). Defense-in-depth: scoped to /taches/ and /_ah/.
     """
+    if not (request.path.startswith("/taches/") or request.path.startswith("/_ah/")):
+        return False
     return bool(
         request.headers.get("X-AppEngine-QueueName")
         or request.headers.get("X-Appengine-Cron")

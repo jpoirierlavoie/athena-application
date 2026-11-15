@@ -433,7 +433,8 @@ def _main_service_modules() -> list[pathlib.Path]:
     return sorted(
         p for p in _ATHENA.rglob("*.py")
         if p.relative_to(_ATHENA).parts[0] not in ("tests", "scripts",
-                                                   "client")
+                                                   "client", ".venv",
+                                                   ".pytest_cache")
     )
 
 

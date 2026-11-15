@@ -10,6 +10,7 @@ import icalendar
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, concurrency, db, provenance, reference
+from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import taxonomie
@@ -324,6 +325,23 @@ def _default_doc() -> dict:
         "vjournal_uid": "",
         "dav_href": "",
     }
+
+
+_PROTECTED_ON_UPDATE = frozenset({
+    "id",
+    "vjournal_uid",
+    "dav_href",
+    "legacy_ref",
+    "trust_balance",
+    "trust_balance_by_client",
+    "trust_cleared_by_client",
+    "created_at",
+    "created_via",
+    "updated_at",
+    "updated_via",
+    "mcp_updated_at",
+    "etag",
+})
 
 
 _SOMMAIRE_MAX_LENGTH = 5000
@@ -876,7 +894,11 @@ def _today_midnight_utc() -> datetime:
 
 def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
-    merged = {**_default_doc(), **_sanitize_data(data)}
+    clean_data = {
+        k: v for k, v in _sanitize_data(data).items()
+        if k not in _PROTECTED_ON_UPDATE
+    }
+    merged = {**_default_doc(), **clean_data}
     # A contact on BOTH sides of a new dossier is refused outright: there is
     # no legacy record to spare here (see _party_shape_errors).
     errors = _party_shape_errors(None, merged)
@@ -1100,6 +1122,8 @@ def _strip_removed_fields(doc: dict) -> dict:
 
 def get_dossier(dossier_id: str) -> Optional[dict]:
     """Fetch a single dossier by ID."""
+    if not is_addressable_id(dossier_id):
+        return None
     try:
         doc = db.collection(COLLECTION).document(dossier_id).get()
         if doc.exists:
@@ -1117,6 +1141,8 @@ def get_dossier_strict(dossier_id: str) -> Optional[dict]:
     template rename checked against its source dossier must tell « that
     dossier was deleted » from « the store could not answer »). Same shape
     as ``get_dossier``: migrations applied, removed fields purged."""
+    if not is_addressable_id(dossier_id):
+        return None
     doc = db.collection(COLLECTION).document(dossier_id).get()
     if not doc.exists:
         return None
@@ -1553,7 +1579,11 @@ def _update_dossier(
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR], 0
 
-    merged = {**existing, **_sanitize_data(data)}
+    clean_data = {
+        key: value for key, value in _sanitize_data(data).items()
+        if key not in _PROTECTED_ON_UPDATE
+    }
+    merged = {**existing, **clean_data}
     # The link rules first: each names what it refuses, where the generic
     # signification check below would only say « la partie signifiée doit
     # être une partie au dossier ».

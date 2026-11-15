@@ -58,6 +58,10 @@ def _edge_app(secret: str = "", *, env: str = "production",
     def warmup():
         return "warm"
 
+    @app.route("/taches/evenement")
+    def taches_evenement():
+        return "ok"
+
     return app
 
 
@@ -88,8 +92,8 @@ def test_a_wrong_or_non_ascii_header_is_a_403_never_a_500():
 def test_app_engine_paths_and_internal_dispatches_never_transit_cloudflare():
     app = _edge_app(SECRET)
     assert _get(app, "/_ah/warmup").status_code == 200
-    assert _get(app, **{"X-AppEngine-QueueName": "portail"}).status_code == 200
-    assert _get(app, **{"X-Appengine-Cron": "true"}).status_code == 200
+    assert _get(app, "/taches/evenement", **{"X-AppEngine-QueueName": "portail"}).status_code == 200
+    assert _get(app, "/taches/evenement", **{"X-Appengine-Cron": "true"}).status_code == 200
 
 
 def test_an_unarmed_portal_serves_and_says_so_once(caplog):
@@ -137,7 +141,7 @@ def test_app_engine_s_own_paths_pass_on_the_appspot_host():
     app = _edge_app(SECRET)
     host = "portail-dot-athena-pallas.nn.r.appspot.com"
     assert _get(app, "/_ah/warmup", host=host).status_code == 200
-    assert _get(app, host=host, **{"X-Appengine-Cron": "true"}).status_code == 200
+    assert _get(app, "/taches/evenement", host=host, **{"X-Appengine-Cron": "true"}).status_code == 200
 
 
 # ── Layer 3 says so: one `appspot_blocked`, ids only (2026-11-08) ────────
@@ -187,9 +191,9 @@ def test_the_service_names_are_the_deployment_inventory_s():
 
 @pytest.mark.parametrize("path, host, headers", [
     ("/_ah/warmup", "portail-dot-athena-pallas.nn.r.appspot.com", {}),
-    ("/sante", "portail-dot-athena-pallas.nn.r.appspot.com",
+    ("/taches/evenement", "portail-dot-athena-pallas.nn.r.appspot.com",
      {"X-AppEngine-QueueName": "portail"}),
-    ("/sante", "portail-dot-athena-pallas.nn.r.appspot.com",
+    ("/taches/evenement", "portail-dot-athena-pallas.nn.r.appspot.com",
      {"X-Appengine-Cron": "true"}),
     ("/sante", "portail.example.ca", {}),
 ])

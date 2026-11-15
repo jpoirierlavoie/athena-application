@@ -3462,6 +3462,8 @@ def attach_uploaded_receipt(
 
 
 def get_transaction(tx_id: str) -> Optional[dict]:
+    if not is_addressable_id(tx_id):
+        return None
     try:
         doc = db.collection(TRANSACTIONS_COLLECTION).document(tx_id).get()
         return doc.to_dict() if doc.exists else None
@@ -3475,7 +3477,7 @@ def get_transaction_strict(tx_id: str) -> Optional[dict]:
     answered « no such entry » (or the id cannot name one). For a caller
     that decides on the answer (``services/comptabilite``); the display
     reader above keeps failing open."""
-    if not isinstance(tx_id, str) or not tx_id or "/" in tx_id:
+    if not is_addressable_id(tx_id):
         return None
     snap = db.collection(TRANSACTIONS_COLLECTION).document(tx_id).get()
     return snap.to_dict() if snap.exists else None

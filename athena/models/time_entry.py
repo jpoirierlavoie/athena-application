@@ -9,6 +9,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, billing_move, concurrency, db, full_reads, provenance
+from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -289,6 +290,8 @@ def get_time_entry_strict(entry_id: str) -> Optional[dict]:
     answer (the connector's ``update_time_entry``, finitions robustness-3),
     whose « introuvable » on a blip would send it hunting for — or
     re-creating — an entry that exists."""
+    if not is_addressable_id(entry_id):
+        return None
     doc = db.collection(COLLECTION).document(entry_id).get()
     if doc.exists:
         return doc.to_dict()
@@ -297,6 +300,8 @@ def get_time_entry_strict(entry_id: str) -> Optional[dict]:
 
 def get_time_entry(entry_id: str) -> Optional[dict]:
     """Fetch a single time entry by ID (fail-open: ``None`` on a read error)."""
+    if not is_addressable_id(entry_id):
+        return None
     try:
         return get_time_entry_strict(entry_id)
     except Exception as exc:

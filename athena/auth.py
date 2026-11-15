@@ -2,10 +2,11 @@
 
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+import math
 import secrets
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from flask import (
     current_app,
@@ -32,32 +33,52 @@ def _prune_revocations_locked(now: datetime) -> None:
         _revoked_sessions.discard(entry)
 
 
+def _normalize_utc_dt(value: Any) -> Optional[datetime]:
+    """Return a timezone-aware UTC datetime, or None when *value* is invalid."""
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _is_fresh_auth_time(auth_time: Any, now_ts: float, max_age_seconds: int) -> bool:
+    """Return True when *auth_time* is a finite epoch within the freshness window."""
+    if isinstance(auth_time, bool) or not isinstance(auth_time, (int, float)):
+        return False
+    ts = float(auth_time)
+    if not math.isfinite(ts) or ts <= 0:
+        return False
+    return (now_ts - ts <= max_age_seconds) and (ts - now_ts <= 60)
+
+
 def is_session_active() -> bool:
     """Return True if the current Flask session exists, is unexpired, and wasn't revoked."""
     user_id = session.get("user_id")
-    expires_at = session.get("expires_at")
-    login_time = session.get("login_time")
+    expires_at = _normalize_utc_dt(session.get("expires_at"))
+    login_time = _normalize_utc_dt(session.get("login_time"))
     sid = session.get("sid")
     iat_ns = session.get("iat_ns")
 
-    if not user_id or not expires_at:
+    if not user_id or expires_at is None:
         return False
 
     now = datetime.now(timezone.utc)
     if now >= expires_at:
         return False
 
+    has_valid_iat_ns = isinstance(iat_ns, int) and not isinstance(iat_ns, bool)
     with _session_lock:
         _prune_revocations_locked(now)
         if sid and (sid, expires_at) in _revoked_sids:
             return False
         cutoff_ns = _min_session_iat_ns.get(user_id)
-        if cutoff_ns is not None and isinstance(iat_ns, int) and iat_ns <= cutoff_ns:
+        if cutoff_ns is not None and has_valid_iat_ns and iat_ns <= cutoff_ns:
             return False
         if (
             not sid
-            and not isinstance(iat_ns, int)
-            and isinstance(login_time, datetime)
+            and not has_valid_iat_ns
+            and login_time is not None
             and (user_id, login_time, expires_at) in _revoked_sessions
         ):
             return False
@@ -68,26 +89,27 @@ def is_session_active() -> bool:
 def revoke_current_session() -> None:
     """Invalidate the current session server-side so cookie replay fails after logout."""
     user_id = session.get("user_id")
-    login_time = session.get("login_time")
-    expires_at = session.get("expires_at")
+    login_time = _normalize_utc_dt(session.get("login_time"))
+    expires_at = _normalize_utc_dt(session.get("expires_at"))
     sid = session.get("sid")
     iat_ns = session.get("iat_ns")
 
-    if not user_id or not expires_at:
+    if not user_id or expires_at is None:
         return
 
+    has_valid_iat_ns = isinstance(iat_ns, int) and not isinstance(iat_ns, bool)
     now = datetime.now(timezone.utc)
     now_ns = time.time_ns()
     with _session_lock:
         _prune_revocations_locked(now)
         if sid:
             _revoked_sids.add((sid, expires_at))
-        if sid or isinstance(iat_ns, int):
-            floor_ns = max(now_ns, iat_ns if isinstance(iat_ns, int) else 0)
+        if sid or has_valid_iat_ns:
+            floor_ns = max(now_ns, iat_ns if has_valid_iat_ns else 0)
             existing_ns = _min_session_iat_ns.get(user_id, 0)
             if floor_ns > existing_ns:
                 _min_session_iat_ns[user_id] = floor_ns
-        elif isinstance(login_time, datetime):
+        elif login_time is not None:
             # Legacy pre-deploy session carrying login_time without sid/iat_ns.
             _revoked_sessions.add((user_id, login_time, expires_at))
 
@@ -166,19 +188,22 @@ def verify_and_create_session(id_token: str) -> tuple[bool, str]:
         log_auth_event("auth_failure", "failure", reason="unauthorized_email")
         return False, "Accès non autorisé."
 
+    if decoded.get("email_verified") is not True:
+        log_auth_event("auth_failure", "failure", reason="email_unverified")
+        return False, "Accès non autorisé."
+
     # Replay guard: only tokens from a recent interactive authentication may
     # establish a session (a captured ID token is otherwise valid ~1 h).
-    auth_time = decoded.get("auth_time", 0)
     now_ts = datetime.now(timezone.utc).timestamp()
-    if not auth_time or now_ts - float(auth_time) > _MAX_TOKEN_AGE_SECONDS:
+    if not _is_fresh_auth_time(decoded.get("auth_time"), now_ts, _MAX_TOKEN_AGE_SECONDS):
         log_auth_event("auth_failure", "failure", reason="token_stale")
         return False, "Session expirée. Veuillez vous reconnecter."
 
     # MFA strictness check: if REQUIRE_MFA is enabled, ensure the token
-    # was issued after MFA verification (contains sign_in_second_factor).
+    # was issued after MFA verification (contains a valid sign_in_second_factor).
     if current_app.config.get("REQUIRE_MFA", False):
-        firebase_claim = decoded.get("firebase", {})
-        if "sign_in_second_factor" not in firebase_claim:
+        firebase_claim = decoded.get("firebase") or {}
+        if not firebase_claim.get("sign_in_second_factor"):
             log_auth_event("auth_failure", "failure", reason="mfa_missing")
             return False, "Vérification en deux étapes requise."
 

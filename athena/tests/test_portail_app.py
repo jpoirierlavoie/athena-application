@@ -396,7 +396,8 @@ def test_finaliser_sans_batch_400(web, connecte):
 
 def _decoded(**over):
     base = {"uid": "u1", "email": "client@exemple.com",
-            "email_verified": True, "portail": True}
+            "email_verified": True, "portail": True,
+            "auth_time": datetime.now(timezone.utc).timestamp()}
     base.update(over)
     return base
 
@@ -416,6 +417,47 @@ def test_session_email_mismatch_refusee(web, monkeypatch):
                     return_value=_decoded(email="autre@exemple.com")):
         reponse = _post_json(web, "/session", {"token": "t", "i": "inv1"})
     assert reponse.status_code == 403
+
+
+def test_session_stale_token_refusee(web, monkeypatch):
+    monkeypatch.setattr(invitations, "lire", lambda i: _invitation())
+    with mock.patch("firebase_admin.auth.verify_id_token",
+                    return_value=_decoded(auth_time=datetime.now(timezone.utc).timestamp() - 700)):
+        reponse = _post_json(web, "/session", {"token": "t", "i": "inv1"})
+    assert reponse.status_code == 403
+    assert reponse.get_json()["erreur"] == "Invitation invalide ou expirée."
+
+
+@pytest.mark.parametrize("bad_auth_time", [
+    None,
+    "not-a-float",
+    True,
+    float("nan"),
+    float("inf"),
+    0,
+])
+def test_session_missing_or_malformed_auth_time_refusee(
+    web, monkeypatch, bad_auth_time
+):
+    monkeypatch.setattr(invitations, "lire", lambda i: _invitation())
+    claims = _decoded()
+    if bad_auth_time is None:
+        claims.pop("auth_time", None)
+    else:
+        claims["auth_time"] = bad_auth_time
+    with mock.patch("firebase_admin.auth.verify_id_token", return_value=claims):
+        reponse = _post_json(web, "/session", {"token": "t", "i": "inv1"})
+    assert reponse.status_code == 403
+    assert reponse.get_json()["erreur"] == "Invitation invalide ou expirée."
+
+
+def test_session_explicit_none_auth_time_refusee(web, monkeypatch):
+    monkeypatch.setattr(invitations, "lire", lambda i: _invitation())
+    with mock.patch("firebase_admin.auth.verify_id_token",
+                    return_value=_decoded(auth_time=None)):
+        reponse = _post_json(web, "/session", {"token": "t", "i": "inv1"})
+    assert reponse.status_code == 403
+    assert reponse.get_json()["erreur"] == "Invitation invalide ou expirée."
 
 
 def test_session_valide_signale_ouverte(web, monkeypatch):

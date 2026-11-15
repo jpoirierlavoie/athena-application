@@ -41,6 +41,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db, provenance
+from models.record_ids import is_addressable_id
 from security import sanitize
 from utils import phases
 from utils.logging_setup import log_unexpected
@@ -458,6 +459,8 @@ def create_budget(
 
 
 def get_budget(budget_id: str) -> Optional[dict]:
+    if not is_addressable_id(budget_id):
+        return None
     try:
         doc = db.collection(COLLECTION).document(budget_id).get()
         if doc.exists:

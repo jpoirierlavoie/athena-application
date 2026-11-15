@@ -39,6 +39,7 @@ from models import aggregation_values, concurrency, db, full_reads, provenance
 # imports neither register (it names their collections as literals): no cycle.
 from models import invoice as invoice_model
 from models import releve_conciliation
+from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
@@ -3092,6 +3093,8 @@ def complete_reconciliation(
 
 
 def get_transaction(tx_id: str) -> Optional[dict]:
+    if not is_addressable_id(tx_id):
+        return None
     try:
         doc = db.collection(TRANSACTIONS_COLLECTION).document(tx_id).get()
         return doc.to_dict() if doc.exists else None
@@ -3109,7 +3112,7 @@ def get_transaction_strict(tx_id: str) -> Optional[dict]:
     swallows an error into ``None``, and the old route read that as « not a
     fee payment » — the administration recette's reversal was then skipped
     without a word."""
-    if not isinstance(tx_id, str) or not tx_id or "/" in tx_id:
+    if not is_addressable_id(tx_id):
         return None
     snap = db.collection(TRANSACTIONS_COLLECTION).document(tx_id).get()
     return snap.to_dict() if snap.exists else None
