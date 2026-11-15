@@ -375,7 +375,7 @@ pyasn1==0.6.5
 # at 6.21.4: same logger, same prefix. Re-check its prefix at every pypdf
 # bump; tests/test_pdf_text.py fails if pypdf stops logging the notice under
 # that logger and prefix.
-pypdf==6.21.4
+pypdf==7.0.1
 # olefile reads the text of a pièce justificative filed as an Outlook .msg
 # (2026-11-10, the lawyer's decision): pure Python, BSD-2, no dependency of
 # its own — no system library. Its one consumer is utils/msg_text.py,
