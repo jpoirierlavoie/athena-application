@@ -228,12 +228,12 @@ def test_the_invoice_date_texts_say_what_the_model_does():
              for name in ("preview_invoice", "create_invoice", "import_invoice")}
     for name, schema_props in props.items():
         due = schema_props["due_date"]["description"]
-        assert "1 calendar month" in due and "30" not in due, name
-    assert ("never after today's UTC date"
+        assert "1 mois civil" in due and "30" not in due, name
+    assert ("jamais future UTC"
             in props["import_invoice"]["date"]["description"])
     # create/preview keep the stricter Montréal day, and say so.
     for name in ("preview_invoice", "create_invoice"):
-        assert ("Never after today's Montréal date"
+        assert ("jamais future"
                 in props[name]["date"]["description"]), name
 
 
@@ -261,7 +261,7 @@ def test_every_invoice_writer_refuses_payment_terms(tool):
     errors = tools.validate_args(
         schema, {**args, "payment_terms": "Payable à réception."})
     assert len(errors) == 1, errors
-    assert errors[0].startswith("`payment_terms` is not a supported argument")
+    assert errors[0].startswith("`payment_terms` n'est pas un paramètre pris en charge")
     assert "payment_terms" not in schema["properties"]
     assert "payment_terms" not in tools.TOOLS[tool]["description"]
 
@@ -297,9 +297,10 @@ def test_a_call_still_sending_payment_terms_never_reaches_a_handler(
                 "params": {"name": name, "arguments": {
                     **args, "payment_terms": "Payable à réception."}},
             }).get_json()
-            assert body["error"]["code"] == -32602, (name, body)
-            assert body["error"]["message"].startswith(
-                "`payment_terms` is not a supported argument"), name
+            assert "error" not in body, (name, body)
+            assert body["result"]["isError"] is True, (name, body)
+            assert body["result"]["content"][0]["text"].startswith(
+                "`payment_terms` n'est pas un paramètre pris en charge"), name
         assert reached == []
         for rid, (name, args) in enumerate(sorted(_TERMS_WRITERS.items()), 10):
             body = _rpc(client, {
@@ -924,22 +925,27 @@ def test_the_texts_hold_whether_the_daily_job_is_on_or_off():
     lawyer's decision of 2026-11-12; none still speaks of a nightly job.
     update_invoice names is_overdue as the authority, never the stored
     status."""
-    served = json.dumps(tools.list_tool_descriptors(None), ensure_ascii=False)
+    served = json.dumps(
+        [tools.list_tool_descriptors(None), OUTPUT_SCHEMAS],
+        ensure_ascii=False,
+    )
     assert "nightly" not in served and "tonight" not in served
+    schema_json = json.dumps(OUTPUT_SCHEMAS, ensure_ascii=False)
     mentions = []
-    at = served.find("daily job")
+    at = schema_json.find("daily job")
     while at != -1:
-        mentions.append(_clause(served, at))
-        at = served.find("daily job", at + 1)
-    # update_invoice's description, and is_overdue in get_invoice,
-    # list_invoices and get_billing_snapshot.
-    assert len(mentions) == 4, mentions
+        mentions.append(_clause(schema_json, at))
+        at = schema_json.find("daily job", at + 1)
+    # is_overdue in get_invoice, list_invoices and get_billing_snapshot.
+    assert len(mentions) == 3, mentions
     assert all("when active" in clause for clause in mentions), mentions
     assert all("09:00 Montréal time" in clause for clause in mentions), mentions
     (update,) = [d for d in tools.list_tool_descriptors(None)
                  if d["name"] == "update_invoice"]
     assert "is_overdue" in update["description"]
-    assert "never the stored status" in update["description"]
+    assert "jamais le statut stocké" in update["description"]
+    assert "job quotidien à 09:00 Montréal" in update["description"]
+    assert "lorsqu'actif" in update["description"]
 
 
 def test_a_draft_goes_to_envoyee_first(world):

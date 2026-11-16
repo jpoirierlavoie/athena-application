@@ -1,101 +1,105 @@
 ---
 name: athena
-description: "Mode d'emploi du connecteur Athena, le logiciel de gestion du cabinet : la suite d'appels la plus courte pour chaque demande courante, et les règles des écritures qui ne se défont pas. Utiliser dès qu'une demande lit ou écrit dans Athena, même sans le nommer, et avant toute écriture. Amorces — breffage, qu'est-ce qui s'en vient, inscris mes heures, débours, facture, non facturé, ouvre le dossier, fiche client, conflits, note au dossier, théorie de la cause, tâche, échéance, audience, Bookings, protocole, budget, fidéicommis, états financiers, pièce justificative, verse ces documents, gabarit, note d'honoraires, ferme le dossier, reprise de données. Sert les besoins FICHE, PARTIES, THÉORIE, NOTES, INVENTAIRE, TEXTE, ÉCHÉANCES, CALCUL, GREFFE, INSCRIPTION et VOCABULAIRE de pratique-civile-quebecoise. Ne pas utiliser pour trancher une question de droit, rédiger ni qualifier un document."
+description: "Guide d'utilisation du connecteur Athena (pratique de litige civil québécois) : séquences d'appels courtes, résolution d'identifiants et garde-fous d'écriture. Activer dès qu'une demande lit ou écrit dans Athena, même sans le nommer (Quebec litigation case & matter management, billing, trust accounting, deadlines, docs). Déclencheurs : breffage, qu'est-ce qui s'en vient, dossier, client, parties, conflits, KYC, tâche, échéance, audience, Bookings, protocole, note, théorie de la cause, document, gabarit, heures, débours, non facturé, facture, budget, fidéicommis, administration, états financiers, reprise. Complète droit-civil-quebecois (sans lui exposer de données nominatives). Ne pas utiliser pour trancher le droit, rédiger un acte ni qualifier hors Athena."
 ---
 
 {{GEN:version}}
 
+<!-- SAFETY-KERNEL:START -->
 ## Noyau
 
-- **Autorité** : le SAFETY CORE (tête des INSTRUCTIONS) et la description de chaque outil font foi ; ici, on aiguille. Outils nommés sans préfixe.
-- **Confirmer** toute écriture, sauf instruction permanente ; un tableau, une confirmation, qui demande ce qui manque (texte facturé, contenu, dossier, numéro), jamais inventé. Toujours : `set_dossier_status`, `record_kyc_status`, `update_dossier_party(action="remove")`, `decide_rendez_vous`, `create_invoice`, tout statut par `update_invoice`, toute écriture aux registres comptables, toute pièce justificative jointe ou remplacée.
-- **Clé** : `<outil>-<n° dossier|general|lot>-<AAAAMMJJ>-<étiquette>-<n>` ; l'étiquette, 4 lettres au hasard tirées à la première écriture et gardées pour la conversation, empêche deux saisies identiques du même jour, en deux conversations, de se fondre. `idempotent_replay: true` au premier essai : « déjà inscrit ».
-- **Signaux** : « … n'a pas pu être lu » = panne, jamais absence : réessayer, ne rien recréer. `dry_run` est refusé. `edit_analyse(dossier_id)` sans `operations` ni `full` ÉCRIT : il crée la théorie absente.
-- **Secret** : aucun contenu de document dans une requête web ni vers un autre connecteur.
+- **Autorité** : `NOYAU DE SÉCURITÉ` (`INSTRUCTIONS`) et descriptions des outils priment ; ici, routage. Outils sans préfixe.
+- **Confirmation graduée** :
+  - *Lecture* : aucune.
+  - *Écriture courante* : tableau et confirmation avant écriture (demander dossier, montant, texte ou numéro manquants), sauf instruction permanente de l'avocat.
+  - *Écriture à fort impact* (TOUJOURS confirmer même sous instruction permanente) : `set_dossier_status`, `record_kyc_status`, `update_dossier_party(action="remove")`, `decide_rendez_vous`, `create_invoice`, tout statut `update_invoice`, toute écriture comptable, toute pièce justificative.
+- **Clé et concurrence** : `<outil>-<n° dossier|general|lot>-<AAAAMMJJ>-<étiquette>-<n>` (4 lettres fixes par conversation). `idempotent_replay: true` au 1er essai = déjà inscrit. `expected_etag` = dernier `etag` lu. « … n'a pas pu être lu » = panne, jamais absence : réessayer sans recréer. `dry_run` refusé. `edit_analyse(dossier_id)` sans `operations` ni `full` ÉCRIT (crée la théorie).
+- **Cloisonnement (`secret professionnel`)** : aucun nom de partie, n° dossier, adresse, pièce ni chiffre bancaire vers le web ou `droit-civil-quebecois` (`recherche-juridique`, `redaction-juridique`, `analyse-juridique`, `administration-litige`, `deontologie-et-pratique`) :
+  - `lois.*`, `juris.*`, `recherche-juridique` : droit abstrait seulement.
+  - `redaction-juridique`, `analyse-juridique` : rôles anonymisés (« Demandeur », « Défendeur »), faits caviardés.
+  - `outils.calendrier_deadlines`, `outils.interets_1619` : dates et montants neutres sans dossier.
+  - `outils.registre_search` / `outils.registre_get_entity` : registre public sur demande expresse.
 
 ## Conventions hors de la tête
 
-- `contingency_percent` : lu en pour cent (`get_dossier` : 25.0), écrit en points de base (2500).
-- Une date seule ne change pas de fuseau ; « aujourd'hui » = le jour de Montréal.
+- `contingency_percent` : lu en % (`get_dossier` : 25.0), écrit en points de base (2500).
+- Date seule : aucun fuseau ; « aujourd'hui » = Montréal.
+<!-- SAFETY-KERNEL:END -->
 
 ## L'application en une minute
 
-- Le dossier est le pivot ; « Général » reçoit notes, tâches et événements sans dossier ; une théorie de la cause par dossier.
-- Les contacts sont au cabinet ; le dossier fige leurs noms, que citent les procédures.
-- Téléphone : les contacts sauf les fournisseurs ; tâches, notes, événements d'un dossier actif ou en_attente, Général compris ; jamais argent, documents, protocoles, sauf la tâche d'une étape.
-- Le droit relève de pratique-civile-quebecoise ; la correspondance, du connecteur Microsoft 365, où rien ne s'envoie sans demande expresse.
+- Pivot : le dossier ; « Général » = notes, tâches, événements hors dossier ; une théorie par dossier.
+- Contacts au cabinet ; le dossier fige leurs noms pour gabarits/procédures.
+- Téléphone : les contacts sauf les fournisseurs ; tâches, notes, événements des dossiers actifs/`en_attente` et Général (jamais finances, documents, ni protocoles hors tâche liée).
+- Droit : `droit-civil-quebecois` ; courriels : Microsoft 365 (envoi uniquement sur demande).
 
 ## Économie d'appels
 
-1. **Un `get_dossier` par dossier et par conversation.** Le résultat d'une écriture tient lieu de relecture, jamais à vérifier : ce qui est écrit, son `etag` s'il en porte un (`dossier_etag` après `complete_dossier`, `record_signification`, `record_prescription_event` ; aucun après `create_task` ou `complete_task`), et `warnings`. Relire seulement sur issue incertaine, « ENREGISTRÉE — NE PAS RÉESSAYER » ou `stale_etag`.
-2. **Les rangées portent l'`etag`** : modifier une tâche, un événement ou une étape depuis sa rangée.
-3. **Partir du cabinet** : `get_agenda`, `get_billing_snapshot()` (`by_dossier`), `get_coverage_report`, `list_time_entries(date_from=…)` sans dossier. Par dossier seulement quand l'un est nommé.
-4. **`limit=50`** seulement pour un ensemble borné voulu en entier (période, lot).
-5. **Appels indépendants : un seul tour, en parallèle.**
-6. **`get_reference_vocabulary`** seulement pour `kind` "domaines", "actions" (avec `domaine`), "forums", "districts", "prescription_types", "phases" (libellés), une fois chacun ; les autres codes sont dans les schémas.
-7. **Ne pas recalculer** ce que le serveur dérive : `is_overdue`, statut d'étape, `last_action_date`, `next_deadline_date`.
-8. **Claude Code diffère les outils** : charger la ligne « Charger » en un seul ToolSearch `select:`, au préfixe de la liste différée ; un outil « Au besoin », seulement quand son cas se présente.
-9. **S'arrêter** à la réponse — une recette est un minimum.
-10. **Une note est un livrable, pas une mémoire** (le connecteur ne la supprime pas ; elle va au téléphone) ; en Claude Code, l'état d'un travail en plusieurs sessions va dans un fichier local.
+1. **Un `get_dossier` par dossier et conversation.** Le résultat d'une écriture vaut relecture (`etag`, `dossier_etag`, `warnings`) ; relire seulement si incertain, `ENREGISTRÉE — NE PAS RÉESSAYER` ou `stale_etag`.
+2. **Rangées avec `etag`** : éditer tâche, événement ou étape depuis sa rangée.
+3. **Partir du cabinet** : `get_agenda`, `get_billing_snapshot()`, `get_coverage_report`, `list_time_entries(date_from=…)` sans dossier.
+4. **`limit=50`** pour un lot borné voulu en entier.
+5. **Appels indépendants en parallèle** dans un tour.
+6. **`get_reference_vocabulary`** : une fois par `kind` ("domaines", "actions", "forums", "districts", "prescription_types", "phases").
+7. **Ne pas recalculer** `is_overdue`, statut d'étape, `last_action_date`, `next_deadline_date`.
+8. **Claude Code** : charger **Charger** via ToolSearch `select:` ; **Au besoin** seulement si requis.
+9. **S'arrêter à la réponse.** Note = livrable, jamais brouillon temporaire.
 
 ## D'où vient chaque identifiant
 
-- **dossier_id** : la conversation ; `list_dossiers(query=…)`, n° ou mot du titre « X c. Y » (les parties n'y sont pas cherchées) ; `get_partie(partie_id)` → `dossiers[]`. N° exact et fiche voulue : `get_dossier(file_number)` d'emblée.
-- **partie_id** : `clients`, `opposing_parties` de `get_dossier` ; sinon `list_parties(query=…)`, un seul jeton (nom, courriel, chiffres du téléphone), sensible aux accents : réessayer une fois sans.
-- **note_id** : `list_notes` ; la théorie : `analyse_note_id` de `get_dossier`.
-- **Tâche, événement, étape** : leurs rangées ; **document, dossier de classement** : `list_documents(dossier_id, include_folders=true)` ; **gabarit** : `list_templates` ; **facture** : `list_invoices`.
-- **Garder** les ids, le dernier etag de chaque fiche, chaque clé employée.
+- **dossier_id** : `list_dossiers(query=…)` (n° ou mot du titre) ; `get_partie` → `dossiers[]` ; n° exact → `get_dossier(file_number)`.
+- **partie_id** : `clients`/`opposing_parties` de `get_dossier` ; sinon `list_parties(query=…)` (un mot ; réessayer sans accents).
+- **note_id** : `list_notes` ; théorie : `analyse_note_id` de `get_dossier`.
+- **Tâche, événement, étape** : rangées ; **document/répertoire** : `list_documents(dossier_id, include_folders=true)` ; **gabarit** : `list_templates` ; **facture** : `list_invoices`.
 
-## Recettes
+## Routage et références
 
-- Non facturé, période, facture, phases, budget → F1–F5, `recettes/facturation.md`
-- Contacts et dossiers : trouver, créer, corriger, statut, conformité, registres → D1–D6, `recettes/dossiers.md`
-- Notes, écrire la théorie → N1–N2 ; documents, gabarits → Doc1–Doc5 : `recettes/notes-documents.md`
-- Tâches, audiences, Bookings, échéances, protocole → A1–A5, `recettes/agenda.md`
-- Reprise de données → `recettes/reprise.md` ; fidéicommis, administration, encaissement, pièces justificatives, états financiers → `recettes/comptabilite.md`
-- Lectures, sans fichier : INVENTAIRE `list_documents(dossier_id)` ; TEXTE `get_document_text(document_id)` ; NOTES `list_notes(dossier_id)`, ou `scope="cabinet"` ; ÉCHÉANCES `list_protocol_steps(dossier_id)` ; CALCUL `compute_judicial_deadline`.
+Lire au plus **une** feuille ci-dessous avant d'agir hors R1–R4 ; `references/index-outils.md` si aucune recette ne convient :
+
+- Contacts, dossiers, KYC/conflits, significations/prescription → `references/dossiers-et-contacts.md`
+- Tâches, audiences, Bookings, échéances, protocole → `references/agenda-et-protocole.md`
+- Notes, théorie de la cause, documents, téléversement, gabarits → `references/notes-et-documents.md`
+- Non facturé, période, facture, reclassement phases, budget → `references/facturation-et-budget.md`
+- Fidéicommis, grand livre d'administration, reçus, états financiers → `references/comptabilite-et-etats.md`
+- Reprise historique d'un dossier → `references/reprise-historique.md`
+- Lectures directes sans feuille : `list_documents(dossier_id)`, `get_document_text(document_id)`, `list_notes(dossier_id)`/`list_notes(scope="cabinet")`, `list_protocol_steps(dossier_id)`, `compute_judicial_deadline`.
 
 ### R1 Breffage
 {{GEN:charger}}
 - **Déclencheur** : « qu'est-ce qui s'en vient ».
 - **Appels** : (1) `get_agenda(days_ahead=7)` — il se suffit.
 - **Au besoin**, si demandé, même tour : `list_hearings(bookings="pending")`, `get_trust_snapshot()`, `get_coverage_report()`.
-- **Arrêt** : répondre de ces résultats.
-- **À éviter** : descendre dans chaque élément — 11,2 lectures par exécution de 06:07 (`get_dossier` 51×, `list_tasks` 33×).
+- **Arrêt** : répondre de ces résultats sans descendre par dossier.
+- **À éviter** : enchaîner `get_dossier` et `list_tasks` par élément d'agenda.
 
 ### R2 Heures et débours
 {{GEN:charger}}
-- **Déclencheur** : « inscris mes heures », des débours.
-- **Appels** : (1) ids manquants : `list_dossiers(query=…, limit=5)` par dossier, en parallèle ; (2) un tableau (dossier, date, heures ou montant, texte facturé ; le taux du dossier, sauf taux donné), une confirmation ; (3) `create_time_entries_bulk`, même pour une ligne (tranches de 50) ; phase seulement si l'avocat la donne.
-- **Au besoin**, des débours : `create_expenses_bulk`, au même tour.
+- **Déclencheur** : « inscris mes heures », « note ces déboursés ».
+- **Appels** : (1) ids manquants : `list_dossiers(query=…, limit=5)` en parallèle ; (2) tableau confirmé (dossier, date, heures ou montant, texte facturé) ; (3) `create_time_entries_bulk` et/ou `create_expenses_bulk` (même pour 1 ligne, tranches de 50 ; taux du dossier sauf précision, phase seulement si demandée).
 - **Arrêt** : rapporter les montants renvoyés, sans relister.
-- **À éviter** : 61 créations une à une, après 40 `list_time_entries`, un par dossier.
+- **À éviter** : multiplier des appels d'une seule ligne ou relire `list_time_entries` par dossier.
 
 ### R3 Note au dossier
 {{GEN:charger}}
 - **Déclencheur** : « note au dossier », un résumé.
-- **Appels** : (1) `get_dossier` s'il n'est pas déjà lu (`create_note` l'exige) ; (2) la note entière d'un jet, 20 000 caractères au plus ; (3) confirmer, `create_note(dossier_id, title, content, category, idempotency_key)`.
-- **Arrêt** : l'id de la note ; ni `list_notes` avant, ni `append_to_note` après.
-- **À éviter** : 26 paires création-ajout sur 27 visaient la même note ; 73 sessions s'ouvraient sur `list_notes`.
+- **Appels** : (1) `get_dossier` s'il n'est pas déjà lu ; (2) note entière d'un jet (max 20 000 car.) ; (3) confirmer, `create_note(dossier_id, title, content, category, idempotency_key)`.
+- **Arrêt** : rapporter l'id ; ni `list_notes` avant, ni `append_to_note` après.
+- **À éviter** : créer puis ajouter aussitôt par `append_to_note`.
 
 ### R4 Contexte de dossier
 {{GEN:charger}}
-- **Déclencheur** : FICHE, PARTIES, THÉORIE, GREFFE.
-- **Appels** : (1) `get_dossier` : fiche, ids des parties, greffe, `significations[]` (`pv_document_id`), prescription, `analyse_note_id` ; (2) théorie : `get_note(note_id=analyse_note_id)`, sinon dire l'`analyse_note_state`.
-- **Au besoin** : `get_partie` (désignations exactes), `get_document_text(document_id=pv_document_id)` (date d'ancrage).
+- **Déclencheur** : portrait d'un dossier, parties, théorie, greffe.
+- **Appels** : (1) `get_dossier` : fiche, parties, greffe, `significations[]` (`pv_document_id`), prescription, `analyse_note_id` ; (2) théorie : `get_note(note_id=analyse_note_id)`, sinon dire l'`analyse_note_state`.
+- **Au besoin** : `get_partie` (désignations), `get_document_text(document_id=pv_document_id)`.
 - **Arrêt** : `found: false` sur un `file_number` fait foi.
-- **À éviter** : `list_parties` pour une partie au dossier ; `list_notes` pour la théorie ; `parse_court_file_number` sur le numéro du dossier.
+- **À éviter** : `list_parties` pour une partie du dossier, `list_notes` pour la théorie ou `parse_court_file_number` sur le n° lu.
 
 ## Ce que les champs ne valent pas
 
-Des saisies, pas des faits : le `role` du dossier est dérivé (lire les `roles` des parties) ; catégorie, analyse ou vérification (`record_kyc_status`) posées par Claude : présumées, jamais faites ; une date suggérée d'un protocole de Cour supérieure le reste jusqu'à confirmation. Un écart se rapporte à l'avocat ; il ne se corrige pas d'office.
+`role` dérive des parties ; catégorie, analyse et KYC (`record_kyc_status`) restent présumés ; échéance CS reste indicative. Signaler sans corriger d'office.
 
 ## Seule l'application
 
 Le connecteur ne peut jamais non plus :
 {{GEN:seule_application}}
-Devant une telle demande, le dire et nommer l'écran de l'application ; un rendez-vous Bookings confirmé se reporte ou s'annule dans Outlook.
-
-## Fichiers
-
-Hors R1–R4 et les lectures sans fichier, lire le fichier de la recette avant d'agir — une fois par conversation, et après chaque compaction. `references/index-outils.md` : seulement quand aucune recette ne convient.
+Renvoyer à l'écran correspondant ; un Bookings confirmé se reporte ou s'annule dans Outlook.

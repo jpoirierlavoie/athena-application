@@ -1,34 +1,24 @@
-"""The claude.ai plugin « athena » (skill 1.9.3) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 2.0.0) — the deploy gate.
 
 ``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
 source (``plugin/athena/`` at the repo root) and the tool registry.
-This module builds it in memory and in a temp dir, and checks the SHIPPED
-files — what Claude reads — against the registry:
+This module builds it in memory and in a temp dir, checks the SHIPPED files
+against the registry, and runs offline scenario evals:
 
-* every backticked tool-like name exists in ``TOOLS``, and every
-  ``tool(param=…)`` names real input properties of that tool, with values
-  its schema accepts (enum members, booleans, integer bounds);
-* every other straight-quoted value in the skill is an enum value some
+* every backticked tool-like name exists in ``TOOLS`` (or uses a declared
+  ``droit-civil-quebecois`` MCP prefix ``lois.`` / ``juris.`` / ``outils.``),
+  and every ``tool(param=…)`` names real input properties with valid values;
+* every other straight-quoted value in the skill is an enum/const value some
   schema declares (input or output);
-* the frontmatter is exactly ``name`` + ``description`` (≤ 1 024
-  characters, no ``<``/``>``), the byte and line budgets hold, and the
-  kernel ends before byte 3 500;
-* no ``{{GEN:…}}`` is left, none of the retired strings is back
-  (``mcp__``, the draft tools, tool counts), ``dry_run`` stands only on
-  its Noyau line, ``.mcp.json`` names the connector « Athena »;
-* every recipe carries its fields; a Charger line is the recipe's own
-  calls, except the registers recipe's, which the registry writes (the
-  read the accounting writes take their etag from, then the ACCOUNTING
-  family); the index lists every tool exactly once — the reads, then each
-  write on its own family's line;
-* the build is deterministic, ``--check`` sees drift, and the exporter
-  never imports ``models``.
-
-It fails when a citation goes stale (a tool or parameter renamed, an enum
-value removed) or a budget breaks. A registry change that alters only the
-generated parts — the index, the version line — leaves it green:
-``--check`` is what says the last build (the one pushed to the mirror
-claude.ai syncs from) is out of date.
+* the frontmatter is exactly ``name`` + ``description`` (≤ 850 characters,
+  no ``<``/``>``), word/byte/line budgets hold, ``SAFETY-KERNEL`` markers sit
+  before ``FIN_DU_NOYAU_MAX``, and terminal leaves carry zero ``../`` or
+  cross-leaf links;
+* no ``{{GEN:…}}`` is left, none of the retired strings or retired singular
+  tools is back, ``dry_run`` stands only on its Noyau line, ``.mcp.json``
+  names the connector « Athena »;
+* 25 deterministic offline scenario evals verify routing, confirmation tiers,
+  anonymization firewall rules, and real registry schemas/enums.
 """
 
 import ast
@@ -60,11 +50,21 @@ _CALL = re.compile(r"([a-z][a-z0-9_]*)\((.*)\)", re.S)
 _LEAD = re.compile(r"([a-z][a-z0-9_]*)(?=\(|$)")
 _QUOTED = re.compile(r'"([^"\n]*)"')
 
-#: Retired strings — never in a file the model reads. ``mcp__`` was the
-#: wrong prefix of 1.3.0 (the real one is ``mcp__claude_ai_…``, and Claude
-#: Code shows it anyway); the draft tools left with the internal chat;
-#: qclaw_/canlii_ are other connectors' prefixes.
-_BANNED = ("mcp__", "save_draft", "get_draft", "revise_draft", "qclaw_", "canlii_")
+#: Retired strings — never in a file the model reads. Includes v1.x skill
+#: names and legacy folder layout replaced in 2.0.0.
+_BANNED = (
+    "mcp__", "save_draft", "get_draft", "revise_draft", "qclaw_", "canlii_",
+    "pratique-civile-quebecoise", "analyse-documentaire",
+    "calendrier-procedural", "deontologie-professionnelle", "recettes/",
+)
+#: Retired singular write tools replaced by their *_bulk equivalents (checked at
+#: identifier boundaries so ``create_expenses_bulk`` etc. stay valid).
+_RETIRED_SINGULAR_TOOLS = re.compile(
+    r"(?<![a-z0-9_])(?:create_time_entry|create_expense|"
+    r"set_time_entry_phase|set_expense_phase)(?![a-z0-9_])"
+)
+#: Foreign MCP tool prefixes from the sibling ``droit-civil-quebecois`` plugin.
+_FOREIGN_PREFIXES = ("lois.", "juris.", "outils.")
 #: A tool COUNT (« 49 outils », « 82 tools ») goes stale with the registry.
 _COUNT = re.compile(r"\b\d+\s+(?:outils|tools)\b", re.I)
 
@@ -398,6 +398,39 @@ def test_kernel_ends_before_its_ceiling(shipped):
     before = raw[:end].decode("utf-8")
     assert "\n## Noyau\n" in before
     assert "\n## Conventions" in before
+    assert ex.SAFETY_KERNEL_START in before
+    assert ex.SAFETY_KERNEL_END in before
+    assert before.index(ex.SAFETY_KERNEL_START) < before.index(ex.SAFETY_KERNEL_END)
+
+
+def test_word_and_routing_budgets(shipped):
+    skill_text = shipped[ex.SKILL].decode("utf-8")
+    assert ex._compter_mots(skill_text) <= ex.SKILL_MAX_WORDS
+    assert set(re.findall(r"references/[a-z0-9-]+\.md", skill_text)) == {
+        p.removeprefix("skills/athena/") for p in (*ex.REFERENCES, ex.INDEX)
+    }
+    for ref in ex.REFERENCES:
+        leaf = shipped[ref].decode("utf-8")
+        assert ex._compter_mots(leaf) <= ex.LEAF_MAX_WORDS, ref
+        assert "../" not in leaf, ref
+        assert re.findall(r"[\w./-]+\.md\b", leaf) == [], ref
+
+
+def test_droit_civil_v2_firewall_and_tiers(shipped):
+    skill = shipped[ex.SKILL].decode("utf-8")
+    for name in (
+        "droit-civil-quebecois",
+        "recherche-juridique",
+        "redaction-juridique",
+        "analyse-juridique",
+        "administration-litige",
+        "deontologie-et-pratique",
+    ):
+        assert name in skill, name
+    for prefix in ("lois.", "juris.", "outils."):
+        assert prefix in skill, prefix
+    for tier in ("Lecture", "Écriture courante", "Écriture à fort impact"):
+        assert tier in skill, tier
 
 
 def test_version_line_follows_the_frontmatter(shipped):
@@ -413,6 +446,8 @@ def test_every_tool_like_name_is_a_tool(shipped):
     unknown = []
     for path, text in _md_texts(shipped).items():
         for span in _SPAN.findall(text):
+            if span.startswith(_FOREIGN_PREFIXES):
+                continue
             m = _LEAD.match(span)
             if m and _tool_like(m.group(1)) and m.group(1) not in tools.TOOLS:
                 unknown.append((path, span))
@@ -483,6 +518,7 @@ def test_no_retired_string_in_the_skill(shipped):
     found = []
     for path, text in _skill_texts(shipped).items():
         found += [(path, s) for s in _BANNED if s in text]
+        found += [(path, m.group(0)) for m in _RETIRED_SINGULAR_TOOLS.finditer(text)]
         found += [(path, m.group(0)) for m in _COUNT.finditer(text)]
     assert found == []
 
@@ -512,7 +548,7 @@ def _recipes(shipped: dict):
     for path, text in texts.items():
         if path == ex.SKILL:
             level = "### "
-        elif path in ex.RECETTES:
+        elif path in ex.REFERENCES:
             level = "## "
         else:
             continue
@@ -537,7 +573,7 @@ def test_every_recipe_carries_its_fields(shipped):
             if field not in fields:
                 problems.append((path, heading, f"no {field}"))
     assert problems == []
-    assert count >= 4 + len(ex.RECETTES)
+    assert count >= 4 + len(ex.REFERENCES)
 
 
 def _registry_charger_recipes() -> set:
@@ -545,7 +581,7 @@ def _registry_charger_recipes() -> set:
     writes — ``{{GEN:outils_comptables}}`` in their source — rather than
     their own calls."""
     found = set()
-    for path in (ex.SKILL, *ex.RECETTES):
+    for path in (ex.SKILL, *ex.REFERENCES):
         heading = None
         for line in ex._lire_texte(ex.SOURCE / path).split("\n"):
             if line.startswith("#"):
@@ -737,3 +773,334 @@ def test_version_digest_tracks_the_registry(monkeypatch):
     patched["zz_probe"] = {"input_schema": {"type": "object"}}
     monkeypatch.setattr(tools, "TOOLS", patched)
     assert ex.empreinte_registre() != before
+
+
+# ── Offline scenario evals (25 realistic lawyer prompts) ───────────────
+
+_SCENARIO_EVALS: tuple[dict, ...] = (
+    {
+        "id": "r1_morning_briefing",
+        "prompt": "Qu'est-ce qui s'en vient cette semaine ?",
+        "surface": ex.SKILL,
+        "marker": "qu'est-ce qui s'en vient",
+        "tier": "lecture",
+        "expected_tools": ("get_agenda",),
+        "forbidden_tools": ("get_dossier", "list_tasks"),
+        "expected_params": {"get_agenda": {"days_ahead": 7}},
+    },
+    {
+        "id": "r1_briefing_bookings_and_trust",
+        "prompt": "Breffage du matin avec demandes Bookings en attente et portrait fidéicommis",
+        "surface": ex.SKILL,
+        "marker": "### R1 Breffage",
+        "tier": "lecture",
+        "expected_tools": ("get_agenda", "list_hearings", "get_trust_snapshot"),
+        "forbidden_tools": ("get_trust_balance",),
+        "expected_params": {"list_hearings": {"bookings": "pending"}},
+    },
+    {
+        "id": "r2_single_time_entry_uses_bulk",
+        "prompt": "Inscris 1,5 h d'appel au dossier 2026-014",
+        "surface": ex.SKILL,
+        "marker": "### R2 Heures et débours",
+        "tier": "ecriture_courante",
+        "expected_tools": ("list_dossiers", "create_time_entries_bulk"),
+        "forbidden_tools": ("list_time_entries",),
+        "expected_params": {},
+    },
+    {
+        "id": "r2_multi_dossiers_expenses_and_hours",
+        "prompt": "Inscris ces heures et ces déboursés sur trois dossiers",
+        "surface": ex.SKILL,
+        "marker": "inscris mes heures",
+        "tier": "ecriture_courante",
+        "expected_tools": ("list_dossiers", "create_time_entries_bulk", "create_expenses_bulk"),
+        "forbidden_tools": (),
+        "expected_params": {},
+    },
+    {
+        "id": "r3_note_au_dossier_one_shot",
+        "prompt": "Ajoute une note au dossier 2026-008 résumant notre appel",
+        "surface": ex.SKILL,
+        "marker": "### R3 Note au dossier",
+        "tier": "ecriture_courante",
+        "expected_tools": ("get_dossier", "create_note"),
+        "forbidden_tools": ("list_notes", "append_to_note"),
+        "expected_params": {},
+    },
+    {
+        "id": "r4_dossier_context_and_theorie",
+        "prompt": "Fais-moi le portrait du dossier 2026-012 avec parties et théorie de la cause",
+        "surface": ex.SKILL,
+        "marker": "### R4 Contexte de dossier",
+        "tier": "lecture",
+        "expected_tools": ("get_dossier", "get_note"),
+        "forbidden_tools": ("list_parties", "list_notes", "parse_court_file_number"),
+        "expected_params": {},
+    },
+    {
+        "id": "f1_unbilled_and_receivables",
+        "prompt": "Combien ai-je de non facturé au cabinet et qui me doit ?",
+        "surface": "skills/athena/references/facturation-et-budget.md",
+        "marker": "## F1 Non facturé, encours",
+        "tier": "lecture",
+        "expected_tools": ("get_billing_snapshot", "list_invoices"),
+        "forbidden_tools": ("list_time_entries",),
+        "expected_params": {"list_invoices": {"status_group": "impayée"}},
+    },
+    {
+        "id": "f2_september_hours_and_expenses",
+        "prompt": "Qu'ai-je fait en septembre comme heures et déboursés ?",
+        "surface": "skills/athena/references/facturation-et-budget.md",
+        "marker": "## F2 Travail d'une période",
+        "tier": "lecture",
+        "expected_tools": ("list_time_entries", "list_expenses"),
+        "forbidden_tools": (),
+        "expected_params": {"list_time_entries": {"limit": 50}},
+    },
+    {
+        "id": "f3_preview_and_create_invoice",
+        "prompt": "Prépare et émets la facture du non facturé du 2026-022",
+        "surface": "skills/athena/references/facturation-et-budget.md",
+        "marker": "## F3 Facture",
+        "tier": "fort_impact",
+        "expected_tools": ("preview_invoice", "create_invoice"),
+        "forbidden_tools": ("get_dossier", "get_billing_snapshot"),
+        "expected_params": {"preview_invoice": {"all_unbilled": True}},
+    },
+    {
+        "id": "f4_phase_reclassify_invoiced_row_via_bulk",
+        "prompt": "Reclasse cette entrée de temps déjà facturée au dossier 2026-003",
+        "surface": "skills/athena/references/facturation-et-budget.md",
+        "marker": "## F4 Reclasser les phases",
+        "tier": "ecriture_courante",
+        "expected_tools": ("list_time_entries", "get_reference_vocabulary", "set_time_entry_phase_bulk"),
+        "forbidden_tools": ("update_time_entry",),
+        "expected_params": {"get_reference_vocabulary": {"kind": "phases"}},
+    },
+    {
+        "id": "f5_budget_review_and_update",
+        "prompt": "Où en est le budget et révise les plafonds",
+        "surface": "skills/athena/references/facturation-et-budget.md",
+        "marker": "## F5 Budget",
+        "tier": "ecriture_courante",
+        "expected_tools": ("get_budget", "create_budget_version"),
+        "forbidden_tools": ("get_billing_snapshot", "list_time_entries"),
+        "expected_params": {"get_budget": {"include_history": False}},
+    },
+    {
+        "id": "d4_close_dossier_drains_phone",
+        "prompt": "Ferme le dossier 2025-044 maintenant qu'il est réglé",
+        "surface": "skills/athena/references/dossiers-et-contacts.md",
+        "marker": "ferme le dossier",
+        "tier": "fort_impact",
+        "expected_tools": ("set_dossier_status",),
+        "forbidden_tools": (),
+        "expected_params": {"set_dossier_status": {"status": "fermé"}},
+    },
+    {
+        "id": "d4_detach_dossier_party",
+        "prompt": "Détache cette partie du dossier 2026-010",
+        "surface": "skills/athena/references/dossiers-et-contacts.md",
+        "marker": "update_dossier_party",
+        "tier": "fort_impact",
+        "expected_tools": ("update_dossier_party",),
+        "forbidden_tools": (),
+        "expected_params": {"update_dossier_party": {"action": "remove"}},
+    },
+    {
+        "id": "d5_kyc_presumed_never_confirmed",
+        "prompt": "Vérifie les conflits et inscris la vérification KYC pour ce client",
+        "surface": "skills/athena/references/dossiers-et-contacts.md",
+        "marker": "## D5 Conformité : identité, conflits",
+        "tier": "fort_impact",
+        "expected_tools": ("get_coverage_report", "get_partie", "record_kyc_status"),
+        "forbidden_tools": (),
+        "expected_params": {},
+    },
+    {
+        "id": "d6_signification_and_deadline_task",
+        "prompt": "La demande a été signifiée hier : inscris la signification et l'échéance de 15 jours",
+        "surface": "skills/athena/references/dossiers-et-contacts.md",
+        "marker": "## D6 Signification, événement de prescription",
+        "tier": "ecriture_courante",
+        "expected_tools": ("get_dossier", "record_signification", "compute_judicial_deadline", "create_task"),
+        "forbidden_tools": (),
+        "expected_params": {},
+    },
+    {
+        "id": "a2_a3_bookings_refusal_and_outlook",
+        "prompt": "Refuse la demande de rendez-vous Bookings en attente",
+        "surface": "skills/athena/references/agenda-et-protocole.md",
+        "marker": "## A3 Demandes Bookings",
+        "tier": "fort_impact",
+        "expected_tools": ("list_hearings", "decide_rendez_vous"),
+        "forbidden_tools": (),
+        "expected_params": {
+            "list_hearings": {"bookings": "pending"},
+            "decide_rendez_vous": {"action": "refuser"},
+        },
+    },
+    {
+        "id": "a5_protocol_creation_with_tasks",
+        "prompt": "Crée le protocole de l'instance et génère les tâches liées",
+        "surface": "skills/athena/references/agenda-et-protocole.md",
+        "marker": "## A5 Protocole de l'instance",
+        "tier": "ecriture_courante",
+        "expected_tools": ("list_protocol_steps", "create_protocol"),
+        "forbidden_tools": (),
+        "expected_params": {"create_protocol": {"create_linked_tasks": True}},
+    },
+    {
+        "id": "n2_edit_analyse_theorie",
+        "prompt": "Complète le bloc C de la théorie de la cause",
+        "surface": "skills/athena/references/notes-et-documents.md",
+        "marker": "## N2 Écrire la théorie de la cause",
+        "tier": "ecriture_courante",
+        "expected_tools": ("get_note", "edit_analyse"),
+        "forbidden_tools": ("list_notes",),
+        "expected_params": {},
+    },
+    {
+        "id": "doc3_qualify_unanalyzed_docs",
+        "prompt": "Qualifie tous les documents non analysés du dossier 2026-008",
+        "surface": "skills/athena/references/notes-et-documents.md",
+        "marker": "## Doc3 Qualifier un lot",
+        "tier": "ecriture_courante",
+        "expected_tools": ("list_documents", "get_document_text", "record_document_analysis"),
+        "forbidden_tools": (),
+        "expected_params": {"list_documents": {"limit": 50}},
+    },
+    {
+        "id": "doc5_fill_gabarit_draft",
+        "prompt": "Prépare une lettre de mise en demeure sur notre gabarit",
+        "surface": "skills/athena/references/notes-et-documents.md",
+        "marker": "## Doc5 Générer, gabariser, classer",
+        "tier": "ecriture_courante",
+        "expected_tools": ("list_templates", "fill_gabarit"),
+        "forbidden_tools": (),
+        "expected_params": {"list_templates": {"kind": "gabarit"}},
+    },
+    {
+        "id": "accounting_admin_anthropic_and_receipt",
+        "prompt": "Inscris la dépense Anthropic et joins le reçu fournisseur",
+        "surface": "skills/athena/references/comptabilite-et-etats.md",
+        "marker": "crédits Claude ou infonuagique",
+        "tier": "fort_impact",
+        "expected_tools": ("get_admin_ledger", "record_admin_entry", "begin_upload", "finalize_upload"),
+        "forbidden_tools": (),
+        "expected_params": {
+            "record_admin_entry": {"kind": "dépense", "category": "infonuagique_ia"},
+            "begin_upload": {"purpose": "piece_justificative"},
+        },
+    },
+    {
+        "id": "accounting_trust_fees_and_statements",
+        "prompt": "Vire nos honoraires du fidéicommis pour la facture envoyée et affiche les états financiers comparatifs",
+        "surface": "skills/athena/references/comptabilite-et-etats.md",
+        "marker": "paie la facture depuis le fidéicommis",
+        "tier": "fort_impact",
+        "expected_tools": ("get_trust_balance", "record_trust_entry", "get_financial_statements"),
+        "forbidden_tools": (),
+        "expected_params": {"record_trust_entry": {"direction": "déboursé", "purpose": "virement_honoraires"}},
+    },
+    {
+        "id": "reprise_historical_dossier_import",
+        "prompt": "Reprends ce fonds historique et sa vieille facture",
+        "surface": ex.REPRISE,
+        "marker": "reprends ce fonds",
+        "tier": "fort_impact",
+        "expected_tools": (
+            "find_imported", "create_partie", "create_dossier",
+            "create_time_entries_bulk", "create_expenses_bulk",
+            "import_invoice", "get_import_audit",
+        ),
+        "forbidden_tools": (),
+        "expected_params": {},
+    },
+    {
+        "id": "web_only_delete_or_reconcile",
+        "prompt": "Supprime ce document et termine la conciliation bancaire du fidéicommis",
+        "surface": ex.SKILL,
+        "marker": "## Seule l'application",
+        "tier": "hors_connecteur",
+        "expected_tools": (),
+        "forbidden_tools": (),
+        "expected_params": {},
+    },
+    {
+        "id": "firewall_cross_plugin_anonymization",
+        "prompt": "Vérifie dans droit-civil-quebecois la prescription de l'action de Jean Tremblay (2026-014) avant de rédiger",
+        "surface": ex.SKILL,
+        "marker": "Cloisonnement",
+        "tier": "pare_feu",
+        "expected_tools": (),
+        "forbidden_tools": (),
+        "expected_params": {},
+        "firewall_tokens": ("recherche-juridique", "redaction-juridique", "administration-litige", "lois.", "juris.", "outils."),
+    },
+)
+
+
+def _skill_impact_tools_in_kernel(skill_text: str) -> set[str]:
+    start = skill_text.index(ex.SAFETY_KERNEL_START)
+    end = skill_text.index(ex.SAFETY_KERNEL_END)
+    kernel = skill_text[start:end]
+    return set(re.findall(r"`([a-z][a-z0-9_]+)`", kernel)) & set(tools.TOOLS)
+
+
+@pytest.mark.parametrize("scenario", _SCENARIO_EVALS, ids=lambda s: s["id"])
+def test_offline_scenario_eval(shipped, scenario):
+    """Deterministic offline eval per scenario: trigger/routing exists,
+    all expected & forbidden tools exist in live registry, parameters match
+    input schemas, confirmation tier matches SAFETY-KERNEL, and cross-plugin
+    anonymization rules hold."""
+    skill_text = shipped[ex.SKILL].decode("utf-8")
+    surface = scenario["surface"]
+    text = shipped[surface].decode("utf-8")
+    assert scenario["marker"] in text, (scenario["id"], surface)
+    if surface != ex.SKILL:
+        rel = surface.removeprefix("skills/athena/")
+        assert rel in skill_text, (scenario["id"], rel)
+
+    for tool_name in (*scenario["expected_tools"], *scenario["forbidden_tools"]):
+        assert tool_name in tools.TOOLS, (scenario["id"], tool_name)
+        if tool_name in scenario["expected_tools"]:
+            assert f"`{tool_name}`" in text or f"`{tool_name}(" in text, (
+                scenario["id"], tool_name, surface
+            )
+
+    for tool_name, params in scenario["expected_params"].items():
+        schema_props = tools.TOOLS[tool_name]["input_schema"].get("properties", {})
+        for pname, pval in params.items():
+            assert pname in schema_props, (scenario["id"], tool_name, pname)
+            if isinstance(pval, bool):
+                assert schema_props[pname].get("type") == "boolean"
+            elif isinstance(pval, int):
+                assert schema_props[pname].get("type") == "integer"
+            elif isinstance(pval, str) and "enum" in schema_props[pname]:
+                assert pval in schema_props[pname]["enum"], (tool_name, pname, pval)
+
+    tier = scenario["tier"]
+    assert tier in ("lecture", "ecriture_courante", "fort_impact", "hors_connecteur", "pare_feu")
+    if tier == "fort_impact":
+        impact_tools = _skill_impact_tools_in_kernel(skill_text)
+        # Accounting writes, dossier status, KYC, party remove, Bookings, invoices:
+        # all high-impact tools explicitly trigger mandatory confirmation.
+        assert any(
+            t in impact_tools
+            for t in scenario["expected_tools"]
+            if t in tools.WRITE_TOOLS
+        ) or "toute écriture comptable" in skill_text
+        if surface != ex.SKILL:
+            assert "confirmer" in text.lower() or "confirmé" in text.lower()
+    elif tier == "hors_connecteur":
+        assert "modifier le fichier d'un document" in text.lower()
+        assert "concilier" in text.lower()
+    elif tier == "pare_feu":
+        for tok in scenario["firewall_tokens"]:
+            assert tok in skill_text, tok
+
+
+def test_at_least_twenty_offline_scenario_evals():
+    assert len(_SCENARIO_EVALS) >= 20

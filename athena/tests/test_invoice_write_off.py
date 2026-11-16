@@ -1202,7 +1202,7 @@ def test_the_disclosure_sweep_catches_a_call_to_either_door():
     never = next(n for n in disclosure.NEVERS if n.key == "invoice_paid")
     assert {"write_off_remainder", "reverse_write_off"} <= set(never.forbidden)
     assert never.fr == "marquer une facture <strong>payée</strong> sans paiement inscrit"
-    assert never.en == "mark an invoice payée by a status change"
+    assert never.en == "marquer payée une facture par changement de statut"
     for door in ("write_off_remainder", "reverse_write_off"):
         for planted in (f"invoice_model.{door}('i', expected_etag='e')\n",
                         f"from models.invoice import {door}\n",

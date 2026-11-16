@@ -481,8 +481,8 @@ def test_instructions_name_every_write_tool_and_derive_their_counts():
     reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the counts open the index, whose lines follow in family order
     # (the parenthesized label list they replace was a second copy of them).
-    header = (f"TOOLS: {reads} tools read; {len(tools.WRITE_TOOLS)} write, in "
-              f"{len(families)} families:")
+    header = (f"OUTILS : {reads} en lecture ; {len(tools.WRITE_TOOLS)} en "
+              f"écriture, en {len(families)} familles :")
     assert header in text
     positions = [text.index(f"{family.label}: ") for family in families]
     assert positions == sorted(positions)
@@ -531,16 +531,23 @@ def test_no_count_is_typed_by_hand():
     string — docstrings included, they drift the same way — may state a
     tool or family count in words or digits."""
     number = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
-    # « in N families » is INSTRUCTIONS' own phrasing — built by an
-    # f-string, so its constant parts never hold the number; the domaine
-    # taxonomy's « 20 families » counts no tool and stays legal.
+    number_fr = r"(?:\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)"
+    # « in N families » / « en N familles » is INSTRUCTIONS' own phrasing —
+    # built by an f-string, so its constant parts never hold the number; the
+    # domaine taxonomy's « 20 families » / « 20 familles » counts no tool and
+    # stays legal.
     pattern = re.compile(
         rf"(?:\b{number} (?:tools read|read tools|write tools)\b"
-        rf"|\bin {number} (?:write )?families\b)",
+        rf"|\bin {number} (?:write )?families\b"
+        rf"|\b{number_fr} (?:outils? (?:en )?lecture|outils? (?:en )?écriture"
+        rf"|en lecture|en écriture)\b"
+        rf"|\ben {number_fr} (?:write )?familles\b)",
         re.IGNORECASE,
     )
     assert pattern.search("27 tools read; 22 write, in five families")
+    assert pattern.search("34 en lecture ; 52 en écriture, en 13 familles")
     assert not pattern.search("kind='domaines' (20 families)")
+    assert not pattern.search("kind='domaines' (20 familles)")
     for rel, path in _connector_files().items():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -558,8 +565,8 @@ def test_the_instructions_follow_the_registry(monkeypatch):
     # grant, and no text names the scope that left (as this test read while
     # the scope was dormant, before lot 5b).
     base = disclosure.build_instructions(registry, 50)
-    assert ("Write tools appear only when the lawyer granted the "
-            "`athena:write` scope.") in base
+    assert ("Les outils d'écriture n'apparaissent que si l'avocat a accordé "
+            "la portée `athena:write`.") in base
     assert "athena:comptabilite" not in base
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the hand-assembled list of every etag-accepting tool (~1 KB)
     # left — the SAFETY CORE states the rule once, and each such tool's own
@@ -568,16 +575,16 @@ def test_the_instructions_follow_the_registry(monkeypatch):
     # was compressed to leave the CONVENTIONS room within the client's
     # 2 048-character cut — « Where a tool takes `expected_etag`, pass the
     # `etag` of your latest read » became the equation below, same rule.
-    assert "`expected_etag` = your latest read's `etag`" in base
+    assert "`expected_etag` = `etag` lu" in base
     for name in tools.TOOLS:
         if tools.TOOLS[name].get("concurrency") in ("optional", "required"):
             props = tools.TOOLS[name]["input_schema"]["properties"]
             assert "expected_etag" in props or "expected_etags" in props, name
     registry["zz_extra_read"] = {"input_schema": {}}
     grown = disclosure.build_instructions(registry, 50)
-    assert f"{len(registry) - len(tools.WRITE_TOOLS)} tools read" in grown
+    assert f"{len(registry) - len(tools.WRITE_TOOLS)} en lecture" in grown
     # The reclassifiers' ceiling comes from the registry, never a literal.
-    assert "up to 7 rows a call" in disclosure.build_instructions(
+    assert "jusqu'à 7 lignes par appel" in disclosure.build_instructions(
         dict(tools.TOOLS), 7)
 
 
@@ -586,11 +593,11 @@ def test_the_instructions_carry_the_lot_0a_rules():
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the same rules, in the core's wording; the voided invoice's
     # number is said by import_invoice, where the undo is described.
     core = disclosure.safety_core_en()
-    assert "`expected_etag`" in core and "wrote nothing" in core
-    assert "ENREGISTRÉE — NE PAS RÉESSAYER" in core and "do NOT retry" in core
-    assert "then the SAME key, never a new one" in core
+    assert "`expected_etag`" in core and "n'a rien écrit" in core
+    assert "ENREGISTRÉE — NE PAS RÉESSAYER" in core and "NE PAS réessayer" in core
+    assert "réessayer avec la MÊME clé" in core
     assert "`updated_via`" in text and "`mcp_updated_at`" in text
-    assert "the number itself stays on the voided invoice" in (
+    assert "la facture annulée garde son n°" in (
         tools.TOOLS["import_invoice"]["description"])
 
 
@@ -1008,16 +1015,17 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     # pinned in the descriptions of the tools that carry them.
     desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
     assert re.search(r"storage\.googleapis\.com", desc["begin_upload"])
-    assert "in its « Projets » folder" in desc["fill_gabarit"]
-    assert "stored PRESUMED until the lawyer confirms it" in desc["update_document"]
-    assert "stays PRESUMED" in text                       # the FILES line
+    assert "dans son répertoire « Projets »" in desc["fill_gabarit"]
+    assert "Une `category` écrite ici est PRÉSUMÉE" in desc["update_document"]
+    assert "catégorie ici = PRÉSUMÉE" in text             # the FILES line
     keys = {n.key: n for n in disclosure.NEVERS}
     # The documented exception, stated as the promise it bounds.
     link = keys["link"]
-    assert "`begin_upload`'s `upload_url`" in link.en and "write-only" in link.en
+    assert "`begin_upload`" in link.en and "`upload_url`" in link.en
+    assert "écriture seule" in link.en
     assert {"get_signed_url", "sign_blob_url", "generate_signed_url",
             "build_folder_zip_url"} <= set(link.forbidden)
-    assert "restorable" in keys["template_version"].en
+    assert "rétablissable" in keys["template_version"].en
     assert {"document", "confirm", "active_template"} <= set(keys)
     # The ANALYSE paragraph and the tool keep the D15 nuance: the category
     # is never chosen THERE, and a presumed one set in FILES is replaced.
@@ -1029,22 +1037,22 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
     # Rewritten again (contracts-1 part 2): the ANALYSE and FILES index
     # lines keep the rule in a clause; its detail is the tools' own.
     analyse = next(f for f in disclosure.FAMILIES if f.key == "analyse")
-    assert "never over the lawyer's" in analyse.instructions_en
-    assert "on any OTHER document that carries an analysis" in (
+    assert "jamais sur celle de l'avocat" in analyse.instructions_en
+    assert "sur tout document déjà analysé" in (
         tools.TOOLS["update_document"]["description"])
     desc = tools.TOOLS["record_document_analysis"]["description"]
     # Rewritten deliberately (the two confirmations separated, 2026-09-29):
     # it pinned « that one is KEPT, with his confirmation ». The category is
     # kept; the ANALYSIS confirmation never covers a new run.
-    assert "that one is KEPT, and a gap is flagged" in desc
+    assert "conservée avec alerte `analyse.divergence_categorie`" in desc
     assert "with his confirmation" not in desc
-    assert "his confirmation of an earlier analysis never covers a new one" in desc
-    assert "cannot choose or invent one here" in desc
-    assert "REPLACES a PRESUMED one (a FILES tool's" in desc
-    assert "NEVER a category the lawyer chose or confirmed" in desc
-    assert "a template is not one" in tools.TOOLS["get_document_text"]["description"]
-    assert "a template is not a document" in text   # READ-CONTENT
-    assert "It never hands out a link that reads or downloads a stored file" in text
+    assert "une confirmation antérieure ne couvre jamais un nouveau passage" in desc
+    assert "Fournir une `sous_nature` de la table fermée" in desc
+    assert "remplace toute catégorie présumée/défaut" in desc
+    assert "JAMAIS celle choisie par l'avocat" in desc
+    assert "pas les modèles" in tools.TOOLS["get_document_text"]["description"]
+    assert "un gabarit n'est pas un document" in text   # READ-CONTENT
+    assert "Ne jamais remettre de lien pour lire ou télécharger un fichier stocké" in text
     # REWRITTEN deliberately (2026-11-10, the consent screen cut short at the
     # lawyer's request): the FILES and TEMPLATES partials that repeated the
     # egress, « Projets » and the restorable versions left the screen. The
@@ -1057,8 +1065,8 @@ def test_the_lot_2a_texts_say_what_files_and_templates_do():
 
 def test_complete_task_describes_the_refusal_it_now_makes():
     desc = tools.TOOLS["complete_task"]["description"]
-    assert "never reopens a closed task" in desc
-    assert "REFUSED" in desc
+    assert "Ne rouvre pas une tâche fermée" in desc
+    assert "REFUSÉ" in desc
     assert "complete_task" in tools.EDIT_TOOLS
 
 
@@ -1088,32 +1096,33 @@ def test_the_lot_3b_texts_say_what_billing_does():
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the index line keeps the three facts a caller needs before
     # opening the tools; « REFUSED while a payment stands » and « the proof
     # of what the client was told » are pinned below, in the descriptions.
-    for fragment in ("CONSUMES the year's next number", "ONLY a brouillon",
-                     "sending NOTHING"):
+    for fragment in ("CONSOMME à jamais le prochain numéro",
+                     "corrige un brouillon", "sans rien envoyer"):
         assert fragment in billing.instructions_en, fragment
     keys = {n.key for n in disclosure.NEVERS}
     assert {"payment", "invoice_paid", "invoice_send", "invoice_sources"} <= keys
 
     desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
-    assert "consumed FOR EVER" in desc["create_invoice"]
-    assert "a brouillon only" in desc["update_invoice"]
-    assert "REFUSED while a payment stands" in desc["update_invoice"]
-    assert "Never payée" in desc["update_invoice"]
-    assert "MARKED sent" in desc["list_invoices"]
-    assert "proof of what the client was told" in desc["create_budget_version"]
+    assert "Consomme définitivement" in desc["create_invoice"]
+    assert "BROUILLON :" in desc["update_invoice"]
+    assert "refusée si paiement actif" in desc["update_invoice"]
+    assert "Jamais `payée` ici" in desc["update_invoice"]
+    assert "marquée envoyée" in desc["list_invoices"]
+    assert "référence du PDF client « Estimation »" in desc["create_budget_version"]
     # D20 (2026-09-29): the sending is the lawyer's to attest — the import's
     # text names update_invoice as HIS instrument, never « promote it »
     # (rewritten deliberately: this line pinned « promote it with
     # update_invoice »).
-    assert "update_invoice to envoyée at his word" in desc["import_invoice"]
+    assert "`update_invoice` marque `envoyée` sur mot de l'avocat" in desc["import_invoice"]
     assert "promote it" not in desc["import_invoice"]
-    assert "set it only on his word" in desc["update_invoice"]
+    assert "promouvoir" not in desc["import_invoice"]
+    assert "sur mot de l'avocat" in desc["update_invoice"]
     # Moved with the prose (contracts-1 part 2): what « envoyée » backs, and
     # how an issued invoice is corrected.
-    assert "a fee payment from trust relies on it, art." in desc["update_invoice"]
-    assert "corrected by voiding it and issuing a new one" in (
+    assert "requis pour paiement fidéicommis, art." in desc["update_invoice"]
+    assert "une facture émise ne se corrige qu'en l'annulant puis créant une nouvelle" in (
         desc["update_invoice"])
-    assert "frozen, their phase aside, until update_invoice voids it" in (
+    assert "Sources gelées (sauf phase via `set_*_phase_bulk`) jusqu'à annulation" in (
         desc["create_invoice"])
     import_status = OUTPUT_SCHEMAS["import_invoice"]["properties"]["entity"][
         "properties"]["status"]["description"]
@@ -1124,9 +1133,9 @@ def test_the_lot_3b_texts_say_what_billing_does():
     # what stays true: the reclassifiers alone change a row WHILE it stays
     # billed, and the void releases the row instead.
     reclassify = next(f for f in disclosure.FAMILIES if f.key == "reclassify")
-    assert "WHILE it stays carried to an invoice" in reclassify.instructions_en
-    assert "(a void releases it instead)" in reclassify.instructions_en
-    assert "WHILE it stays carried to an invoice" in endpoint.INSTRUCTIONS
+    assert "même sur une entrée portée à une facture" in reclassify.instructions_en
+    assert "(seule l'annulation de facture la libère)" in reclassify.instructions_en
+    assert "seule l'annulation de facture la libère" in endpoint.INSTRUCTIONS
 
     # Completeness review of lot 3: the move (CORRECT, `dossier_id`) says
     # what the budget really does — a non-billable time entry counts in NO
@@ -1134,17 +1143,17 @@ def test_the_lot_3b_texts_say_what_billing_does():
     # own move warning says (_move_warnings).
     # Moved into update_time_entry (contracts-1 part 2), whose `dossier_id`
     # is the move; its twin says the disbursement's share follows too.
-    assert "non-billable time counts in no budget" in desc["update_time_entry"]
-    assert "its share of the budget actuals with it" in desc["update_expense"]
+    assert "non facturable = 0 $" in desc["update_time_entry"]
+    assert "avec son impact budgétaire" in desc["update_expense"]
 
     # Fixups of lot 3 — ONE truth about invoice numbers on every surface:
     # the year counter never reissues a number; an IMPORTED number can be
     # imported again once the voided invoice is deleted in the application.
     importing = next(f for f in disclosure.FAMILIES if f.key == "import")
-    assert "NEVER allocates a number" in importing.instructions_en
-    assert "the counter never reissues it" in desc["create_invoice"]
-    assert "an IMPORTED number can be imported again" in desc["update_invoice"]
-    assert "only then can it be imported again" in desc["import_invoice"]
+    assert "n'alloue JAMAIS de numéro" in importing.instructions_en
+    assert "jamais réémis" in desc["create_invoice"]
+    assert "un n° importé n'est réimportable qu'après suppression à l'app" in desc["update_invoice"]
+    assert "réimportable seulement après suppression à l'app" in desc["import_invoice"]
     with mock.patch("google.cloud.firestore.Client"):
         import mcp.handlers as _handlers
     assert _handlers._NUMBER_IS_PERMANENT.startswith(
@@ -1152,12 +1161,12 @@ def test_the_lot_3b_texts_say_what_billing_does():
         "l'année")
     # ... and an uncertain creation is said as such, never « no number
     # consumed »: re-read, then the SAME key.
-    assert "« Issue INCERTAINE »" in desc["create_invoice"]
-    assert "with the SAME key" in desc["create_invoice"]
+    assert "issue incertaine" in desc["create_invoice"].lower()
+    assert "avec la MÊME clé" in desc["create_invoice"]
 
     # Fixups of lot 3 (D18): the FILES texts say a category stored before
     # the marker is the lawyer's unless it is « autre ».
-    assert "counts as his unless its category is « autre »" in (
+    assert "catégorie antérieure au suivi autre qu'« autre »" in (
         desc["update_document"])
 
 
@@ -1174,19 +1183,19 @@ def test_the_lot_4b_texts_say_what_the_dossier_tools_do():
     assert dossiers.tools == ("set_dossier_status", "update_dossier_party")
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the index line keeps the drain and the LINK; the rest is
     # pinned where the caller reads each tool.
-    for fragment in ("DRAINS its DavX5 collection", "the contact stays"):
+    for fragment in ("VIDE sa collection DavX5", "le contact reste"):
         assert fragment in dossiers.instructions_en, fragment
     status_desc = tools.TOOLS["set_dossier_status"]["description"]
     party_desc = tools.TOOLS["update_dossier_party"]["description"]
-    for fragment in ("prescription alerts", "SAME status"):
+    for fragment in ("alertes coupées", "Même statut"):
         assert fragment in status_desc, fragment
-    for fragment in ("EVER had trust funds", "a party a signification names",
-                     "To ADD a party: update_dossier"):
+    for fragment in ("avec fidéicommis sur ce dossier", "partie signifiée",
+                     "pour ajouter : `update_dossier`"):
         assert fragment in party_desc, fragment
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "dossier_status" not in keys
-    assert ("detaching a party or a mandataire removes a LINK — the contact "
-            "stays") in keys["delete"].en
+    assert ("détacher une partie ou un mandataire retire un LIEN, le contact "
+            "reste") in keys["delete"].en
     # REWRITTEN deliberately (2026-11-10, the consent screen cut short): the
     # screen says the LINK beside the capability — the DOSSIERS line — and
     # the refusals (last client, a served party) are the tool's own.
@@ -1215,15 +1224,15 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
     assert contacts.tools == ("update_partie_mandataire", "record_kyc_status")
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: the index line keeps PRESUMED and « NOT done »; the rest is
     # pinned in the two descriptions.
-    for fragment in ("PRESUMED", "counts as NOT done"):
+    for fragment in ("PRÉSUMÉE", "compte comme NON faite"):
         assert fragment in contacts.instructions_en, fragment
     kyc_desc = tools.TOOLS["record_kyc_status"]["description"]
-    for fragment in ("reported OPEN by get_coverage_report",
-                     "this connector never confirms one",
-                     "REFUSED on a check the lawyer decided or confirmed",
-                     "`notes` are APPENDED under a dated"):
+    for fragment in ("reste OUVERT dans `get_coverage_report`",
+                     "jamais confirmé ici",
+                     "REFUSÉ sur statut décidé",
+                     "`notes` AJOUTÉES sous"):
         assert fragment in kyc_desc, fragment
-    assert "the mandataire contact stays" in (
+    assert "contact subsiste" in (
         tools.TOOLS["update_partie_mandataire"]["description"])
     keys = {n.key: n for n in disclosure.NEVERS}
     assert "trust_identity" not in keys
@@ -1237,8 +1246,8 @@ def test_the_lot_4b_texts_say_what_the_contact_tools_do():
     assert ("*", "identity_verified_source") in kyc_never.forbidden_inputs
     # The SAFETY CORE states it as a clause (contracts-1 part 2).
     assert kyc_never.in_core
-    assert ("CONFIRM an identity or conflict check, or change one the lawyer "
-            "decided or confirmed") == kyc_never.en
+    assert ("CONFIRMER une vérification d'identité ou de conflits, ni écraser "
+            "celle décidée ou confirmée par l'avocat") == kyc_never.en
     # REWRITTEN deliberately (2026-11-10, the consent screen cut short): the
     # promise's clause says both halves — never confirm, never change the
     # lawyer's — and PRESUMED is said beside the capability.
@@ -1274,13 +1283,13 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
 
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS became a SAFETY CORE plus ONE index line per family, the family prose moved into the tool descriptions: these two DOSSIERS facts are set_dossier_status's own.
     status_desc = tools.TOOLS["set_dossier_status"]["description"]
-    assert ("between actif and en_attente nothing changes on the phone"
+    assert ("Entre `actif` et `en_attente`, rien ne change au téléphone"
             in status_desc)
     # Reworded by the finitions (contracts-8): the moved-status case is one
     # of the three retry cases, no longer an « unless » tacked on.
-    assert "`warnings` say the status moved during the call" in status_desc
+    assert "`warnings` indiquent statut déplacé" in status_desc
     contacts = next(f for f in disclosure.FAMILIES if f.key == "contacts")
-    assert "it counts as NOT done" in contacts.instructions_en
+    assert "compte comme NON faite" in contacts.instructions_en
 
     text = endpoint.INSTRUCTIONS
     # The writes that rewrite what they read: ONE rule in the core now —
@@ -1289,9 +1298,9 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     # REWRITTEN deliberately (2026-09-30, the context-cost lot): same rule,
     # compressed with the rest of the core to leave the CONVENTIONS room
     # within the client's 2 048-character cut.
-    assert ("stale_etag (also without `expected_etag`, if the record changed "
-            "during the call) wrote nothing") in disclosure.safety_core_en()
-    assert "a dossier it refuses retried as its warning says" in (
+    assert ("`stale_etag`, même sans `expected_etag`, n'a rien écrit"
+            ) in disclosure.safety_core_en()
+    assert "réessayer selon `warnings` si un dossier refuse" in (
         tools.TOOLS["update_dossier_party"]["description"])
     assert "`*_source` \"mcp\"" in text
     assert "« [AAAA-MM-JJ — inscrit par Claude] »" in text
@@ -1305,8 +1314,8 @@ def test_the_lot_4b_text_step_says_what_the_phone_and_the_record_keep():
     assert "(votre téléphone suit)" in dossiers.consent_fr
 
     deletions = tools.TOOLS["list_deletions"]["description"]
-    assert "each LINK detached" in deletions
-    assert "the contact stays" in deletions
+    assert "LIENS détachés" in deletions
+    assert "le contact subsiste" in deletions
     row = OUTPUT_SCHEMAS["list_deletions"]["properties"]["items"]["items"][
         "properties"]
     assert "a LINK detached" in row["entity_type"]["description"]
@@ -1338,19 +1347,19 @@ def test_review_of_the_lot_4b_text_step():
     # Reworded by the finitions (contracts-8): three cases, stated once, in
     # order — the duplicated « unless » clause prescribed the very action it
     # was meant to be the exception to.
-    assert "`warnings` say the status moved" in desc
-    assert "never resend yours" in desc
-    assert desc.count("unless") <= 1, desc
+    assert "`warnings` indiquent statut déplacé" in desc
+    assert "relire `get_dossier` puis NOUVELLE clé" in desc
+    assert desc.count("unless") <= 1 and desc.count("sauf") <= 1, desc
     # Fixes of lot 4: the same-key retry is no longer promised without
     # exception — the description names both refusals a retry can meet and
     # the way out of each; INSTRUCTIONS too.
     # REWRITTEN deliberately (contracts-1 part 2): the DOSSIERS paragraph
     # became an index line — the three cases are the description's, and
     # the core states the generic ones for every write.
-    assert "normally" in desc and "still in flight" in desc
-    assert "interrupted" in desc and "a NEW key" in desc
+    assert "en cours" in desc and "MÊME clé" in desc
+    assert "interrompu" in desc and "NOUVELLE clé" in desc
     core = disclosure.safety_core_en()
-    assert "still in flight" in core and "a NEW key only if" in core
+    assert "encore en cours" in core and "NOUVELLE clé si rien écrit" in core
 
     # REWRITTEN in lot 5, step 5: « Les paiements ne sont inscriptibles par
     # aucun outil » was TRUE when lot 4b wrote this test, and lot 5 made it
@@ -1414,9 +1423,9 @@ def test_the_lot_5_texts_state_the_final_never_set():
     # of the SAFETY CORE now; the two register entries that record a
     # payment are named by the tools that make them.
     assert payment.in_core
-    assert payment.en == "record a payment outside the accounting registers"
+    assert payment.en == "inscrire un paiement hors des registres comptables"
     for name in ("record_trust_entry", "record_admin_entry"):
-        assert "RECORDS A PAYMENT" in tools.TOOLS[name]["description"], name
+        assert "INSCRIT UN PAIEMENT" in tools.TOOLS[name]["description"], name
 
     # « fee_payee » joined on the lawyer's decision D23 (2026-09-29) — the
     # list is rewritten deliberately, the order kept. Rewritten again
@@ -1429,35 +1438,37 @@ def test_the_lot_5_texts_state_the_final_never_set():
     listed_fr = " ".join(keys[k].fr for k in register)
     listed_en = " ".join(keys[k].en for k in register)
     # REWRITTEN deliberately (2026-11-10, the consent screen cut short): each
-    # promise keeps its whole statement in English (INSTRUCTIONS); the
-    # screen's French clause says its gist — None where the detail is the
-    # English text's alone.
+    # promise keeps its whole statement in INSTRUCTIONS; the screen's French
+    # clause says its gist — None where the detail is INSTRUCTIONS' alone.
     for fr, en in (
-        ("<strong>supprimer</strong> une écriture", "never deletes a register entry"),
-        ("<strong>concilier</strong>", "reconciliation"),
-        ("modifier un compte", "creates or modifies an account"),
+        ("<strong>supprimer</strong> une écriture",
+         "Ne jamais supprimer une écriture comptable"),
+        ("<strong>concilier</strong>", "conciliation"),
+        ("modifier un compte", "créer ou modifier un compte"),
         ("<strong>virer des fonds</strong> du fidéicommis entre dossiers",
-         "never transfers trust funds between dossiers"),
-        ("<strong>en espèces</strong>", "in cash (art. 57"),
-        (None, "with a paper invoice"),
-        ("facture <strong>non envoyée</strong>", "with an invoice not yet sent"),
-        (None, "an invoice that imputes a provision"),
+         "Ne jamais virer des fonds du fidéicommis entre dossiers"),
+        ("<strong>en espèces</strong>", "en espèces (art. 57"),
+        (None, "facture papier"),
+        ("facture <strong>non envoyée</strong>", "non envoyée"),
+        (None, "imputant une provision"),
         # D21 and D23 (2026-09-29).
         ("d'un autre client",
-         "another client's invoice than the one whose funds leave trust"),
-        (None, "nor one naming no client, in a dossier of several"),
+         "un autre client que celui dont les fonds sortent du fidéicommis"),
+        (None, "ou sans client nommé dans un dossier à plusieurs clients"),
         ("à un autre que <strong>vous ou votre cabinet</strong>",
-         "to anyone but the lawyer or his firm"),
-        ("<strong>numéro de compte</strong>", "a bank transit or account number"),
+         "à un autre bénéficiaire que l'avocat ou son cabinet"),
+        ("<strong>numéro de compte</strong>",
+         "de numéro de transit ou de compte bancaire"),
     ):
         assert fr is None or fr in listed_fr, fr
         assert en in listed_en, en
 
     delete = keys["register_delete"]
-    assert "a trust entry is corrected only by a reversal" in delete.en
-    assert "`update_admin_entry` while editable" in delete.en
+    assert ("une écriture au fidéicommis ne se corrige que par "
+            "contre-passation") in delete.en
+    assert "`update_admin_entry` tant qu'elle est modifiable" in delete.en
     # 2026-10-05: never « even under the accounting grant » — no such grant.
-    assert delete.en.startswith("It never deletes a register entry:")
+    assert delete.en.startswith("Ne jamais supprimer une écriture comptable :")
     # Each item carries the calls it forbids — split three ways.
     assert set(delete.forbidden) == {"delete_transaction", "delete_card_payment"}
     assert keys["register_transfer"].forbidden == ("create_inter_dossier_transfer",)
@@ -1488,9 +1499,9 @@ def test_the_lot_5_texts_state_the_final_never_set():
     # « the ONLY correction » is the tool's own sentence, pinned here.
     assert "`reverse_register_entry`" in accounting.instructions_en
     assert tools.TOOLS["reverse_register_entry"]["description"].startswith(
-        "ACCOUNTING — WRITE. The ONLY correction of a trust entry, and of an "
-        "administration entry update_admin_entry can no longer edit")
-    assert "(its latest 25 kept)" in tools.TOOLS["update_admin_entry"]["description"]
+        "COMPTABILITÉ — ÉCRITURE. Seule correction d'une écriture en "
+        "fidéicommis ou d'une écriture admin verrouillée")
+    assert "garde 25 révisions" in tools.TOOLS["update_admin_entry"]["description"]
 
     # Every token reads the register promises since 2026-10-05 (until then
     # only a token holding the separate accounting grant did), and the
@@ -1577,8 +1588,8 @@ def test_the_2026_10_05_false_claim_entries_bite_on_the_texts_that_stood():
         tools.TOOLS["get_admin_ledger"]["description"],
         tools.TOOLS["create_invoice"]["description"],
         tools.TOOLS["update_invoice"]["description"],
-        "Write tools appear only when the lawyer granted the `athena:write` "
-        "scope.",
+        "Les outils d'écriture n'apparaissent que si l'avocat a accordé la "
+        "portée `athena:write`.",
         # The read paragraph names trust accounting by its French name.
         "Cet accès inclut les soldes des fonds détenus en fidéicommis "
         "(comptabilité en fidéicommis)",
@@ -1624,47 +1635,35 @@ def test_the_texts_name_the_natures_outside_the_results():
     for kind in tools._ADMIN_EDIT_KINDS:
         assert kind in update, kind
     for fragment in (
-        "the lawyer's DRAWING — never the method « prélèvement », a "
-        "pre-authorized debit",
-        "no `category`, `ventilation`, invoice nor supplier invoice",
-        "neither ever with a dossier",
-        "an account OUTSIDE this ledger — the trust account, a savings "
-        "account — named as `counterparty`",
-        "paying a card of this ledger is always this, never a virement "
-        "interne",
-        "Fees drawn from trust are never a virement interne: "
-        "record_trust_entry purpose virement_honoraires records them",
-        "remise_tps_tvq / remboursement_tps_tvq (TPS/TVQ paid to / refunded "
-        "by the tax authorities, its whole amount — never a dépense nor a "
-        "recette_autre; interest or penalties paid are a dépense apart, "
-        "interest received a recette_autre apart; never with a dossier)",
-        "These natures and paiement_carte enter no revenue, expense or "
-        "tax-credit total.",
+        "retrait avocat",
+        "Hors résultats : `prélèvement` (retrait avocat), `apport`",
+        "compte externe en `counterparty`",
+        "`remise_tps_tvq`/`remboursement_tps_tvq` (sans dossier ; intérêts/pénalités à part)",
+        "Honoraires fidéicommis = `record_trust_entry`",
     ):
         assert fragment in record, fragment
-    # The descriptions said « four » in prose until 2026-11-07, and a len()
-    # tripwire held that count to the model's; they name the natures now,
-    # and the retired counts are KNOWN_FALSE_CLAIMS (asserted absent below).
-    # The sentence of update_admin_entry that names the kinds without a
-    # dossier names every kind of the model's list (NO_DOSSIER_KINDS).
-    end = update.index(" never carries a dossier")
+    assert "jamais le mode préautorisé" in (
+        tools.TOOLS["record_admin_entry"]["input_schema"]["properties"]["kind"]
+        ["description"])
+    # The dossier-less kinds sentence in update_admin_entry names NO_DOSSIER_KINDS.
+    end = update.index(" sans dossier")
     no_dossier = update[update.rindex(". ", 0, end) + 2:end]
     for kind in al.NO_DOSSIER_KINDS:
         assert kind in no_dossier, kind
-    # So do both tools' `dossier_id` property texts (review of lot A):
-    # each lists, after « never », every kind that carries no dossier.
+    # So do both tools' `dossier_id` property texts: each lists after « jamais »
+    # every kind that carries no dossier.
     for name in ("record_admin_entry", "update_admin_entry"):
         prop = tools.TOOLS[name]["input_schema"]["properties"]["dossier_id"]
         never_text = prop["description"]
-        never_text = never_text[never_text.index("never"):]
+        never_text = never_text[never_text.index("jamais"):]
         for kind in al.NO_DOSSIER_KINDS:
             assert kind in never_text, (name, kind)
     for fragment in (
-        "A new `kind` keeps the bank movement's sign",
-        "across signs only dépense <-> recette_autre",
-        "reverse the entry, then record the right one",
-        "Net, TPS and TVQ mean something only on a dépense",
-        "requires `dossier_id` \"\"",
+        "`kind` conserve le sens bancaire",
+        "seul `dépense` <-> `recette_autre`",
+        "contrepasser/réinscrire",
+        "`ventilation`/`category` requis si `dépense`/`remboursement_depense`",
+        "`dossier_id=\"\"`",
     ):
         assert fragment in update, fragment
     # The passages the description states ARE the model's table: within
@@ -1675,7 +1674,8 @@ def test_the_texts_name_the_natures_outside_the_results():
         by_sign.setdefault(al._KIND_DIRECTION[kind], []).append(kind)
     for sign, plural in (("déboursé", "déboursés"), ("recette", "recettes")):
         kinds = by_sign[sign]
-        assert (", ".join(kinds[:-1]) + f" and {kinds[-1]} ({plural})") in update
+        assert (", ".join(f"`{k}`" for k in kinds[:-1])
+                + f" et `{kinds[-1]}` ({plural})") in update
         for a in kinds:
             for b in kinds:
                 assert al.kind_move_allowed(a, b), (a, b)
@@ -1687,18 +1687,16 @@ def test_the_texts_name_the_natures_outside_the_results():
     outside = (set(al.VALID_KINDS) - set(al.REVENUE_KINDS)
                - set(al.EXPENSE_KINDS) - set(al.REFUND_KINDS) - {al.REVERSAL_KIND})
     assert set(al.NON_RESULT_KINDS) | {"paiement_carte"} == outside
-    never = ledger[ledger.index("Never in any such total"):]
+    never = ledger[ledger.index("Hors résultats ni total"):]
     for kind in sorted(outside):
         assert kind in never, kind
     for kind in al.REVENUE_KINDS + al.EXPENSE_KINDS + al.REFUND_KINDS:
         assert kind not in never, kind
     # 2026-11-08: a refund counts against the expenses, and carries a split.
-    assert "and dépense less remboursement_depense (expenses" in ledger
-    assert "net, TPS and TVQ mean something only on those two" in ledger
-    assert ("A revenue, expense or tax-credit (CTI/RTI) total counts only "
-            "encaissement_facture and recette_autre") in ledger
-    assert "it settles the TPS/TVQ balance, never an expense nor a tax credit" in ledger
-    assert "not the method « prélèvement »" in ledger
+    assert "dépenses = `dépense` moins `remboursement_depense`" in ledger
+    assert "seuls avec net/TPS/TVQ significatifs" in ledger
+    assert "Revenus = `encaissement_facture` et `recette_autre`" in ledger
+    assert "(solde TPS/TVQ)" in ledger
 
     retired = ("`kind` moves only between dépense and recette_autre (its "
                "sign follows).")
@@ -1766,7 +1764,7 @@ def test_the_folder_texts_name_every_system_folder():
     assert len(set(names)) == 7
     for name in names:
         assert f"« {name} »" in desc, name
-    assert "Seven folders are the application's" in desc
+    assert "Répertoires système (`system_role`, non renommables ni déplaçables ici)" in desc
 
 
 def _filing_leaves_by_parent() -> dict[str, list[str]]:
@@ -1804,10 +1802,9 @@ def test_the_folder_texts_say_the_application_files_into_four_and_locks_three_pa
     # short at the lawyer's request); the tool's description keeps it all.
     desc = tools.TOOLS["manage_folder"]["description"]
     for parent, leaves in grouped.items():
-        en = (" and ".join(f"« {n} »" for n in leaves) + f" under « {parent} »")
-        assert en in desc, en
-    assert "the four it files into itself" in desc
-    assert "and those three parents" in desc
+        fr = (" et ".join(f"« {n} »" for n in leaves) + f" sous « {parent} »")
+        assert fr in desc, fr
+    assert "et ces trois parents" in desc
     # The retired wording bites — whole, as the partial carried it.
     retired = (
         "en déplacer — jamais les sept dossiers où l'application classe "
@@ -1842,11 +1839,11 @@ def test_the_default_tree_texts_are_true_and_trip_no_false_claim():
         "« projets » | « autres » | « portail »",
     ):
         assert not _false_claims_in(true), true[:80]
-    assert "in its « Projets » folder (under « Interne »" in desc["fill_gabarit"]
-    assert ("always into the dossier's « Factures » folder (under « Mandat »)"
+    assert "dans son répertoire « Projets » (sous « Interne »)" in desc["fill_gabarit"]
+    assert ("dans « Factures » (sous « Mandat »"
             in desc["create_document"])
-    assert "Both land in « Projets » unless folder_id" in desc["create_document"]
-    assert "A new dossier gets the default filing tree" in desc["create_dossier"]
+    assert "Atterrissent dans « Projets » sauf `folder_id`" in desc["create_document"]
+    assert "Crée l'arborescence par défaut" in desc["create_dossier"]
     # The retired phrasings bite on the texts they were written for.
     for false in (
         "The system folders « Projets » and « Reçus du portail » are the "

@@ -432,22 +432,20 @@ def _row_commits(fake, collection="timeentries"):
 
 
 def test_l_outil_simple_reclasse_une_entree_facturee(real):
-    payload = handlers.set_time_entry_phase(
-        {"time_entry_id": "e1", "sous_phase": "INT-02"}
+    payload = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "sous_phase": "INT-02"}]}
     )
-    assert payload["outcome"] == "applied"
-    assert payload["entity"]["invoiced"] is True   # tout l'objet du lot
-    assert payload["entity"]["sous_phase"] == "INT-02"
-    assert payload["entity"]["phase_label"] == "Introduction de l'instance"
-    # L'écho porte les chiffres, inchangés : c'est la preuve lisible côté
-    # appelant que rien d'autre n'a bougé.
-    assert payload["entity"]["amount_cents"] == 45000
-    assert payload["entity"]["hours"] == 1.5
-    # Et l'etag rendu est celui ÉCRIT, jamais celui lu avant l'écriture :
-    # c'est celui que la prochaine édition gardée doit présenter.
+    row = payload["results"][0]
+    assert row["outcome"] == "applied"
+    assert row["invoiced"] is True   # tout l'objet du lot
+    assert row["sous_phase"] == "INT-02"
+    assert row["phase_label"] == "Introduction de l'instance"
+    # L'écrit ne touche aucun chiffre — seule la phase et l'etag changent.
     stored = real.peek("timeentries/e1")
     assert stored["sous_phase"] == "INT-02"
-    assert payload["entity"]["etag"] == stored["etag"] != "etag-0"
+    assert stored["amount"] == 45000
+    assert stored["hours"] == 1.5
+    assert stored["etag"] != "etag-0"
     # Une écriture gardée : une transaction, la lecture comprise.
     (commit,) = _row_commits(real)
     assert commit.transaction is not None
@@ -455,70 +453,78 @@ def test_l_outil_simple_reclasse_une_entree_facturee(real):
 
 
 def test_l_outil_simple_annonce_le_non_changement(real):
-    handlers.set_expense_phase({"expense_id": "x1", "phase": "PRE"})
+    handlers.set_expense_phase_bulk(
+        {"entries": [{"expense_id": "x1", "phase": "PRE"}]}
+    )
     real.reset_logs()
-    payload = handlers.set_expense_phase({"expense_id": "x1", "phase": "PRE"})
-    assert payload["outcome"] == "unchanged"
+    payload = handlers.set_expense_phase_bulk(
+        {"entries": [{"expense_id": "x1", "phase": "PRE"}]}
+    )
+    assert payload["unchanged"] == 1
+    assert payload["results"][0]["outcome"] == "unchanged"
     assert _row_commits(real, "expenses") == []
-    assert payload["entity"]["etag"] == real.peek("expenses/x1")["etag"]
 
 
 def test_l_outil_simple_leve_sur_un_refus(real):
-    """Un appelant qui a nommé UNE ligne veut une erreur, pas un rapport
-    d'une ligne."""
-    with pytest.raises(tools.ToolArgumentError, match="introuvable"):
-        handlers.set_time_entry_phase(
-            {"time_entry_id": "absent", "phase": "PRE"}
-        )
-    with pytest.raises(tools.ToolArgumentError, match="n'appartient pas"):
-        handlers.set_time_entry_phase(
-            {"time_entry_id": "e1", "phase": "INS", "sous_phase": "CTS-02"}
-        )
-    with pytest.raises(tools.ToolArgumentError, match="Aucun code de phase"):
-        handlers.set_time_entry_phase({"time_entry_id": "e1"})
+    """Une ligne invalide dans un appel à une ligne répond « refused » avec sa
+    raison et n'écrit rien."""
+    r1 = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "absent", "phase": "PRE"}]}
+    )
+    assert r1["refused"] == 1 and "introuvable" in r1["results"][0]["reason"]
+    r2 = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "phase": "INS", "sous_phase": "CTS-02"}]}
+    )
+    assert r2["refused"] == 1 and "n'appartient pas" in r2["results"][0]["reason"]
+    r3 = handlers.set_time_entry_phase_bulk({"entries": [{"time_entry_id": "e1"}]})
+    assert r3["refused"] == 1 and "Aucun code de phase" in r3["results"][0]["reason"]
     assert real.commits == []
 
 
 def test_l_outil_simple_refuse_un_etag_perime_et_n_ecrit_rien(real):
-    with pytest.raises(tools.ToolArgumentError) as excinfo:
-        handlers.set_time_entry_phase({"time_entry_id": "e1",
-                                       "sous_phase": "INT-02",
-                                       "expected_etag": "une-autre-version"})
-    assert excinfo.value.reason == "stale_etag"
-    assert "list_time_entries" in str(excinfo.value)
+    """Un écrit concurrent pendant l'appel fait refuser la ligne sans écrire."""
+    real_bulk = time_entry_model.get_time_entries_bulk
+
+    def racing(ids):
+        rows = real_bulk(ids)
+        real.external_write("timeentries/e1", {
+            **real.peek("timeentries/e1"), "etag": "une-autre-version"})
+        return rows
+
+    with mock.patch.object(time_entry_model, "get_time_entries_bulk", racing):
+        payload = handlers.set_time_entry_phase_bulk(
+            {"entries": [{"time_entry_id": "e1", "sous_phase": "INT-02"}]}
+        )
+    assert payload["refused"] == 1
+    assert payload["results"][0]["outcome"] == "refused"
     assert real.peek("timeentries/e1")["sous_phase"] == ""
-    assert real.commits == []
+    assert _row_commits(real) == []
 
 
 def test_l_outil_simple_accepte_l_etag_courant_puis_celui_qu_il_rend(real):
-    """Chaîner deux reclassements sans relire : le second présente l'etag
-    que le premier a RENDU. Présenter l'ancien serait refusé."""
-    first = handlers.set_time_entry_phase({
-        "time_entry_id": "e1", "sous_phase": "INT-02",
-        "expected_etag": "etag-0"})
-    assert first["outcome"] == "applied"
-    with pytest.raises(tools.ToolArgumentError) as excinfo:
-        handlers.set_time_entry_phase({
-            "time_entry_id": "e1", "sous_phase": "AUD-01",
-            "expected_etag": "etag-0"})
-    assert excinfo.value.reason == "stale_etag"
-    second = handlers.set_time_entry_phase({
-        "time_entry_id": "e1", "sous_phase": "AUD-01",
-        "expected_etag": first["entity"]["etag"]})
-    assert second["outcome"] == "applied"
+    """Chaîner deux reclassements à la file sans relire."""
+    first = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "sous_phase": "INT-02"}]}
+    )
+    assert first["results"][0]["outcome"] == "applied"
+    second = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "sous_phase": "AUD-01"}]}
+    )
+    assert second["results"][0]["outcome"] == "applied"
     assert real.peek("timeentries/e1")["sous_phase"] == "AUD-01"
 
 
 def test_un_code_deja_porte_repond_inchange_meme_sur_un_etag_perime(real):
     """Rien ne peut se perdre à ne pas écrire : refuser ce non-changement
     casserait la rejouabilité que ces outils promettent."""
-    handlers.set_time_entry_phase({"time_entry_id": "e1",
-                                   "sous_phase": "INT-02"})
+    handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "sous_phase": "INT-02"}]}
+    )
     real.reset_logs()
-    payload = handlers.set_time_entry_phase({
-        "time_entry_id": "e1", "sous_phase": "INT-02",
-        "expected_etag": "etag-0"})
-    assert payload["outcome"] == "unchanged"
+    payload = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "sous_phase": "INT-02"}]}
+    )
+    assert payload["results"][0]["outcome"] == "unchanged"
     assert real.commits == []
 
 

@@ -803,10 +803,10 @@ def test_the_photo_travels_as_an_image_item_never_in_structured_content(
     assert image["type"] == "image" and image["mimeType"] == "image/jpeg"
     data = base64.b64decode(image["data"], validate=True)
     assert data[:2] == b"\xff\xd8" and len(data) <= tools.RECEIPT_IMAGE_MAX_BYTES
-    structured = result["structuredContent"]
-    assert structured["content_kind"] == "image"
-    assert tools.IMAGE_RESULT_KEY not in structured
-    assert json.loads(text["text"]) == structured
+    assert "structuredContent" not in result
+    parsed = json.loads(text["text"])
+    assert parsed["content_kind"] == "image"
+    assert tools.IMAGE_RESULT_KEY not in parsed
     assert image["data"][:200] not in text["text"]
     assert len(resp.data) < 1024 * 1024
 
@@ -858,7 +858,8 @@ def test_the_image_item_follows_the_text_and_nowhere_else():
     assert result["content"][1] == {
         "type": "image", "data": base64.b64encode(b"\x89PNGdata").decode(),
         "mimeType": "image/png"}
-    assert result["structuredContent"] == {"k": "v"}
+    assert "structuredContent" not in result
+    assert json.loads(result["content"][0]["text"]) == {"k": "v"}
     assert [c["type"] for c in tools.tool_result(
         {"k": "v"}, "2025-06-18")["content"]] == ["text"]
 

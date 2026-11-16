@@ -79,7 +79,7 @@ def test_the_templatize_chain_names_the_argument_it_hands_over():
     name the hand-over."""
     preview = tools.TOOLS["preview_templatize"]
     create = tools.TOOLS["create_template"]
-    assert "create_template's `source_document_id`" in preview["description"]
+    assert "en `source_document_id`" in preview["description"]
     prop = create["input_schema"]["properties"]["source_document_id"]
     assert "preview_templatize" in prop["description"]
     assert "document_id" not in create["input_schema"]["properties"]
@@ -161,12 +161,21 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
     # of the separate accounting scope — is named here, the registry no
     # longer carrying that scope.
     after_d22 = _AFTER_D22
-    assert after_d22 <= tools.WRITE_TOOLS
-    visible = (set(tools.TOOLS) - _ACCOUNTING_SCOPE_UNTIL_2026_10_05 - after_d22
+    all_shipped_then = set(tools.TOOLS) | _RETIRED_IN_V2
+    all_writes_then = tools.WRITE_TOOLS | _RETIRED_IN_V2
+    assert after_d22 <= all_writes_then
+    visible = (all_shipped_then - _ACCOUNTING_SCOPE_UNTIL_2026_10_05 - after_d22
                - _READS_AFTER_BULK)
-    assert len(visible) == 80 and len(visible & tools.WRITE_TOOLS) == 49
-    assert len(set(tools.TOOLS) - after_d22 - _READS_AFTER_BULK) == 86
-    assert len(tools.WRITE_TOOLS - after_d22) == 54
+    assert len(visible) == 80 and len(visible & all_writes_then) == 49
+    assert len(all_shipped_then - after_d22 - _READS_AFTER_BULK) == 86
+    assert len(all_writes_then - after_d22) == 54
+
+
+# Tools retired in v2.0.0 after the D22/Bulk releases (historical counts above kept exact).
+_RETIRED_IN_V2 = frozenset({
+    "create_time_entry", "create_expense",
+    "set_time_entry_phase", "set_expense_phase",
+})
 
 
 # The write tools shipped AFTER the D22 release, each under its own train.
@@ -200,12 +209,14 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
     # What a write token saw AT THAT RELEASE: the separate accounting scope
     # still held six tools back (removed 2026-10-05 — a write token sees
     # them all since; the runbook of a past release keeps its counts).
-    assert _READS_AFTER_BULK <= set(tools.TOOLS) - tools.WRITE_TOOLS
-    shipped = set(tools.TOOLS) - _READS_AFTER_BULK
+    all_shipped = set(tools.TOOLS) | _RETIRED_IN_V2
+    all_writes = tools.WRITE_TOOLS | _RETIRED_IN_V2
+    assert _READS_AFTER_BULK <= all_shipped - all_writes
+    shipped = all_shipped - _READS_AFTER_BULK
     visible = shipped - _ACCOUNTING_SCOPE_UNTIL_2026_10_05
-    reads = len(visible - tools.WRITE_TOOLS)
-    writes = len(visible & tools.WRITE_TOOLS)
-    all_reads = len(shipped - tools.WRITE_TOOLS)
+    reads = len(visible - all_writes)
+    writes = len(visible & all_writes)
+    all_reads = len(shipped - all_writes)
     ordered = [
         "python -m pytest tests/ -q -p no:cacheprovider",
         "*Revoke and disconnect — BEFORE the push*",
@@ -214,7 +225,7 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
         "*Re-add the connector and READ the CREATE paragraph",
         f"**{len(visible)}** tools ({reads} read, {writes} write)",
         f"**{len(shipped)}** ({all_reads} read, "
-        f"{len(tools.WRITE_TOOLS)} write)",
+        f"{len(all_writes)} write)",
         "*One smoke test, on a TEST dossier only*",
         "`entries[1]`",
         "skill `pallas-athena`",
@@ -223,7 +234,7 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
     assert positions == sorted(positions), list(zip(ordered, positions))
     assert f"up to {tools.ENTRY_BULK_MAX} rows a call" in body
     assert "there is no code gate (D19" in body
-    assert _AFTER_D22 <= tools.WRITE_TOOLS
+    assert _AFTER_D22 <= all_writes
     # §11 points at it from the D19 paragraph.
     section_11 = text[text.index("## 11. Optional — MCP connector"):
                       text.index("## 11b.")]
@@ -241,12 +252,12 @@ def test_review_e3_the_accounting_index_line_says_what_its_tools_say():
 
     accounting = next(f for f in disclosure.FAMILIES if f.key == "accounting")
     assert "what the bank shows" not in accounting.instructions_en
-    assert "movements that HAPPENED at the bank" in accounting.instructions_en
+    assert "mouvements RÉELLEMENT SURVENUS à la banque" in accounting.instructions_en
     # The ONE text every token reads since 2026-10-05 (the accounting
     # variant left with the separate scope).
-    assert "movements that HAPPENED at the bank" in endpoint.INSTRUCTIONS
+    assert "mouvements RÉELLEMENT SURVENUS à la banque" in endpoint.INSTRUCTIONS
     for name in ("record_trust_entry", "record_admin_entry"):
-        assert "HAPPENED" in tools.TOOLS[name]["description"], name
+        assert "RÉEL" in tools.TOOLS[name]["description"], name
     deployment = _flat(_REPO / "DEPLOYMENT.md")
     assert "record only movements that happened at the bank" in deployment
 

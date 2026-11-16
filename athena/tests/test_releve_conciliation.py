@@ -720,7 +720,7 @@ def test_the_never_rules_forbid_the_statement_writers_and_its_signer():
     # The short screen (2026-11-10) names it in three words; the English
     # statement (INSTRUCTIONS) says all three gestures.
     assert "(relevé bancaire compris)" in setup.fr
-    assert "attaches, replaces or removes its bank statement" in setup.en
+    assert "joindre, remplacer ou retirer son relevé bancaire" in setup.en
     # The model signer of a statement's (and a proof's) READ link.
     assert "consult_url" in keys["link"].forbidden and hasattr(rc, "consult_url")
 

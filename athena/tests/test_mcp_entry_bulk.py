@@ -115,19 +115,16 @@ def _dossier_reads(fake, did: str) -> int:
 # ══════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.parametrize("bulk, single", [(_TIME, "create_time_entry"),
-                                          (_EXPENSE, "create_expense")])
-def test_each_row_takes_exactly_the_single_tool_s_fields(bulk, single):
-    """« Each row takes the same fields as the single tool » — pinned by
-    comparison, never by a second list: the items ARE the single tool's
-    properties minus the call-level protocol key, with its required list."""
-    single_schema = tools.TOOLS[single]["input_schema"]
+@pytest.mark.parametrize("bulk, fields_fn, req", [
+    (_TIME, tools._time_entry_fields, tools._TIME_ENTRY_REQUIRED),
+    (_EXPENSE, tools._expense_fields, tools._EXPENSE_REQUIRED),
+])
+def test_each_row_takes_exactly_the_single_tool_s_fields(bulk, fields_fn, req):
+    """Chaque ligne reprend exactement les champs partagés sans `idempotency_key`."""
     entries = tools.TOOLS[bulk]["input_schema"]["properties"]["entries"]
     items = entries["items"]
-    expected = {k: v for k, v in single_schema["properties"].items()
-                if k != "idempotency_key"}
-    assert items["properties"] == expected
-    assert items["required"] == single_schema["required"]
+    assert items["properties"] == fields_fn()
+    assert items["required"] == list(req)
     assert items["additionalProperties"] is False
     assert entries["minItems"] == 1
     assert entries["maxItems"] == tools.ENTRY_BULK_MAX
@@ -164,25 +161,22 @@ def test_the_key_is_required_and_the_hints_are_a_creator_s(tool):
 @pytest.mark.parametrize("tool", [_TIME, _EXPENSE])
 def test_the_description_opens_on_the_refusal_and_the_confirmation(tool):
     text = tools.TOOLS[tool]["description"]
-    assert len(text) <= 2048
+    assert len(text) <= 900
     head = text[:400]
-    assert "ALL OR NOTHING" in head and "nothing is written" in head
+    assert "TOUT OU RIEN" in head and "rien n'est écrit" in head
     # Both forms a refusal takes: the handler's row, the schema's field.
     field = "hours" if tool == _TIME else "amount_cents"
-    assert f"0-based index (`entries[3]`, a field `entries[3].{field}`)" in head
-    assert "idempotency_key REQUIRED" in head
-    assert "confirm the batch with the user before calling" in head
-    assert "VERBATIM on the client's invoice" in text
-    assert "never delete" in text
+    assert f"index base 0 (`entries[3]`, `entries[3].{field}`)" in head
+    assert "idempotency_key REQUISE" in head
+    assert "confirmer le lot avant d'appeler" in head
+    assert "VERBATIM sur la facture" in text
+    assert "jamais supprimer" in text
 
 
 def test_the_instructions_and_the_consent_name_them_with_their_ceiling():
     text = endpoint.INSTRUCTIONS
     assert "`create_time_entries_bulk`" in text and "`create_expenses_bulk`" in text
-    assert f"up to {tools.ENTRY_BULK_MAX} rows, ALL OR NOTHING" in text
-    # The consent screen's CREATE line says the batches (its partial and
-    # the box's summary, with their ceiling, left on 2026-11-10: the
-    # ceiling is the tools' and INSTRUCTIONS').
+    assert f"jusqu'à {tools.ENTRY_BULK_MAX} lignes, TOUT OU RIEN" in text
     create = next(f for f in disclosure.FAMILIES if f.key == "create")
     assert "par lots" in create.consent_fr
 
@@ -256,12 +250,13 @@ def test_a_batch_of_disbursements_takes_create_expense_s_defaults(fake):
     assert [e["amount_cents"] for e in payload["entities"]] == [9500, 1200]
 
 
-def test_the_single_tool_still_takes_the_same_path(fake):
-    """The refactor that shares the builder left the single tool whole."""
-    payload = _call("create_time_entry", {**_time_row(hours=0.25),
-                                          "idempotency_key": _key()})
-    assert payload["entity"]["amount_cents"] == 7500
-    stored = fake.peek(f"timeentries/{payload['entity']['id']}")
+def test_a_single_row_bulk_time_entry_lands_cleanly(fake):
+    payload = _call(_TIME, {
+        "entries": [_time_row(hours=0.25)],
+        "idempotency_key": _key(),
+    })
+    assert payload["entities"][0]["amount_cents"] == 7500
+    stored = fake.peek(f"timeentries/{payload['entities'][0]['id']}")
     assert stored["created_via"] == "mcp" and stored["invoiced"] is False
 
 
@@ -332,9 +327,9 @@ def test_the_schema_check_names_the_row_of_every_field_it_refuses(tool, row, bad
     (e12,) = [e for e in errors if "`entries[12]" in e]
     (e37,) = [e for e in errors if "`entries[37]" in e]
     (e44,) = [e for e in errors if "`entries[44]" in e]
-    assert e12.startswith(f"`entries[12].{next(iter(bound))}` must be")
-    assert e37 == f"`entries[37].{required}` is required"
-    assert e44.startswith(f"`entries[44].{next(iter(enum))}` must be one of")
+    assert e12.startswith(f"`entries[12].{next(iter(bound))}` doit être")
+    assert e37 == f"`entries[37].{required}` est requis"
+    assert e44.startswith(f"`entries[44].{next(iter(enum))}` doit valoir l'une des valeurs")
     # Nothing else is refused, and no field is named bare any more.
     assert len(errors) == 3
     assert not [e for e in errors if not e.startswith("`entries[")]
@@ -373,8 +368,7 @@ def test_a_duplicate_row_s_other_fault_is_named_in_the_same_refusal(fake):
     assert "`entries[0]` :" not in text
 
 
-@pytest.mark.parametrize("tool, row", [(_TIME, _time_row),
-                                       ("create_time_entry", None)])
+@pytest.mark.parametrize("tool, row", [(_TIME, _time_row), (_EXPENSE, _expense_row)])
 def test_a_failed_legacy_ref_check_refuses_and_releases_the_key(
     fake, monkeypatch, tool, row,
 ):
@@ -394,22 +388,19 @@ def test_a_failed_legacy_ref_check_refuses_and_releases_the_key(
 
     monkeypatch.setattr(models, "find_by_legacy_ref", _down)
     key = _key()
-    if row is None:
-        args = {**_time_row(legacy_ref="ancien-3"), "idempotency_key": key}
-    else:
-        args = {"entries": [row(), row(legacy_ref="ancien-3")],
-                "idempotency_key": key}
+    args = {"entries": [row(), row(legacy_ref="ancien-3")],
+            "idempotency_key": key}
     exc = _refused(tool, args)
     assert exc.reason == "read_unavailable" and exc.keep_claim is False
     assert "n'a pas pu être lue" in str(exc)
     assert "rien n'a été enregistré" in str(exc)
-    assert fake.peek_collection("timeentries") == {}
+    coll = "timeentries" if tool == _TIME else "expenses"
+    assert fake.peek_collection(coll) == {}
     # The fault clears: the SAME key runs the call afresh, and it lands.
     monkeypatch.setattr(models, "find_by_legacy_ref", real)
     payload = _call(tool, args)
     assert payload["idempotent_replay"] is False
-    expected = 1 if row is None else 2
-    assert len(fake.peek_collection("timeentries")) == expected
+    assert len(fake.peek_collection(coll)) == 2
 
 
 def test_a_refused_batch_releases_its_key_for_the_corrected_one(fake):
@@ -475,7 +466,7 @@ def test_fifty_one_rows_are_refused_and_fifty_land(fake, tool, row):
     schema = tools.TOOLS[tool]["input_schema"]
     over = {"entries": [row() for _ in range(51)], "idempotency_key": _key()}
     assert tools.validate_args(schema, over) == [
-        "`entries` must contain at most 50 items (51 given)"]
+        "`entries` doit contenir au plus 50 élément(s) (51 fourni(s))"]
     # The handler repeats the bound — a direct call skips the schema.
     exc = _refused(tool, over, schema=False)
     assert "plafonné à 50 lignes" in str(exc) and "(51 reçues)" in str(exc)
@@ -519,7 +510,7 @@ def test_a_row_can_never_be_born_invoiced(tool, row):
                    {"created_via": "web"}, {"idempotency_key": "cle-ligne-01"}):
         errors = tools.validate_args(
             schema, {"entries": [row(**forged)], "idempotency_key": _key()})
-        assert errors and "is not a supported argument" in errors[0], forged
+        assert errors and "n'est pas un paramètre pris en charge" in errors[0], forged
 
 
 def test_a_phase_code_outside_the_vocabulary_is_refused_by_the_schema():

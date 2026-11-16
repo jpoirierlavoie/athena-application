@@ -506,7 +506,7 @@ def test_the_validator_enforces_the_counts(world):
     schema = tools.TOOLS["fill_gabarit"]["input_schema"]
     args = {"template_id": "t", "dossier_id": "d1",
             "blocs": [{"nom": f"B{i}", "contenu": "x"} for i in range(13)]}
-    assert any("at most 12" in e for e in tools.validate_args(schema, args))
+    assert any("au plus 12" in e for e in tools.validate_args(schema, args))
     assert tools.validate_args(schema, {**args, "dry_run": True})  # refused
 
 
@@ -910,8 +910,8 @@ def test_the_texts_say_which_half_of_a_copy_is_presumed(world):
     assert "category and protection level, presumed" not in text
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it — and says which half is presumed.
     desc = tools.TOOLS["create_document"]["description"]
-    assert ("the source's protection level, PRESUMED, and its category — "
-            "PRESUMED unless the lawyer had set it") in desc
+    assert ("protection conservée PRÉSUMÉE, catégorie PRÉSUMÉE "
+            "sauf choix antérieur de l'avocat") in desc
     # The FILES consent partial said it too until 2026-11-10, when the
     # lawyer had the screen cut short: the description above is where the
     # caller reads which half is presumed.
@@ -1024,7 +1024,7 @@ def test_the_instructions_state_the_rules_verbatim():
     from mcp import disclosure
 
     text = endpoint.INSTRUCTIONS
-    assert "« {{ » or « }} » is refused" in (
+    assert "« `{{` » ou « `}}` » refusés" in (
         tools.TOOLS["fill_gabarit"]["description"])
     # The fields the builder fills are the registry's list (2026-09-30:
     # the bulk creators' ceiling joined the reclassifiers'), never a copy.
@@ -1035,8 +1035,8 @@ def test_the_instructions_state_the_rules_verbatim():
             line = line.replace("{" + field + "}", "")
         assert "{" not in line and "}" not in line, family.key
     assert "`fill_gabarit`" in text and "`create_document`" in text
-    assert "It never changes an existing document's FILE" in text
-    assert "in ITS OWN dossier only" in (
+    assert "Ne jamais modifier le FICHIER d'un document existant" in text
+    assert "dans SON PROPRE dossier" in (
         tools.TOOLS["create_document"]["description"])
     assert "« par Claude (connecteur) »" in text
 

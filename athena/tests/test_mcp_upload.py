@@ -980,8 +980,8 @@ def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(worl
     # tool says what a new file of the active template does, and the
     # « jamais » list keeps the designation the lawyer's.
     desc = tools.TOOLS["update_template"]["description"]
-    assert "A new file for the active template prints at once" in desc
-    assert "Never changes which template is active" in desc
+    assert "Un nouveau fichier sur le modèle actif s'imprime aussitôt" in desc
+    assert "ne change jamais quel modèle est actif" in desc
     assert "change jamais sans vous" not in desc
     from mcp import disclosure
     (active,) = [n for n in disclosure.NEVERS if n.key == "active_template"]

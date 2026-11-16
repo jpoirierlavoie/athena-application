@@ -451,9 +451,9 @@ def test_every_surface_says_the_history_is_kept_whatever_the_path():
     # 2026-11-10 (cut short at the lawyer's request): the two descriptions
     # below are where a caller reads it.
     append = mcp_tools.TOOLS["append_to_note"]["description"]
-    assert "kept in its revision history" in append
+    assert "conserve une révision" in append
     update = mcp_tools.TOOLS["update_note"]["description"]
-    assert "in the app or on the phone too" in update
+    assert "dans l'app ou sur téléphone" in update
     for text in (instructions, append, update):
         lowered = text.lower()
         assert "only the connector" not in lowered

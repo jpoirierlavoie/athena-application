@@ -64,8 +64,16 @@ ALLOWED_REDIRECT_URIS: frozenset[str] = frozenset(
     }
 )
 
-# MCP protocol revisions supported, newest first.
-SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-06-18", "2025-03-26")
+# MCP protocol revisions supported, newest first (aligned with MCP-Socle #v0.7.0).
+SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (
+    "2026-07-28",
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+)
+# Boundary at which sessionless per-request _meta and Mcp-Method/Mcp-Name
+# header concordance replace the legacy initialize handshake.
+FIRST_MODERN_PROTOCOL_VERSION: str = "2026-07-28"
 # Per spec guidance, an absent MCP-Protocol-Version header means 2025-03-26.
 DEFAULT_PROTOCOL_VERSION: str = "2025-03-26"
 

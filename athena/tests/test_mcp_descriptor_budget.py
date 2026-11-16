@@ -78,39 +78,37 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
 
 
-# The plan's target for the whole widened surface (~86 tools), 2026-09-25.
-TOTAL_CAP = 280_000
-# max(8 000, today's largest rounded up to the next 500) — 7 603 → 8 000.
-# A descriptor past it is a tool trying to be two tools: split it, or cut
-# the prose that restates what the schema already says.
-PER_TOOL_CAP = 8_000
+# v2.0.0 tightened ceiling (measured 205,533 UTF-8 bytes across 86 tools).
+TOTAL_CAP = 225_000
+# Largest descriptor measured: update_partie at 6,588 UTF-8 bytes.
+PER_TOOL_CAP = 7_200
 
 
 def _model_visible_bytes() -> dict[str, int]:
     sizes = {}
     for descriptor in tools.list_tool_descriptors(None):
-        visible = {k: v for k, v in descriptor.items() if k != "outputSchema"}
+        assert "outputSchema" not in descriptor
         sizes[descriptor["name"]] = len(
-            json.dumps(visible, ensure_ascii=False).encode("utf-8")
+            json.dumps(descriptor, ensure_ascii=False).encode("utf-8")
         )
     return sizes
 
 
 def test_the_measure_covers_every_tool_and_excludes_only_the_output_schema():
     """The budget must see the whole advertised surface — a tool left out of
-    the measure would escape the ceiling unnoticed. REWRITTEN 2026-10-05: a
-    kill switch could hide a tool from `list_tool_descriptors(None)` (the
-    accounting one defaulted to OFF, so a dummy run proved an accounting
-    tool was measured all the same); the lawyer removed every switch, and
-    the measure holds every tool — pinned here, the six accounting tools
-    named."""
+    the measure would escape the ceiling unnoticed. Since Lot 1 (D2),
+    ``outputSchema`` and duplicate ``annotations.title`` are no longer
+    emitted on the wire, while ``OUTPUT_SCHEMAS`` stays pinned server-side.
+    """
     sizes = _model_visible_bytes()
     assert set(sizes) == set(tools.TOOLS)
     assert tools.ACCOUNTING_WRITE_TOOLS | {"get_admin_ledger"} <= set(sizes)
     descriptors = tools.list_tool_descriptors(None)
     assert {d["name"] for d in descriptors} == set(tools.TOOLS)
     for d in descriptors:
-        assert set(d) == {"name", "title", "description", "inputSchema", "outputSchema", "annotations"}
+        assert list(d.keys()) == [
+            "name", "title", "description", "inputSchema", "annotations"
+        ]
 
 
 def test_no_single_tool_exceeds_the_per_tool_budget():
@@ -127,7 +125,7 @@ def test_no_single_tool_exceeds_the_per_tool_budget():
 # the cut is a rule that client never reads. Measured 2026-09-30: one tool
 # over it, get_dossier at 2 154 — tightened to 2 038; the next largest were
 # list_invoices (1 775) and import_invoice (1 743).
-DESCRIPTION_CUT = 2_048
+DESCRIPTION_CUT = 900
 
 
 def test_no_tool_description_passes_the_client_s_cut():
@@ -221,47 +219,39 @@ def test_bytes_are_counted_as_utf8_not_as_escapes():
 # characters, 7 343 UTF-8 bytes.
 INSTRUCTIONS_CAP = 8_000
 _CORE_MARKERS = (
-    "SAFETY CORE",
-    "NEVER, whatever the tool:",
-    "DELETE anything",
-    "record a payment outside the accounting registers",
-    "SEND an invoice to anyone",
-    "CONFIRM an identity or conflict check",
+    "NOYAU DE SÉCURITÉ",
+    "JAMAIS, quel que soit l'outil :",
+    "rien SUPPRIMER",
+    "inscrire un paiement hors des registres comptables",
+    "ENVOYER une facture",
+    "CONFIRMER une vérification d'identité ou de conflits",
     "`decide_rendez_vous`",
-    "cancels the client's Outlook meeting",
-    # An EXCLUSIVITY: nothing else leaves the practice (review of the
-    # context-cost lot — « ONE effect reaches » alone reads « one such »).
-    "Only ONE effect reaches anyone outside the practice",
-    "confirm with the user unless a standing instruction",
+    "annule la réunion Outlook du client",
+    "UN SEUL effet joint un tiers hors du cabinet",
+    "confirmer avec l'utilisateur sauf instruction permanente",
     "idempotency_key",
-    "the SAME key, never a new one",
-    # The third state of a claimed key (review of the finitions): without
-    # it, « retry only with the SAME key » after an uncertain outcome was a
-    # dead end once the key's refusal turned « interrompu ».
-    "refused as INTERRUPTED",
-    "a NEW key only if nothing was written",
+    "MÊME clé",
+    "INTERROMPU",
+    "NOUVELLE clé si rien écrit",
     "« ENREGISTRÉE — NE PAS RÉESSAYER »",
     "`expected_etag`",
     "stale_etag",
-    "re-read, then redo the write on the current record",
-    "Each tool's description carries its own rules",
+    "relire et refaire sur l'état actuel",
+    "Lire la description de l'outil d'abord",
 )
 # What the CONVENTIONS must carry — each a fact a caller needs to read a
 # result or write an argument, whatever tool it opens.
 _CONVENTION_MARKERS = (
-    "CONVENTIONS:",
-    "French",
-    "Markdown", "raw HTML refused",
+    "CONVENTIONS :",
+    "français",
+    "Markdown", "HTML brut refusé",
     "`*_cents`", "`*_display`", "(CAD)",
     "ISO 8601 America/Montreal",
-    "date-only fields `YYYY-MM-DD`",
+    "dates seules `AAAA-MM-JJ`",
     "UUIDv4", "verbatim",
-    # BOTH halves (review of the context-cost lot): the server stamps, and
-    # a text sent back KEEPS the stamps it held — « never type it » alone
-    # had a model strip them from a body it re-sent in full.
-    "never add a stamp, keep those a re-sent text holds",
-    "`created_via` on creations", "`updated_via`", "`mcp_updated_at`",
-    "where declared",
+    "n'ajoutez aucune mention, conservez celles d'un texte renvoyé",
+    "`created_via` à la création", "`updated_via`", "`mcp_updated_at`",
+    "si déclaré",
     "« … par Claude le … »",
     "« par Claude (connecteur) »", "`genere_depuis`",
     "`*_source` \"mcp\"", "« [AAAA-MM-JJ — inscrit par Claude] »",
@@ -325,12 +315,12 @@ def test_the_safety_core_is_the_first_characters_and_complete():
     # REWRITTEN deliberately (2026-09-30): the CONVENTIONS, not the index,
     # follow the core — the index comes after the head.
     rest = text[len(core):]
-    assert rest.lstrip().startswith("CONVENTIONS: ")
+    assert rest.lstrip().startswith("CONVENTIONS :")
     head = disclosure.instructions_head_en()
-    assert text.startswith(head + " TOOLS: ")
+    assert text.startswith(head + " OUTILS : ")
     # Everything after the core is the conventions, the index and the rest
     # — never a second copy of the protocol rules.
-    assert "idempotency_key` on EVERY write" not in rest
+    assert "`idempotency_key` sur CHAQUE écriture" not in rest
 
 
 def test_the_conventions_and_every_core_promise_survive_the_client_s_cut():
@@ -348,6 +338,8 @@ def test_the_conventions_and_every_core_promise_survive_the_client_s_cut():
     assert len(head) <= _head_limit(), (
         f"the head (core + conventions) is {len(head)} characters, over "
         f"{_head_limit()}: a client cutting there loses its end")
+    assert len(head.encode("utf-8")) <= _head_limit(), (
+        f"the head is {len(head.encode('utf-8'))} UTF-8 bytes, over {_head_limit()}")
     assert head in cut
     for never in disclosure.core_nevers():
         assert never.en in cut, never.key

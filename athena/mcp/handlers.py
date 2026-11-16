@@ -5178,7 +5178,7 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
         f"{kind} est déjà porté(e) à la facture "
         f"{row.get('invoice_id') or '(inconnue)'}. Une entrée facturée ne "
         "se corrige plus — seule sa phase du litige reste reclassable "
-        "(set_time_entry_phase, set_expense_phase). Pour la libérer : "
+        "(set_time_entry_phase_bulk, set_expense_phase_bulk). Pour la libérer : "
         "annulez la facture (update_invoice avec status « annulée », ou "
         "dans l'application), possible tant qu'aucun paiement n'y est "
         "inscrit — sinon, contre-passez d'abord son écriture au registre "
@@ -6538,7 +6538,7 @@ _TIME_PHASE_KW = {
     "bulk_getter": _time_entries_bulk,
     "setter": _set_time_entry_phase,
     "entity_builder": _time_entry_entity,
-    "tool": "set_time_entry_phase",
+    "tool": "set_time_entry_phase_bulk",
     "stale_subject": "Cette entrée de temps a été modifiée",
 }
 _EXPENSE_PHASE_KW = {
@@ -6547,23 +6547,9 @@ _EXPENSE_PHASE_KW = {
     "bulk_getter": _expenses_bulk,
     "setter": _set_expense_phase,
     "entity_builder": _expense_entity,
-    "tool": "set_expense_phase",
+    "tool": "set_expense_phase_bulk",
     "stale_subject": "Ce déboursé a été modifié",
 }
-
-
-def set_time_entry_phase(args: dict) -> dict:
-    return run_write(
-        "set_time_entry_phase", args,
-        lambda: _set_phase_impl(args, bulk=False, **_TIME_PHASE_KW),
-    )
-
-
-def set_expense_phase(args: dict) -> dict:
-    return run_write(
-        "set_expense_phase", args,
-        lambda: _set_phase_impl(args, bulk=False, **_EXPENSE_PHASE_KW),
-    )
 
 
 def set_time_entry_phase_bulk(args: dict) -> dict:
@@ -6725,8 +6711,8 @@ def _import_invoice_impl(args: dict) -> dict:
         "warnings": [
             f"Les {n_entries} entrée(s) et {n_expenses} déboursé(s) sont "
             "maintenant marqués facturés : le connecteur ne peut plus les "
-            "modifier, sauf leur phase du litige (set_time_entry_phase, "
-            "set_expense_phase). Pour défaire cet import, annulez la "
+            "modifier, sauf leur phase du litige (set_time_entry_phase_bulk, "
+            "set_expense_phase_bulk). Pour défaire cet import, annulez la "
             "facture (update_invoice avec status « annulée », ou dans "
             "l'application) — les entrées et déboursés redeviennent "
             "modifiables ; le numéro reste attaché à la facture annulée tant "
@@ -9838,14 +9824,7 @@ def _decide_payload(action: str, doc: dict, report: dict) -> dict:
     }
 
 
-# ── 25. create_time_entry (WRITE) ───────────────────────────────────────
-
-def create_time_entry(args: dict) -> dict:
-    return run_write(
-        "create_time_entry", args,
-        lambda: _create_time_entry_impl(args),
-    )
-
+# ── 25-26. Helpers de création temps / déboursés (partagés par *_bulk) ──
 
 def _time_entry_create_data(
     args: dict, dossier_id: str, dossier: dict,
@@ -9915,27 +9894,6 @@ def _created_time_entry_entity(doc: dict) -> dict:
     return row
 
 
-def _create_time_entry_impl(args: dict) -> dict:
-    dossier_id, dossier = _resolve_write_dossier(args, required=True)
-    data = _time_entry_create_data(args, dossier_id, dossier)
-    entry, errors = time_entry_model.create_time_entry(data)
-    _raise_if_outcome_uncertain(errors, reread="list_time_entries")
-    if errors:
-        raise ToolArgumentError("; ".join(errors))
-    return _entity_write_result(
-        "time_entry", _created_time_entry_entity(entry), dossier=dossier,
-        dav_exposed=False,
-    )
-
-
-# ── 26. create_expense (WRITE) ──────────────────────────────────────────
-
-def create_expense(args: dict) -> dict:
-    return run_write(
-        "create_expense", args, lambda: _create_expense_impl(args)
-    )
-
-
 def _expense_create_data(
     args: dict, dossier_id: str, dossier: dict,
 ) -> dict:
@@ -9992,19 +9950,6 @@ def _created_expense_entity(doc: dict) -> dict:
     }
     _money(row, "amount", doc.get("amount", 0))
     return row
-
-
-def _create_expense_impl(args: dict) -> dict:
-    dossier_id, dossier = _resolve_write_dossier(args, required=True)
-    data = _expense_create_data(args, dossier_id, dossier)
-    expense, errors = expense_model.create_expense(data)
-    _raise_if_outcome_uncertain(errors, reread="list_expenses")
-    if errors:
-        raise ToolArgumentError("; ".join(errors))
-    return _entity_write_result(
-        "expense", _created_expense_entity(expense), dossier=dossier,
-        dav_exposed=False,
-    )
 
 
 # ── 26b. create_time_entries_bulk / create_expenses_bulk (WRITE) ─────────

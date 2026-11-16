@@ -103,7 +103,7 @@ def test_the_cadences_read_in_french_and_in_english():
     (rendez_vous.REFUS_NON_INSCRIT, cron_schedule.cadence_fr("bookings")),
     (handlers._HEARING_CANCELLED, cron_schedule.cadence_fr("outlook")),
     (handlers._REFUS_NON_INSCRIT_MCP, cron_schedule.cadence_fr("bookings")),
-    (tools.TOOLS["update_hearing"]["description"], cron_schedule.cadence_en("outlook")),
+    (tools.TOOLS["update_hearing"]["description"], cron_schedule.cadence_fr("outlook")),
 ], ids=["reception-refus", "mcp-annulation", "mcp-refus", "mcp-update_hearing"])
 def test_every_text_that_promises_a_delay_quotes_the_cadence(text, quoted):
     assert quoted in text

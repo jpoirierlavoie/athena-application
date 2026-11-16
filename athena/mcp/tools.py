@@ -266,19 +266,18 @@ def split_image(tool_name: str, payload: Any) -> tuple[Any, Optional[ImageAttach
     return payload, image
 
 
-def tool_result(payload: Any, protocol_version: str, *,
+def tool_result(payload: Any, protocol_version: str = "", *,
                 image: Optional[ImageAttachment] = None) -> dict:
     """Wrap a handler payload in the MCP tools/call result envelope.
 
     The text block is COMPACT JSON (no indent, no space after a separator):
-    it is the copy the model reads on a client that ignores
-    ``structuredContent``, and every byte of it is paid in the
-    conversation's context. ``indent=2`` cost ~23 % more bytes on the
-    conformance fixtures (2026-09-30) for no information a model uses.
-    ``structuredContent`` is the same object either way — only its text
-    rendering changed. An *image* (:func:`split_image`) follows the text
-    item, base64, and nowhere else.
+    every byte is paid in the conversation's context. ``outputSchema`` and
+    duplicate ``structuredContent`` were retired on the wire (aligned with
+    MCP-Socle) while ``OUTPUT_SCHEMAS`` stays enforced server-side in pytest.
+    An *image* (:func:`split_image`) follows the text item, base64, and
+    nowhere else.
     """
+    _ = protocol_version
     clean = _jsonable(payload)
     result: dict[str, Any] = {
         "content": [
@@ -297,12 +296,6 @@ def tool_result(payload: Any, protocol_version: str, *,
             "data": base64.b64encode(image.data).decode("ascii"),
             "mimeType": image.mime_type,
         })
-    # Lexicographic >= is exact for ISO-dated protocol revisions: when a
-    # NEWER revision joins SUPPORTED_PROTOCOL_VERSIONS, its clients must
-    # keep receiving structuredContent (an equality gate would silently
-    # drop it while outputSchema stays declared — the inverted contract).
-    if protocol_version >= "2025-06-18":
-        result["structuredContent"] = clean
     return result
 
 
@@ -434,29 +427,28 @@ def _validate_value(
         for branch in schema["anyOf"]:
             if not _validate_value(branch, value, name, root=root):
                 return errors
-        errors.append(f"`{name}` matches none of the allowed variants")
+        errors.append(f"`{name}` ne correspond à aucune variante admise")
         return errors
 
     expected_type = schema.get("type")
     if expected_type is not None and not _type_ok(expected_type, value):
         if isinstance(expected_type, (list, tuple)):
             errors.append(
-                f"`{name}` must be one of the types: "
+                f"`{name}` doit être de l'un des types : "
                 + ", ".join(str(e) for e in expected_type)
             )
             return errors
-        article = "an" if expected_type[0] in "aeiou" else "a"
         if (
             expected_type == "integer"
             and "minimum" in schema
             and "maximum" in schema
         ):
             errors.append(
-                f"`{name}` must be an integer between "
-                f"{schema['minimum']} and {schema['maximum']}"
+                f"`{name}` doit être un entier entre "
+                f"{schema['minimum']} et {schema['maximum']}"
             )
         else:
-            errors.append(f"`{name}` must be {article} {expected_type}")
+            errors.append(f"`{name}` doit être de type {expected_type}")
         return errors
 
     if value is None:
@@ -466,7 +458,7 @@ def _validate_value(
 
     if "enum" in schema and value not in schema["enum"]:
         allowed = ", ".join(repr(v) for v in schema["enum"])
-        errors.append(f"`{name}` must be one of: {allowed}")
+        errors.append(f"`{name}` doit valoir l'une des valeurs : {allowed}")
         return errors
 
     if isinstance(value, bool):
@@ -474,14 +466,14 @@ def _validate_value(
 
     if isinstance(value, (int, float)):
         if "minimum" in schema and value < schema["minimum"]:
-            errors.append(f"`{name}` must be >= {schema['minimum']}")
+            errors.append(f"`{name}` doit être >= {schema['minimum']}")
         if "maximum" in schema and value > schema["maximum"]:
-            errors.append(f"`{name}` must be <= {schema['maximum']}")
+            errors.append(f"`{name}` doit être <= {schema['maximum']}")
 
     if isinstance(value, str) and "maxLength" in schema:
         if len(value) > schema["maxLength"]:
             errors.append(
-                f"`{name}` must be at most {schema['maxLength']} characters"
+                f"`{name}` doit compter au plus {schema['maxLength']} caractères"
             )
 
     if isinstance(value, str) and "minLength" in schema:
@@ -490,8 +482,8 @@ def _validate_value(
         # reads to the client model like a server fault.
         if len(value.strip()) < schema["minLength"]:
             errors.append(
-                f"`{name}` must be at least {schema['minLength']} "
-                "non-whitespace characters"
+                f"`{name}` doit contenir au moins {schema['minLength']} "
+                "caractères non blancs"
             )
 
     if isinstance(value, list):
@@ -502,13 +494,13 @@ def _validate_value(
         count_errors: list[str] = []
         if "minItems" in schema and len(value) < schema["minItems"]:
             count_errors.append(
-                f"`{name}` must contain at least {schema['minItems']} "
-                f"item(s) ({len(value)} given)"
+                f"`{name}` doit contenir au moins {schema['minItems']} "
+                f"élément(s) ({len(value)} fourni(s))"
             )
         if "maxItems" in schema and len(value) > schema["maxItems"]:
             count_errors.append(
-                f"`{name}` must contain at most {schema['maxItems']} "
-                f"items ({len(value)} given)"
+                f"`{name}` doit contenir au plus {schema['maxItems']} "
+                f"élément(s) ({len(value)} fourni(s))"
             )
         if count_errors:
             errors.extend(count_errors)
@@ -525,37 +517,20 @@ def _validate_value(
         if schema.get("additionalProperties") is False:
             for key in value:
                 if key not in properties:
-                    # NAME the supported arguments, and the near-miss when
-                    # one is unambiguous. A refusal that says only what is
-                    # wrong leaves the caller guessing; read_from_manifest
-                    # already answered « Fichier inconnu. Fichiers
-                    # disponibles : … » and the convention had simply never
-                    # reached here.
-                    #
-                    # ⚠ This does NOT explain the 2026-08-31 `date_from1`
-                    # incident, and an earlier draft of this comment claimed
-                    # it did. Replayed against the live model, a refusal
-                    # NAMING `date_from` gets « je dois utiliser date_from »
-                    # in reply — and `date_from1` emitted again. That
-                    # corruption is downstream of the model's intent and no
-                    # wording can reach it; its cause was a keyword property
-                    # name in a tool declaration. This is a
-                    # plain improvement for ordinary wrong argument names,
-                    # nothing more.
                     proche = _nearest_argument(key, properties)
-                    detail = f"`{_field(key)}` is not a supported argument"
+                    detail = f"`{_field(key)}` n'est pas un paramètre pris en charge"
                     if proche:
-                        detail += f" — did you mean `{proche}`?"
+                        detail += f" — vouliez-vous dire `{proche}` ?"
                     if properties:
                         detail += (
-                            " (supported: "
+                            " (admis : "
                             + ", ".join(f"`{k}`" for k in sorted(properties))
                             + ")"
                         )
                     errors.append(detail)
         for key in schema.get("required", []):
             if key not in value:
-                errors.append(f"`{_field(key)}` is required")
+                errors.append(f"`{_field(key)}` est requis")
         for key, subschema in properties.items():
             if key in value:
                 errors.extend(
@@ -572,17 +547,12 @@ def _limit(default: int) -> dict:
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
-        "description": f"Maximum items to return (default {default}, hard max 50).",
+        "description": f"Nombre maximal d'éléments (défaut {default}, max 50).",
     }
 
 
 def _id(description: str) -> dict:
-    """A UUIDv4-id argument with a PER-USAGE description.
-
-    One fresh dict per call. The old shared `_ID` fragment carried one
-    description slot for sixteen different usages — which is how all
-    sixteen ended up with none at all.
-    """
+    """A UUIDv4-id argument with a PER-USAGE description."""
     return {"type": "string", "maxLength": 64, "description": description}
 
 
@@ -592,52 +562,16 @@ def _date(description: str) -> dict:
 
 
 def _write_protocol_props() -> dict:
-    """idempotency_key — the shared write protocol (WP15).
-
-    Fresh dict per usage (module rule). Every write tool splats this into
-    its input schema; enforcement lives in mcp/write_support.run_write.
-
-    ``dry_run`` used to sit here too and was REMOVED on 2026-08-27 (user
-    decision). It had never been a control — nothing required it, nothing
-    checked it, and a caller that omitted it simply wrote. It was a
-    courtesy the model extended or withheld, and the first real batch
-    showed both failure directions at once: the model previewed forty-five
-    documents nobody asked it to preview, while no mechanism could have
-    obliged it to preview anything else.
-
-    Its cost was measured, not supposed. It doubled every write into two
-    model calls, which is what killed a document-analysis batch on
-    `chain_ceiling` after six documents out of forty-five. And it carried
-    its own trap class: `run_write` short-circuited the dry branch WITHOUT
-    calling the model, so every model-side guard had to be repeated in the
-    handler ahead of it or a preview would promise a success the real call
-    refused. Those guards remain — they refuse early, in French, naming the
-    field — but the obligation that created them is gone.
-
-    Proposing without performing is now expressed the honest way: do not
-    call the tool, and describe the intended write. The charter and the
-    scheduled addendum say exactly that. A proposal that runs no code
-    cannot half-run.
-
-    Removal is fail-CLOSED, which is what makes it safe: every write input
-    schema carries ``additionalProperties: False``, so a caller still
-    sending `dry_run` is REFUSED by :func:`validate_args` rather than
-    silently written for — which would be the dangerous outcome.
-    """
+    """idempotency_key — the shared write protocol (WP15)."""
     return {
         "idempotency_key": {
             "type": "string",
             "minLength": 8,
             "maxLength": 128,
-            # Concise on purpose (2026-09-30): this text is repeated in
-            # every write tool's schema — 46 copies, ~13 KB before — and the
-            # SAFETY CORE of INSTRUCTIONS states the full retry discipline
-            # once. The policy's two facts stay: « Pass one on every write »
-            # and no « REQUIRED » (tests/test_mcp_framework_guards).
             "description": (
-                "Caller-chosen key for THIS write: within 24 h the same key "
-                "returns the stored result, never a second write; with "
-                "other arguments it is refused. Pass one on every write."
+                "Clé choisie pour CETTE écriture (rejeu sur 24 h sans seconde "
+                "écriture ; refusée si les arguments changent). Passez-en une "
+                "à chaque écriture."
             ),
         },
     }
@@ -687,63 +621,41 @@ def _expected_etag_prop(readers: tuple[str, ...]) -> dict:
         "expected_etag": {
             "type": "string",
             "maxLength": 64,
-            # Concise on purpose (2026-09-30): repeated on every edit tool
-            # (23 copies); the SAFETY CORE states the stale_etag remedy once.
-            # The readers stay named — the guard checks each is (test_mcp_
-            # framework_guards), and they are what differs per tool.
             "description": (
-                "The `etag` from your latest read of this record ("
+                "`etag` de la dernière lecture ("
                 + " / ".join(readers)
-                + ", or the last write result); if the record changed "
-                "since, the write is REFUSED and nothing is written — "
-                "re-read, then retry."
+                + " ou dernière écriture) ; refusé sans écrire si l'élément a changé."
             ),
         },
     }
 
 
-# The read tools whose rows carry the etag an edit tool expects — declared
-# on the edit as ``"etag_readers"`` and named in its ``expected_etag`` text.
 _PARTIE_ETAG_READERS = ("get_partie", "list_parties")
 _DOSSIER_ETAG_READERS = ("get_dossier", "list_dossiers")
 _TIME_ENTRY_ETAG_READERS = ("list_time_entries",)
 _EXPENSE_ETAG_READERS = ("list_expenses",)
 _TASK_ETAG_READERS = ("list_tasks",)
 _NOTE_ETAG_READERS = ("get_note", "list_notes")
-# A protocol's etag is on its list_protocol_steps object; a step's on its
-# row there, and on the get_agenda urgent-step rows.
 _PROTOCOL_ETAG_READERS = ("list_protocol_steps",)
 _STEP_ETAG_READERS = ("list_protocol_steps", "get_agenda")
-# A calendar event's etag is on its list_hearings row and on the get_agenda
-# hearing rows; a pending Bookings request is listed only by
-# list_hearings (bookings: "pending").
 _HEARING_ETAG_READERS = ("list_hearings", "get_agenda")
 _RENDEZ_VOUS_ETAG_READERS = ("list_hearings",)
 
 
 def _expected_etag_required_when(readers: tuple[str, ...], when: str) -> dict:
-    """``expected_etag`` for a tool that DEMANDS it on some calls only.
-
-    Declared ``optional`` in the registry — the other calls of the tool
-    (a title change, the théorie's idempotent init) have no version to
-    present, or cannot have one yet — and demanded by the HANDLER when
-    *when* holds: a content replacement (plan rule 3, D8). The text says
-    so first, so a model reads the condition before the generic remedy.
-    """
+    """``expected_etag`` for a tool that DEMANDS it on some calls only."""
     prop = _expected_etag_prop(readers)
     prop["expected_etag"]["description"] = (
-        f"REQUIRED {when}. " + prop["expected_etag"]["description"]
+        f"REQUIS {when}. " + prop["expected_etag"]["description"]
     )
     return prop
 
 
 def _expected_etag_only_for(readers: tuple[str, ...], which: str) -> dict:
-    """``expected_etag`` for a tool whose OTHER calls have no version to
-    present (manage_folder's create): the text names the calls it applies
-    to first, and the handler refuses it on the others."""
+    """``expected_etag`` for a tool whose OTHER calls have no version."""
     prop = _expected_etag_prop(readers)
     prop["expected_etag"]["description"] = (
-        f"{which} only. " + prop["expected_etag"]["description"]
+        f"{which} seulement. " + prop["expected_etag"]["description"]
     )
     return prop
 
@@ -755,48 +667,32 @@ def _offset() -> dict:
         "minimum": 0,
         "maximum": 5000,
         "description": (
-            "Skip this many rows before returning `limit` rows (default "
-            "0). Follow next_offset from the previous response. Not "
-            "snapshot-stable: the list is re-derived per call, so a row "
-            "changed between pages shifts the following ones."
+            "Décalage pour pagination par page (`next_offset`, défaut 0 ; "
+            "non figé entre appels)."
         ),
     }
 
 
 def _cursor(note: str = "") -> dict:
-    """Keyset paging — the recoverable alternative to `offset`.
-
-    Unlike an offset, a cursor names a POSITION IN THE ORDERING, so a row
-    inserted between two pages neither skips nor repeats anything.
-    """
+    """Keyset paging — stable alternative to `offset`."""
     return {
         "type": "string",
         "maxLength": 400,
         "description": (
-            "Opaque next_cursor from the previous response — resumes right "
-            "after the last returned row. Omit for the first page; a "
-            "malformed value restarts at page 1. Unlike `offset`, a cursor "
-            "is stable across insertions between pages." + (" " + note if note else "")
+            "Curseur `next_cursor` de la page précédente (omettre à la page 1 ; "
+            "stable entre insertions)." + (" " + note if note else "")
         ),
     }
 
 
 def _updated_since() -> dict:
-    """The change-window argument of the fully-materialized list tools.
-
-    Deliberately absent from the windowed tools (list_dossiers,
-    list_hearings): a filter inside a 200-doc window would silently miss
-    older rows touched recently.
-    """
+    """Change-window argument (Montréal day or ISO-8601)."""
     return {
         "type": "string",
         "maxLength": 35,
         "description": (
-            "Only rows modified on/after this moment — YYYY-MM-DD "
-            "(Montréal calendar day) or a full ISO-8601 timestamp. "
-            "Beware: updated_at is noisy (phone syncs and internal "
-            "bookkeeping re-stamp it without visible changes), so treat "
-            "matches as candidates, not confirmed edits."
+            "Modifiés depuis ce moment (AAAA-MM-JJ Montréal ou ISO-8601 ; "
+            "inclut les synchros techniques : candidats à vérifier)."
         ),
     }
 
@@ -846,7 +742,6 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # un montant ne le rend pas additif : le client se sert de l'indice pour
     # décider s'il confirme, et sous-avertir reste le mauvais côté de
     # l'erreur.
-    "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
     # complete_task REPLACES a task's stored status — and, through the
     # model's cascade, the linked protocol step's, up to closing the whole
@@ -1105,34 +1000,32 @@ _BUDGET_SOUS_PHASE_CODES = sorted(
 
 
 def _invoice_selection_props() -> dict:
-    """The selection preview_invoice and create_invoice share — ONE shape,
-    so the preview a caller runs is the invoice it then issues."""
+    """The selection preview_invoice and create_invoice share."""
     ids = {"type": "string", "maxLength": 64,
-           "description": "A source id (UUIDv4)."}
+           "description": "UUIDv4 de la source."}
     return {
-        "dossier_id": _id("The dossier billed (list_dossiers). Required."),
+        "dossier_id": _id("Dossier facturé (list_dossiers). Requis."),
         "time_entry_ids": {
             "type": "array", "items": dict(ids),
             "maxItems": INVOICE_SOURCES_MAX,
             "description": (
-                "Time entries to bill (list_time_entries). With expense_ids: "
-                f"at most {INVOICE_SOURCES_MAX} sources in all."),
+                "Entrées de temps à facturer (list_time_entries). Avec "
+                f"expense_ids : max {INVOICE_SOURCES_MAX} sources au total."),
         },
         "expense_ids": {
             "type": "array", "items": dict(ids),
             "maxItems": INVOICE_SOURCES_MAX,
-            "description": "Disbursements to bill (list_expenses).",
+            "description": "Déboursés à facturer (list_expenses).",
         },
         "all_unbilled": {
             "type": "boolean",
             "description": (
-                "true: every billable, unbilled source of the dossier, "
-                "instead of naming ids."),
+                "true : toutes les sources facturables non facturées du dossier."),
         },
-        "date": _date("Invoice date, YYYY-MM-DD; default today (Montréal). "
-                      "Never after today's Montréal date."),
-        "due_date": _date("YYYY-MM-DD, not before `date`; default date + 1 "
-                          "calendar month (31 Jan → 28/29 Feb)."),
+        "date": _date("Date de facture AAAA-MM-JJ (défaut : aujourd'hui Montréal ; "
+                      "jamais future)."),
+        "due_date": _date("Échéance AAAA-MM-JJ, >= `date` (défaut : date + 1 mois "
+                          "civil)."),
     }
 # Lot 2A (T9) — the upload ticket. Literals copied from the models (an
 # import would run firestore.Client() at load); tests/test_mcp_upload.py
@@ -1179,18 +1072,25 @@ _PARTIE_PRONOUNS = ["il/lui", "elle", "iel", "he/him", "she/her", "they/them"]
 # see _require_address_bloc in the handlers for why a partial block silently
 # relocates a contact.
 _ADDRESS_KEYS = ("street", "unit", "city", "province", "postal_code", "country")
+_ADDRESS_KEY_FR = {
+    "street": "rue",
+    "unit": "bureau/app.",
+    "city": "ville",
+    "province": "province",
+    "postal_code": "code postal",
+    "country": "pays",
+}
 
 
 def _address_props(prefix: str, which: str) -> dict:
-    """The six flat address keys of one block, as fresh dicts (module rule)."""
+    """The six flat address keys of one block, as fresh dicts."""
     return {
         f"{prefix}_{key}": {
             "type": "string",
             "maxLength": 200,
             "description": (
-                f"{which} address — {key}. Send the six keys of the block "
-                "together (unit, postal_code may be empty): a partial block "
-                "is completed with Montréal / Québec / Canada."
+                f"Adresse {which} — {_ADDRESS_KEY_FR[key]}. Envoyer les 6 clés "
+                "du bloc ensemble (sinon défaut Montréal/QC/Canada)."
             ),
         }
         for key in _ADDRESS_KEYS
@@ -1202,59 +1102,59 @@ def _partie_identity_props() -> dict:
     return {
         "prefix": {
             "type": "string", "enum": _PARTIE_PREFIXES,
-            "description": "Honorific title (vCard N prefix).",
+            "description": "Civilité (préfixe vCard N).",
         },
         "first_name": {"type": "string", "maxLength": 200,
-                       "description": "Given name (natural person)."},
+                       "description": "Prénom (personne physique)."},
         "middle_name": {"type": "string", "maxLength": 200,
-                        "description": "Other given names."},
+                        "description": "Autres prénoms."},
         "last_name": {"type": "string", "maxLength": 200,
-                      "description": "Family name — REQUIRED on an individual."},
+                      "description": "Nom de famille — REQUIS pour individual."},
         "suffix": {"type": "string", "maxLength": 100,
-                   "description": "Honorific suffix: Ad. E., j.c.s."},
+                   "description": "Suffixe honorifique (Ad. E., j.c.s.)."},
         "organization_name": {
             "type": "string", "maxLength": 300,
             "description": (
-                "Legal name — REQUIRED on an organization. This is what "
-                "display_name returns for a company, never the trade name."
+                "Raison sociale — REQUISE pour organization (sert à "
+                "display_name, jamais le nom commercial)."
             ),
         },
         "trade_name": {"type": "string", "maxLength": 300,
-                       "description": "Trade name / « doing business as »."},
+                       "description": "Nom commercial / « faisant affaires sous »."},
         "governing_law": {"type": "string", "maxLength": 300,
-                          "description": "Constituting statute."},
+                          "description": "Loi constitutive."},
         "language": {"type": "string", "enum": _PARTIE_LANGUAGES,
-                     "description": "Correspondence language (vCard LANG)."},
+                     "description": "Langue de correspondance (vCard LANG)."},
         "gender": {"type": "string", "enum": _PARTIE_GENDERS,
-                   "description": "vCard GENDER."},
+                   "description": "Genre (vCard GENDER)."},
         "pronouns": {"type": "string", "enum": _PARTIE_PRONOUNS,
-                     "description": "vCard PRONOUNS."},
+                     "description": "Pronoms (vCard PRONOUNS)."},
         "occupation": {"type": "string", "enum": _PARTIE_OCCUPATIONS,
-                       "description": "Occupation (art. 14). Not on the vCard."},
+                       "description": "Profession/statut (art. 14, hors vCard)."},
         "job_title": {"type": "string", "maxLength": 200,
-                      "description": "Position or profession (vCard TITLE)."},
+                      "description": "Poste ou fonction (vCard TITLE)."},
         "organization": {"type": "string", "maxLength": 300,
-                         "description": "Employer, business or school (vCard ORG)."},
+                         "description": "Employeur ou organisme (vCard ORG)."},
         "email": {"type": "string", "maxLength": 254,
-                  "description": "Personal email; normalised to lowercase."},
+                  "description": "Courriel personnel (normalisé en minuscules)."},
         "email_work": {"type": "string", "maxLength": 254,
-                       "description": "Work email."},
+                       "description": "Courriel professionnel."},
         "phone_home": {"type": "string", "maxLength": 40,
-                       "description": "Normalised to E.164."},
+                       "description": "Téléphone domicile (format E.164)."},
         "phone_cell": {"type": "string", "maxLength": 40,
-                       "description": "Normalised to E.164."},
+                       "description": "Cellulaire (format E.164)."},
         "phone_work": {"type": "string", "maxLength": 40,
-                       "description": "Normalised to E.164."},
+                       "description": "Téléphone travail (format E.164)."},
         "fax": {"type": "string", "maxLength": 40,
-                "description": "Normalised to E.164."},
+                "description": "Télécopieur (format E.164)."},
         "bar_number": {"type": "string", "maxLength": 60,
-                       "description": "Barreau number, for a lawyer."},
+                       "description": "Numéro du Barreau (avocat)."},
         "company_neq": {"type": "string", "maxLength": 60,
-                        "description": "Québec NEQ, for an organization."},
+                        "description": "NEQ du Québec (personne morale)."},
         "notes": {"type": "string", "maxLength": 2000,
-                  "description": "Free-text notes on the contact."},
-        **_address_props("address", "Personal"),
-        **_address_props("work_address", "Work"),
+                  "description": "Notes libres sur le contact."},
+        **_address_props("address", "personnelle"),
+        **_address_props("work_address", "professionnelle"),
     }
 
 
@@ -1266,25 +1166,20 @@ _PARTY_ROLES = [
 
 
 def _party_entry_props() -> dict:
-    """One party on a dossier. The connector RESOLVES every id and snapshots
-    the names itself — they are what a generated procedure cites."""
+    """One party on a dossier."""
     return {
         "type": "object",
         "properties": {
             "partie_id": _id(
-                "An EXISTING contact's id. Refused if it does not resolve — "
-                "never silently blanked."
+                "UUIDv4 d'un contact EXISTANT (refusé si introuvable)."
             ),
             "roles": {
                 "type": "array",
                 "items": {"type": "string", "enum": _PARTY_ROLES},
-                "description": (
-                    "Procedural roles; a party may hold several. An unknown "
-                    "role is REFUSED here (the web form drops it silently)."
-                ),
+                "description": "Rôles procéduraux (rôle inconnu refusé).",
             },
             "avocat_partie_id": _id(
-                "This party's lawyer, as another contact's id. Optional."
+                "Avocat de cette partie (UUIDv4 d'un contact). Optionnel."
             ),
         },
         "required": ["partie_id"],
@@ -1293,91 +1188,78 @@ def _party_entry_props() -> dict:
 
 
 def _forum_props() -> dict:
-    """Forum fields. The model's normalize_forum reconciles them server-side
-    and DISCARDS what does not apply — the handler reports what it dropped."""
+    """Forum fields."""
     return {
         "forum_type": {
             "type": "string",
             "enum": ["judiciaire", "administratif", "federal", "prejudiciaire"],
             "description": (
-                "judiciaire = ordinary court, the file number is parsed. "
-                "administratif / federal = the body named by `forum`; the "
-                "number is stored unparsed and the district is cleared. "
-                "prejudiciaire = nothing filed; the file number is FORCED to "
-                "« Préjudiciaire »."
+                "judiciaire (numéro analysé), administratif/federal (organisme "
+                "dans `forum`, district vidé) ou prejudiciaire (numéro forcé à "
+                "« Préjudiciaire »)."
             ),
         },
         "forum": {
             "type": "string", "maxLength": 40,
             "description": (
-                "Body slug for administratif/federal — from "
-                "get_reference_vocabulary(kind=\"forums\"). A slug from the "
-                "wrong category is refused."
+                "Code d'organisme administratif/fédéral via "
+                "get_reference_vocabulary(kind=\"forums\")."
             ),
         },
         "district_judiciaire": {
             "type": "string", "maxLength": 60,
-            "description": (
-                "Judicial district. Discarded for an administrative or "
-                "federal forum, with a warning saying so."
-            ),
+            "description": "District judiciaire (écarté hors judiciaire/préjudiciaire).",
         },
     }
 
 
 def _dossier_field_props() -> dict:
-    """The classification/financial block shared by complete_dossier,
-    create_dossier and update_dossier — one definition, three tools."""
+    """The classification/financial block shared by complete/create/update_dossier."""
     return {
         "domaine": {"type": "string", "maxLength": 10,
-                    "description": "Taxonomy family — get_reference_vocabulary."},
+                    "description": "Code famille (get_reference_vocabulary)."},
         "action": {"type": "string", "maxLength": 10,
-                   "description": "Named recourse; its prefix MUST equal domaine."},
+                   "description": "Code recours (préfixe = domaine)."},
         "action_precision": {"type": "string", "maxLength": 2000,
-                             "description": "Free text; required by « Autre » rows."},
+                             "description": "Précision libre (requise pour « Autre »)."},
         "sommaire": {"type": "string", "maxLength": 5000,
-                     "description": "Free-text case summary (stored up to 5000)."},
+                     "description": "Sommaire libre du dossier (max 5000 car.)."},
         "mandate_type": {"type": "string", "maxLength": 40,
                          "description": "judiciaire | service_conseils | general | special."},
         "court_file_number": {
             "type": "string", "maxLength": 40,
             "description": (
-                "e.g. « 500-05-123456-241 ». On a judiciaire forum the "
-                "greffe, juridiction, tribunal and district are DERIVED from "
-                "it."
+                "Ex. « 500-05-123456-241 » (greffe/juridiction/district "
+                "dérivés sur forum judiciaire)."
             ),
         },
         "prescription_type": {"type": "string", "maxLength": 40,
-                              "description": "Delay key — get_reference_vocabulary."},
+                              "description": "Clé de délai (get_reference_vocabulary)."},
         "fee_type": {"type": "string", "maxLength": 30,
                      "description": "hourly | flat | contingency | mixed | pro_bono | aide_juridique."},
         "fee_notes": {"type": "string", "maxLength": 2000,
-                      "description": "Free text on the fee arrangement."},
+                      "description": "Précisions sur l'entente d'honoraires."},
         "valeur": {"type": "integer", "minimum": 1, "maximum": 100000000000,
-                   "description": "Amount in dispute, integer cents."},
+                   "description": "Valeur en litige, en cents entiers."},
         "hourly_rate": {
             "type": "integer", "minimum": 0, "maximum": 100000000,
             "description": (
-                "Integer cents. 0 is REAL (pro bono, aide juridique) — set it "
-                "on a historical file, because create_time_entry defaults "
-                "each entry's rate to this value."
+                "Taux horaire en cents (0 = pro bono/aide juridique ; défaut "
+                "de create_time_entries_bulk)."
             ),
         },
         "flat_fee": {"type": "integer", "minimum": 1, "maximum": 100000000000,
-                     "description": "Flat fee, integer cents."},
+                     "description": "Forfait en cents entiers."},
         "contingency_percent": {
             "type": "integer", "minimum": 1, "maximum": 10000,
-            "description": "BASIS POINTS: 2500 = 25,00 %.",
+            "description": "Points de base : 2500 = 25,00 %.",
         },
-        "droit_action_date": _date("« Droit d'action » start, YYYY-MM-DD."),
-        "date_avis": _date("Confirmed avis préalable date, YYYY-MM-DD."),
-        "prise_action_date": _date("Interruptive act filed, YYYY-MM-DD."),
+        "droit_action_date": _date("Point de départ du droit d'action, AAAA-MM-JJ."),
+        "date_avis": _date("Date confirmée d'avis préalable, AAAA-MM-JJ."),
+        "prise_action_date": _date("Date d'acte interruptif déposé, AAAA-MM-JJ."),
         "prescription_notes": {
             "type": "string", "maxLength": 2000,
-            "description": (
-                "Free-text notes on the limitation analysis. A real dossier "
-                "field the connector could not reach before this lot."
-            ),
+            "description": "Notes libres sur l'analyse de prescription.",
         },
     }
 
@@ -1388,10 +1270,8 @@ def _legacy_ref_prop() -> dict:
             "type": "string",
             "maxLength": 64,
             "description": (
-                "This record's identifier in the PREVIOUS system. Stored so "
-                "find_imported can retrieve it later: the idempotency window "
-                "is 24 h and an import runs for days. Refused if another "
-                "record of the same kind already bears it."
+                "Référence d'origine (reprise > 24 h) pour find_imported ; "
+                "refusée si déjà portée sur la même collection."
             ),
         }
     }
@@ -1504,26 +1384,22 @@ _SOUS_PHASE_CODES = [c for c in phases.VALID_SOUS_PHASES if c]
 # task, update_time_entry). tests/test_mcp_tools.py checks that every
 # phased tool states it somewhere, and the one of the three that fits.
 _PHASE_DESCRIPTION = (
-    "Litigation phase code (axis 1 — e.g. « CTS » Contestation, « ADM » "
-    "Administration; labels: get_reference_vocabulary kind phases), not "
-    "`category`. Given `sous_phase` alone, derived from its prefix."
+    "Code phase du litige (axe 1 — libellés : get_reference_vocabulary "
+    "kind phases ; déduit de `sous_phase` si omis)."
 )
 _SOUS_PHASE_DESCRIPTION = (
-    "Full sub-code (e.g. « CTS-02 »); its prefix must match `phase` when "
-    "both are given. `phase` alone imputes to its « -00 » (Général)."
+    "Sous-code (ex. « CTS-02 » ; doit correspondre à `phase` ; sinon "
+    "« -00 » Général)."
 )
 _PHASE_OMIT_UNCLASSIFIED = (
-    "Omit both: stored unclassified (non renseignée) — never defaulted "
-    "from the protocol."
+    "Omettre les deux : stockée non renseignée (jamais déduite du protocole)."
 )
-_PHASE_OMIT_KEPT = "Omit both: the stored pair is left alone."
-_PHASE_OMIT_REFUSED = "Naming neither is refused."
+_PHASE_OMIT_KEPT = "Omettre les deux : la paire actuelle reste inchangée."
+_PHASE_OMIT_REFUSED = "Ne nommer aucun des deux est refusé."
 
 
 def _phase_props(*, on_omit: Optional[str]) -> dict:
-    """The ``phase`` / ``sous_phase`` pair. *on_omit* — one of the three
-    ``_PHASE_OMIT_*`` sentences, or ``None`` when the tool's own
-    description says what omitting both does — ends the ``phase`` text."""
+    """The ``phase`` / ``sous_phase`` pair."""
     return {
         "phase": {
             "type": "string",
@@ -1541,114 +1417,89 @@ def _phase_props(*, on_omit: Optional[str]) -> dict:
     }
 
 
-
 def _hearing_modality_props() -> dict:
-    """modalite / conference_uri / reminder_minutes — shared, fresh per
-    usage, by create_hearing, create_hearing_series and update_hearing."""
+    """modalite / conference_uri / reminder_minutes."""
     return {
         "modalite": {
             "type": "string",
             "enum": _HEARING_MODALITES,
-            "description": (
-                "présentiel (default at creation), visioconférence or "
-                "téléphonique."
-            ),
+            "description": "Modalité (défaut à la création : présentiel).",
         },
         "conference_uri": {
             "type": "string",
             "maxLength": 2000,
-            "description": (
-                "Video link — http:// or https:// only (anything else is "
-                "refused, naming this field). Shown on the phone and in "
-                "Outlook for a visioconférence."
-            ),
+            "description": "Lien vidéo http:// ou https:// (affiché sur téléphone et Outlook).",
         },
         "reminder_minutes": {
             "type": "integer",
             "enum": _HEARING_REMINDERS,
-            "description": "Reminder before the start, in minutes (1440 = 24 h, the default).",
+            "description": "Rappel avant le début en minutes (défaut 1440 = 24 h).",
         },
     }
 
 
 def _hearing_create_props() -> dict:
-    """The create_hearing arguments — shared, fresh per usage, by
-    create_hearing and create_hearing_series (a series is N copies of ONE
-    create_hearing prototype, so the two cannot describe it two ways)."""
+    """The create_hearing arguments — shared with create_hearing_series."""
     return {
         "dossier_id": _id(
-            "The dossier this event belongs to (UUIDv4). Omit for "
-            "a standalone (« Général ») event."
+            "Dossier (UUIDv4). Omettre pour un événement « Général »."
         ),
         "title": {
             "type": "string",
             "minLength": 1,
             "maxLength": 300,
-            "description": "Event title, in French.",
+            "description": "Titre en français.",
         },
         "hearing_type": {
             "type": "string",
             "enum": _HEARING_TYPES,
             "description": (
-                "Two-tier vocabulary; the FORUM derives from it. "
-                "Defaults to 'rencontre' (extrajudiciaire) — pick "
-                "a judicial type only for a real court event."
+                "Type (détermine le forum ; défaut 'rencontre' extrajudiciaire)."
             ),
         },
-        "date": _date("Event date, YYYY-MM-DD (Montréal). Required."),
+        "date": _date("Date AAAA-MM-JJ (Montréal). Requis."),
         "start_time": {
             "type": "string",
             "maxLength": 5,
-            "description": "HH:MM Montréal. Omit for an all-day event.",
+            "description": "Début HH:MM Montréal (omettre = journée entière).",
         },
         "end_time": {
             "type": "string",
             "maxLength": 5,
-            "description": "HH:MM Montréal. Defaults to start + 1 h.",
+            "description": "Fin HH:MM Montréal (défaut : début + 1 h).",
         },
         "all_day": {
             "type": "boolean",
-            "description": "true forces an all-day event.",
+            "description": "true force une journée entière.",
         },
         "location": {
             "type": "string",
             "maxLength": 300,
-            "description": "Room, address or palais de justice.",
+            "description": "Salle, adresse ou palais de justice.",
         },
         "court": {
             "type": "string",
             "maxLength": 200,
-            "description": "Court name, for judicial events.",
+            "description": "Tribunal (événements judiciaires).",
         },
         "judge": {
             "type": "string",
             "maxLength": 200,
-            "description": "Presiding judge, when known.",
+            "description": "Juge si connu.",
         },
         "notes": {
             "type": "string",
             "maxLength": 1500,
-            "description": (
-                "Free notes, in French. A provenance stamp is "
-                "appended automatically."
-            ),
+            "description": "Notes libres en français (mention ajoutée auto).",
         },
         **_hearing_modality_props(),
         "status": {
             "type": "string",
             "enum": _HEARING_CREATE_STATUSES,
-            "description": "à_confirmer (default) or confirmée when the date is certain.",
+            "description": "à_confirmer (défaut) ou confirmée.",
         },
     }
 
-# Items per bulk reclassification call. Sized in the MAX_ZIP_FILES tradition
-# — against gunicorn's 60 s SIGKILL, not against a round number: one batched
-# read plus at most 50 serialized single-key updates is a few seconds. It
-# also equals one `list_time_entries` page, so the read and write cadences
-# line up. `minItems`/`maxItems` below are enforced by `validate_args` on the
-# endpoint path since 2026-09-25 (they were declared and ignored until then).
-# The handler still repeats both bounds, in French: a direct call skips the
-# schema, and the house rule is that a handler never relies on it.
 PHASE_BULK_MAX = 50
 
 
@@ -1659,10 +1510,8 @@ def _phase_bulk_items(id_key: str, id_description: str) -> dict:
         "minItems": 1,
         "maxItems": PHASE_BULK_MAX,
         "description": (
-            f"The rows to reclassify, 1 to {PHASE_BULK_MAX} per call. Each "
-            "item carries its own phase code; an item naming neither `phase` "
-            "nor `sous_phase` is refused (unlike the correction tools, "
-            "omitting a code here would mean nothing)."
+            f"1 à {PHASE_BULK_MAX} lignes à reclasser (chacune doit nommer "
+            "`phase` ou `sous_phase`, sinon refusée)."
         ),
         "items": {
             "type": "object",
@@ -1676,31 +1525,21 @@ def _phase_bulk_items(id_key: str, id_description: str) -> dict:
     }
 
 
-# Rows per create_time_entries_bulk / create_expenses_bulk call. ONE
-# Firestore batch, all or nothing, so the ceiling is the models' own
-# (models.time_entry.BULK_CREATE_MAX / models.expense.BULK_CREATE_MAX —
-# hand-copied, a model import would build the Firestore client at load, and
-# pinned equal by tests/test_mcp_entry_bulk.py). Equal to PHASE_BULK_MAX and
-# to one list_time_entries page, for the same reason: the read, the create
-# and the reclassification cadences line up.
 ENTRY_BULK_MAX = 50
 
 
 def _time_entry_fields() -> dict:
-    """The fields of ONE new time entry — create_time_entry's inputs, and
-    each item of create_time_entries_bulk's ``entries``. Fresh per usage."""
+    """The fields of ONE time entry in create_time_entries_bulk."""
     return {
-        "dossier_id": _id(
-            "The dossier the time belongs to (UUIDv4). Required."
-        ),
-        "date": _date("Work date, YYYY-MM-DD. Required."),
+        "dossier_id": _id("Dossier (UUIDv4). Requis."),
+        "date": _date("Date du travail, AAAA-MM-JJ. Requis."),
         "description": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
             "description": (
-                "Billing narrative, in French — prints verbatim "
-                "on the invoice."
+                "Libellé français imprimé VERBATIM sur la facture client "
+                "(aucune note interne)."
             ),
         },
         "hours": {
@@ -1708,28 +1547,19 @@ def _time_entry_fields() -> dict:
             "minimum": 0.01,
             "maximum": 24,
             "description": (
-                "Hours worked, at most TWO decimals — so a legacy "
-                "quarter-hour (0.25) imports exactly. Anything finer "
-                "is refused rather than rounded: 0.25 h silently "
-                "rounded to 0.2 h bills 60,00 $ where the paper "
-                "invoice printed 75,00 $."
+                "Heures, au plus DEUX décimales (ex. 0.25 ; plus fin refusé, "
+                "jamais arrondi)."
             ),
         },
         "rate_cents": {
             "type": "integer",
             "minimum": 0,
             "maximum": 1000000,
-            "description": (
-                "Hourly rate in cents. Omit to use the dossier's "
-                "rate."
-            ),
+            "description": "Taux horaire en cents (défaut : taux du dossier).",
         },
         "billable": {
             "type": "boolean",
-            "description": (
-                "Defaults to true. Non-billable time is recorded "
-                "with amount 0."
-            ),
+            "description": "Défaut true (false enregistre un montant de 0).",
         },
         **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
         **_legacy_ref_prop(),
@@ -1740,36 +1570,32 @@ _TIME_ENTRY_REQUIRED = ["dossier_id", "date", "description", "hours"]
 
 
 def _expense_fields() -> dict:
-    """The fields of ONE new disbursement — create_expense's inputs, and
-    each item of create_expenses_bulk's ``entries``. Fresh per usage."""
+    """The fields of ONE disbursement in create_expenses_bulk."""
     return {
-        "dossier_id": _id(
-            "The dossier the expense belongs to (UUIDv4). Required."
-        ),
-        "date": _date("Expense date, YYYY-MM-DD. Required."),
+        "dossier_id": _id("Dossier (UUIDv4). Requis."),
+        "date": _date("Date du déboursé, AAAA-MM-JJ. Requis."),
         "description": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
             "description": (
-                "Billing narrative, in French — prints verbatim "
-                "on the invoice."
+                "Libellé français imprimé VERBATIM sur la facture client."
             ),
         },
         "amount_cents": {
             "type": "integer",
             "minimum": 1,
             "maximum": 100000000,
-            "description": "Amount in integer cents (15000 = 150,00 $).",
+            "description": "Montant en cents entiers (15000 = 150,00 $).",
         },
         "category": {
             "type": "string",
             "enum": _EXPENSE_CATEGORIES,
-            "description": "Defaults to 'autre'.",
+            "description": "Défaut 'autre'.",
         },
         "taxable": {
             "type": "boolean",
-            "description": "Defaults to true.",
+            "description": "Défaut true.",
         },
         **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
         **_legacy_ref_prop(),
@@ -1779,17 +1605,15 @@ def _expense_fields() -> dict:
 _EXPENSE_REQUIRED = ["dossier_id", "date", "description", "amount_cents"]
 
 
-def _entry_bulk_items(single: str, fields: dict, required: list[str]) -> dict:
-    """The ``entries`` array of a bulk creator: each item is *single*'s
-    own fields, with its own required list — never a second copy."""
+def _entry_bulk_items(label: str, fields: dict, required: list[str]) -> dict:
+    """The ``entries`` array of a bulk creator."""
     return {
         "type": "array",
         "minItems": 1,
         "maxItems": ENTRY_BULK_MAX,
         "description": (
-            f"1 to {ENTRY_BULK_MAX} rows, each with {single}'s fields and "
-            "rules. ONE refused row refuses the whole call, named "
-            "`entries[i]` (0-based)."
+            f"1 à {ENTRY_BULK_MAX} {label}. Une ligne refusée fait refuser "
+            "tout l'appel (`entries[i]` en base 0)."
         ),
         "items": {
             "type": "object",
@@ -1801,15 +1625,14 @@ def _entry_bulk_items(single: str, fields: dict, required: list[str]) -> dict:
 
 
 def _substitutions_prop(*, expected_required: bool) -> dict:
-    """The `substitutions` array of lot 2B (preview_templatize: counts
-    optional; create_template: each REQUIRED and exact)."""
+    """The `substitutions` array of lot 2B."""
     expected: dict = {
         "type": "integer", "minimum": 1, "maximum": TEMPLATIZE_EXPECTED_MAX,
         "description": (
-            "REQUIRED: the exact count preview_templatize reported as "
-            "`substituted` — any other refuses the whole call."
+            "REQUIS : compte exact `substituted` retourné par "
+            "preview_templatize."
             if expected_required else
-            "Optional: the count you expect; a mismatch is reported."
+            "Optionnel : compte attendu pour vérification."
         ),
     }
     return {
@@ -1817,8 +1640,8 @@ def _substitutions_prop(*, expected_required: bool) -> dict:
         "minItems": 1,
         "maxItems": TEMPLATIZE_SUBSTITUTIONS_MAX,
         "description": (
-            f"1 to {TEMPLATIZE_SUBSTITUTIONS_MAX} literal → field "
-            "replacements, longest literal matched first."
+            f"1 à {TEMPLATIZE_SUBSTITUTIONS_MAX} remplacements littéral → "
+            "champ (plus long d'abord)."
         ),
         "items": {
             "type": "object",
@@ -1828,20 +1651,17 @@ def _substitutions_prop(*, expected_required: bool) -> dict:
                     "minLength": TEMPLATIZE_LITERAL_MIN_CHARS,
                     "maxLength": TEMPLATIZE_LITERAL_MAX_CHARS,
                     "description": (
-                        "The text exactly as the document writes it — "
-                        "CASE-SENSITIVE, whole words (non-breaking spaces "
-                        "and curly apostrophes match plain ones). No "
-                        "brace, tab or line break."
+                        "Texte EXACT sensible à la casse, mots entiers (sans "
+                        "accolade, tabulation ni saut de ligne)."
                     ),
                 },
                 "placeholder": {
                     "type": "string", "minLength": 1,
                     "maxLength": TEMPLATIZE_PLACEHOLDER_MAX_CHARS,
                     "description": (
-                        "The field it becomes, e.g. client.nom_complet or "
-                        "{{client.nom_complet}} — names as list_templates "
-                        "shows them; an ALL-CAPS name prints its value in "
-                        "capitals."
+                        "Champ cible (ex. client.nom_complet ou "
+                        "{{client.nom_complet}} ; MAJUSCULES = valeur en "
+                        "majuscules)."
                     ),
                 },
                 "expected_occurrences": expected,
@@ -1945,23 +1765,20 @@ def _money_arg(description: str) -> dict:
 
 
 def _ventilation_props() -> dict:
-    """A dépense's TPS/TVQ split — shared, fresh per usage, by
-    record_admin_entry and update_admin_entry."""
+    """A dépense's TPS/TVQ split."""
     part = {"type": "integer", "minimum": 0, "maximum": MONEY_MAX_CENTS}
     return {
         "ventilation": {
             "type": "string", "enum": _VENTILATION_MODES,
             "description": (
-                "The TPS/TVQ split of a dépense (paid) or a "
-                "remboursement_depense (refunded): ventiler (extract both "
-                "from the taxes-included amount), sans_taxe (no tax: net = "
-                "amount) or détaillée (net_cents + gst_cents + qst_cents, "
-                "summing exactly to the amount)."
+                "Ventilation TPS/TVQ (dépense / remboursement_depense) : "
+                "ventiler, sans_taxe (net = montant) ou détaillée (net_cents + "
+                "gst_cents + qst_cents = montant)."
             ),
         },
-        "net_cents": {**part, "description": "détaillée only: net amount."},
-        "gst_cents": {**part, "description": "détaillée only: TPS."},
-        "qst_cents": {**part, "description": "détaillée only: TVQ."},
+        "net_cents": {**part, "description": "détaillée seulement : montant net."},
+        "gst_cents": {**part, "description": "détaillée seulement : TPS."},
+        "qst_cents": {**part, "description": "détaillée seulement : TVQ."},
     }
 
 
@@ -1970,18 +1787,18 @@ def _register_text_props(counterparty_rule: str = "") -> dict:
         "counterparty": {
             "type": "string", "maxLength": COUNTERPARTY_MAX_CHARS,
             "description": (
-                "Who paid, or who is paid (« Somme reçue de / "
-                "Bénéficiaire »), as the bank document names them."
+                "Payeur ou bénéficiaire (« Somme reçue de / Bénéficiaire ») "
+                "tel que nommé sur la pièce bancaire."
                 + (" " + counterparty_rule if counterparty_rule else "")
             ),
         },
         "reference": {
             "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
-            "description": "Cheque number or bank reference.",
+            "description": "Numéro de chèque ou référence bancaire.",
         },
         "description": {
             "type": "string", "maxLength": REGISTER_DESCRIPTION_MAX_CHARS,
-            "description": "Free text printed with the entry, in French.",
+            "description": "Libellé libre inscrit au registre, en français.",
         },
     }
 
@@ -1992,23 +1809,22 @@ TOOLS: dict[str, dict] = {
     "get_agenda": {
         "title": "Agenda et priorités",
         "description": (
-            "Daily briefing: upcoming hearings, urgent tasks, urgent protocol "
-            "steps, prescription alerts within 60 days, and practice-wide stats "
-            "(open dossiers, unbilled work, outstanding invoices). Prefer this "
-            "as the first call for any \"what's coming up\" question. The "
-            "window covers whole Montréal days: it opens at MIDNIGHT, so a "
-            "hearing earlier today is still listed, and runs through all of "
-            "window.to; every overdue flag in the response uses "
-            "that same Montréal day, so window.from and is_overdue can never "
-            "disagree. In "
-            "prescription alerts, last_action_date is the last juridical day "
-            "of CIVIL PROCEDURE ON OR BEFORE the deadline — the last day a "
-            "demande can be filed (inclusive — it equals prescription_date "
-            "on a business-day deadline; check last_action_differs, which "
-            "is also true when the prescription ends on 26 December or 2 "
-            "January: Athena computes prescription on the art. 61 L.i. "
-            "calendar, without the two days art. 82 C.p.c. adds for "
-            "procedure), never the date an action was taken."
+            (
+            "Bilan quotidien : audiences à venir, tâches et étapes de "
+            "protocole urgentes, alertes de prescription (60 j) et stats du "
+            "cabinet (dossiers ouverts, en-cours, impayés). Premier appel "
+            "conseillé pour « qu'est-ce qui s'en vient ? ». Fenêtre en jours "
+            "civils de Montréal : s'ouvre à MINUIT (audiences plus tôt "
+            "aujourd'hui incluses) jusqu'à la fin de `window.to` ; chaque "
+            "indicateur de retard suit ce même jour de Montréal "
+            "(`window.from` et `is_overdue` concordent toujours). Pour la "
+            "prescription, `last_action_date` est le dernier jour juridique "
+            "de PROCÉDURE CIVILE au plus tard à l'échéance pour déposer la "
+            "demande (égal à `prescription_date` un jour ouvrable ; vérifier "
+            "`last_action_differs`, vrai aussi le 26 déc. ou 2 janv. car "
+            "Athéna calcule la prescription sur l'art. 61 L.i., sans les 2 "
+            "jours de l'art. 82 C.p.c.)."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2017,7 +1833,7 @@ TOOLS: dict[str, dict] = {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 90,
-                    "description": "Look-ahead window in days (default 14).",
+                    "description": "Fenêtre d'anticipation en jours (défaut 14).",
                 },
             },
             "additionalProperties": False,
@@ -2027,12 +1843,13 @@ TOOLS: dict[str, dict] = {
     "list_dossiers": {
         "title": "Liste des dossiers",
         "description": (
-            "List case files (dossiers), optionally filtered by status or a "
-            "free-text query matching title, file number, court file number "
-            "and the sommaire (case summary). Returns summary rows, newest "
-            "opened first; use get_dossier for full detail. Paginate with "
-            "next_cursor: pass it back as `cursor` until it comes back "
-            "null."
+            (
+            "Liste les dossiers, filtrés par `status` ou recherche libre sur "
+            "titre, numéro interne, numéro de cour et `sommaire`. Retourne "
+            "des résumés, plus récents en premier ; appeler `get_dossier` "
+            "pour le détail complet. Paginer en repassant `next_cursor` "
+            "comme `cursor` jusqu'à `null`."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2040,22 +1857,18 @@ TOOLS: dict[str, dict] = {
                 "status": {
                     "type": "string",
                     "enum": _DOSSIER_STATUSES,
-                    "description": "Filter by dossier status. Omit for all.",
+                    "description": "Filtrer par statut de dossier. Omettre pour tout voir.",
                 },
                 "query": {
                     "type": "string",
                     "maxLength": 120,
-                    "description": ("Free-text match on title, file number, "
-                                    "court file number and sommaire."),
+                    "description": ("Recherche libre sur titre, numéro interne, numéro de cour et sommaire."),
                 },
                 "cursor": {
                     "type": "string",
                     "maxLength": 400,
                     "description": (
-                        "Opaque next_cursor from the previous response — "
-                        "resumes right after the last returned row. Omit "
-                        "for the first page; a malformed value restarts "
-                        "at page 1."
+                        "Curseur opaque `next_cursor` de la réponse précédente (reprend après la dernière ligne). Omettre en page 1 ; valeur invalide repart en page 1."
                     ),
                 },
                 "limit": _limit(20),
@@ -2077,62 +1890,35 @@ TOOLS: dict[str, dict] = {
             # prescription_status / prescription_date_effective derive both
             # from the recorded prescription_events (derive_prescription —
             # arts. 2892/2896, 2904 C.c.Q.).
-            "Fetch one dossier by dossier_id or file_number: the full "
-            "record — free-text `sommaire` (case summary), court "
-            "metadata, recourse & prescription fields — plus per-module "
-            "summaries (tasks, hearings, notes, documents, time, expenses, "
-            "invoices, protocol). Every delay here is INDICATIVE: its "
-            "starting point is a question of fact, and interruption/"
-            "suspension count only as recorded prescription_events (they "
-            "drive prescription_status / prescription_date_effective; the "
-            "raw prescription_date, the computed « date pour agir », never "
-            "moves). summaries.protocol: `upcoming` = open steps due within "
-            "`upcoming_window_days` (7) calendar days, NOT all future ones; "
-            "`next_deadline_date` = the nearest open deadline, whatever the "
-            "window; a step due today is upcoming, never overdue. "
-            "forum_type: 'judiciaire' (a Québec judicial court; the number "
-            "parsed into greffe/juridiction/tribunal), 'administratif' or "
-            "'federal' (the body's name in `tribunal`, the number stored "
-            "unparsed), or "
-            "'prejudiciaire' (nothing filed yet — only district_judiciaire "
-            "is set, court_file_number reads 'Préjudiciaire'). Recourse "
-            "(Québec action taxonomy): domaine/domaine_label (the family), "
-            "action/action_label/action_precision (the named recourse, e.g. "
-            "REC-01). delai = the taxonomy's suggestion; "
-            "delai_types its kind(s) — PE prescription extinctive, PA "
-            "acquisitive (defensive), D déchéance stricte (neither "
-            "suspends nor interrupts), DR déchéance relevable (statutory "
-            "relief exists), A avis préalable, R délai raisonnable, N "
-            "none, I imprescriptible, S follows the "
-            "underlying right, V variable, F retrospective window; "
-            "delai_types_label = the joined French label; a_valider = a "
-            "qualification still to confirm at the sources. avis lists "
-            "prior-notice obligations (libelle/delai/sanction/conditionnel); "
-            "delai_point_depart (its starting point), ref_delai (source of "
-            "the delay), ref_fondement (seat of the right of action). Also "
-            "valeur/valeur_classe, droit_action_date and "
-            "prescription_type/prescription_label (the delay the lawyer "
-            "CONFIRMED — may differ from the taxonomy's suggestion)."
+            (
+            "Fiche complète d'un dossier par `dossier_id` ou `file_number` : "
+            "`sommaire`, données judiciaires, recours et prescription, plus "
+            "résumés par module (tâches, audiences, notes, documents, temps, "
+            "déboursés, factures, protocole). Tout délai est INDICATIF : le "
+            "point de départ relève des faits et seuls les "
+            "`prescription_events` enregistrés comptent "
+            "(`prescription_status` / `prescription_date_effective` ; "
+            "`prescription_date` brute reste fixe). "
+            "`summaries.protocol.upcoming` = étapes dues d'ici 7 j ; "
+            "`next_deadline_date` = prochaine échéance (due aujourd'hui = à "
+            "venir). `forum_type` : 'judiciaire' (numéro analysé), "
+            "'administratif'/'federal' (`tribunal`, numéro brut), "
+            "'prejudiciaire'. Taxonomie : `domaine`/`action`, `delai` "
+            "suggéré, `delai_types` (PE/PA/D/DR/A/R/N/I/S/V/F), `a_valider`, "
+            "`avis`, `prescription_type` (délai confirmé)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier's UUIDv4 id, e.g. from list_dossiers. Provide exactly one of dossier_id or file_number."
+                    "UUIDv4 du dossier (ex. de list_dossiers). Fournir exactement dossier_id OU file_number."
                 ),
                 "file_number": {
                     "type": "string",
                     "maxLength": 20,
                     "description": (
-                        "The user-assigned file number, e.g. « 2026-001 ». "
-                        "Alternative to dossier_id — provide exactly one. "
-                        "Matched EXACTLY (whitespace trimmed), so « 2026-1 » "
-                        "does not find « 2026-001 »: found: false means no "
-                        "dossier bears this exact number, not that the file "
-                        "is absent under some other spelling. Unlike the "
-                        "dossier_id branch, a failed lookup reports an error "
-                        "rather than found: false — so « not found » here is "
-                        "a fact you can act on."
+                        "Numéro interne exact attribué au dossier (ex. « 2026-001 » ; espaces retirés). Fournir dossier_id OU file_number. Un échec de lecture renvoie une erreur plutôt que found: false — un found: false est donc fiable."
                     ),
                 },
             },
@@ -2143,30 +1929,28 @@ TOOLS: dict[str, dict] = {
     "list_tasks": {
         "title": "Liste des tâches",
         "description": (
-            "List tasks ordered by due date (undated last). By default only "
-            "active tasks (à_faire, en_cours) are returned; pass an explicit "
-            "status or include_completed=true to see the rest. Every row "
-            "carries is_overdue, computed against the MONTRÉAL calendar day: "
-            "a task due TODAY is not overdue, an undated one never is, and a "
-            "terminée/annulée one never is whatever its due date says."
+            (
+            "Liste les tâches triées par échéance (sans date à la fin). Par "
+            "défaut, actives seulement (`à_faire`, `en_cours`) ; passer "
+            "`status` ou `include_completed=true` pour le reste. "
+            "`is_overdue` suit le jour de Montréal : due aujourd'hui, sans "
+            "date, `terminée` ou `annulée` n'est jamais en retard."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "Only tasks of this dossier (UUIDv4). Omit for all tasks."
+                    "Limiter à ce dossier (UUIDv4). Omettre pour toutes les tâches."
                 ),
                 "status": {
                     "type": "string",
                     "enum": _TASK_STATUSES,
-                    "description": ("Filter to one status (French "
-                                    "vocabulary); overrides the default "
-                                    "active-only view."),
+                    "description": ("Filtrer à un statut précis (vocabulaire français) ; remplace la vue active par défaut."),
                 },
                 "include_completed": {
                     "type": "boolean",
-                    "description": ("true also returns terminée and annulée "
-                                    "tasks in the default (no-status) view."),
+                    "description": ("true inclut aussi les tâches terminée et annulée dans la vue par défaut."),
                 },
                 "updated_since": _updated_since(),
                 "offset": _offset(),
@@ -2179,48 +1963,42 @@ TOOLS: dict[str, dict] = {
     "list_hearings": {
         "title": "Liste des audiences",
         "description": (
-            "List court hearings and agenda events between two dates (default: "
-            "today to +60 days, max span 366 days), optionally scoped to one "
-            "dossier. Includes cancelled hearings (status annulée) — check the "
-            "status field. Each row carries the derived forum "
-            "(judiciaire/extrajudiciaire), the modalité, a conference_uri for "
-            "video events, and its etag (update_hearing). Two other modes, "
-            "exclusive of the date window and of each other: `serie_id` lists "
-            "one recurring chain whole (past included); `bookings` \"pending\" "
-            "lists the « Bookings with me » requests awaiting a decision "
-            "(decide_rendez_vous), with the requester's name and email."
+            (
+            "Liste audiences et événements entre deux dates (défaut : "
+            "aujourd'hui à +60 j, max 366 j), ou pour un dossier. Inclut les "
+            "`annulée` (vérifier `status`). Chaque ligne porte le forum "
+            "dérivé (`judiciaire`/`extrajudiciaire`), la modalité, "
+            "`conference_uri` et `etag` (`update_hearing`). Deux modes "
+            "exclusifs des dates : `serie_id` liste toute une série "
+            "récurrente (passé inclus) ; `bookings` \"pending\" liste les "
+            "demandes Bookings en attente de décision (`decide_rendez_vous`)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "date_from": _date(
-                    "Window start, YYYY-MM-DD (Montréal calendar date). Default: today."
+                    "Début de fenêtre, AAAA-MM-JJ (Montréal). Défaut : aujourd'hui."
                 ),
                 "date_to": _date(
-                    "Window end, YYYY-MM-DD inclusive. Default: date_from + 60 days."
+                    "Fin de fenêtre, AAAA-MM-JJ inclusif. Défaut : date_from + 60 j."
                 ),
                 "dossier_id": _id(
-                    "Only hearings of this dossier (UUIDv4). Omit for all."
+                    "Audiences de ce dossier seulement (UUIDv4). Omettre pour tout voir."
                 ),
                 "serie_id": _id(
-                    "List this recurring chain whole, past occurrences "
-                    "included (from a row's serie_id). Not with the date "
-                    "window, dossier_id or bookings."
+                    "Lister toute cette série récurrente, passé inclus (d'un `serie_id` retourné). Exclut dates, dossier_id et bookings."
                 ),
                 "bookings": {
                     "type": "string",
                     "enum": ["pending"],
                     "description": (
-                        "\"pending\": the Bookings requests awaiting a "
-                        "decision — à_confirmer, or annulée_client (the "
-                        "client cancelled; refuser removes it). Not with the "
-                        "date window, dossier_id or serie_id."
+                        "\"pending\" : demandes Bookings en attente — à_confirmer ou annulée_client (refuser la retire). Exclut dates, dossier_id et serie_id."
                     ),
                 },
                 "limit": _limit(25),
                 "cursor": _cursor(
-                    "Hearings page OLDEST-first (agenda order), so the "
-                    "cursor advances forward in time."
+                    "Pagine du plus ancien au plus récent (ordre d'agenda)."
                 ),
             },
             "additionalProperties": False,
@@ -2230,20 +2008,16 @@ TOOLS: dict[str, dict] = {
     "list_notes": {
         "title": "Notes (dossier ou cabinet)",
         "description": (
-            "List notes with a 280-character plain-text preview. "
-            "CHOOSE THE CORPUS FIRST — the default is NARROW: with no "
-            "dossier_id and no scope you get ONLY the « Général » notes "
-            "(entries attached to no file), NOT the firm. To search every "
-            "dossier — the way to find a note whose file you have forgotten "
-            "— pass scope=\"cabinet\". With dossier_id you get that one "
-            "file. Every row carries its dossier_id/file number/title, so a "
-            "cabinet hit is attributable without a second call. "
-            "`query` searches the FULL title and "
-            "content, so a match may sit past the preview — fetch the note "
-            "before concluding it is irrelevant. Use get_note for the full "
-            "Markdown. A note flagged is_analyse is the dossier's « Théorie "
-            "de la cause » (the lawyer's structured case analysis) — write "
-            "it only with edit_analyse, never append_to_note/update_note."
+            (
+            "Liste les notes avec aperçu texte de 280 car. CHOISIR LE CORPUS "
+            ": sans `dossier_id` ni `scope`, retourne UNIQUEMENT les notes « "
+            "Général » (sans dossier). Passer `scope=\"cabinet\"` pour "
+            "chercher dans tous les dossiers (chaque ligne identifie son "
+            "dossier), ou `dossier_id` pour un dossier. `query` cherche dans "
+            "tout le titre ET tout le corps : lire la note via `get_note` "
+            "avant d'écarter un résultat. `is_analyse: true` désigne la « "
+            "Théorie de la cause » — modifier uniquement via `edit_analyse`."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2252,60 +2026,47 @@ TOOLS: dict[str, dict] = {
                     "type": "string",
                     "enum": ["general", "dossier", "cabinet"],
                     "description": (
-                        "WHICH CORPUS to search. \"general\" (default) = only "
-                        "notes attached to NO dossier. \"dossier\" = one file "
-                        "(implicit whenever dossier_id is given). "
-                        "\"cabinet\" = EVERY note in the firm. Contradictory "
-                        "combinations are refused, never silently resolved."
+                        "Corpus : \"general\" (défaut, notes sans dossier), \"dossier\" (implicite avec dossier_id), \"cabinet\" (TOUTES les notes). Combinaisons contradictoires refusées."
                     ),
                 },
                 "dossier_id": _id(
-                    "The dossier whose notes to list (UUIDv4). Implies "
-                    "scope=\"dossier\". Omit for the « Général » notes, or "
-                    "pass scope=\"cabinet\" to search every dossier."
+                    "Dossier ciblé (UUIDv4, implique scope=\"dossier\"). Omettre pour « Général » ou passer scope=\"cabinet\"."
                 ),
                 "dossier_status": {
                     "type": "string",
                     "enum": _DOSSIER_STATUSES,
                     "description": (
-                        "Cabinet scope ONLY: keep notes whose dossier carries "
-                        "this status (research usually targets open files)."
+                        "Scope cabinet uniquement : filtrer selon le statut du dossier."
                     ),
                 },
                 "query": {
                     "type": "string",
                     "maxLength": 120,
                     "description": (
-                        "Case-insensitive substring over each note's title "
-                        "AND full content (not just the preview)."
+                        "Sous-chaîne insensible à la casse dans le titre ET tout le contenu."
                     ),
                 },
                 "category": {
                     "type": "string",
                     "enum": _NOTE_CATEGORIES,
-                    "description": "Filter to one note category.",
+                    "description": "Filtrer à une catégorie de note.",
                 },
                 "pinned": {
                     "type": "boolean",
                     "description": (
-                        "true = pinned notes only; false = unpinned only. "
-                        "Omit for both."
+                        "true = épinglées seulement ; false = non épinglées. Omettre pour tout."
                     ),
                 },
                 "date_from": _date(
-                    "Earliest creation date (Montréal calendar), "
-                    "YYYY-MM-DD inclusive."
+                    "Date minimale de création (Montréal), AAAA-MM-JJ inclusif."
                 ),
                 "date_to": _date(
-                    "Latest creation date (Montréal calendar), "
-                    "YYYY-MM-DD inclusive."
+                    "Date maximale de création (Montréal), AAAA-MM-JJ inclusif."
                 ),
                 "updated_since": _updated_since(),
                 "offset": _offset(),
                 "cursor": _cursor(
-                    "Cabinet scope ONLY (other scopes page with offset). "
-                    "Cabinet orders by creation date + id — immutable fields, "
-                    "so pinning a note between pages cannot shift it."
+                    "Scope cabinet uniquement (les autres utilisent offset) ; ordre immuable (création + id)."
                 ),
                 "limit": _limit(20),
             },
@@ -2316,15 +2077,17 @@ TOOLS: dict[str, dict] = {
     "get_note": {
         "title": "Détail d'une note",
         "description": (
-            "Fetch one note with its full raw Markdown content and etag. For "
-            "a note flagged is_analyse (the dossier's « Théorie de la "
-            "cause »), `structure` maps its entête and blocs A–H; write it "
-            "with edit_analyse only."
+            (
+            "Lit une note avec son Markdown complet et son `etag`. Si "
+            "`is_analyse` est true (« Théorie de la cause »), `structure` "
+            "décrit l'entête et les blocs A–H ; modifier uniquement avec "
+            "`edit_analyse`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "note_id": _id("The note's UUIDv4 id, from list_notes."),
+                "note_id": _id("UUIDv4 de la note (de list_notes)."),
             },
             "required": ["note_id"],
             "additionalProperties": False,
@@ -2334,21 +2097,26 @@ TOOLS: dict[str, dict] = {
     "list_documents": {
         "title": "Documents (dossier ou cabinet)",
         "description": (
-            "List document METADATA — names, categories, sizes, versions; "
-            "never file contents or download links. `query` matches METADATA "
-            "ONLY (display name, file name, the analysis summary, "
-            "notes_internes, genere_depuis, tags), NEVER the text inside the "
-            "file — read that with get_document_text (content SEARCH across "
-            "files is still not available). Scope: one dossier by default "
-            "(dossier_id required), or scope=\"cabinet\" across every "
-            "dossier (folder_path is then \"\"). Filter by folder, "
-            "category, `query` or a date window. Each row carries its "
-            "dossier, folder_path (\"\" = dossier root), document_date — "
-            "the document's OWN date when the lawyer entered one (null "
-            "otherwise; created_at is only the upload instant) —, its etag, "
-            "category_source (« mcp »: set by Claude, PRESUMED until the "
-            "lawyer confirms) and folder_system_role. include_folders adds "
-            "the dossier's whole folder tree."
+            (
+            (
+            (
+            (
+            (
+            "Liste les MÉTADONNÉES de documents (noms, catégories, tailles, "
+            "versions — jamais le contenu ni de lien). `query` porte "
+            "UNIQUEMENT sur les métadonnées (nom, fichier, résumé d'analyse, "
+            "`notes_internes`, `genere_depuis`, étiquettes `tags`), jamais "
+            "le texte (lire via `get_document_text`). Défaut : un dossier "
+            "(`dossier_id` requis), ou `scope=\"cabinet\"` (`folder_path=\"\"`). "
+            "Retourne `document_date` (date propre ou null), `etag`, "
+            "`category_source` (`mcp` = présumé jusqu'à confirmation) et "
+            "`folder_system_role`. `include_folders=true` joint toute "
+            "l'arborescence."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2357,62 +2125,50 @@ TOOLS: dict[str, dict] = {
                     "type": "string",
                     "enum": ["dossier", "cabinet"],
                     "description": (
-                        "\"dossier\" (default) = one file, and dossier_id is "
-                        "REQUIRED. \"cabinet\" = every dossier; dossier_id "
-                        "and folder_id are then refused as contradictory."
+                        "\"dossier\" (défaut, dossier_id REQUIS) ou \"cabinet\" (tous dossiers ; dossier_id et folder_id alors refusés)."
                     ),
                 },
                 "dossier_id": _id(
-                    "The dossier whose document metadata to list (UUIDv4). "
-                    "Required unless scope=\"cabinet\"."
+                    "UUIDv4 du dossier. Requis sauf avec scope=\"cabinet\"."
                 ),
                 "dossier_status": {
                     "type": "string",
                     "enum": _DOSSIER_STATUSES,
                     "description": (
-                        "Cabinet scope ONLY: keep documents whose dossier "
-                        "carries this status."
+                        "Scope cabinet uniquement : filtrer par statut du dossier."
                     ),
                 },
                 "folder_id": _id(
-                    "Restrict to one folder (UUIDv4). Omit to span every folder."
+                    "Limiter à un répertoire (UUIDv4). Omettre pour tous."
                 ),
                 "category": {
                     "type": "string",
                     "enum": _DOCUMENT_CATEGORIES,
-                    "description": "Filter by document category.",
+                    "description": "Filtrer par catégorie de document.",
                 },
                 "query": {
                     "type": "string",
                     "maxLength": 120,
                     "description": (
-                        "Free-text match on the metadata the description "
-                        "lists — never the file's text."
+                        "Recherche texte libre sur les métadonnées listées — jamais le contenu du fichier."
                     ),
                 },
                 "date_from": _date(
-                    "Earliest EFFECTIVE date, YYYY-MM-DD inclusive — the "
-                    "document's own document_date when set, else its "
-                    "upload date."
+                    "Date effective min, AAAA-MM-JJ inclusif (document_date si définie, sinon date de téléversement)."
                 ),
                 "date_to": _date(
-                    "Latest effective date, YYYY-MM-DD inclusive."
+                    "Date effective max, AAAA-MM-JJ inclusif."
                 ),
                 "updated_since": _updated_since(),
                 "include_folders": {
                     "type": "boolean",
                     "description": (
-                        "Dossier scope only: also return the dossier's "
-                        "COMPLETE folder tree in `folders` — empty folders "
-                        "included, whatever folder_id, query or page. An "
-                        "unreadable folder store or an unknown dossier_id "
-                        "is REFUSED, never reported as « no folder ». "
-                        "Default false."
+                        "Scope dossier seulement : inclut toute l'arborescence dans `folders` (même vides). Erreur de lecture refusée plutôt que vue vide. Défaut false."
                     ),
                 },
                 "offset": _offset(),
                 "cursor": _cursor(
-                    "Cabinet scope ONLY (dossier scope pages with offset)."
+                    "Scope cabinet uniquement (le scope dossier utilise offset)."
                 ),
                 "limit": _limit(25),
             },
@@ -2429,76 +2185,53 @@ TOOLS: dict[str, dict] = {
     "list_templates": {
         "title": "Gabarits (modèles Word)",
         "description": (
-            "The practice's Word templates (« gabarits ») — metadata only: "
-            "never the file, its filename or a link. Without template_id: "
-            "the list. With template_id: that template's placeholders, "
-            "split three ways — AUTO fields the application fills itself "
-            "(dossier, parties, firm, today's date), never yours to supply; "
-            "MANUAL fields, short letter metadata with their options; BLOCS, "
-            "the free content the template leaves to be written (names "
-            "exact). Pass dossier_id (and the slot ids) to see which auto "
-            "fields resolve on that file: an unresolved one prints "
-            "« [CHAMP MANQUANT : name] », a data gap to report, not to "
-            "write around. Values are NEVER returned — read get_dossier or "
-            "get_partie for the data. Kinds note_honoraires, note_credit and "
-            "note are filled by their own flow (their fields: flow_fields); "
-            "at most ONE of each is active, designated by the lawyer in the "
-            "application — none designated, that flow refuses; nothing "
-            "here changes it. Kind modele: the lawyer's contract models "
-            "(« Modèles »), Word files he adapts by hand — never filled, "
-            "fill_gabarit refuses them."
+            (
+            "Gabarits Word du cabinet — métadonnées seulement (jamais le "
+            "fichier ni de lien). Sans `template_id` : liste. Avec "
+            "`template_id` : champs classés en AUTO (remplis par Athéna), "
+            "MANUELS et BLOCS (noms exacts). Passer `dossier_id` (et slots) "
+            "vérifie la résolution auto : tout manque donne « [CHAMP "
+            "MANQUANT : nom] » (à signaler, ne pas contourner ; valeurs "
+            "jamais retournées). Au plus un modèle actif par sorte spéciale "
+            "(`note_honoraires`, `note_credit`, `note`), désigné par "
+            "l'avocat dans l'app. Sortes `modele` : contrats adaptés à la "
+            "main, jamais remplis (`fill_gabarit` refuse)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "template_id": _id(
-                    "Inspect ONE template (UUIDv4), from a row of the list. "
-                    "Omit to list."
+                    "Inspecter UN modèle (UUIDv4). Omettre pour lister."
                 ),
                 "kind": {
                     "type": "string",
                     "enum": _TEMPLATE_KINDS,
                     "description": (
-                        "List only: « gabarit » (letters, procedures), "
-                        "« note_honoraires » (the invoice note), "
-                        "« note_credit » (a write-off's credit note), "
-                        "« note » (the note print), « modele » (contract "
-                        "models, never filled)."
+                        "Liste : « gabarit » (actes/lettres), « note_honoraires », « note_credit », « note » ou « modele » (jamais rempli)."
                     ),
                 },
                 "category": {
                     "type": "string",
                     "enum": _TEMPLATE_CATEGORIES,
-                    "description": "List only: the template's own category.",
+                    "description": "Liste : catégorie propre du modèle.",
                 },
                 "query": {
                     "type": "string",
                     "maxLength": 120,
-                    "description": "List only: matches name and description.",
+                    "description": "Liste : cherche dans le nom et la description.",
                 },
                 "dossier_id": _id(
-                    "With template_id: resolve the auto fields on this "
-                    "dossier. Omitted, every dossier and party field reads "
-                    "unresolved."
+                    "Avec template_id : résout les champs auto sur ce dossier."
                 ),
                 "client_id": _id(
-                    "With template_id: the dossier's client filling the "
-                    "« client » slot. Needed when the dossier has several "
-                    "and the template uses the slot. Refused for kinds "
-                    "note / note_honoraires / note_credit (their flow never "
-                    "fills it)."
+                    "Avec template_id : client du slot « client » (requis si multiple et utilisé). Refusé pour note/note_honoraires/note_credit."
                 ),
                 "adverse_id": _id(
-                    "With template_id: the dossier's opposing party filling "
-                    "the « adverse » slot. Needed when it has several. "
-                    "Refused for kinds note / note_honoraires / "
-                    "note_credit."
+                    "Avec template_id : partie adverse du slot « adverse » (si multiple). Refusé pour note/note_honoraires/note_credit."
                 ),
                 "destinataire_id": _id(
-                    "With template_id: the addressee contact of the "
-                    "« destinataire » slot. No default. note_honoraires, "
-                    "note_credit: the invoice's client. Refused for kind "
-                    "note."
+                    "Avec template_id : contact destinataire (pas de défaut). Client de la facture pour note_honoraires/note_credit ; refusé pour note."
                 ),
                 "offset": _offset(),
                 "limit": _limit(20),
@@ -2510,9 +2243,11 @@ TOOLS: dict[str, dict] = {
     "list_parties": {
         "title": "Liste des contacts",
         "description": (
-            "List contacts (parties), optionally filtered by contact_role, "
-            "type, or a name/email/phone query. Returns summary rows; use "
-            "get_partie for the full card."
+            (
+            "Liste les contacts (parties), filtrés par `contact_role`, "
+            "`type` ou recherche nom/courriel/téléphone. Retourne des lignes "
+            "sommaires ; appeler `get_partie` pour la fiche complète."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2520,19 +2255,17 @@ TOOLS: dict[str, dict] = {
                 "contact_role": {
                     "type": "string",
                     "enum": _CONTACT_ROLES,
-                    "description": ("Filter by the contact's role in "
-                                    "the practice."),
+                    "description": ("Filtrer par rôle du contact au cabinet."),
                 },
                 "type": {
                     "type": "string",
                     "enum": _PARTIE_TYPES,
-                    "description": ("individual = personne physique; "
-                                    "organization = personne morale."),
+                    "description": ("individual = personne physique ; organization = personne morale."),
                 },
                 "query": {
                     "type": "string",
                     "maxLength": 120,
-                    "description": "Free-text match on name, email and phone.",
+                    "description": "Recherche libre sur nom, courriel et téléphone.",
                 },
                 "updated_since": _updated_since(),
                 "offset": _offset(),
@@ -2545,18 +2278,19 @@ TOOLS: dict[str, dict] = {
     "get_partie": {
         "title": "Fiche d'un contact",
         "description": (
-            "Fetch one contact's full card: personal and professional "
-            "coordinates, legal identifiers, KYC / conflict-check status — "
-            "each with WHO decided it (`*_source`; `*_presumed` true = "
-            "inscribed by this connector, awaiting the lawyer's "
-            "confirmation) —, mandataires, and the dossiers referencing "
-            "them. KYC and conflict-check notes may be sensitive."
+            (
+            "Fiche complète d'un contact : coordonnées personnelles et "
+            "professionnelles, identifiants légaux, statuts KYC / conflit "
+            "d'intérêts (avec `*_source` et `*_presumed` si inscrit par ce "
+            "connecteur en attente de confirmation), mandataires et dossiers "
+            "liés. Les notes KYC/conflit peuvent être sensibles."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "partie_id": _id(
-                    "The contact's UUIDv4 id, from list_parties."
+                    "UUIDv4 du contact (de list_parties)."
                 ),
             },
             "required": ["partie_id"],
@@ -2567,21 +2301,21 @@ TOOLS: dict[str, dict] = {
     "get_billing_snapshot": {
         "title": "Portrait de facturation",
         "description": (
-            "Billing posture. Without dossier_id: firm-wide unbilled totals "
-            "— fees AND disbursements (unbilled_expenses) — the outstanding "
-            "amount and invoices, plus by_dossier: which files hold the "
-            "work in progress (hours, fees, disbursements per dossier). "
-            "With dossier_id: that dossier's time/expense/invoice summaries "
-            "plus unbilled line detail (up to 50 rows each). Note "
-            "total_hours counts ALL time incl. non-billable; unbilled "
-            "figures are billable-and-not-yet-invoiced only."
+            (
+            "Portrait de facturation. Sans `dossier_id` : totaux non "
+            "facturés du cabinet (honoraires et `unbilled_expenses`), solde "
+            "impayé, factures et détail `by_dossier`. Avec `dossier_id` : "
+            "résumés temps/déboursés/factures et jusqu'à 50 lignes non "
+            "facturées par type. `total_hours` inclut le temps non "
+            "facturable ; les montants non facturés ne comptent que le "
+            "facturable non encore facturé."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "Scope to one dossier (UUIDv4). Omit for the "
-                    "firm-wide picture."
+                    "Cibler un dossier (UUIDv4). Omettre pour le portrait global du cabinet."
                 ),
             },
             "additionalProperties": False,
@@ -2591,40 +2325,37 @@ TOOLS: dict[str, dict] = {
     "list_time_entries": {
         "title": "Entrées de temps",
         "description": (
-            "Time entries firm-wide or per dossier — billed AND unbilled "
-            "(the billing snapshot lists unbilled rows only; this is the "
-            "work-history view, and the only way to see invoiced time). "
-            "Sorted newest date first. billable_filter='non_facture' means "
-            "NOT YET INVOICED — it includes non-billable rows, whose amount "
-            "is always 0; 'billable' filters to billable time regardless of "
-            "invoicing. Combine dossier_id + date range to answer « what "
-            "was done on this file in July »."
+            (
+            "Entrées de temps du cabinet ou d'un dossier — facturées ET non "
+            "facturées (seule façon de voir le temps facturé), plus récentes "
+            "d'abord. `billable_filter='non_facture'` garde le non encore "
+            "facturé (inclut le non facturable à 0 $) ; `'billable'` filtre "
+            "le facturable (facturé ou non). Combiner `dossier_id` et plage "
+            "de dates pour un relevé."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "Restrict to one dossier (UUIDv4). Omit for firm-wide."
+                    "Limiter à un dossier (UUIDv4). Omettre pour tout le cabinet."
                 ),
                 "date_from": _date(
-                    "Earliest entry date, YYYY-MM-DD inclusive."
+                    "Date minimale de l'entrée, AAAA-MM-JJ inclusif."
                 ),
                 "date_to": _date(
-                    "Latest entry date, YYYY-MM-DD inclusive."
+                    "Date maximale de l'entrée, AAAA-MM-JJ inclusif."
                 ),
                 "billable_filter": {
                     "type": "string",
                     "enum": ["billable", "non_facture"],
                     "description": (
-                        "'billable' = billable time only; 'non_facture' = "
-                        "not yet invoiced (includes non-billable rows). "
-                        "Omit for everything."
+                        "'billable' = facturable seulement ; 'non_facture' = non encore facturé (inclut non facturable). Omettre pour tout."
                     ),
                 },
                 "limit": _limit(25),
                 "cursor": _cursor(
-                    "Required to walk a full month or exercise: `truncated` "
-                    "warns there is more, and only this resumes it."
+                    "Requis pour parcourir une période complète si `truncated` est true."
                 ),
             },
             "additionalProperties": False,
@@ -2634,37 +2365,36 @@ TOOLS: dict[str, dict] = {
     "list_expenses": {
         "title": "Déboursés",
         "description": (
-            "Disbursements (débours) firm-wide or per dossier — billed AND "
-            "unbilled, sorted newest date first. "
-            "billable_filter='non_facture' keeps only those not yet "
-            "invoiced. Categories are French keys (signification, "
-            "expertise, transcription, deplacement, photocopie, "
-            "timbre_judiciaire, autre)."
+            (
+            "Déboursés du cabinet ou d'un dossier — facturés ET non "
+            "facturés, plus récents d'abord. `billable_filter='non_facture'` "
+            "garde seulement les non facturés. Catégories en clés françaises "
+            "(`signification`, `expertise`, `transcription`, `deplacement`, "
+            "`photocopie`, `timbre_judiciaire`, `autre`)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "Restrict to one dossier (UUIDv4). Omit for firm-wide."
+                    "Limiter à un dossier (UUIDv4). Omettre pour tout le cabinet."
                 ),
                 "date_from": _date(
-                    "Earliest expense date, YYYY-MM-DD inclusive."
+                    "Date minimale du déboursé, AAAA-MM-JJ inclusif."
                 ),
                 "date_to": _date(
-                    "Latest expense date, YYYY-MM-DD inclusive."
+                    "Date maximale du déboursé, AAAA-MM-JJ inclusif."
                 ),
                 "billable_filter": {
                     "type": "string",
                     "enum": ["non_facture"],
                     "description": (
-                        "'non_facture' = not yet invoiced. Omit for "
-                        "everything."
+                        "'non_facture' = non encore facturé. Omettre pour tout."
                     ),
                 },
                 "limit": _limit(25),
                 "cursor": _cursor(
-                    "Required to walk a full month or exercise: `truncated` "
-                    "warns there is more, and only this resumes it."
+                    "Requis pour parcourir toute la période si `truncated` est true."
                 ),
             },
             "additionalProperties": False,
@@ -2674,69 +2404,53 @@ TOOLS: dict[str, dict] = {
     "list_invoices": {
         "title": "Registre des factures",
         "description": (
-            "The invoice register, newest date first. "
-            "WITHOUT a status filter this returns EVERY status, including "
-            "`brouillon` (drafted, never sent to the client) and `annulée` "
-            "(void) — neither is money owed, and neither may be presented as "
-            "an issued invoice. `envoyée` means MARKED sent (in the "
-            "application or by update_invoice): Athéna itself sends "
-            "nothing. Filter with `status`, or with "
-            "`status_group=\"impayée\"` for what is actually outstanding. "
-            "Resolves the invoice_id carried by list_time_entries and "
-            "list_expenses rows. "
-            "PAYMENT IS ONLY AS RECORDED: `amount_paid` is the sum posted in "
-            "the accounting module (the only writer of a payment), "
-            "`balance` is amount_due − "
-            "amount_paid − written_off (`written_off` = what the lawyer "
-            "forgave by a write-off, « radiation » — never a payment), and "
-            "`payment_basis: \"none\"` means nothing was "
-            "recorded — NOT that nothing was paid. Older invoices predate "
-            "the payment field and read that way. "
-            "`amount_due` is the balance AT ISSUANCE and is never updated: "
-            "it stays non-zero on a paid invoice, so never read it as what "
-            "is still owed. "
-            "Reconciliation: summing `balance` over status envoyée + "
-            "en_retard (i.e. status_group=\"impayée\") equals "
-            "get_billing_snapshot's outstanding_cents to the cent — the two "
-            "share one definition, the LIVE balance. Never sum "
-            "`amount_due` for this: it is frozen at issuance and stays at "
-            "full value on a settled invoice, so it overstates what is "
-            "owed by everything already collected. Reconciles only ACROSS "
-            "ALL PAGES. While "
-            "`truncated` is true the sum you hold is partial; page to the "
-            "end with `cursor`, or quote get_billing_snapshot's figure "
-            "instead of adding these up.Beware the DIFFERENT one in "
-            "get_dossier.summaries.invoices.total_outstanding, which sums "
-            "`total`, counts brouillons and treats payée as settled; the two "
-            "figures will not agree, by design. "
-            "Exact at any size firm-wide and for any single dossier; page "
-            "with `cursor`."
+            (
+            (
+            (
+            (
+            (
+            "Registre des factures, plus récentes d'abord. Sans filtre, "
+            "inclut `brouillon` (jamais transmise) et `annulée` (aucun "
+            "montant dû) ; filtrer par `status` ou `status_group=\"impayée\"` "
+            "(`envoyée` + `en_retard`). `envoyée` = marquée envoyée (Athéna "
+            "ne transmet rien). `amount_paid` = paiements aux registres "
+            "comptables ; `balance = amount_due - amount_paid - written_off` "
+            "(radiations) ; `payment_basis=\"none\"` = aucun paiement inscrit. "
+            "`amount_due` est figé à l'émission : ne jamais l'additionner. "
+            "Sommer `balance` sur `status_group=\"impayée\"` sur toutes pages "
+            "(`cursor=null`) égale `get_billing_snapshot.outstanding_cents` "
+            "au cent près — contrairement à "
+            "`get_dossier.summaries.invoices.total_outstanding` (somme "
+            "`total`, inclut brouillons, traite `payée` comme réglée : les "
+            "deux ne concordent pas à dessein)."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "Restrict to one dossier (UUIDv4). Omit for firm-wide."
+                    "Limiter à un dossier (UUIDv4). Omettre pour tout le cabinet."
                 ),
                 "status": {
                     "type": "string",
                     "enum": _INVOICE_STATUSES,
                     "description": (
-                        "One exact status. Mutually exclusive with "
-                        "status_group."
+                        "Un statut exact. Exclusif de status_group."
                     ),
                 },
                 "status_group": {
                     "type": "string",
                     "enum": ["impayée"],
                     "description": (
-                        "\"impayée\" = envoyée + en_retard, the same pair "
-                        "get_billing_snapshot sums. Mutually exclusive with "
-                        "status."
+                        "\"impayée\" = envoyée + en_retard (même définition que get_billing_snapshot). Exclusif de status."
                     ),
                 },
-                "date_from": _date("Earliest invoice date, YYYY-MM-DD inclusive."),
-                "date_to": _date("Latest invoice date, YYYY-MM-DD inclusive."),
+                "date_from": _date("Date minimale de facture, AAAA-MM-JJ inclusif."),
+                "date_to": _date("Date maximale de facture, AAAA-MM-JJ inclusif."),
                 "limit": _limit(25),
                 "cursor": _cursor(),
             },
@@ -2747,27 +2461,20 @@ TOOLS: dict[str, dict] = {
     "get_invoice": {
         "title": "Facture",
         "description": (
-            "One invoice: its parties, its full money block (fees, "
-            "disbursements, GST, QST, retainer, total, recorded payment, "
-            "write-offs and live balance) and its line items. A « payée » "
-            "says how it was settled in `settlement_label`; `write_offs` "
-            "lists each write-off (« radiation », with its credit note's "
-            "`credit_note_number`) and its cancellation. "
-            "Line descriptions are what PRINTED on the client's invoice — "
-            "quote them verbatim, never paraphrase. "
-            "`subtotal_matches_line_items: false` means the stored subtotal "
-            "and the sum of the lines disagree: raise it, never silently "
-            "re-add. A non-empty `warnings` array means the line items could "
-            "not be read — the invoice is not empty, the read failed. "
-            "Line items are readable ONE INVOICE AT A TIME; there is no way "
-            "to search them across invoices. `etag` is update_invoice's "
-            "expected_etag; `connector_transitions` the statuses it can set "
-            "now."
+            (
+            "Détail d'une facture : parties, montants (honoraires, "
+            "déboursés, TPS, TVQ, provision, total, paiements, radiations, "
+            "solde), `settlement_label`, `write_offs` (`credit_note_number`) "
+            "et lignes (citer VERBATIM). `subtotal_matches_line_items: "
+            "false` signale un écart sans réadditionner ; `warnings` non "
+            "vide = échec de lecture des lignes. Fournit `etag` et "
+            "`connector_transitions` pour `update_invoice`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "invoice_id": _id("The invoice to read (UUIDv4)."),
+                "invoice_id": _id("UUIDv4 de la facture à lire."),
             },
             "required": ["invoice_id"],
             "additionalProperties": False,
@@ -2777,12 +2484,13 @@ TOOLS: dict[str, dict] = {
     "preview_invoice": {
         "title": "Aperçu d'une facture",
         "description": (
-            "READ — what create_invoice would issue from this selection, "
-            "computed by the SAME model function it runs; writes nothing, "
-            "allocates no number. `ready` false = create_invoice would "
-            "refuse: `refusals` says why, each source its `reason`. When "
-            "ready, call create_invoice with the SAME selection and "
-            "`total_cents` as expected_total_cents."
+            (
+            "LECTURE — simule `create_invoice` sur cette sélection via la "
+            "même logique du modèle ; n'écrit rien et ne consomme aucun "
+            "numéro. `ready: false` indique un refus (`refusals` détaille "
+            "chaque source). Si prêt, appeler `create_invoice` avec la MÊME "
+            "sélection et `total_cents` comme `expected_total_cents`."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2795,24 +2503,23 @@ TOOLS: dict[str, dict] = {
     "get_budget": {
         "title": "Budget d'un dossier",
         "description": (
-            "READ — a dossier's budget by litigation phase: the version in "
-            "force (lines by sub-code, hourly rate, note, totals), budget "
-            "vs actuals per phase (actuals = billable time worked plus every "
-            "disbursement, billed or not; `level` warn from 80 % of the "
-            "phase's dollars, over past 100 %) and the version history. "
-            "`base_version` is what create_budget_version expects (0 = no "
-            "budget yet). A failed read of the actuals refuses — never a "
-            "view showing no consumption."
+            (
+            "LECTURE — budget par phase d'un dossier : version en vigueur "
+            "(sous-codes, taux horaire, note, totaux), réel vs budget (temps "
+            "facturable + tous déboursés ; `warn` >= 80 %, `over` > 100 %) "
+            "et historique des versions. Passer `base_version` à "
+            "`create_budget_version` (0 = aucun budget). Un échec de lecture "
+            "du réel refuse l'appel."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier (list_dossiers). Required."),
+                "dossier_id": _id("Dossier (list_dossiers). Requis."),
                 "include_history": {
                     "type": "boolean",
                     "description": (
-                        f"List the versions, newest first, at most "
-                        f"{BUDGET_HISTORY_MAX} (default true)."),
+                        f"Lister les versions récentes d'abord, max {BUDGET_HISTORY_MAX} (défaut true)."),
                 },
             },
             "required": ["dossier_id"],
@@ -2823,31 +2530,28 @@ TOOLS: dict[str, dict] = {
     "get_coverage_report": {
         "title": "Rapport de couverture",
         "description": (
-            "Hygiene sweep across the open files, in ONE call instead of one "
-            "get_dossier per dossier: which files are missing a protocol, a "
-            "signification, a court file number, a conflict check. "
-            "Two severities: `manquement` = something the file is REQUIRED "
-            "to have (the conflict-of-interest and identity checks are "
-            "regulatory obligations, not data-entry preferences); "
-            "`signalement` = worth a look, not a breach. Codes are stable "
-            "across runs, so a file can be tracked from one sweep to the "
-            "next. "
-            "EVERY FINDING IS AN OBSERVATION, never an instruction: each "
-            "`detail` says what to do in the application and, where a tool "
-            "of this connector does the same (create_protocol, "
-            "record_signification, complete_dossier, complete_task…), names "
-            "it — act only on the user's word. This connector can "
-            "only INSCRIBE an identity or conflict check as PRESUMED "
-            "(record_kyc_status), and this report keeps it OPEN until the "
-            "lawyer confirms it there. "
-            "ALWAYS read `scope.checks_skipped` and `data_completeness` "
-            "before reporting a file as clean: when the protocol index or "
-            "the client contacts cannot be read, those checks are SUPPRESSED "
-            "rather than fired — a client is never called unverified because "
-            "a read failed, and a shortened report is not a clean one. "
-            "`cross_scope_findings` carries findings on CLOSED dossiers "
-            "(a task still open on a closed file), which the status filter "
-            "could never surface."
+            (
+            (
+            (
+            (
+            (
+            "Audit de conformité des dossiers ouverts en un appel "
+            "(protocole, signification, numéro de cour, KYC/conflits). "
+            "Gravités : `manquement` (obligatoire, ex. KYC/conflits) et "
+            "`signalement`. Codes stables. CHAQUE CONSTAT EST UNE "
+            "OBSERVATION, jamais une directive : `detail` dit quoi faire à "
+            "l'app et nomme l'outil équivalent (`create_protocol`, "
+            "`record_signification`, `complete_dossier`, `complete_task`… ; "
+            "`record_kyc_status` inscrit seulement identité/conflit PRÉSUMÉ "
+            "jusqu'à confirmation à l'écran). TOUJOURS lire "
+            "`scope.checks_skipped` et `data_completeness` avant de déclarer "
+            "conforme (un échec de lecture suspend le contrôle). "
+            "`cross_scope_findings` couvre les dossiers fermés."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2856,19 +2560,18 @@ TOOLS: dict[str, dict] = {
                     "type": "string",
                     "enum": _DOSSIER_STATUSES,
                     "description": (
-                        "Dossier status to sweep; default \"actif\"."
+                        "Statut de dossier à auditer ; défaut \"actif\"."
                     ),
                 },
                 "checks": {
                     "type": "array",
                     "items": {"type": "string", "enum": list(_COVERAGE_CODES)},
                     "description": (
-                        "Restrict the sweep to these codes. Omit for all — "
-                        "anything left out is listed in checks_skipped."
+                        "Limiter à ces codes. Omettre pour tout contrôler (les exclus paraissent dans checks_skipped)."
                     ),
                 },
                 "limit": _limit(25),
-                "cursor": _cursor("Items page by file number."),
+                "cursor": _cursor("Pagine par numéro de dossier."),
             },
             "additionalProperties": False,
         },
@@ -2877,22 +2580,16 @@ TOOLS: dict[str, dict] = {
     "get_reference_vocabulary": {
         "title": "Vocabulaires de référence",
         "description": (
-            "Enumerate a controlled vocabulary the models VALIDATE but never "
-            "spell out when they refuse — « Domaine invalide. » names no "
-            "valid domaine. Call this BEFORE writing a dossier's "
-            "classification rather than guessing a code. "
-            "kind='domaines' (20 families), 'actions' (162 named recourses; "
-            "pass `domaine` to narrow — the code prefix MUST equal the "
-            "domaine), 'prescription_types' (the delay dropdown), 'forums' "
-            "(non-judicial bodies: Québec administrative tribunals and "
-            "federal courts, for forum_type administratif/federal), "
-            "'districts' (judicial districts), 'phases' (litigation phase "
-            "codes and their sub-codes). "
-            "`note` carries whatever qualifies that row: for an action it is "
-            "the taxonomy's INDICATIVE delay — a suggestion the lawyer "
-            "confirms, never a computed deadline, and often empty because "
-            "the source has no single clean period. Pure reference data: no "
-            "dossier, no client, nothing personal."
+            (
+            "Énumère un vocabulaire contrôlé validé par le modèle (qui "
+            "refuse sans lister les choix) — consulter AVANT d'écrire une "
+            "classification. `kind` : `domaines`, `actions` (filtrer par "
+            "`domaine`, préfixe = domaine), `prescription_types`, `forums` "
+            "(tribunaux admin./fédéraux), `districts`, `phases`. `note` sur "
+            "une action = délai INDICATIF de la taxonomie (suggestion à "
+            "confirmer par l'avocat, souvent vide). Données de référence "
+            "pures."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2910,23 +2607,14 @@ TOOLS: dict[str, dict] = {
                         "moyens_preuve", "qualifications_ecrit",
                     ],
                     "description": (
-                        "Which vocabulary to enumerate. The four analysis "
-                        "ones feed `record_document_analysis`: "
-                        "`sous_natures` (the 42 codes — the analysis "
-                        "DERIVES the category from the one you pick), "
-                        "`privileges` (7 codes, CUMULATIVE, each with its "
-                        "protection LEVEL, its legal basis and its "
-                        "reserve — what the code does NOT guarantee), and "
-                        "the two Annexe C axes `moyens_preuve` / "
-                        "`qualifications_ecrit`."
+                        "Vocabulaire à énumérer. Pour `record_document_analysis` : `sous_natures` (dérive la catégorie), `privileges` (cumulatifs, avec niveau/fondement/réserve), `moyens_preuve` et `qualifications_ecrit` (Annexe C)."
                     ),
                 },
                 "domaine": {
                     "type": "string",
                     "maxLength": 10,
                     "description": (
-                        "Narrow `actions` to one family, e.g. « REC ». "
-                        "Refused with any other kind."
+                        "Limiter `actions` à une famille, ex. « REC ». Refusé avec tout autre kind."
                     ),
                 },
             },
@@ -2938,16 +2626,15 @@ TOOLS: dict[str, dict] = {
     "find_imported": {
         "title": "Retrouver un enregistrement importé",
         "description": (
-            "Find what a historical import already wrote, by the identifier "
-            "it carried in the PREVIOUS system (`legacy_ref`). This is the "
-            "durable duplicate guard: an idempotency_key expires after 24 h "
-            "and an import runs for days, so before creating anything for a "
-            "spreadsheet row, look the row's own reference up here. "
-            "Searches contacts, dossiers, time entries, disbursements and "
-            "invoices at once; pass `entity_type` to narrow. An empty "
-            "`matches` means nothing bearing that reference exists — a fact "
-            "you can act on, because a failed lookup reports an error "
-            "instead. Nothing in this connector can delete a duplicate."
+            (
+            "Cherche ce qu'une reprise historique a déjà créé via sa "
+            "référence d'origine (`legacy_ref`). Garde durable au-delà des "
+            "24 h d'`idempotency_key` : vérifier chaque ligne avant création "
+            "(aucune suppression ici). Couvre contacts, dossiers, temps, "
+            "déboursés et factures (filtrable via `entity_type`). `matches: "
+            "[]` prouve l'absence (une lecture défaillante renvoie une "
+            "erreur)."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -2957,10 +2644,7 @@ TOOLS: dict[str, dict] = {
                     "minLength": 1,
                     "maxLength": 64,
                     "description": (
-                        "The previous system's own identifier for this "
-                        "record — a row number, a file reference, an invoice "
-                        "number. Whatever convention you adopt, keep it "
-                        "stable for the whole import."
+                        "Identifiant d'origine dans le système précédent (n° de ligne, référence, n° de facture) à garder stable pour toute la reprise."
                     ),
                 },
                 "entity_type": {
@@ -2968,7 +2652,7 @@ TOOLS: dict[str, dict] = {
                     "enum": [
                         "partie", "dossier", "time_entry", "expense", "invoice",
                     ],
-                    "description": "Restrict the search to one kind of record.",
+                    "description": "Limiter la recherche à un type d'enregistrement.",
                 },
             },
             "required": ["legacy_ref"],
@@ -2979,38 +2663,29 @@ TOOLS: dict[str, dict] = {
     "get_import_audit": {
         "title": "Vérifier l'import d'un dossier",
         "description": (
-            "Reconcile ONE dossier after a historical import: its work, its "
-            "disbursements and its invoices checked against each other. Run "
-            "it after every file, before moving to the next spreadsheet row. "
-            "Findings are OBSERVATIONS, never instructions — this connector "
-            "cannot delete a duplicate entry; every detail says what to do. "
-            "IMP-01 unbilled work on a closed dossier (the signature of an "
-            "interrupted import). IMP-02 stored subtotal ≠ sum of line "
-            "items. IMP-03 a line item citing a source that no longer "
-            "exists. IMP-04 possible duplicate entries — same date, "
-            "description and amount, which is exactly what re-running an "
-            "import after the 24 h idempotency window produces. IMP-05 a "
-            "closed dossier with no closing date. IMP-06 an entry marked "
-            "invoiced whose invoice is missing. IMP-07 an imported invoice "
-            "still in brouillon. "
-            "`checks_skipped` names checks NOT run because the sources could "
-            "not be read completely — a shortened report must never pass for "
-            "a clean one, and a paging boundary must never be reported as a "
-            "missing source."
+            (
+            "Rapproche un dossier après reprise (temps, déboursés et "
+            "factures) avant de passer à la ligne suivante. Constats = "
+            "OBSERVATIONS seulement (aucune suppression de doublon ici) : "
+            "`IMP-01` temps non facturé sur dossier fermé ; `IMP-02` "
+            "sous-total ≠ lignes ; `IMP-03` source absente ; `IMP-04` "
+            "doublons probables ; `IMP-05` dossier fermé sans date de "
+            "clôture ; `IMP-06` entrée facturée sans facture ; `IMP-07` "
+            "facture importée en `brouillon`. Lire `checks_skipped` (un "
+            "contrôle sauté ne vaut pas conformité)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier to reconcile. Provide exactly one of "
-                    "dossier_id or file_number."
+                    "Dossier à rapprocher. Fournir exactement dossier_id OU file_number."
                 ),
                 "file_number": {
                     "type": "string",
                     "maxLength": 20,
                     "description": (
-                        "The file number, e.g. « 2019-014 ». Matched exactly. "
-                        "Alternative to dossier_id — provide exactly one."
+                        "Numéro exact du dossier (ex. « 2019-014 »). Alternative à dossier_id — fournir un des deux."
                     ),
                 },
             },
@@ -3021,18 +2696,14 @@ TOOLS: dict[str, dict] = {
     "list_deletions": {
         "title": "Journal des suppressions",
         "description": (
-            "The append-only deletion trail, newest first: what was "
-            "deleted, when, and the minimal snapshot (title + status) it "
-            "carried — and each LINK detached (a party from a dossier, a "
-            "mandataire from a contact; the contact stays), by the "
-            "application or this connector. Use it when something that used "
-            "to appear has vanished — it distinguishes « deleted » from "
-            "« never existed ». Two honest limits: the trail starts at its "
-            "own deployment (silence about anything earlier — for a link, "
-            "about any detach before its journaling shipped), and the read "
-            "window is the 200 most "
-            "recent events — an empty answer past that means « not in the "
-            "recent window », never « never deleted »."
+            (
+            "Journal append-only des suppressions, plus récentes en premier "
+            ": enregistrements supprimés (titre + statut minimaux) et LIENS "
+            "détachés (`dossier_party`, `mandataire` — le contact subsiste), "
+            "depuis l'app ou le connecteur. Distingue « supprimé » d'« "
+            "inexistant ». Commence au déploiement du journal et couvre les "
+            "200 derniers événements (absent au-delà = hors fenêtre)."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -3055,21 +2726,14 @@ TOOLS: dict[str, dict] = {
                         "dossier_party", "mandataire",
                     ],
                     "description": (
-                        "Filter to one entity type. `dossier_party` and "
-                        "`mandataire` rows are a LINK removed, never a "
-                        "record: the contact stays. `dossier_party`: "
-                        "entity_id = the contact, status = the side it "
-                        "left. `mandataire`: entity_id = the mandataire, "
-                        "title = the contact it REPRESENTED (not the "
-                        "mandataire's name), status = the kind."
+                        "Filtrer à un type. `dossier_party` et `mandataire` tracent un LIEN retiré (le contact subsiste) : `dossier_party` (`entity_id` = contact, `status` = camp quitté) ; `mandataire` (`entity_id` = mandataire, `title` = contact REPRÉSENTÉ, `status` = sorte)."
                     ),
                 },
                 "dossier_id": _id(
-                    "Only deletions on this dossier (UUIDv4)."
+                    "Limiter aux événements de ce dossier (UUIDv4)."
                 ),
                 "date_from": _date(
-                    "Earliest deletion date (Montréal calendar), "
-                    "YYYY-MM-DD inclusive."
+                    "Date minimale (Montréal), AAAA-MM-JJ inclusif."
                 ),
                 "limit": _limit(25),
             },
@@ -3080,36 +2744,27 @@ TOOLS: dict[str, dict] = {
     "list_protocol_steps": {
         "title": "Étapes du protocole",
         "description": (
-            "Case-protocol timeline for a dossier: the active protocol's "
-            "ordered steps with deadlines. A step's `status` is DERIVED here "
-            "from its deadline against today (Montréal) and is the value that "
-            "governs; `status_stored` is the word on the document, kept for "
-            "provenance only. The stored word is written solely when the "
-            "lawyer opens the protocol page in a browser and an « en_retard » "
-            "there is never cleared, so it can lag reality indefinitely — "
-            "`status_differs: true` marks exactly that. `is_overdue` is "
-            "equivalent to `status == \"en_retard\"`; both come from one "
-            "predicate and can never contradict each other. Set "
-            "include_history=true to also include prior (completed/suspended) "
-            "protocols. Check regime_mismatch on every protocol: true means "
-            "the template's C.p.c. regime does not govern the dossier's "
-            "forum (e.g. a Cour du Québec simplified-track template — arts. "
-            "535.x — on a Superior Court file), so its tracked deadlines "
-            "are suspect and must be raised, not relied on. Each protocol "
-            "carries the `etag` update_protocol expects and `closed_by` "
-            "(« auto » = closed by its last step's completion); each step "
-            "the `etag` update_protocol_step expects."
+            (
+            "Calendrier du protocole d'instance d'un dossier : étapes "
+            "ordonnées et échéances du protocole actif. `status` est DÉRIVÉ "
+            "aujourd'hui (Montréal) et fait foi (`is_overdue` == `status == "
+            "\"en_retard\"`), contrairement à `status_stored` figé à "
+            "l'affichage web (`status_differs: true`). "
+            "`include_history=true` inclut les protocoles antérieurs. "
+            "Vérifier `regime_mismatch`: `true` signale un modèle C.p.c. "
+            "inadapté au tribunal (échéances à signaler). Porte `etag` du "
+            "protocole et de chaque étape."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier whose case protocol to read (UUIDv4)."
+                    "Dossier dont lire le protocole (UUIDv4)."
                 ),
                 "include_history": {
                     "type": "boolean",
-                    "description": ("true also includes completed/suspended past "
-                                    "protocols (up to 10)."),
+                    "description": ("true inclut aussi jusqu'à 10 protocoles antérieurs (complétés/suspendus)."),
                 },
             },
             "required": ["dossier_id"],
@@ -3120,35 +2775,32 @@ TOOLS: dict[str, dict] = {
     "compute_judicial_deadline": {
         "title": "Calcul de délai judiciaire",
         "description": (
-            "Compute a Quebec judicial deadline under art. 83 C.p.c.: all "
-            "calendar days count; when the raw deadline lands on a "
-            "non-juridical day (weekend, Quebec statutory holiday, or 26 "
-            "December / 2 January — holidays in civil procedure every year, "
-            "art. 82 C.p.c.) it is extended in the direction of computation "
-            "— 'after' pushes later, 'before' pushes earlier — to the "
-            "nearest juridical day. Civil procedure only: Athena computes a "
-            "PRESCRIPTION date (art. 2879 C.c.Q.) on the art. 61 L.i. "
-            "calendar, without those two days."
+            (
+            "Calcule un délai judiciaire québécois selon l'art. 83 C.p.c. : "
+            "tous les jours civils comptent ; si l'échéance tombe un jour "
+            "non juridique (fin de semaine, férié québécois, 26 décembre ou "
+            "2 janvier — art. 82 C.p.c.), proroge dans le sens du calcul "
+            "(`'after'` ou `'before'`) au prochain jour juridique. Procédure "
+            "civile seulement : pour la prescription C.c.Q. (art. 2879), "
+            "Athéna utilise l'art. 61 L.i. sans ces deux jours."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "start_date": _date(
-                    "The starting date of the computation, YYYY-MM-DD."
+                    "Date de départ du calcul, AAAA-MM-JJ."
                 ),
                 "delay_days": {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 3650,
-                    "description": ("Calendar days in the delay — art. 83 C.p.c. "
-                                    "counts every day."),
+                    "description": ("Nombre de jours civils du délai (art. 83 C.p.c.)."),
                 },
                 "direction": {
                     "type": "string",
                     "enum": ["after", "before"],
-                    "description": ("'after' counts forward from start_date; "
-                                    "'before' counts backward. A non-juridical "
-                                    "landing extends in the SAME direction."),
+                    "description": ("'after' compte vers l'avant depuis start_date ; 'before' vers l'arrière (prorogation dans le même sens)."),
                 },
             },
             "required": ["start_date", "delay_days", "direction"],
@@ -3159,10 +2811,12 @@ TOOLS: dict[str, dict] = {
     "parse_court_file_number": {
         "title": "Analyse d'un numéro de dossier judiciaire",
         "description": (
-            "Parse a Quebec court file number (NNN-NN-NNNNNN-NN) into "
-            "courthouse (greffe) and jurisdiction metadata: tribunal, "
-            "competence, palais de justice, judicial district. Letter-prefixed "
-            "numbers (TAL, TAQ…) are flagged administrative."
+            (
+            "Analyse un numéro de dossier judiciaire québécois "
+            "(NNN-NN-NNNNNN-NN) en greffe, tribunal, compétence, palais de "
+            "justice et district judiciaire. Un préfixe de lettres (TAL, "
+            "TAQ…) signale un tribunal administratif."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -3170,9 +2824,7 @@ TOOLS: dict[str, dict] = {
                 "court_file_number": {
                     "type": "string",
                     "maxLength": 30,
-                    "description": ("The raw number, e.g. « 500-05-123456-241 »; a "
-                                    "letters prefix (TAL, TAQ…) flags an "
-                                    "administrative tribunal."),
+                    "description": ("Numéro brut, ex. « 500-05-123456-241 » (préfixe alphabétique = tribunal administratif)."),
                 },
             },
             "required": ["court_file_number"],
@@ -3183,15 +2835,17 @@ TOOLS: dict[str, dict] = {
     "get_trust_balance": {
         "title": "Solde en fidéicommis d'un dossier",
         "description": (
-            "Trust (fidéicommis) balances held for a dossier, per client: book "
-            "(the register's balance), cleared (available for disbursement), and "
-            "deposits in transit. Amounts in cents plus fr-CA display. Read-only."
+            (
+            "Soldes en fidéicommis d'un dossier par client : comptable "
+            "(registre), compensé (disponible pour déboursé) et dépôts en "
+            "circulation. Montants en cents + format fr-CA. Lecture seule."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier whose trust balances to read (UUIDv4)."
+                    "Dossier dont lire les soldes en fidéicommis (UUIDv4)."
                 ),
             },
             "required": ["dossier_id"],
@@ -3202,56 +2856,43 @@ TOOLS: dict[str, dict] = {
     "list_trust_transactions": {
         "title": "Registre des opérations en fidéicommis",
         "description": (
-            "The trust register (journal de caisse), NEWEST movements "
-            "first. Pass dossier_id AND "
-            "client_id together for a carte-client (one beneficiary); pass "
-            "neither for the full journal. Optional date range and status. "
-            "PAGING IS ASYMMETRIC, and the difference matters. A bare "
-            "account_id (no dossier_id/client_id/status/date filter) rides "
-            "the newest-first index: it is exact at any register size and "
-            "`cursor` walks the whole register. EVERY OTHER SHAPE reads a "
-            "bounded window ordered OLDEST-first and re-sorts it here, and "
-            "returns next_cursor: null — so on a register longer than that "
-            "window the rows shown are NOT the most recent ones, even though "
-            "they are displayed newest-first. When `truncated` is true on a "
-            "filtered call, narrow with date_from/date_to, or drop the "
-            "filters and pass account_id alone. "
-            "Each row names its account, dossier and client, the reference "
-            "(cheque number) and description recorded, the invoice a fee "
-            "payment settled, its reversal links and who wrote and cleared "
-            "it — what clear_register_entries matches against a statement. "
-            "Amounts in cents; date and cleared_date are date-only (YYYY-MM-DD). "
-            "Read-only; never exposes the bank transit or account number."
+            (
+            "Journal de fidéicommis, plus récent en premier. `dossier_id` + "
+            "`client_id` = carte-client d'un bénéficiaire ; sans filtre = "
+            "tout le journal. PAGINATION ASYMÉTRIQUE : `account_id` seul "
+            "suit l'index décroissant et pagine tout le registre via "
+            "`cursor` ; tout autre filtre lit une fenêtre bornée en ordre "
+            "croissant réordonnée ici (`next_cursor: null`) — si `truncated: "
+            "true`, resserrer les dates ou passer `account_id` seul. Jamais "
+            "de numéro de transit/compte bancaire."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "account_id": _id(
-                    "Restrict to one trust account (UUIDv4). Omit for all."
+                    "Limiter à un compte en fidéicommis (UUIDv4). Omettre pour tous."
                 ),
                 "dossier_id": _id(
-                    "With client_id, selects a carte-client (UUIDv4)."
+                    "Avec client_id, cible une carte-client (UUIDv4)."
                 ),
                 "client_id": _id(
-                    "With dossier_id, selects a carte-client — one beneficiary (UUIDv4)."
+                    "Avec dossier_id, cible une carte-client — un bénéficiaire (UUIDv4)."
                 ),
                 "date_from": _date(
-                    "Entries dated on/after this date, YYYY-MM-DD."
+                    "Écritures datées du ou après le AAAA-MM-JJ."
                 ),
                 "date_to": _date(
-                    "Entries dated on/before this date, YYYY-MM-DD."
+                    "Écritures datées du ou avant le AAAA-MM-JJ."
                 ),
                 "status": {
                     "type": "string",
                     "enum": ["en_circulation", "compensée", "annulée"],
-                    "description": ("en_circulation = recorded, not yet cleared; "
-                                    "compensée = cleared at the bank; annulée = "
-                                    "reversed."),
+                    "description": ("en_circulation = non compensé ; compensée = compensé à la banque ; annulée = contrepassé."),
                 },
                 "limit": _limit(25),
                 "cursor": _cursor(
-                    "Honoured ONLY with a bare account_id; every other "
-                    "shape returns next_cursor: null (see the description)."
+                    "Honoré SEULEMENT avec account_id seul ; sinon next_cursor: null."
                 ),
             },
             "additionalProperties": False,
@@ -3261,17 +2902,15 @@ TOOLS: dict[str, dict] = {
     "get_trust_snapshot": {
         "title": "Aperçu des fonds en fidéicommis",
         "description": (
-            "Firm-wide trust picture: each account's book and bank balance "
-            "with its OWN reconciliation state (last completed period, "
-            "never_reconciled, overdue), total held, the outstanding cheques "
-            "LISTED with their issue dates (stale-cheque monitoring), "
-            "deposits in transit, and by_dossier — which files hold trust "
-            "money (book vs cleared per dossier; per-client detail via "
-            "get_trust_balance). reconciliation_overdue means a month-end "
-            "past its 30-day grace has no completed reconciliation covering "
-            "it; reconciliation_never_performed flags a firm that has never "
-            "reconciled at all. Amounts in cents + fr-CA display. "
-            "Read-only; never exposes the transit or account number."
+            (
+            "Portrait global du fidéicommis : solde comptable et bancaire de "
+            "chaque compte, état de conciliation (dernière période, "
+            "`never_reconciled`, `overdue` passé 30 j), total détenu, "
+            "chèques en circulation avec date d'émission, dépôts en "
+            "circulation et `by_dossier` (détail client via "
+            "`get_trust_balance`). Lecture seule ; jamais de numéro de "
+            "transit/compte."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -3284,50 +2923,41 @@ TOOLS: dict[str, dict] = {
     "create_note": {
         "title": "Créer une note dans un dossier",
         "description": (
-            "WRITE. Create a new note — the intended home for research "
-            "results, summaries and analyses. With dossier_id it is filed on "
-            "that dossier; OMIT dossier_id only for work attached to no file "
-            "at all (legal watch, general research), which files it under "
-            "« Général ». Never omit it as a fallback because you could not "
-            "find the right dossier — an id you supply that does not exist is "
-            "refused outright, and that refusal is the signal to go look. "
-            "Content is Markdown "
-            "in French. The note syncs to the lawyer's phone; this "
-            "connector can later edit it (update_note), never delete it. "
-            "Confirm with the user before calling, and never call it on a "
-            "dossier you have not read with get_dossier first. Without an "
-            "idempotency_key a retry creates a second note — pass one, or "
-            "check list_notes before retrying. Raw HTML tags "
-            "are rejected (Markdown autolinks like <https://…> are converted "
-            "automatically); write plain Markdown. Defaults to category "
-            "'recherche'. Every note opens with a dated « Note rédigée par "
-            "Claude le … » provenance line."
+            (
+            "ÉCRITURE — crée une note Markdown en français (recherches, "
+            "résumés, analyses). Avec `dossier_id` : classée au dossier (id "
+            "invalide refusé ; omettre SEULEMENT hors dossier « Général »). "
+            "Synchronisée au téléphone ; modifiable via `update_note`, "
+            "jamais supprimable ici. HTML brut refusé (liens `<https://…>` "
+            "auto-convertis). Défaut catégorie `'recherche'` ; ouvre avec « "
+            "Note rédigée par Claude le … ». Passer `idempotency_key` et "
+            "confirmer avant d'appeler."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier to file the note on (UUIDv4). OMIT only when the research belongs to no dossier — it is then filed under « Général ». An id that does not resolve is refused, never downgraded."
+                    "Dossier cible (UUIDv4). Omettre SEULEMENT hors dossier (« Général »). Id inexistant refusé."
                 ),
                 "title": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": NOTE_TITLE_MAX_CHARS,
-                    "description": "Note title, in French.",
+                    "description": "Titre de la note, en français.",
                 },
                 "content": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": CONTENT_MAX_CHARS,
                     "description": (
-                        f"Markdown body, in French (max {CONTENT_MAX_CHARS} "
-                        "characters)."
+                        f"Corps Markdown en français (max {CONTENT_MAX_CHARS} car.)."
                     ),
                 },
                 "category": {
                     "type": "string",
                     "enum": _NOTE_CATEGORIES,
-                    "description": "Defaults to 'recherche'.",
+                    "description": "Défaut 'recherche'.",
                 },
                 **_write_protocol_props(),
             },
@@ -3341,32 +2971,28 @@ TOOLS: dict[str, dict] = {
     "append_to_note": {
         "title": "Ajouter du texte à une note existante",
         "description": (
-            "WRITE. Append Markdown to the END of an existing note, under a "
-            "dated « Ajouté par Claude » separator. Purely additive: existing "
-            "content is never modified or removed here (replacing text is "
-            "update_note). Like every change of a note's content, the note "
-            "as it stood is kept in its revision history. Use get_note "
-            "first to read what is already there. If the call appears to "
-            "fail, re-read the note with get_note before retrying — a retry "
-            "appends a second copy. "
-            "Fails explicitly (rather than truncating) when the note would "
-            "exceed its storage ceiling. Refuses the « Théorie de la cause » "
-            "note (is_analyse true in list_notes/get_note) — write it with "
-            "edit_analyse (mode append completes one bloc)."
+            (
+            "ÉCRITURE — ajoute du Markdown en français à la FIN d'une note "
+            "sous séparateur daté « Ajouté par Claude ». Additif seulement "
+            "(conserve une révision). Lire d'abord avec `get_note` ; en cas "
+            "d'erreur incertaine, relire avant de réessayer (un second appel "
+            "ajoute une 2e copie). Refuse au-delà du plafond. Refuse "
+            "`is_analyse` (« Théorie de la cause » : utiliser "
+            "`edit_analyse`)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "note_id": _id(
-                    "The note to append to (UUIDv4), from list_notes."
+                    "UUIDv4 de la note à compléter (de list_notes)."
                 ),
                 "content": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": CONTENT_MAX_CHARS,
                     "description": (
-                        f"Markdown to append, in French (max "
-                        f"{CONTENT_MAX_CHARS} characters)."
+                        f"Markdown français à ajouter (max {CONTENT_MAX_CHARS} car.)."
                     ),
                 },
                 **_write_protocol_props(),
@@ -3386,51 +3012,50 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — REPLACES the fields you name (a field you omit is "
-            "untouched): title, category, pinned, content, dossier_id "
-            "(MOVES the note, \"\" = « Général »; its phone copy follows). "
-            "`content` replaces the WHOLE body: read it with get_note, edit, "
-            "send it back complete, with `expected_etag`. The replaced text "
-            "is kept in the note's revision history (as for any content "
-            "change, in the app or on the phone too) and a dated « Révisée "
-            "par Claude » line opens the new body. Text between angle "
-            "brackets (raw HTML) is refused, never stripped; an over-long "
-            "body is refused, never truncated. Refuses the « Théorie de la "
-            "cause » (is_analyse): use edit_analyse. To add at the end, "
-            "prefer append_to_note."
+            (
+            (
+            (
+            "ÉCRITURE — REMPLACE les champs nommés (omis = intact) : "
+            "`title`, `category`, `pinned`, `content`, `dossier_id` (déplace "
+            "la note, `\"\"` = « Général », suivi sur téléphone). `content` "
+            "remplace TOUT le corps : relire via `get_note`, envoyer complet "
+            "avec `expected_etag` (l'ancien texte va aux révisions comme "
+            "dans l'app ou sur téléphone ; mention « Révisée par Claude » "
+            "ajoutée). HTML brut ou dépassement refusés. Refuse `is_analyse` "
+            "(`edit_analyse`). Préférer `append_to_note` pour ajouter en fin."
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "note_id": _id("The note to modify (UUIDv4), from list_notes."),
+                "note_id": _id("UUIDv4 de la note à modifier (de list_notes)."),
                 "title": {
                     "type": "string", "minLength": 1,
                     "maxLength": NOTE_TITLE_MAX_CHARS,
-                    "description": "New title, in French.",
+                    "description": "Nouveau titre, en français.",
                 },
                 "category": {
                     "type": "string", "enum": _NOTE_CATEGORIES,
-                    "description": "New category.",
+                    "description": "Nouvelle catégorie.",
                 },
                 "pinned": {
                     "type": "boolean",
-                    "description": "Pin (true) or unpin (false) the note.",
+                    "description": "Épingler (true) ou désépingler (false) la note.",
                 },
                 "content": {
                     "type": "string", "minLength": 1,
                     "maxLength": NOTE_REPLACE_MAX_CHARS,
                     "description": (
-                        "The complete new Markdown body, in French (max "
-                        f"{NOTE_REPLACE_MAX_CHARS} characters)."
+                        f"Nouveau corps Markdown COMPLET, en français (max {NOTE_REPLACE_MAX_CHARS} car.)."
                     ),
                 },
                 "dossier_id": _id(
-                    "MOVE the note to this dossier (UUIDv4), or \"\" for "
-                    "« Général ». An id that does not resolve is refused, "
-                    "never downgraded."
+                    "DÉPLACER vers ce dossier (UUIDv4) ou \"\" pour « Général ». Id invalide refusé."
                 ),
                 **_expected_etag_required_when(
-                    _NOTE_ETAG_READERS, "when `content` is sent"),
+                    _NOTE_ETAG_READERS, "lorsque `content` est envoyé"),
                 **_write_protocol_props(),
             },
             "required": ["note_id"],
@@ -3450,31 +3075,29 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — the dossier's « Théorie de la cause » (an entête, then "
-            "8 blocs « ## Bloc A » … « ## Bloc H »). With neither "
-            "`operations` nor `full`: creates it pre-seeded if absent "
-            "(idempotent) and returns its structure and etag. `operations`: "
-            "replace a bloc's body or append at its end, each bloc once; "
-            "headings are kept, and the text may hold no level-1/2 heading. "
-            "`full`: rewrites everything, keeping the eight headings once "
-            "each, in order. Writing REQUIRES `expected_etag`; each write "
-            "keeps the replaced text in the note's revision history and "
-            "adds a dated « par Claude » line. Refuses (never guesses) when "
-            "a heading is missing or doubled."
+            (
+            "ÉCRITURE — « Théorie de la cause » d'un dossier (`entete` + "
+            "blocs `## Bloc A` … `H`). Sans `operations` ni `full` : "
+            "initialise si absente (idempotent) et retourne structure + "
+            "`etag`. `operations` : remplace ou complète des blocs nommés "
+            "(aucun titre `#`/`##` interne). `full` : réécrit tout en "
+            "gardant les titres dans l'ordre. Toute écriture EXIGE "
+            "`expected_etag`, archive une révision et ajoute une mention "
+            "datée « par Claude ». Titres manquants/doublés refusés."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier whose théorie de la cause to write (UUIDv4)."
+                    "UUIDv4 du dossier de la théorie de la cause."
                 ),
                 "operations": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": ANALYSE_OPERATIONS_MAX,
                     "description": (
-                        f"1 to {ANALYSE_OPERATIONS_MAX} bloc edits, applied "
-                        "in order — whole list or nothing. Not with `full`."
+                        f"1 à {ANALYSE_OPERATIONS_MAX} modifications de blocs en tout-ou-rien. Exclusif de `full`."
                     ),
                     "items": {
                         "type": "object",
@@ -3484,23 +3107,20 @@ TOOLS: dict[str, dict] = {
                                 "enum": ["entete", "A", "B", "C", "D", "E",
                                          "F", "G", "H"],
                                 "description": (
-                                    "« entete » (the text before bloc A) "
-                                    "or a bloc letter."
+                                    "« entete » (avant le bloc A) ou lettre du bloc."
                                 ),
                             },
                             "mode": {
                                 "type": "string",
                                 "enum": ["replace", "append"],
                                 "description": (
-                                    "replace = the bloc's whole body (\"\" "
-                                    "empties it, bar the dated revision "
-                                    "line); append = add at its end."
+                                    "replace = tout le corps du bloc (\"\" le vide, sauf la ligne de révision datée) ; append = ajoute à la fin."
                                 ),
                             },
                             "content": {
                                 "type": "string",
                                 "maxLength": CONTENT_MAX_CHARS,
-                                "description": "Markdown, in French.",
+                                "description": "Markdown, en français.",
                             },
                         },
                         "required": ["bloc", "mode", "content"],
@@ -3511,14 +3131,12 @@ TOOLS: dict[str, dict] = {
                     "type": "string", "minLength": 1,
                     "maxLength": NOTE_REPLACE_MAX_CHARS,
                     "description": (
-                        "The whole new note (Markdown). Not with "
-                        "`operations`."
+                        "Note complète (Markdown). Exclusif de `operations`."
                     ),
                 },
                 **_expected_etag_required_when(
                     _NOTE_ETAG_READERS,
-                    "with `operations` or `full` (the note's id is "
-                    "get_dossier's analyse_note_id)"),
+                    "avec `operations` ou `full` (id de note = `analyse_note_id` de get_dossier)"),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id"],
@@ -3537,52 +3155,44 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "Close a task: « terminée », « annulée », or move an OPEN task "
-            "to « en_cours ». It never reopens a closed task (neither to "
-            "« à_faire » nor to « en_cours ») — that is reopen_task — and "
-            "never edits its fields (update_task) or deletes it. "
-            "CASCADE, and read this before calling: completing a task that "
-            "a protocol step is linked to ALSO completes that step, exactly "
-            "as ticking the box in the application does — and if it was the "
-            "last open step, THE WHOLE PROTOCOL closes and its deadlines "
-            "stop appearing in get_agenda (reopen_task on the task reopens "
-            "both). `protocol_step_effect` reports what actually happened "
-            "to the step linked in the active protocol of the task's "
-            "dossier, re-read after the write, never predicted. "
-            "One asymmetry worth knowing: « annulée » triggers NO cascade, "
-            "so the linked step stays open and keeps appearing in the "
-            "agenda. « en_cours » on a task already « terminée » or "
-            "« annulée » is REFUSED — that would reopen it. Rare: "
-            "« en_cours » on an OPEN task whose linked step is still "
-            "« complété » reopens that step, and a protocol its last step "
-            "had closed — which `protocol_step_effect`, reading the active "
-            "protocol only, does not show. Calling it on a task that already carries the requested status "
-            "is a safe no-op (`already_completed: true`, nothing written) — "
-            "which is what makes a scheduled job replayable. Asking for the "
-            "other terminal status on an already-closed task is REFUSED "
-            "rather than silently rewriting the lawyer's decision."
+            (
+            (
+            (
+            (
+            (
+            "ÉCRITURE — ferme une tâche (`terminée`, `annulée`) ou passe une "
+            "tâche ouverte à `en_cours`. Ne rouvre pas une tâche fermée "
+            "(`reopen_task`), n'édite ni ne supprime. CASCADE : `terminée` "
+            "complète l'étape liée — et ferme le protocole si dernière étape "
+            "ouverte (`protocol_step_effect` vérifie après coup ; "
+            "`reopen_task` rouvre les deux). Asymétrie : `annulée` ne "
+            "cascade PAS ; passer entre statuts fermés ou vers `en_cours` si "
+            "fermée est REFUSÉ. Rare : `en_cours` sur tâche ouverte à étape "
+            "`complété` rouvre celle-ci (non reflétée par "
+            "`protocol_step_effect` sur protocole fermé). Statut déjà porté "
+            "= no-op (`already_completed: true`)."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": _id("The task to close (UUIDv4)."),
+                "task_id": _id("UUIDv4 de la tâche à fermer."),
                 "status": {
                     "type": "string",
                     "enum": ["terminée", "annulée", "en_cours"],
                     "description": (
-                        "Default « terminée ». « à_faire » is deliberately "
-                        "absent, and « en_cours » is refused on a task "
-                        "already closed: reopening is reopen_task."
+                        "Défaut « terminée ». « en_cours » refusé si déjà fermée (utiliser reopen_task)."
                     ),
                 },
                 "completion_note": {
                     "type": "string",
                     "maxLength": 1000,
                     "description": (
-                        "Optional French note appended to the task's "
-                        "description under a dated « par Claude » stamp. "
-                        "Refused rather than truncated if the combined text "
-                        "would pass the 2000-character field ceiling."
+                        "Note française optionnelle ajoutée sous mention datée « par Claude ». Refusée si le total dépasse 2000 car."
                     ),
                 },
                 **_write_protocol_props(),
@@ -3608,49 +3218,44 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — REPLACES the fields you name; a field you omit is "
-            "untouched, and values already stored write nothing. Never the "
-            "status: close with complete_task, reopen with reopen_task. "
-            "`description` replaces the WHOLE text and the old one is NOT "
-            "kept — read it with list_tasks and send it back complete. "
-            "`dossier_id` MOVES the task (\"\" = « Général ») and its phone "
-            "copy follows; a task a protocol step links never moves "
-            "(refused). Omitting both phase keys leaves the classification "
-            "alone."
+            (
+            "ÉCRITURE — REMPLACE les champs nommés (omis = intact ; "
+            "identique = sans écriture). Jamais le statut "
+            "(`complete_task`/`reopen_task`). `description` remplace TOUT le "
+            "texte sans historique : relire via `list_tasks` et renvoyer "
+            "complet. `dossier_id` DÉPLACE (`` = « Général », suivi sur "
+            "téléphone ; refusé si liée à un protocole). Omettre les deux "
+            "clés de phase laisse le classement intact."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": _id("The task to modify (UUIDv4), from list_tasks."),
+                "task_id": _id("UUIDv4 de la tâche à modifier (de list_tasks)."),
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 300,
-                    "description": "New title, in French.",
+                    "description": "Nouveau titre, en français.",
                 },
                 "description": {
                     "type": "string", "maxLength": 2000,
                     "description": (
-                        "New description — replaces the whole text; \"\" "
-                        "empties it. Refused, never truncated, past 2000 "
-                        "characters."
+                        "Nouvelle description — remplace tout le texte (\"\" vide). Refusée au-delà de 2000 car."
                     ),
                 },
                 "priority": {
                     "type": "string", "enum": _TASK_PRIORITIES,
-                    "description": "New priority.",
+                    "description": "Nouvelle priorité.",
                 },
                 "category": {
                     "type": "string", "enum": _TASK_CATEGORIES,
-                    "description": "New category.",
+                    "description": "Nouvelle catégorie.",
                 },
                 "due_date": _date(
-                    "New deadline, YYYY-MM-DD; \"\" removes it (an undated "
-                    "task never reaches the urgent lists)."
+                    "Nouvelle échéance, AAAA-MM-JJ (\"\" la retire ; sans date = absente des urgences)."
                 ),
                 **_phase_props(on_omit=None),
                 "dossier_id": _id(
-                    "MOVE the task to this dossier (UUIDv4), or \"\" for "
-                    "« Général ». An id that does not resolve is refused, "
-                    "never downgraded."
+                    "DÉPLACER vers ce dossier (UUIDv4) ou \"\" pour « Général ». Id invalide refusé."
                 ),
                 **_expected_etag_prop(_TASK_ETAG_READERS),
                 **_write_protocol_props(),
@@ -3671,35 +3276,31 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — reopen a « terminée » task, or an « annulée » one with "
-            "reopen_cancelled true (a cancellation is a decision: confirm "
-            "with the user), to « à_faire » (default) or « en_cours »; it "
-            "also puts an « en_cours » task back to « à_faire ». CASCADE: a "
-            "linked protocol step that was « complété » reopens too, and "
-            "so does its protocol when the cascade had closed it by itself. "
-            "When the step cannot follow (protocol suspended or closed by "
-            "hand, another protocol active) the call is REFUSED and nothing "
-            "is written. `protocol_step_effect` reports what happened, "
-            "re-read after the write. A task already in the requested state "
-            "is a no-op."
+            (
+            "ÉCRITURE — rouvre une tâche `terminée` (ou `annulée` avec "
+            "`reopen_cancelled: true` après confirmation) vers `à_faire` "
+            "(défaut) ou `en_cours`, ou remet `en_cours` à `à_faire`. "
+            "CASCADE : rouvre l'étape de protocole liée si `complété` (et le "
+            "protocole fermé automatiquement ; refusé si un autre protocole "
+            "est actif). `protocol_step_effect` reflète l'état réel après "
+            "écriture."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": _id("The task to reopen (UUIDv4), from list_tasks."),
+                "task_id": _id("UUIDv4 de la tâche à rouvrir (de list_tasks)."),
                 "status": {
                     "type": "string",
                     "enum": ["à_faire", "en_cours"],
                     "description": (
-                        "Default « à_faire ». To put an OPEN task "
-                        "« en_cours », use complete_task."
+                        "Défaut « à_faire ». Pour passer une tâche ouverte à « en_cours », utiliser complete_task."
                     ),
                 },
                 "reopen_cancelled": {
                     "type": "boolean",
                     "description": (
-                        "Must be true to reopen an « annulée » task — "
-                        "refused otherwise, naming this flag."
+                        "Requis à true pour rouvrir une tâche « annulée »."
                     ),
                 },
                 **_expected_etag_prop(_TASK_ETAG_READERS),
@@ -3717,50 +3318,43 @@ TOOLS: dict[str, dict] = {
     "create_protocol": {
         "title": "Créer un protocole",
         "description": (
-            "WRITE — create a dossier's case protocol from a template: "
-            "cq_simplifié (Cour du Québec simplified track: C.p.c. "
-            "deadlines, locked), cs_ordinaire (Cour supérieure: suggested "
-            "dates to confirm) or conventionnel (no steps — add them with "
-            "add_protocol_step). A dossier has at most ONE actif protocol: "
-            "refused while one exists (suspend or complete it first with "
-            "update_protocol). A template whose C.p.c. regime does not "
-            "govern the dossier's court is refused, naming the right one. "
-            "Deadlines are computed from start_date (art. 83 C.p.c.). No "
-            "task is created unless create_linked_tasks is true (one per "
-            "step, synced to the phone, linked so that completing one "
-            "completes the other). Returns each step's id, deadline, phase "
-            "and etag, and the protocol's etag."
+            (
+            "ÉCRITURE — crée le protocole d'instance d'un dossier : "
+            "`cq_simplifié` (Cour du Québec : délais C.p.c. verrouillés), "
+            "`cs_ordinaire` (Cour supérieure : dates suggérées à confirmer) "
+            "ou `conventionnel` (ajouter étapes via `add_protocol_step`). Au "
+            "plus un protocole `actif` par dossier ; refusé si régime "
+            "incompatible avec le tribunal. Échéances calculées depuis "
+            "`start_date` (art. 83 C.p.c.). `create_linked_tasks: true` crée "
+            "les tâches liées au téléphone. Retourne étapes, échéances, "
+            "phases et `etag`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier (UUIDv4). An id that does not resolve is "
-                    "refused."),
+                    "UUIDv4 du dossier (id inexistant refusé)."),
                 "protocol_type": {
                     "type": "string", "enum": _PROTOCOL_TYPES,
                     "description": (
-                        "The template. Its regime must govern the "
-                        "dossier's court (see regime_mismatch in "
-                        "list_protocol_steps)."),
+                        "Modèle C.p.c. ; son régime doit régir le tribunal du dossier (`regime_mismatch`)."),
                 },
                 "start_date": _date(
-                    "YYYY-MM-DD — the date the template's deadlines run "
-                    "from (e.g. service of the originating application)."),
+                    "AAAA-MM-JJ — date de départ des échéances du modèle (ex. signification de la demande)."),
                 "title": {
                     "type": "string", "maxLength": 200,
                     "description": (
-                        "Default « Protocole de l'instance »."),
+                        "Défaut « Protocole de l'instance »."),
                 },
                 "notes": {
                     "type": "string", "maxLength": 2000,
-                    "description": "Free notes on the protocol, in French.",
+                    "description": "Notes libres en français sur le protocole.",
                 },
                 "create_linked_tasks": {
                     "type": "boolean",
                     "description": (
-                        "Default false. true creates one task per step "
-                        "(title, deadline, phase copied) on the dossier."),
+                        "Défaut false. true crée une tâche liée par étape sur le dossier."),
                 },
                 **_write_protocol_props(),
             },
@@ -3778,43 +3372,40 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — REPLACES the protocol fields you name; values already "
-            "stored write nothing. A new start_date RECOMPUTES the "
-            "template deadlines in the same write — except completed "
-            "steps and CS dates the lawyer truly confirmed, which stay "
-            "(`recompute`); a linked task still on its step's old date "
-            "follows, one moved by hand stays (`linked_tasks`). status "
-            "« suspendu » or « complété » takes the steps out of "
-            "get_agenda and stops the task↔step cascade; « actif » is "
-            "refused while another protocol of the dossier is actif. "
-            "Never the type, the dossier or the steps "
-            "(update_protocol_step). `notes` replaces without history."
+            (
+            "ÉCRITURE — REMPLACE les champs nommés du protocole (identique = "
+            "sans écriture). Un nouveau `start_date` RECALCULE les échéances "
+            "du modèle sauf étapes complétées et dates CS confirmées par "
+            "l'avocat (`recompute`) ; tâches liées non modifiées à la main "
+            "suivent (`linked_tasks`). `status` `suspendu`/`complété` retire "
+            "les étapes de `get_agenda` et arrête la cascade ; `actif` "
+            "refusé si autre protocole actif. `notes` remplace sans "
+            "historique."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "protocol_id": _id(
-                    "The protocol (UUIDv4), from list_protocol_steps."),
+                    "UUIDv4 du protocole (de list_protocol_steps)."),
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 200,
-                    "description": "New title.",
+                    "description": "Nouveau titre.",
                 },
                 "notes": {
                     "type": "string", "maxLength": 2000,
-                    "description": "New notes — replaces the whole text.",
+                    "description": "Nouvelles notes — remplacent tout le texte.",
                 },
                 "court": {
                     "type": "string", "maxLength": 200,
-                    "description": "The court the protocol runs before.",
+                    "description": "Tribunal saisi du protocole.",
                 },
                 "start_date": _date(
-                    "New start date, YYYY-MM-DD — recomputes the template "
-                    "deadlines (see description)."),
+                    "Nouvelle date de départ, AAAA-MM-JJ — recalcule les échéances du modèle."),
                 "status": {
                     "type": "string", "enum": _PROTOCOL_STATUSES,
                     "description": (
-                        "« suspendu » / « complété » close it (stamped "
-                        "closed_by « mcp »); « actif » reactivates it."),
+                        "« suspendu » / « complété » ferment (closed_by « mcp ») ; « actif » réactive."),
                 },
                 **_expected_etag_prop(_PROTOCOL_ETAG_READERS),
                 **_write_protocol_props(),
@@ -3831,40 +3422,40 @@ TOOLS: dict[str, dict] = {
     "add_protocol_step": {
         "title": "Ajouter une étape de protocole",
         "description": (
-            "WRITE — add a custom step at the end of an ACTIVE protocol "
-            "(refused on a suspended or completed one: reactivate it with "
-            "update_protocol first). A custom step is never mandatory nor "
-            "locked, and its deadline is yours to set — compute it with "
-            "compute_judicial_deadline. create_linked_task true also "
-            "creates a task with the step's title, deadline and phase, "
-            "synced to the phone and linked to the step."
+            (
+            "ÉCRITURE — ajoute une étape personnalisée en fin d'un protocole "
+            "ACTIF (réactiver d'abord si suspendu/complété). Jamais "
+            "verrouillée ni obligatoire ; calculer son échéance via "
+            "`compute_judicial_deadline`. `create_linked_task: true` crée la "
+            "tâche liée synchronisée sur le téléphone."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "protocol_id": _id(
-                    "The protocol (UUIDv4), from list_protocol_steps."),
+                    "UUIDv4 du protocole (de list_protocol_steps)."),
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 300,
-                    "description": "Step title, in French.",
+                    "description": "Titre de l'étape, en français.",
                 },
                 "description": {
                     "type": "string", "maxLength": 2000,
-                    "description": "What the step requires.",
+                    "description": "Description de ce que l'étape requiert.",
                 },
                 "cpc_reference": {
                     "type": "string", "maxLength": 200,
-                    "description": "E.g. « art. 246 C.p.c. ».",
+                    "description": "Ex. « art. 246 C.p.c. ».",
                 },
-                "deadline_date": _date("YYYY-MM-DD. Omit for no deadline."),
+                "deadline_date": _date("AAAA-MM-JJ (omettre si aucune échéance)."),
                 **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
                 "notes": {
                     "type": "string", "maxLength": 2000,
-                    "description": "Free notes on the step.",
+                    "description": "Notes libres sur l'étape.",
                 },
                 "create_linked_task": {
                     "type": "boolean",
-                    "description": "Default false — see description.",
+                    "description": "Défaut false (voir description).",
                 },
                 **_write_protocol_props(),
             },
@@ -3882,56 +3473,48 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — either REPLACE fields of a step (deadline_date, "
-            "notes, phase; title, description and cpc_reference on a "
-            "custom step only — a template step's C.p.c. text and a CQ "
-            "locked deadline are refused, naming the field) or set its "
-            "`status` — never both in one call (two writes, not atomic). "
-            "`status` is a TARGET, never a toggle: « complété » or "
-            "« à_venir »; the state it already has writes nothing. "
-            "CASCADE: the linked task follows (an annulée one is left "
-            "alone); completing the last open step closes the WHOLE "
-            "protocol; reopening a step of a protocol that closed that way "
-            "reactivates it (refused if another protocol is actif). "
-            "Otherwise refused on a protocol that is not actif. A changed "
-            "deadline carries along a linked task still on the old date "
-            "(`linked_task`), and confirms a CS date — one sent back "
-            "unchanged stays a suggestion (confirm it in the application). "
-            "`status_change` is re-read after the write. `notes` replaces "
-            "without history."
+            (
+            "ÉCRITURE — soit REMPLACER des champs (`deadline_date`, `notes`, "
+            "`phase`, plus `title`/`description`/`cpc_reference` sur étape "
+            "personnalisée seulement — texte C.p.c. et délais CQ verrouillés "
+            "refusés), soit fixer `status` (`complété` ou `à_venir`, cible "
+            "explicite, jamais ensemble). CASCADE : la tâche liée suit "
+            "(`annulée` intacte) ; la dernière étape complétée ferme le "
+            "protocole ; rouvrir une étape le réactive si aucun autre n'est "
+            "actif. Changer `deadline_date` décale la tâche liée non "
+            "déplacée et confirme une date CS. `notes` sans historique."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "protocol_id": _id(
-                    "The step's protocol (UUIDv4), from list_protocol_steps."),
-                "step_id": _id("The step (UUIDv4)."),
+                    "UUIDv4 du protocole de l'étape (de list_protocol_steps)."),
+                "step_id": _id("UUIDv4 de l'étape."),
                 "deadline_date": _date(
-                    "New deadline, YYYY-MM-DD; \"\" clears it (refused on "
-                    "a template step)."),
+                    "Nouvelle échéance, AAAA-MM-JJ ; \"\" la retire (refusé sur étape gabarit)."),
                 "notes": {
                     "type": "string", "maxLength": 2000,
                     "description": (
-                        "New notes — replaces the whole text, no history."),
+                        "Nouvelles notes — remplacent tout le texte sans historique."),
                 },
                 **_phase_props(on_omit=_PHASE_OMIT_KEPT),
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 300,
-                    "description": "New title — custom steps only.",
+                    "description": "Nouveau titre — étapes personnalisées seulement.",
                 },
                 "description": {
                     "type": "string", "maxLength": 2000,
-                    "description": "New description — custom steps only.",
+                    "description": "Nouvelle description — étapes personnalisées seulement.",
                 },
                 "cpc_reference": {
                     "type": "string", "maxLength": 200,
-                    "description": "New reference — custom steps only.",
+                    "description": "Nouvelle référence — étapes personnalisées seulement.",
                 },
                 "status": {
                     "type": "string", "enum": _STEP_STATUS_TARGETS,
                     "description": (
-                        "The state wanted — alone in its call (see "
-                        "description)."),
+                        "État cible souhaité — seul dans l'appel."),
                 },
                 **_expected_etag_prop(_STEP_ETAG_READERS),
                 **_write_protocol_props(),
@@ -3948,54 +3531,46 @@ TOOLS: dict[str, dict] = {
     "create_task": {
         "title": "Créer une tâche",
         "description": (
-            "WRITE. Create a task — the deadline-custody entry point: a "
-            "deadline you computed belongs HERE, in the agenda that raises "
-            "alarms, not in the prose of a note. With dossier_id it is "
-            "filed on that dossier (an unresolvable id is refused, never "
-            "downgraded); omit it only for practice-wide to-dos "
-            "(« Général »). The task is created à_faire — this connector "
-            "can later edit (update_task), close (complete_task) or reopen "
-            "(reopen_task) it but never delete it, and it syncs to the "
-            "lawyer's phone. Confirm with the user before calling; use "
-            "an idempotency_key on every "
-            "scheduled call."
+            (
+            "ÉCRITURE — crée une tâche (`à_faire`), point d'entrée des "
+            "échéances et alertes d'agenda. Avec `dossier_id` : classée au "
+            "dossier (id inexistant refusé ; omettre seulement pour « "
+            "Général »). Synchronisée au téléphone ; gérée ensuite via "
+            "`update_task`/`complete_task`/`reopen_task`, jamais supprimable "
+            "ici. Confirmer avant d'appeler et passer une `idempotency_key`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier to file the task on (UUIDv4). Omit for a "
-                    "standalone (« Général ») task."
+                    "Dossier cible (UUIDv4). Omettre pour une tâche « Général »."
                 ),
                 "title": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 300,
-                    "description": "Task title, in French — the actionable.",
+                    "description": "Titre de la tâche en français — l'action à accomplir.",
                 },
                 "description": {
                     "type": "string",
                     "maxLength": 1500,
                     "description": (
-                        "Optional detail (basis of the deadline, article, "
-                        "computation), in French. A provenance stamp is "
-                        "appended automatically."
+                        "Détail optionnel (fondement du délai, article, calcul), en français. Mention ajoutée auto."
                     ),
                 },
                 "due_date": _date(
-                    "Deadline, YYYY-MM-DD. Omit for an undated task — but "
-                    "an undated task never appears in the urgent lists, "
-                    "so a computed deadline should always carry its date."
+                    "Échéance, AAAA-MM-JJ (obligatoire pour figurer dans les listes urgentes)."
                 ),
                 "priority": {
                     "type": "string",
                     "enum": _TASK_PRIORITIES,
-                    "description": "Defaults to 'normale'.",
+                    "description": "Défaut 'normale'.",
                 },
                 "category": {
                     "type": "string",
                     "enum": _TASK_CATEGORIES,
-                    "description": "Defaults to 'autre'.",
+                    "description": "Défaut 'autre'.",
                 },
                 **_phase_props(on_omit=_PHASE_OMIT_UNCLASSIFIED),
                 **_write_protocol_props(),
@@ -4010,18 +3585,16 @@ TOOLS: dict[str, dict] = {
     "create_hearing": {
         "title": "Créer un événement au calendrier",
         "description": (
-            "WRITE. Create a calendar event (hearing, meeting, "
-            "examination…) on the shared agenda. hearing_type drives the "
-            "derived forum: the five judicial types (audience, "
-            "instruction, conférence_de_gestion/_de_règlement/"
-            "_préparatoire) read as court events; it defaults to "
-            "« rencontre » (extrajudiciaire). Times are Montréal local "
-            "(HH:MM); omitting start_time makes it an all-day event. The "
-            "event is created à_confirmer unless you pass status confirmée, "
-            "and syncs to the lawyer's phone. Correct or reschedule it "
-            "later with update_hearing; it cannot be deleted here. For a "
-            "recurring event use create_hearing_series. Confirm with the "
-            "user before calling."
+            (
+            "ÉCRITURE — crée un événement d'agenda (audience, rencontre, "
+            "interrogatoire…) partagé sur le téléphone. `hearing_type` "
+            "détermine le forum (types judiciaires vs défaut `'rencontre'` "
+            "extrajudiciaire). Heures de Montréal (`HH:MM` ; sans "
+            "`start_time` = journée entière). Créé `à_confirmer` sauf "
+            "`status=\"confirmée\"`. Modifiable via `update_hearing`, jamais "
+            "supprimable ici ; pour une série, utiliser "
+            "`create_hearing_series`. Confirmer avant d'appeler."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -4039,18 +3612,7 @@ TOOLS: dict[str, dict] = {
     "create_hearing_series": {
         "title": "Créer une série d'événements",
         "description": (
-            "WRITE — create a RECURRING series: N ordinary events sharing "
-            "a serie_id, written in ONE atomic batch (all or nothing) and "
-            "synced to the phone. Same arguments as create_hearing, plus "
-            "`frequency` and EXACTLY one bound: `count` (1 to "
-            f"{_SERIES_MAX}) or `until` (YYYY-MM-DD, inclusive — refused, "
-            f"never truncated, past {_SERIES_MAX} occurrences). Each "
-            "occurrence keeps the Montréal wall-clock hour across "
-            "daylight-saving changes and is never moved off a weekend or "
-            "holiday. `idempotency_key` is REQUIRED. Change one occurrence "
-            "with update_hearing (detach_from_series takes it out of the "
-            "chain); list a chain with list_hearings(serie_id). Confirm "
-            "with the user before calling."
+            f"ÉCRITURE — crée une série RÉCURRENTE atomique (`all or nothing`, même `serie_id`, synchro téléphone). Mêmes arguments que `create_hearing`, plus `frequency` et EXACTEMENT une borne : `count` (1 à {_SERIES_MAX}) ou `until` (AAAA-MM-JJ inclusif, refusé au-delà de {_SERIES_MAX} occurrences). Conserve l'heure locale de Montréal à l'heure d'été et ne déplace pas les fériés. `idempotency_key` REQUISE. Modifier une occurrence via `update_hearing` (`detach_from_series` pour détacher). Confirmer avant d'appeler."
         ),
         "input_schema": {
             "type": "object",
@@ -4059,20 +3621,18 @@ TOOLS: dict[str, dict] = {
                 "frequency": {
                     "type": "string",
                     "enum": _SERIES_FREQUENCIES,
-                    "description": "How often the event repeats.",
+                    "description": "Fréquence de répétition de l'événement.",
                 },
                 "count": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": _SERIES_MAX,
                     "description": (
-                        "Number of occurrences, the first one included. "
-                        "Not with `until`."
+                        "Nombre d'occurrences (1re incluse). Exclusif de `until`."
                     ),
                 },
                 "until": _date(
-                    "Last possible day, YYYY-MM-DD (inclusive). Not with "
-                    "`count`."
+                    "Dernier jour possible, AAAA-MM-JJ inclusif. Exclusif de `count`."
                 ),
                 **_write_protocol_props(),
             },
@@ -4092,114 +3652,82 @@ TOOLS: dict[str, dict] = {
         # arguments, and the hint is what a client trusts before a blind
         # retry. The family default (false) is the honest one here.
         "description": (
-            "WRITE — REPLACES the fields you name; a field you omit is "
-            "untouched, and values already stored write nothing. "
-            "Reschedule with date / start_time / end_time (Montréal): an "
-            "omitted hour keeps the stored wall-clock hour, an omitted end "
-            "keeps the duration. `status` annulée drops the event from "
-            "get_agenda and removes its Outlook copy at the mirror's next "
-            f"run ({_cron.cadence_en('outlook')}, Montréal; the phone shows it "
-            "cancelled at once). `dossier_id` MOVES it "
-            "(\"\" = « Général ») — a series occurrence moves only with "
-            "detach_from_series true. A pending or refused Bookings request "
-            "is refused here (decide_rendez_vous). On a CONFIRMED Bookings "
-            "rendez-vous ONLY dossier_id, notes and notes_append are "
-            "accepted: rescheduling, cancelling or any other change is "
-            "REFUSED, because the Outlook meeting the client holds is the "
-            "reference — a reschedule or a cancellation is made in Outlook "
-            "(the Bookings sync then flags it in Réception); anything else "
-            "the lawyer edits in the application, whose form is left free: "
-            "only this connector is restricted. Replaced notes are NOT kept."
+            f"ÉCRITURE — REMPLACE les champs nommés (omis = intact ; identique = sans écriture). Reporter : `date`/`start_time`/`end_time` (Montréal ; heure/durée gardées si omises). `status=\"annulée\"` retire de `get_agenda` et d'Outlook au prochain cycle ({_cron.cadence_fr('outlook')}, Montréal ; téléphone mis à jour aussitôt). `dossier_id` DÉPLACE (`\"\"` = « Général » ; série : exige `detach_from_series: true`). Bookings en attente/refusé = refusé (`decide_rendez_vous`). Bookings CONFIRMÉ : seuls `dossier_id`, `notes`, `notes_append` sont admis ici (reporter ou annuler se fait dans Outlook ; toute autre modification à l'application — seul ce connecteur est restreint). Notes sans historique."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "hearing_id": _id(
-                    "The event to modify (UUIDv4), from list_hearings or "
-                    "get_agenda."
+                    "UUIDv4 de l'événement à modifier (de list_hearings ou get_agenda)."
                 ),
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 300,
-                    "description": "New title, in French.",
+                    "description": "Nouveau titre, en français.",
                 },
                 "hearing_type": {
                     "type": "string", "enum": _HEARING_TYPES,
-                    "description": "New type (the forum derives from it).",
+                    "description": "Nouveau type (dérive le forum).",
                 },
                 "date": _date(
-                    "New day, YYYY-MM-DD (Montréal). Omitted: the stored day."
+                    "Nouveau jour, AAAA-MM-JJ (Montréal). Omis : jour conservé."
                 ),
                 "start_time": {
                     "type": "string", "maxLength": 5,
                     "description": (
-                        "New start, HH:MM Montréal; makes the event timed. "
-                        "Required to turn an all-day event into a timed one."
+                        "Nouveau début, HH:MM Montréal ; rend l'événement horodaté."
                     ),
                 },
                 "end_time": {
                     "type": "string", "maxLength": 5,
                     "description": (
-                        "New end, HH:MM Montréal, same day, after the start. "
-                        "Omitted: the stored duration."
+                        "Nouvelle fin, HH:MM Montréal, même jour après début. Omis : durée conservée."
                     ),
                 },
                 "all_day": {
                     "type": "boolean",
                     "description": (
-                        "true: an all-day event (then no start_time or "
-                        "end_time); false: a timed one (needs start_time if "
-                        "it was all-day)."
+                        "true = journée entière (sans start_time/end_time) ; false = horodaté (exige start_time)."
                     ),
                 },
                 "location": {
                     "type": "string", "maxLength": 300,
-                    "description": "New location; \"\" empties it.",
+                    "description": "Nouveau lieu ; \"\" vide.",
                 },
                 "court": {
                     "type": "string", "maxLength": 200,
-                    "description": "New court; \"\" empties it.",
+                    "description": "Nouveau tribunal ; \"\" vide.",
                 },
                 "judge": {
                     "type": "string", "maxLength": 200,
-                    "description": "New judge; \"\" empties it.",
+                    "description": "Nouveau juge ; \"\" vide.",
                 },
                 **_hearing_modality_props(),
                 "notes": {
                     "type": "string", "maxLength": 2000,
                     "description": (
-                        "REPLACES the whole notes (\"\" empties them); the "
-                        "old text is NOT kept. Refused, never truncated, "
-                        "past 2000 characters. Not with notes_append."
+                        "REMPLACE toutes les notes (\"\" vide) sans historique ; max 2000 car. Exclusif de `notes_append`."
                     ),
                 },
                 "notes_append": {
                     "type": "string", "minLength": 1, "maxLength": 1500,
                     "description": (
-                        "Appended under a dated « Ajouté par Claude » line; "
-                        "the notes as stored must still fit 2000 characters "
-                        "(refused otherwise). A repeated call appends again "
-                        "— retry only with the same idempotency_key. Not "
-                        "with notes."
+                        "Ajouté sous mention datée « Ajouté par Claude » (total <= 2000 car.). Rejouer seulement avec même idempotency_key. Exclusif de `notes`."
                     ),
                 },
                 "status": {
                     "type": "string", "enum": _HEARING_STATUSES,
                     "description": (
-                        "New status. terminée is refused on a future day."
+                        "Nouveau statut. terminée refusé sur une date future."
                     ),
                 },
                 "detach_from_series": {
                     "type": "boolean",
                     "description": (
-                        "true: this occurrence leaves its series and becomes "
-                        "a standalone event, in the same write as the other "
-                        "fields (a no-op when it is in no series)."
+                        "true = détache cette occurrence de sa série (dans la même écriture)."
                     ),
                 },
                 "dossier_id": _id(
-                    "MOVE the event to this dossier (UUIDv4), or \"\" for "
-                    "« Général ». An id that does not resolve is refused, "
-                    "never downgraded."
+                    "DÉPLACER vers ce dossier (UUIDv4) ou \"\" pour « Général ». Id invalide refusé."
                 ),
                 **_expected_etag_prop(_HEARING_ETAG_READERS),
                 **_write_protocol_props(),
@@ -4221,40 +3749,41 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE, OUTBOUND — decide a pending « Bookings with me » "
-            "request (list them with list_hearings, bookings \"pending\"). "
-            "`confirmer`: the event enters the calendar and the phone; with "
-            "lier_partie (default true) the contact whose email is EXACTLY "
-            "the requester's is linked, and the call is refused when none "
-            "matches (resend with lier_partie false). A request the client "
-            "cancelled cannot be confirmed. `refuser` CANCELS THE OUTLOOK "
-            "MEETING, WHICH NOTIFIES THE CLIENT, with a fixed text you "
-            "cannot change; a request the client cancelled is only removed. "
-            "An already-CONFIRMED rendez-vous is not refused here: it is "
-            "cancelled in Outlook. "
-            "`expected_etag` (from that listing) and `idempotency_key` are "
-            "REQUIRED; the same decision twice writes nothing and never "
-            "contacts the client again. Always confirm with the user first."
+            (
+            (
+            (
+            (
+            "ÉCRITURE EXTÉRIEURE — décide d'une demande « Bookings with me » "
+            "en attente (`list_hearings`, `bookings=\"pending\"`). `confirmer` "
+            "ajoute l'événement à l'agenda et au téléphone ; `lier_partie` "
+            "(défaut true) lie le contact au courriel exact du demandeur "
+            "(refusé si absent : renvoyer avec `lier_partie: false`). "
+            "Impossible si le client a annulé. `refuser` ANNULE LA RÉUNION "
+            "OUTLOOK ET NOTIFIE LE CLIENT avec texte fixe (ou retire si déjà "
+            "annulée par le client). Un rendez-vous déjà CONFIRMÉ n'est pas "
+            "refusé ici : il s'annule dans Outlook. `expected_etag` et "
+            "`idempotency_key` REQUIS. Toujours confirmer avant d'appeler."
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "hearing_id": _id(
-                    "The pending request (UUIDv4), from list_hearings with "
-                    "bookings \"pending\"."
+                    "Demande en attente (UUIDv4), de list_hearings avec bookings=\"pending\"."
                 ),
                 "action": {
                     "type": "string", "enum": _RENDEZ_VOUS_ACTIONS,
                     "description": (
-                        "confirmer (accept) or refuser (decline — notifies "
-                        "the client)."
+                        "confirmer (accepte) ou refuser (décline — notifie le client)."
                     ),
                 },
                 "lier_partie": {
                     "type": "boolean",
                     "description": (
-                        "confirmer only (default true): link the contact "
-                        "matched server-side on the requester's exact email."
+                        "confirmer seulement (défaut true) : lie le contact au courriel exact du demandeur."
                     ),
                 },
                 **_expected_etag_prop(_RENDEZ_VOUS_ETAG_READERS),
@@ -4271,91 +3800,16 @@ TOOLS: dict[str, dict] = {
         "concurrency": CONCURRENCY_REQUIRED,
         "etag_readers": _RENDEZ_VOUS_ETAG_READERS,
     },
-    "create_time_entry": {
-        "title": "Créer une entrée de temps",
-        "description": (
-            "WRITE. Record billable (or non-billable) time on a dossier — "
-            "capture work at the moment it happens instead of "
-            "reconstructing at billing time. dossier_id is REQUIRED (time "
-            "always belongs to a file). The description prints VERBATIM "
-            "on the client's invoice: write it as a billing narrative, in "
-            "French, and never include provenance or internal notes — the "
-            "entry is marked machine-created internally. rate_cents "
-            "defaults to the dossier's hourly rate. It can be corrected "
-            "with update_time_entry only while not yet invoiced (its "
-            "litigation phase with set_time_entry_phase, even after); this "
-            "connector can never delete it. Confirm with the user before "
-            "calling."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **_time_entry_fields(),
-                **_write_protocol_props(),
-            },
-            "required": list(_TIME_ENTRY_REQUIRED),
-            "additionalProperties": False,
-        },
-        "handler": "create_time_entry",
-        "scope": SCOPE_WRITE,
-        "idempotency": IDEMPOTENCY_OPTIONAL,
-    },
-    "create_expense": {
-        "title": "Créer un déboursé",
-        "description": (
-            "WRITE. Record a disbursement (débours) on a dossier — "
-            "bailiff, expert, transcript, filing stamp… dossier_id is "
-            "REQUIRED. The description prints verbatim on the client's "
-            "invoice: billing narrative in French, no internal notes. "
-            "Amount in integer cents. It can be corrected with "
-            "update_expense only while not yet invoiced (its litigation "
-            "phase with set_expense_phase, even after); this connector can "
-            "never delete it. Confirm with the user before calling."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **_expense_fields(),
-                **_write_protocol_props(),
-            },
-            "required": list(_EXPENSE_REQUIRED),
-            "additionalProperties": False,
-        },
-        "handler": "create_expense",
-        "scope": SCOPE_WRITE,
-        "idempotency": IDEMPOTENCY_OPTIONAL,
-    },
     "create_time_entries_bulk": {
         "title": "Créer plusieurs entrées de temps",
         "description": (
-            "WRITE — ALL OR NOTHING: one refused row refuses the WHOLE call "
-            "and nothing is written; the refusal names every bad row by its "
-            "0-based index (`entries[3]`, a field `entries[3].hours`) — fix "
-            "those and resend the whole batch. idempotency_key REQUIRED; "
-            "confirm the batch with "
-            "the user before calling. The batch form of `create_time_entry`: "
-            f"1 to {ENTRY_BULK_MAX} entries in ONE call, written atomically "
-            "— an import, or a day's time. Every row takes "
-            "create_time_entry's fields, defaults and rules: dossier_id "
-            "required and resolved first (an unknown one refuses), "
-            "rate_cents defaulting to that dossier's hourly rate, hours at "
-            "most two decimals (finer is refused, never rounded), a "
-            "description that prints VERBATIM on the client's invoice (a "
-            "billing narrative in French — never provenance or internal "
-            "notes; each row is marked machine-created internally), a "
-            "legacy_ref refused when already borne or borne twice in the "
-            "batch. The rows land un-invoiced. `entities` comes back in "
-            "the SAME ORDER as `entries`, each shaped like "
-            "create_time_entry's `entity` — its etag is the next edit's "
-            "expected_etag. A row is corrected with update_time_entry while "
-            "un-invoiced (its phase with set_time_entry_phase, even after); "
-            "this connector can never delete one."
+            f"ÉCRITURE — TOUT OU RIEN : une ligne refusée fait refuser TOUT l'appel (rien n'est écrit) ; index base 0 (`entries[3]`, `entries[3].hours`). idempotency_key REQUISE ; confirmer le lot avant d'appeler. Crée 1 à {ENTRY_BULK_MAX} entrées de temps non facturées en bloc atomique : `dossier_id` requis, `rate_cents` au taux du dossier par défaut, `hours` max 2 décimales (jamais arrondi), `description` en libellé français imprimé VERBATIM sur la facture (aucune note interne), `legacy_ref` refusée si doublon. `entities` revient dans le même ordre avec chaque `etag`. Corriger avant facture via `update_time_entry`, reclasser via `set_time_entry_phase_bulk` ; jamais supprimer ici."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entries": _entry_bulk_items(
-                    "create_time_entry", _time_entry_fields(),
+                    "entrées de temps", _time_entry_fields(),
                     _TIME_ENTRY_REQUIRED,
                 ),
                 **_write_protocol_props(),
@@ -4372,31 +3826,13 @@ TOOLS: dict[str, dict] = {
     "create_expenses_bulk": {
         "title": "Créer plusieurs déboursés",
         "description": (
-            "WRITE — ALL OR NOTHING: one refused row refuses the WHOLE call "
-            "and nothing is written; the refusal names every bad row by its "
-            "0-based index (`entries[3]`, a field "
-            "`entries[3].amount_cents`) — fix those and resend the whole "
-            "batch. idempotency_key REQUIRED; confirm the batch with "
-            "the user before calling. The batch form of `create_expense`: "
-            f"1 to {ENTRY_BULK_MAX} disbursements in ONE call, written "
-            "atomically. Every row takes create_expense's fields, defaults "
-            "and rules: dossier_id required and resolved first (an unknown "
-            "one refuses), amount in integer cents, category 'autre' and "
-            "taxable true by default, a description that prints VERBATIM "
-            "on the client's invoice (billing narrative in French, no "
-            "internal notes), a legacy_ref refused when already borne or "
-            "borne twice in the batch. The rows land un-invoiced. "
-            "`entities` comes back in the SAME ORDER as `entries`, each "
-            "shaped like create_expense's `entity`. A row is corrected with "
-            "update_expense while un-invoiced (its phase with "
-            "set_expense_phase, even after); this connector can never "
-            "delete one."
+            f"ÉCRITURE — TOUT OU RIEN : une ligne refusée fait refuser TOUT l'appel (rien n'est écrit) ; index base 0 (`entries[3]`, `entries[3].amount_cents`). idempotency_key REQUISE ; confirmer le lot avant d'appeler. Crée 1 à {ENTRY_BULK_MAX} déboursés non facturés en bloc atomique : `dossier_id` requis, montant en cents entiers, défaut `category` 'autre' et `taxable: true`, `description` en libellé français imprimé VERBATIM sur la facture (aucune note interne), `legacy_ref` refusée si doublon. `entities` revient dans le même ordre. Corriger avant facture via `update_expense`, reclasser via `set_expense_phase_bulk` ; jamais supprimer ici."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entries": _entry_bulk_items(
-                    "create_expense", _expense_fields(), _EXPENSE_REQUIRED,
+                    "déboursés", _expense_fields(), _EXPENSE_REQUIRED,
                 ),
                 **_write_protocol_props(),
             },
@@ -4410,97 +3846,85 @@ TOOLS: dict[str, dict] = {
     "complete_dossier": {
         "title": "Compléter les champs vides d'un dossier",
         "description": (
-            "WRITE, fill-only-if-empty. Fill dossier fields that are EMPTY "
-            "or still at their model default — a computed classification, "
-            "value in dispute, prescription starting point… A field that "
-            "already carries a different value is NEVER overwritten: the "
-            "whole call is refused listing the conflicting fields, and "
-            "nothing is written (changing a set value is update_dossier's "
-            "job). Filling court_file_number also derives the "
-            "judicial metadata exactly as the web form does. Money in "
-            "integer cents; contingency_percent in basis points "
-            "(2500 = 25 %); dates YYYY-MM-DD. Confirm with the user "
-            "before calling; the response carries the resulting "
-            "prescription picture."
+            (
+            "ÉCRITURE — remplissage SEULEMENT si vide ou encore à la valeur "
+            "par défaut (classification, valeur en litige, départ de "
+            "prescription…). Un champ déjà différent n'est JAMAIS écrasé : "
+            "tout l'appel est refusé en listant les conflits "
+            "(`update_dossier` sert à modifier). `court_file_number` dérive "
+            "aussi les métadonnées judiciaires. Montants en cents entiers ; "
+            "`contingency_percent` en points de base (`2500` = 25 %) ; dates "
+            "AAAA-MM-JJ. Confirmer avant d'appeler ; retourne le portrait de "
+            "prescription résultant."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier to complete (UUIDv4). Required."),
+                "dossier_id": _id("UUIDv4 du dossier à compléter. Requis."),
                 "domaine": {
                     "type": "string", "maxLength": 10,
-                    "description": ("Taxonomy family code (e.g. REC) — "
-                                    "validated by the model."),
+                    "description": ("Code famille de taxonomie (ex. REC) — validé par le modèle."),
                 },
                 "action": {
                     "type": "string", "maxLength": 10,
-                    "description": ("Taxonomy action code (e.g. REC-01); "
-                                    "must belong to the domaine."),
+                    "description": ("Code recours de taxonomie (ex. REC-01) ; doit appartenir à `domaine`."),
                 },
                 "action_precision": {
                     "type": "string", "maxLength": 500,
-                    "description": "Free-text precision (the -99 rows require it).",
+                    "description": "Précision en texte libre (requise pour les recours -99).",
                 },
                 "sommaire": {
                     "type": "string", "maxLength": 5000,
                     "description": (
-                        "Case summary, French — only when empty. The model "
-                        "stores it up to 5000, unlike every other string "
-                        "field, which caps at 2000."
+                        "Sommaire du dossier en français — seulement si vide (max 5000 car.)."
                     ),
                 },
                 "mandate_type": {
                     "type": "string",
                     "enum": ["judiciaire", "service_conseils", "general", "special"],
-                    "description": "Nature of the engagement.",
+                    "description": "Nature du mandat.",
                 },
                 "court_file_number": {
                     "type": "string", "maxLength": 40,
-                    "description": ("Court file number; judicial metadata "
-                                    "derives from it when parseable."),
+                    "description": ("Numéro de cour ; dérive les métadonnées judiciaires si analysable."),
                 },
                 "prescription_type": {
                     "type": "string", "maxLength": 40,
-                    "description": ("Confirmed delay key (e.g. 3_ans) — "
-                                    "validated against the model "
-                                    "vocabulary; drives the computed date "
-                                    "pour agir."),
+                    "description": ("Clé de délai confirmée (ex. 3_ans) — validée par le vocabulaire ; calcule la date pour agir."),
                 },
                 "fee_type": {
                     "type": "string",
                     "enum": ["hourly", "flat", "contingency", "mixed",
                              "pro_bono", "aide_juridique"],
-                    "description": "Fee arrangement.",
+                    "description": "Entente d'honoraires.",
                 },
                 "fee_notes": {
                     "type": "string", "maxLength": 1000,
-                    "description": "Free text on the fee arrangement.",
+                    "description": "Texte libre sur l'entente d'honoraires.",
                 },
                 "valeur": {
                     "type": "integer", "minimum": 1,
-                    "description": "Amount in dispute, integer cents.",
+                    "description": "Valeur en litige, en cents entiers.",
                 },
                 "hourly_rate": {
                     "type": "integer", "minimum": 1,
-                    "description": ("Hourly rate in cents — fills only if "
-                                    "still at the 30000 default."),
+                    "description": ("Taux horaire en cents — rempli seulement si encore au défaut 30000."),
                 },
                 "flat_fee": {
                     "type": "integer", "minimum": 1,
-                    "description": "Flat fee in cents.",
+                    "description": "Forfait en cents.",
                 },
                 "contingency_percent": {
                     "type": "integer", "minimum": 1, "maximum": 10000,
-                    "description": "Basis points (2500 = 25,00 %).",
+                    "description": "Points de base (2500 = 25,00 %).",
                 },
                 "droit_action_date": _date(
-                    "Start of the prescription period, YYYY-MM-DD."),
+                    "Point de départ du délai de prescription, AAAA-MM-JJ."),
                 "date_avis": _date(
-                    "Confirmed avis préalable date, YYYY-MM-DD."),
+                    "Date confirmée d'avis préalable, AAAA-MM-JJ."),
                 "prise_action_date": _date(
-                    "Date the recourse was filed (art. 2892) — silences "
-                    "the prescription alert. Prefer "
-                    "record_prescription_event for new entries."),
+                    "Date du dépôt de la demande (art. 2892) — coupe l'alerte. Préférer `record_prescription_event`."),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id"],
@@ -4513,43 +3937,41 @@ TOOLS: dict[str, dict] = {
     "record_signification": {
         "title": "Consigner une signification",
         "description": (
-            "WRITE, append-only. Record service of process on a party OF "
-            "the dossier — one entry per party served (arts. 145/147 "
-            "C.p.c. delays run per party). A party not on the dossier is "
-            "refused. Use `supersedes` when a corrected procès-verbal "
-            "replaces an earlier one (the prior entry is marked "
-            "superseded, never deleted). This connector can never edit or "
-            "remove a recorded signification. Confirm with the user."
+            (
+            "ÉCRITURE append-only — inscrit une signification à une partie "
+            "DU dossier (une par partie signifiée, délais arts. 145/147 "
+            "C.p.c.). Partie hors dossier refusée. Passer `supersedes` "
+            "lorsqu'un PV corrigé remplace un antérieur (marqué remplacé, "
+            "jamais supprimé). Jamais modifiable ni supprimable ici. "
+            "Confirmer avant d'appeler."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier (UUIDv4). Required."),
+                "dossier_id": _id("UUIDv4 du dossier. Requis."),
                 "partie_id": _id(
-                    "The served party's contact id — must be a party ON "
-                    "the dossier (see get_dossier clients/opposing_parties)."
+                    "Contact de la partie signifiée — doit figurer AU dossier (voir get_dossier)."
                 ),
-                "date": _date("Service date, YYYY-MM-DD. Required."),
+                "date": _date("Date de signification, AAAA-MM-JJ. Requis."),
                 "mode": {
                     "type": "string",
                     "enum": ["personnelle", "domicile", "huissier",
                              "notification", "avocat", "publication"],
-                    "description": "Mode of service. Defaults to 'huissier'.",
+                    "description": "Mode de signification. Défaut 'huissier'.",
                 },
                 "huissier_id": _id(
-                    "Optional contact id of the bailiff."
+                    "Id optionnel du contact de l'huissier."
                 ),
                 "pv_document_id": _id(
-                    "Optional documents record of the procès-verbal."
+                    "Id optionnel du document du procès-verbal."
                 ),
                 "supersedes": _id(
-                    "Id of the EARLIER signification this one replaces "
-                    "(from get_dossier.significations) — the corrected-"
-                    "second-PV case."
+                    "Id de la signification ANTÉRIEURE remplacée (get_dossier.significations) — cas du 2e PV corrigé."
                 ),
                 "confirmee": {
                     "type": "boolean",
-                    "description": "true once the procès-verbal is in hand.",
+                    "description": "true dès que le procès-verbal est en main.",
                 },
                 **_write_protocol_props(),
             },
@@ -4563,42 +3985,39 @@ TOOLS: dict[str, dict] = {
     "record_prescription_event": {
         "title": "Consigner un événement de prescription",
         "description": (
-            "WRITE, append-only. Record a C.c.Q. prescription event on the "
-            "dossier: interruption_depot (art. 2892 — a demande filed; "
-            "silences the alert, effective date becomes null per art. "
-            "2896), interruption_reconnaissance (art. 2898 — restarts the "
-            "confirmed period from the event date), suspension (art. 2904 "
-            "— requires end_date, shifts the effective deadline), "
-            "renonciation (art. 2883). The RAW prescription_date is never "
-            "recomputed — the derived prescription_status and "
-            "prescription_date_effective returned by this call (and by "
-            "get_dossier) carry the picture. This connector can never "
-            "edit or remove a recorded event. Confirm with the user "
-            "before calling."
+            (
+            "ÉCRITURE append-only — inscrit un événement C.c.Q. de "
+            "prescription sur le dossier : `interruption_depot` (art. 2892 — "
+            "demande déposée, coupe l'alerte, date effective null art. "
+            "2896), `interruption_reconnaissance` (art. 2898 — repart de la "
+            "date), `suspension` (art. 2904 — requiert `end_date`), "
+            "`renonciation` (art. 2883). `prescription_date` brute reste "
+            "intacte ; retourne `prescription_status` et "
+            "`prescription_date_effective`. Jamais modifiable ni supprimable "
+            "ici. Confirmer avant d'appeler."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier (UUIDv4). Required."),
+                "dossier_id": _id("UUIDv4 du dossier. Requis."),
                 "type": {
                     "type": "string",
                     "enum": ["interruption_depot",
                              "interruption_reconnaissance",
                              "suspension", "renonciation"],
-                    "description": "The C.c.Q. event kind.",
+                    "description": "Type d'événement C.c.Q.",
                 },
-                "date": _date("Event date, YYYY-MM-DD. Required."),
+                "date": _date("Date de l'événement, AAAA-MM-JJ. Requis."),
                 "end_date": _date(
-                    "Suspension end, YYYY-MM-DD — required for (and only "
-                    "meaningful on) type=suspension."
+                    "Fin de suspension, AAAA-MM-JJ — requise seulement pour type=suspension."
                 ),
                 "reference": {
                     "type": "string", "maxLength": 300,
-                    "description": ("Free text: article, document, "
-                                    "circumstance (French)."),
+                    "description": ("Texte libre : article, pièce, circonstance (français)."),
                 },
                 "document_id": _id(
-                    "Optional documents record supporting the event."
+                    "Id optionnel du document appuyant l'événement."
                 ),
                 **_write_protocol_props(),
             },
@@ -4612,55 +4031,46 @@ TOOLS: dict[str, dict] = {
     "update_time_entry": {
         "title": "Corriger une entrée de temps",
         "description": (
-            "WRITE — REPLACES the values you name; a field you omit is "
-            "untouched. Correct a transcription error BEFORE the entry is "
-            "invoiced: once it is, only its litigation phase stays "
-            "reclassifiable (set_time_entry_phase), and the way back is "
-            "voiding the invoice (update_invoice, status annulée, or the "
-            "application), which releases every source. `dossier_id` MOVES "
-            "the entry to another dossier — hours, rate, amount and phase "
-            "kept, its share of the budget actuals with it (non-billable "
-            "time counts in no budget). "
-            "`amount` is never yours to set — the model recomputes it as "
-            "hours × rate, and forces 0 on a non-billable entry. "
-            "Omitting `billable` leaves it as it is: never send it « just in "
-            "case », because flipping a deliberately non-billable entry back "
-            "on rematerialises its amount. "
-            "Omitting BOTH phase keys leaves the classification alone; "
-            "naming either rewrites both."
+            (
+            "ÉCRITURE — REMPLACE les champs nommés (omis = intact). Corrige "
+            "avant facturation ; une fois facturée, seule la phase reste "
+            "reclassable (`set_time_entry_phase_bulk`), sauf annulation de "
+            "facture (`update_invoice` `annulée`). `dossier_id` DÉPLACE avec "
+            "son réel budgétaire (non facturable = 0 $). `amount` est "
+            "toujours recalculé (`hours × rate`, ou 0 si non facturable). "
+            "Omettre `billable` sauf pour le changer. Omettre les deux clés "
+            "de phase laisse le classement intact."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "time_entry_id": _id("The entry to correct (UUIDv4). Required."),
-                "date": _date("Correct the date, YYYY-MM-DD."),
+                "time_entry_id": _id("UUIDv4 de l'entrée à corriger. Requis."),
+                "date": _date("Corriger la date, AAAA-MM-JJ."),
                 "description": {
                     "type": "string", "minLength": 1, "maxLength": 2000,
                     "description": (
-                        "Billing narrative, French — prints VERBATIM on the "
-                        "client's invoice. No provenance note is ever added."
+                        "Libellé français imprimé VERBATIM sur la facture client (aucune mention ajoutée)."
                     ),
                 },
                 "hours": {
                     "type": "number", "minimum": 0.01, "maximum": 24,
                     "description": (
-                        "At most two decimals (0.25 for a quarter hour); "
-                        "anything finer is refused rather than rounded."
+                        "Au plus deux décimales (0.25 = quart d'heure) ; plus fin refusé, jamais arrondi."
                     ),
                 },
                 "rate_cents": {
                     "type": "integer", "minimum": 0, "maximum": 100000000,
-                    "description": "Hourly rate in cents; 0 is legitimate.",
+                    "description": "Taux horaire en cents ; 0 est admis.",
                 },
                 "billable": {
                     "type": "boolean",
                     "description": (
-                        "Send ONLY to change it. A non-billable entry always "
-                        "carries amount 0."
+                        "Envoyer SEULEMENT pour changer. Non facturable vaut toujours 0 $."
                     ),
                 },
                 "dossier_id": _id(
-                    "Move the entry to this dossier (list_dossiers)."),
+                    "Déplacer l'entrée vers ce dossier (list_dossiers)."),
                 **_phase_props(on_omit=None),
                 **_legacy_ref_prop(),
                 **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
@@ -4678,41 +4088,39 @@ TOOLS: dict[str, dict] = {
     "update_expense": {
         "title": "Corriger un déboursé",
         "description": (
-            "WRITE — REPLACES the values you name; a field you omit is "
-            "untouched. Same wall as update_time_entry: once the "
-            "disbursement is invoiced only its litigation phase stays "
-            "reclassifiable (set_expense_phase) until the invoice is voided. "
-            "`dossier_id` MOVES it to another dossier, amount and phase "
-            "kept, its share of the budget actuals with it. "
-            "Unlike a time entry, `amount_cents` IS yours — the model never "
-            "recomputes a disbursement, so a historical amount survives "
-            "exactly. "
-            "Omitting `taxable` leaves it as it is: sending it « just in "
-            "case » would add QST to a non-taxable disbursement."
+            (
+            "ÉCRITURE — REMPLACE les champs nommés (omis = intact). Après "
+            "facturation, seule la phase reste reclassable "
+            "(`set_expense_phase_bulk`) sauf annulation de facture. "
+            "`dossier_id` DÉPLACE vers un autre dossier avec son impact "
+            "budgétaire. `amount_cents` reste exact tel que saisi. Omettre "
+            "`taxable` sauf pour le changer ; omettre les deux clés de phase "
+            "conserve la paire."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "expense_id": _id("The disbursement to correct. Required."),
-                "date": _date("Correct the date, YYYY-MM-DD."),
+                "expense_id": _id("UUIDv4 du déboursé à corriger. Requis."),
+                "date": _date("Corriger la date, AAAA-MM-JJ."),
                 "description": {
                     "type": "string", "minLength": 1, "maxLength": 2000,
-                    "description": "Prints VERBATIM on the client's invoice.",
+                    "description": "Libellé imprimé VERBATIM sur la facture client.",
                 },
                 "amount_cents": {
                     "type": "integer", "minimum": 1, "maximum": 100000000,
-                    "description": "Amount in integer cents.",
+                    "description": "Montant en cents entiers.",
                 },
                 "category": {
                     "type": "string", "enum": _EXPENSE_CATEGORIES,
-                    "description": "Disbursement category.",
+                    "description": "Catégorie du déboursé.",
                 },
                 "taxable": {
                     "type": "boolean",
-                    "description": "Send ONLY to change it.",
+                    "description": "Envoyer SEULEMENT pour changer.",
                 },
                 "dossier_id": _id(
-                    "Move the disbursement to this dossier (list_dossiers)."),
+                    "Déplacer le déboursé vers ce dossier (list_dossiers)."),
                 **_phase_props(on_omit=_PHASE_OMIT_KEPT),
                 **_legacy_ref_prop(),
                 **_expected_etag_prop(_EXPENSE_ETAG_READERS),
@@ -4727,97 +4135,25 @@ TOOLS: dict[str, dict] = {
         "concurrency": CONCURRENCY_OPTIONAL,
         "etag_readers": _EXPENSE_ETAG_READERS,
     },
-    "set_time_entry_phase": {
-        "title": "Reclasser la phase d'une entrée de temps",
-        "description": (
-            "WRITE — sets ONLY the litigation phase (`phase`/`sous_phase`) "
-            "of a time entry, and it is the only tool that can do so once "
-            "the entry has been carried to an invoice. That is safe because "
-            "the phase appears on NO invoice: line items are independent "
-            "copies with no phase field, and nothing on the client's note "
-            "d'honoraires reads it. It feeds the dossier's budget-vs-actuals "
-            "view, which counts billed work too. Hours, rate, amount, "
-            "description, billable and invoiced are not addressable here and "
-            "cannot move. When the entry is NOT yet invoiced, "
-            "`update_time_entry` can set the phase as well, alongside other "
-            "corrections — prefer it there. Give `sous_phase` alone and the "
-            "parent phase is derived from its prefix; give `phase` alone and "
-            "it imputes to that phase's « -00 » (Général). Re-sending the "
-            "code the entry already carries writes nothing at all."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "time_entry_id": _id(
-                    "The entry to reclassify (UUIDv4). Required."
-                ),
-                **_phase_props(on_omit=_PHASE_OMIT_REFUSED),
-                **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
-                **_write_protocol_props(),
-            },
-            "required": ["time_entry_id"],
-            "additionalProperties": False,
-        },
-        "handler": "set_time_entry_phase",
-        "scope": SCOPE_WRITE,
-        "idempotency": IDEMPOTENCY_OPTIONAL,
-        "concurrency": CONCURRENCY_OPTIONAL,
-        "etag_readers": _TIME_ENTRY_ETAG_READERS,
-        # A second identical call writes nothing: the model compares the
-        # stored pair first. Declared per tool, like complete_task.
-        "annotations": {"idempotentHint": True},
-    },
-    "set_expense_phase": {
-        "title": "Reclasser la phase d'un déboursé",
-        "description": (
-            "WRITE — the disbursement twin of `set_time_entry_phase`: sets "
-            "ONLY `phase`/`sous_phase`, invoiced or not, because the phase "
-            "appears on no invoice. Amount, category, taxable, description "
-            "and invoiced cannot move here. Disbursements carry the "
-            "« frais » half of a phase's actuals, so a budget is only right "
-            "when both halves are classified. Re-sending the stored code "
-            "writes nothing."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "expense_id": _id(
-                    "The disbursement to reclassify. Required."
-                ),
-                **_phase_props(on_omit=_PHASE_OMIT_REFUSED),
-                **_expected_etag_prop(_EXPENSE_ETAG_READERS),
-                **_write_protocol_props(),
-            },
-            "required": ["expense_id"],
-            "additionalProperties": False,
-        },
-        "handler": "set_expense_phase",
-        "scope": SCOPE_WRITE,
-        "idempotency": IDEMPOTENCY_OPTIONAL,
-        "concurrency": CONCURRENCY_OPTIONAL,
-        "etag_readers": _EXPENSE_ETAG_READERS,
-        "annotations": {"idempotentHint": True},
-    },
     "set_time_entry_phase_bulk": {
         "title": "Reclasser la phase de plusieurs entrées de temps",
         "description": (
-            "WRITE — the batch form of `set_time_entry_phase`: reclassify a "
-            "whole page of `list_time_entries` in one call instead of one "
-            "call per row. `results` comes back in the SAME ORDER as "
-            "`entries`, one row each, saying whether the entry was applied, "
-            "left alone because it already carried that code, or refused and "
-            "why — a refused item never blocks its neighbours, and nothing "
-            "is ever changed without being named. Naming the same id twice "
-            "refuses the WHOLE call: two codes for one row means the plan is "
-            "ambiguous. A retry with the same `idempotency_key` replays the "
-            "stored report rather than re-attempting the refusals — fix them "
-            "and send a NEW key."
+            (
+            "ÉCRITURE — reclasse la phase (`phase`/`sous_phase`) de 1 à 50 "
+            "entrées de temps (même déjà facturées : la phase ne paraît sur "
+            "aucune facture, seulement au suivi budgétaire réel vs prévu). "
+            "`sous_phase` seul dérive `phase` ; `phase` seul impute à « -00 "
+            "» Général. `results` suit l'ordre d'entrée (appliqué, inchangé "
+            "si identique, ou refus isolé sans bloquer les voisins). Doublon "
+            "d'id = refus total. Rejeu sur `idempotency_key` renvoie le "
+            "rapport stocké : utiliser une NOUVELLE clé après correction."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entries": _phase_bulk_items(
-                    "time_entry_id", "A time entry to reclassify."
+                    "time_entry_id", "Entrée de temps à reclasser."
                 ),
                 **_write_protocol_props(),
             },
@@ -4838,17 +4174,20 @@ TOOLS: dict[str, dict] = {
     "set_expense_phase_bulk": {
         "title": "Reclasser la phase de plusieurs déboursés",
         "description": (
-            "WRITE — the batch form of `set_expense_phase`, same contract as "
-            "`set_time_entry_phase_bulk`: ordered per-item results, a refusal "
-            "that stops nothing else, a duplicated id that refuses the whole "
-            "call, and a replayed `idempotency_key` that returns the stored "
-            "report."
+            (
+            "ÉCRITURE — reclasse la phase de 1 à 50 déboursés (même déjà "
+            "facturés ; alimentent la moitié « frais » du réel budgétaire). "
+            "Même contrat que `set_time_entry_phase_bulk` : résultats "
+            "ordonnés, refus isolé sans bloquer les voisins, doublon d'id "
+            "refuse tout l'appel, NOUVELLE `idempotency_key` après "
+            "correction."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entries": _phase_bulk_items(
-                    "expense_id", "A disbursement to reclassify."
+                    "expense_id", "Déboursé à reclasser."
                 ),
                 **_write_protocol_props(),
             },
@@ -4868,97 +4207,67 @@ TOOLS: dict[str, dict] = {
     "import_invoice": {
         "title": "Importer une facture du système précédent",
         "description": (
-            "WRITE. Recreate an invoice the previous system already issued, "
-            "under ITS OWN number and date — the year counter is never read "
-            "and never advanced, so the live numbering is untouched. "
-            "SOURCE-FIRST: create the historical time entries and "
-            "disbursements first, then bill them here. Line items can only "
-            "come from real, uninvoiced sources of this dossier; there is no "
-            "literal-line-item path, which is what keeps the budget, the "
-            "phase reporting and the fee journal truthful. "
-            "`expected_total_cents` is REQUIRED — the grand total printed on "
-            "the paper invoice, BEFORE any retainer is applied. Any "
-            "difference refuses the creation with the gap and the breakdown; "
-            "there is no tolerance, because one cent of silent drift is how "
-            "a book of account starts lying. When the paper total genuinely "
-            "cannot be rebuilt from the lines (a courtesy write-down, a "
-            "rounding), name the difference with `adjustment` so it is "
-            "written ON the invoice instead of hidden. "
-            "Compare the returned subtotal, GST and "
-            "QST against the PDF: the totals are computed over the real "
-            "sources, never estimated. "
-            "The invoice lands in BROUILLON; only the lawyer attests it was "
-            "sent (update_invoice to envoyée at his word, or the "
-            "application), and a payment is recorded only as an entry of the accounting "
-            "registers (in the application, or with the accounting tools: "
-            "record_admin_entry, record_trust_entry), never by this tool. Billing the "
-            "sources freezes them: nothing here can modify "
-            "them afterwards except their litigation phase "
-            "(set_time_entry_phase / set_expense_phase) until the invoice is "
-            "voided (update_invoice, status annulée, or the application), "
-            "which releases every source — the number itself stays on the "
-            "voided invoice until the lawyer deletes that invoice there; only "
-            "then can it be imported again."
+            (
+            "ÉCRITURE — recrée une facture du système précédent sous SON "
+            "PROPRE numéro et sa date (compteur annuel intact). APPROCHE PAR "
+            "SOURCES : créer temps et déboursés réels d'abord. "
+            "`expected_total_cents` REQUIS (total papier AVANT provision) : "
+            "tout écart refuse sans tolérance (`adjustment` nomme une "
+            "remise/arrondi réel). Comparer sous-total, TPS et TVQ au PDF. "
+            "Atterrit en `brouillon` (aucun envoi ; `update_invoice` marque "
+            "`envoyée` sur mot de l'avocat ; paiements par registres "
+            "comptables). Gèle les sources sauf phase (`set_*_phase_bulk`) "
+            "jusqu'à annulation (`update_invoice` `annulée`) ; la facture "
+            "annulée garde son n° (réimportable seulement après suppression à "
+            "l'app)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier this invoice belongs to."),
+                "dossier_id": _id("Dossier auquel cette facture appartient."),
                 "invoice_number": {
                     "type": "string", "minLength": 1, "maxLength": 32,
                     "description": (
-                        "The number the invoice ALREADY bears. Refused if it "
-                        "belongs to the current year's live « YYYY-F… » "
-                        "series (that counter would hand it out again), if "
-                        "another invoice already carries it, or if it is over "
-                        "length — never truncated."
+                        "Numéro déjà porté par la facture. Refusé s'il entre dans la série live `YYYY-F…` de l'année, existe déjà ou dépasse la longueur."
                     ),
                 },
-                "date": _date("The ORIGINAL invoice date, YYYY-MM-DD; never "
-                              "after today's UTC date."),
-                "due_date": _date("Defaults to date + 1 calendar month "
-                                  "(31 Jan → 28/29 Feb)."),
+                "date": _date("Date ORIGINALE de facture, AAAA-MM-JJ (jamais future UTC)."),
+                "due_date": _date("Défaut : date + 1 mois civil (31 janv. → 28/29 févr.)."),
                 "expected_total_cents": {
                     "type": "integer", "minimum": 0, "maximum": 100000000000,
                     "description": (
-                        "The grand total printed on the paper invoice, in "
-                        "cents, BEFORE any retainer is deducted — not the "
-                        "balance due."
+                        "Grand total imprimé sur la facture papier en cents AVANT provision — pas le solde dû."
                     ),
                 },
                 "time_entry_ids": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 64},
                     "description": (
-                        "Time entries to bill. Every one must exist, be "
-                        "uninvoiced and belong to this dossier — otherwise "
-                        "the whole call is refused, naming each offender."
+                        "Entrées de temps à facturer (toutes existantes, non facturées et de ce dossier, sinon refus total)."
                     ),
                 },
                 "expense_ids": {
                     "type": "array",
                     "items": {"type": "string", "maxLength": 64},
-                    "description": "Disbursements to bill, same rules.",
+                    "description": "Déboursés à facturer, mêmes règles.",
                 },
                 "retainer_applied_cents": {
                     "type": "integer", "minimum": 0, "maximum": 100000000000,
                     "description": (
-                        "A provision deducted on the original invoice. "
-                        "Without it the recorded balance stays overstated and "
-                        "the invoice can never settle."
+                        "Provision déduite sur l'original (sinon solde surestimé)."
                     ),
                 },
                 "adjustment": {
                     "type": "object",
                     "description": (
-                        "The escape hatch when the printed total cannot be "
-                        "rebuilt from the lines. Becomes ONE named fee line."
+                        "Recours quand le total imprimé diffère des lignes ; crée une ligne d'honoraires nommée."
                     ),
                     "properties": {
                         "amount_cents": {
                             "type": "integer",
                             "description": (
-                                "May be negative (a write-down). Never 0."
+                                "Peut être négatif (réduction) ; jamais 0."
                             ),
                         },
                         "description": {
@@ -4966,18 +4275,13 @@ TOOLS: dict[str, dict] = {
                             "minLength": 1,
                             "maxLength": 500,
                             "description": (
-                                "French, printed on the invoice — « Remise de "
-                                "courtoisie », « Arrondi ». Required: an "
-                                "unexplained amount on a client's invoice is "
-                                "worse than a refusal."
+                                "Libellé français imprimé sur la facture (« Remise de courtoisie », « Arrondi »). Requis."
                             ),
                         },
                         "taxable": {
                             "type": "boolean",
                             "description": (
-                                "true (default) reproduces an invoice whose "
-                                "GST/QST were computed on the reduced amount; "
-                                "false reproduces one discounted after tax."
+                                "true (défaut) : TPS/TVQ calculées sur le montant ajusté ; false : rabais après taxes."
                             ),
                         },
                     },
@@ -4986,7 +4290,7 @@ TOOLS: dict[str, dict] = {
                 },
                 "notes": {
                     "type": "string", "maxLength": 1500,
-                    "description": "Notes carried on the invoice.",
+                    "description": "Notes portées sur la facture.",
                 },
                 **_legacy_ref_prop(),
                 **_write_protocol_props(),
@@ -5010,19 +4314,18 @@ TOOLS: dict[str, dict] = {
     "create_invoice": {
         "title": "Émettre une facture",
         "description": (
-            "WRITE — issue a NEW invoice from real, billable, unbilled time "
-            "entries and disbursements of ONE dossier, billed to its first "
-            "client. Run preview_invoice first with the same selection and "
-            "pass its total_cents as expected_total_cents: any difference "
-            "refuses. It takes the year's NEXT number (AAAA-F###), consumed "
-            "FOR EVER — the counter never reissues it, even once voided — "
-            "and lands in "
-            "brouillon: nothing is sent. Its sources are then frozen, their "
-            "phase aside, until update_invoice voids it. idempotency_key "
-            "REQUIRED; confirm with "
-            "the user first. A refusal consumes no number; an « Issue "
-            "INCERTAINE » answer means it MAY exist — re-read list_invoices "
-            "before retrying, with the SAME key."
+            (
+            "ÉCRITURE — émet une NOUVELLE facture depuis des sources "
+            "facturables non facturées du dossier (au 1er client). Appeler "
+            "`preview_invoice` d'abord avec la même sélection et passer son "
+            "`total_cents` dans `expected_total_cents`. Consomme "
+            "définitivement le prochain `AAAA-F###` (jamais réémis, même "
+            "annulé) et crée en `brouillon` (rien d'envoyé). Sources gelées "
+            "(sauf phase via `set_*_phase_bulk`) jusqu'à annulation. "
+            "`idempotency_key` REQUISE ; confirmer d'abord. Si issue "
+            "incertaine, relire `list_invoices` avant de réessayer avec la "
+            "MÊME clé."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -5030,13 +4333,12 @@ TOOLS: dict[str, dict] = {
                 **_invoice_selection_props(),
                 "notes": {
                     "type": "string", "maxLength": INVOICE_NOTES_MAX_CHARS,
-                    "description": "Printed on the invoice, French.",
+                    "description": "Imprimées sur la facture, en français.",
                 },
                 "expected_total_cents": {
                     "type": "integer", "minimum": 0,
                     "description": (
-                        "preview_invoice's total_cents for this same "
-                        "selection. Required."),
+                        "Total `total_cents` de preview_invoice pour cette sélection. Requis."),
                 },
                 **_write_protocol_props(),
             },
@@ -5062,60 +4364,53 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — ONE change a call, against expected_etag (get_invoice). "
-            "DRAFT, a brouillon only: notes, due_date, "
-            "refresh_billing_address REPLACE what they name — amounts, lines, "
-            "client and number never change; an issued invoice is corrected "
-            "by voiding it and issuing a new one. STATUS: brouillon → "
-            "envoyée. Lateness is AUTOMATIC: is_overdue (get_invoice, "
-            "list_invoices) derives it from the due date, prorogued to the "
-            "next business day on the civil calendar (Saturday, Sunday, "
-            "public holiday) — read it, never the stored status. A daily "
-            "job at 09:00 Montréal time, when active (the lawyer may keep it "
-            "off), marks an overdue envoyée en_retard; until that run, or "
-            "while the job is off, it stays envoyée unless marked here or in "
-            "the application. envoyée → en_retard only once "
-            "overdue, en_retard → envoyée only to correct a mark made before "
-            "that date (connector_transitions says which applies; a refusal "
-            "names the first late day). envoyée SENDS "
-            "NOTHING and only a void undoes it — it is the lawyer's word that "
-            "he sent the invoice (a fee payment from trust relies on it, art. "
-            "56 2°): set it only on his word. VOID: status annulée + void_reason "
-            "releases every source it billed, never its number (the counter "
-            "never reissues one; an IMPORTED number can be imported again "
-            "once the lawyer deletes the voided invoice in the application); "
-            "REFUSED "
-            "while a payment stands (reverse its register entry first — in "
-            "the application, or with reverse_register_entry). Never payée: "
-            "only a payment recorded in the accounting registers pays an "
-            "invoice."
+            (
+            (
+            (
+            (
+            (
+            "ÉCRITURE — un changement par appel contre `expected_etag` "
+            "(`get_invoice`). BROUILLON : `notes`, `due_date`, "
+            "`refresh_billing_address` (montants, lignes, client, numéro "
+            "figés). STATUT : `brouillon` → `envoyée` (ne transmet rien au "
+            "client, atteste l'envoi sur mot de l'avocat — requis pour "
+            "paiement fidéicommis, art. 56 2°). Lire `is_overdue` (jamais le "
+            "statut stocké) : un job quotidien à 09:00 Montréal lorsqu'actif "
+            "(l'avocat peut le désactiver) passe `envoyée` → `en_retard` (ou "
+            "`connector_transitions`). ANNULATION : `annulée` + "
+            "`void_reason` libère les sources (refusée si paiement actif) — "
+            "une facture émise ne se corrige qu'en l'annulant puis créant "
+            "une nouvelle ; n° conservé (un n° importé n'est réimportable "
+            "qu'après suppression à l'app). Jamais `payée` ici."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "invoice_id": _id("The invoice (list_invoices). Required."),
+                "invoice_id": _id("UUIDv4 de la facture (list_invoices). Requis."),
                 "status": {
                     "type": "string", "enum": _INVOICE_TARGET_STATUSES,
-                    "description": "STATUS or VOID (annulée).",
+                    "description": "STATUT ou ANNULATION (annulée).",
                 },
                 "void_reason": {
                     "type": "string", "minLength": 1,
                     "maxLength": VOID_REASON_MAX_CHARS,
                     "description": (
-                        "annulée: REQUIRED, why — stored on the invoice, "
-                        "French."),
+                        "annulée : REQUIS — motif conservé sur la facture, en français."),
                 },
                 "notes": {
                     "type": "string", "maxLength": INVOICE_NOTES_MAX_CHARS,
-                    "description": "DRAFT: replaces the notes; \"\" clears them.",
+                    "description": "BROUILLON : remplace les notes ; \"\" les vide.",
                 },
-                "due_date": _date("DRAFT: YYYY-MM-DD, not before the "
-                                  "invoice date."),
+                "due_date": _date("BROUILLON : AAAA-MM-JJ, pas avant la date de facture."),
                 "refresh_billing_address": {
                     "type": "boolean",
                     "description": (
-                        "DRAFT: true re-copies the client's address as it is "
-                        "on file now."),
+                        "BROUILLON : true recopie l'adresse actuelle du client."),
                 },
                 **_expected_etag_prop(_INVOICE_ETAG_READERS),
                 **_write_protocol_props(),
@@ -5136,36 +4431,33 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — record a NEW version of a dossier's budget. It becomes "
-            "the reference budget, and its « Estimation » PDF is a CLIENT "
-            "document; every earlier version stays kept, nothing is "
-            "overwritten — the proof of what the client was told, and "
-            "when. mode replace: `lines` IS the budget (an omitted "
-            "hours or frais_cents is 0). mode merge: each line changes the "
-            "values it NAMES on its sub-code (an omitted one keeps the stored "
-            "value; both 0 removes the line), every other line kept. Each "
-            "line names hours or frais_cents. base_version from get_budget: refused if a "
-            "newer version was saved since. Identical to the version in "
-            "force: nothing written."
+            (
+            "ÉCRITURE — enregistre une NOUVELLE version de budget (référence "
+            "du PDF client « Estimation ») ; les versions antérieures sont "
+            "conservées intactes. `mode=\"replace\"` : `lines` remplace tout "
+            "(heure/frais omis = 0). `mode=\"merge\"` : met à jour les valeurs "
+            "nommées par sous-code (les deux à 0 supprime la ligne). Exige "
+            "`base_version` de `get_budget` (refusé si dépassé ; identique = "
+            "sans écriture)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier (list_dossiers). Required."),
+                "dossier_id": _id("Dossier (list_dossiers). Requis."),
                 "base_version": {
                     "type": "integer", "minimum": 0,
                     "description": (
-                        "get_budget's base_version (0 = no budget yet). "
-                        "Required."),
+                        "Champ `base_version` de get_budget (0 = aucun budget). Requis."),
                 },
                 "mode": {
                     "type": "string", "enum": _BUDGET_MODES,
-                    "description": "replace or merge. Required.",
+                    "description": "replace ou merge. Requis.",
                 },
                 "lines": {
                     "type": "array",
                     "maxItems": len(_BUDGET_SOUS_PHASE_CODES),
-                    "description": "One line per sub-code, each at most once.",
+                    "description": "Une ligne par sous-code, chacun au plus une fois.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -5173,19 +4465,18 @@ TOOLS: dict[str, dict] = {
                                 "type": "string",
                                 "enum": _BUDGET_SOUS_PHASE_CODES,
                                 "description": (
-                                    "Litigation sub-code "
-                                    "(get_reference_vocabulary kind phases)."),
+                                    "Sous-code de phase (get_reference_vocabulary kind phases)."),
                             },
                             "hours": {
                                 "type": "number", "minimum": 0,
                                 "maximum": 10000,
                                 "description": (
-                                    "Estimated hours, at most two decimals."),
+                                    "Heures estimées, max deux décimales."),
                             },
                             "frais_cents": {
                                 "type": "integer", "minimum": 0,
                                 "maximum": 100000000,
-                                "description": "Estimated disbursements, cents.",
+                                "description": "Déboursés estimés, en cents.",
                             },
                         },
                         "required": ["sous_phase"],
@@ -5195,13 +4486,12 @@ TOOLS: dict[str, dict] = {
                 "hourly_rate_cents": {
                     "type": "integer", "minimum": 0, "maximum": 100000000,
                     "description": (
-                        "Default: the version in force's, else the "
-                        "dossier's."),
+                        "Défaut : taux de la version en vigueur, sinon du dossier."),
                 },
                 "note": {
                     "type": "string", "maxLength": BUDGET_NOTE_MAX_CHARS,
                     "description": (
-                        "Assumptions, French. Omitted: kept; \"\" clears it."),
+                        "Hypothèses en français. Omise : conservée ; \"\" la vide."),
                 },
                 **_write_protocol_props(),
             },
@@ -5220,25 +4510,18 @@ TOOLS: dict[str, dict] = {
     "create_dossier": {
         "title": "Créer un dossier",
         "description": (
-            "WRITE. Open a dossier — built for transcribing a historical "
-            "file, so `status` may be « fermé » or « archivé » from the "
-            "start and `opened_date` / `closed_date` are yours to set. A "
-            "dossier created closed is never advertised to DavX5, which is "
-            "deliberate: there is no collection to drain because none ever "
-            "existed. "
-            "Every partie_id is RESOLVED before anything is written and the "
-            "names are snapshotted server-side — they are what a generated "
-            "procedure will cite. An unknown id is refused, never blanked. "
-            "Call get_reference_vocabulary for domaine / action / "
-            "prescription_type / forum / district codes instead of guessing: "
-            "the model refuses an invalid one without naming a valid one. "
-            "`hourly_rate` accepts 0 (pro bono, aide juridique) — set it, "
-            "because create_time_entry defaults each entry's rate to it. "
-            "Check find_imported first and pass `legacy_ref`: nothing here "
-            "can delete a duplicate. A new dossier gets the default filing "
-            "tree — Mandat, Procédures, Correspondance, Interne, Autres, with "
-            "their subfolders (list_documents include_folders); if it could "
-            "not be created, the dossier stands and a warning says so."
+            (
+            "ÉCRITURE — ouvre un dossier (adapté à la reprise : `status` "
+            "`fermé`/`archivé` et `opened_date`/`closed_date` acceptés ; un "
+            "dossier créé fermé reste hors DavX5). Chaque `partie_id` est "
+            "résolu et ses noms figés (pour gabarits) ; id inconnu refusé. "
+            "Consulter `get_reference_vocabulary` pour `domaine`, `action`, "
+            "`prescription_type`, `forum`, `district`. `hourly_rate` accepte "
+            "0 (pro bono/aide juridique ; défaut des entrées de temps). "
+            "Vérifier `find_imported` et passer `legacy_ref` (aucune "
+            "suppression ici). Crée l'arborescence par défaut (sinon "
+            "avertissement)."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -5246,38 +4529,34 @@ TOOLS: dict[str, dict] = {
                 "file_number": {
                     "type": "string", "minLength": 1, "maxLength": 40,
                     "description": (
-                        "The file number as the practice wrote it, e.g. "
-                        "« 2019-014 ». Refused if a dossier already bears it."
+                        "Numéro du dossier au cabinet (ex. « 2019-014 »). Refusé si déjà utilisé."
                     ),
                 },
                 "title": {
                     "type": "string", "minLength": 1, "maxLength": 300,
-                    "description": "e.g. « Tremblay c. Lavoie ».",
+                    "description": "Ex. « Tremblay c. Lavoie ».",
                 },
                 "clients": {
                     "type": "array",
                     "description": (
-                        "At least one. Each entry names an EXISTING contact."
+                        "Au moins un. Chaque entrée référence un contact EXISTANT."
                     ),
                     "items": _party_entry_props(),
                 },
                 "opposing_parties": {
                     "type": "array",
-                    "description": "Opposing parties, same shape as clients.",
+                    "description": "Parties adverses, même structure que `clients`.",
                     "items": _party_entry_props(),
                 },
                 "status": {
                     "type": "string", "enum": _DOSSIER_STATUSES,
                     "description": (
-                        "Defaults to « actif ». A historical file usually "
-                        "arrives « fermé » or « archivé ». Change it later "
-                        "with set_dossier_status."
+                        "Défaut « actif ». En reprise, souvent « fermé » ou « archivé ». Modifiable ensuite via set_dossier_status."
                     ),
                 },
-                "opened_date": _date("Opening date, YYYY-MM-DD."),
+                "opened_date": _date("Date d'ouverture, AAAA-MM-JJ."),
                 "closed_date": _date(
-                    "Closing date, YYYY-MM-DD. Auto-stamped when the status "
-                    "is fermé/archivé and none is given."
+                    "Date de clôture, AAAA-MM-JJ. Auto-inscrite si statut fermé/archivé sans date."
                 ),
                 **_forum_props(),
                 **_dossier_field_props(),
@@ -5294,41 +4573,37 @@ TOOLS: dict[str, dict] = {
     "update_dossier": {
         "title": "Corriger un dossier",
         "description": (
-            "WRITE — REPLACES the values you name; a field you omit is "
-            "untouched. Use complete_dossier instead when you only want to "
-            "FILL fields that are still empty: it refuses to overwrite, which "
-            "is the safer tool for an unattended job. "
-            "`status` and `closed_date` are set_dossier_status's (it drains "
-            "or restores the phone's DavX5 collection); `file_number` is not "
-            "accepted (every invoice froze a snapshot of it). "
-            "Party arrays are APPEND-only via add_clients / "
-            "add_opposing_parties (a contact already on either side is "
-            "refused): passing a whole array would silently drop the parties "
-            "you left out. A party's roles or lawyer, its detachment and its "
-            "name snapshot are update_dossier_party's."
+            (
+            "ÉCRITURE — REMPLACE les champs nommés (omis = intact). Utiliser "
+            "`complete_dossier` pour ne remplir que les champs vides sans "
+            "risquer d'écraser. `status` et `closed_date` relèvent de "
+            "`set_dossier_status` (DavX5) ; `file_number` est refusé (figé "
+            "aux factures). Parties UNIQUEMENT additives via `add_clients` / "
+            "`add_opposing_parties` (doublon sur un côté refusé). Rôles, "
+            "avocat, détachement et rafraîchissement des noms relèvent de "
+            "`update_dossier_party`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id("The dossier to correct (UUIDv4). Required."),
+                "dossier_id": _id("UUIDv4 du dossier à corriger. Requis."),
                 "title": {"type": "string", "maxLength": 300,
-                          "description": "New title."},
+                          "description": "Nouveau titre."},
                 "sommaire": {"type": "string", "maxLength": 5000,
-                             "description": "Free-text case summary."},
-                "opened_date": _date("Correct the opening date, YYYY-MM-DD."),
+                             "description": "Sommaire libre du dossier."},
+                "opened_date": _date("Corriger la date d'ouverture, AAAA-MM-JJ."),
                 "add_clients": {
                     "type": "array",
                     "description": (
-                        "Parties to ADD as clients. Refused if one is already "
-                        "on the dossier, on either side."
+                        "Parties à AJOUTER comme clients. Refusé si déjà liées au dossier."
                     ),
                     "items": _party_entry_props(),
                 },
                 "add_opposing_parties": {
                     "type": "array",
                     "description": (
-                        "Parties to ADD as opposing parties. Refused if one "
-                        "is already on the dossier, on either side."
+                        "Parties à AJOUTER en adverse. Refusé si déjà liées au dossier."
                     ),
                     "items": _party_entry_props(),
                 },
@@ -5350,43 +4625,39 @@ TOOLS: dict[str, dict] = {
     "set_dossier_status": {
         "title": "Changer le statut d'un dossier",
         "description": (
-            "WRITE — sets a dossier's status exactly as the application does, "
-            "the phone included: fermé / archivé DRAINS its DavX5 collection "
-            "(its tasks, notes and events leave the phone; they stay in the "
-            "application), actif / en_attente RESTORES it; between actif "
-            "and en_attente nothing changes on the phone or in the alerts. "
-            "Asking for the "
-            "status it already has writes nothing — unless you give a "
-            "different closed_date, which is written — and re-applies that "
-            "visibility. Retrying, three cases, in order: (1) `dav.complete` "
-            "came back false → the SAME status under the SAME idempotency_key "
-            "(an incomplete result is never stored, so it normally runs "
-            "afresh); (2) "
-            "refused as still in flight → wait, then the same key; (3) "
-            "refused as interrupted, or `warnings` say the status moved "
-            "during the call → re-read the dossier (get_dossier) and ask for "
-            "the status you READ, under a NEW key — never resend yours. "
-            "Refused, nothing written, "
-            "when the dossier's tasks, notes and events cannot be read. "
-            "Closing takes the dossier out of the prescription alerts "
-            "(get_agenda, dashboard); reopening erases its closed_date. Every "
-            "side effect is named in `warnings` — read them."
+            (
+            (
+            (
+            (
+            (
+            "ÉCRITURE — change le statut comme l'app, DavX5 inclus : "
+            "`fermé`/`archivé` VIDE la collection téléphone (données gardées "
+            "à l'app, alertes coupées) ; `actif`/`en_attente` la RESTAURE "
+            "(rouvrir efface `closed_date`). Entre `actif` et `en_attente`, "
+            "rien ne change au téléphone. Même statut = sans écriture (sauf "
+            "nouveau `closed_date`) et réapplique DavX5. Rejeu : (1) "
+            "`dav.complete: false` → MÊME statut + MÊME clé ; (2) en cours → "
+            "attendre + MÊME clé ; (3) interrompu ou `warnings` indiquent "
+            "statut déplacé → relire `get_dossier` puis NOUVELLE clé. Lire "
+            "`warnings`."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier (UUIDv4), from list_dossiers / get_dossier."
+                    "UUIDv4 du dossier (list_dossiers / get_dossier)."
                 ),
                 "status": {
                     "type": "string", "enum": _DOSSIER_STATUSES,
-                    "description": "The status to set.",
+                    "description": "Statut cible à appliquer.",
                 },
                 "closed_date": _date(
-                    "fermé / archivé only: the closing date, YYYY-MM-DD — "
-                    "never in the future (Montréal), never before the opening "
-                    "date. Omitted: today on a close, kept on a dossier "
-                    "already closed."
+                    "fermé / archivé seulement : AAAA-MM-JJ (jamais future ni avant ouverture ; défaut aujourd'hui à la fermeture)."
                 ),
                 **_write_protocol_props(),
             },
@@ -5407,23 +4678,18 @@ TOOLS: dict[str, dict] = {
     "update_dossier_party": {
         "title": "Tenir les parties d'un dossier",
         "description": (
-            "WRITE — one party LINK of a dossier. action \"update\": "
-            "REPLACES the party's `roles` (the full list; [] clears them) "
-            "and/or its lawyer (`avocat_partie_id`, as in create_dossier's "
-            "party entries; \"\" removes him); every other "
-            "entry is written back as stored, and the dossier-level role the "
-            "gabarits cite is re-derived. \"remove\": DETACHES the party — "
-            "the contact itself is never deleted, the detach is journaled "
-            "(list_deletions, dossier_party) — REFUSED for the last client, "
-            "for a party a signification names, and for a client who has EVER "
-            "had trust funds on the dossier. To ADD a party: update_dossier "
-            "(add_clients / add_opposing_parties). \"refresh_names\": "
-            "re-snapshots party and lawyer names from the current contacts — "
-            "ONE dossier (dossier_id) or every dossier of ONE contact "
-            "(partie_id, at most 50) — reporting each change, a dossier it "
-            "refuses retried as its warning says; invoices, trust "
-            "entries and generated documents keep the name they were issued "
-            "with."
+            (
+            "ÉCRITURE — un LIEN partie-dossier. `update` : remplace `roles` "
+            "(`[]` vide) et/ou `avocat_partie_id` (`` retire) et recalcule "
+            "le rôle pour gabarits. `remove` : DÉTACHE (contact subsiste, "
+            "tracé dans `list_deletions` `dossier_party`) — refusé pour le "
+            "dernier client, partie signifiée ou avec fidéicommis sur ce "
+            "dossier (pour ajouter : `update_dossier`). `refresh_names` : "
+            "actualise les noms figés (un dossier ou <= 50 dossiers d'un "
+            "contact ; réessayer selon `warnings` si un dossier refuse ; "
+            "factures, fidéicommis et documents générés gardent "
+            "leur nom d'origine)."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -5431,22 +4697,18 @@ TOOLS: dict[str, dict] = {
                 "action": {
                     "type": "string",
                     "enum": ["update", "remove", "refresh_names"],
-                    "description": "What to do.",
+                    "description": "Action souhaitée.",
                 },
                 "dossier_id": _id(
-                    "update / remove: the dossier. refresh_names: ONE dossier "
-                    "— or give partie_id instead."
+                    "update / remove : le dossier. refresh_names : UN dossier (ou passer partie_id)."
                 ),
                 "partie_id": _id(
-                    "update / remove: the party's contact id (get_dossier "
-                    "lists them). refresh_names: every dossier citing this "
-                    "contact, as a party or a party's lawyer."
+                    "update / remove : id du contact lié (get_dossier). refresh_names : tous ses dossiers (partie ou avocat)."
                 ),
                 "side": {
                     "type": "string", "enum": ["clients", "opposing_parties"],
                     "description": (
-                        "update / remove: needed only when a legacy dossier "
-                        "lists the contact on BOTH sides."
+                        "update / remove : requis seulement si un ancien dossier liste le contact des deux côtés."
                     ),
                 },
                 "roles": {
@@ -5454,14 +4716,11 @@ TOOLS: dict[str, dict] = {
                     "items": {"type": "string", "enum": _PARTY_ROLES},
                     "maxItems": len(_PARTY_ROLES),
                     "description": (
-                        "update: the party's procedural roles — a FULL "
-                        "replacement, no duplicate."
+                        "update : rôles procéduraux — remplacement COMPLET sans doublon."
                     ),
                 },
                 "avocat_partie_id": _id(
-                    "update: the party's lawyer, a contact id (list_parties) "
-                    "— or \"\" to remove him. His name is snapshotted here; "
-                    "the result reports him as avocat_id_before / _after."
+                    "update : contact de l'avocat (list_parties) ou \"\" pour retirer ; nom figé (`avocat_id_before`/`_after`)."
                 ),
                 **_expected_etag_only_for(
                     _DOSSIER_ETAG_READERS, "update / remove"),
@@ -5479,35 +4738,29 @@ TOOLS: dict[str, dict] = {
     "create_partie": {
         "title": "Créer un contact",
         "description": (
-            "WRITE. Create a contact (partie): a client, an opposing party, "
-            "opposing counsel, an expert, a bailiff, a stenographer, a "
-            "supplier the firm pays (« fournisseur »)… Built for transcribing "
-            "a historical file, so pass `legacy_ref` and check "
-            "find_imported first — this connector can never delete a "
-            "duplicate. "
-            "An individual REQUIRES last_name; an organization REQUIRES "
-            "organization_name; never mix the two families. "
-            "An ADDRESS TRAVELS AS A BLOCK of six keys (street, unit, city, "
-            "province, postal_code, country) or not at all: the model "
-            "completes a partial block with Montréal / Québec / Canada, so "
-            "a Toronto contact sent with a street and no city is silently "
-            "relocated — onto an invoice the client will receive. "
-            "Identity and conflict-of-interest checks are not writable here: "
-            "record_kyc_status inscribes them PRESUMED — only the lawyer "
-            "confirms one."
+            (
+            "ÉCRITURE — crée un contact (client, partie adverse, avocat, "
+            "expert, huissier, sténographe, `fournisseur`…). Vérifier "
+            "`find_imported` et passer `legacy_ref` en reprise (aucune "
+            "suppression ici). `individual` exige `last_name` ; "
+            "`organization` exige `organization_name` (ne pas mêler). "
+            "ADRESSE EN BLOC : envoyer les 6 clés ensemble (`street`, "
+            "`unit`, `city`, `province`, `postal_code`, `country`), sinon "
+            "les absentes prennent Montréal / Québec / Canada par défaut. "
+            "KYC/conflit : utiliser `record_kyc_status` (inscrit PRÉSUMÉ)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "type": {
                     "type": "string", "enum": _PARTIE_TYPES,
-                    "description": "individual (natural person) or organization.",
+                    "description": "individual (personne physique) ou organization (personne morale).",
                 },
                 "contact_role": {
                     "type": "string", "enum": _CONTACT_ROLES,
                     "description": (
-                        "The contact's role. Defaults to « client ». A "
-                        "« fournisseur » never syncs to the lawyer's phone."
+                        "Rôle du contact. Défaut « client ». Un « fournisseur » ne synchronise pas au téléphone."
                     ),
                 },
                 **_partie_identity_props(),
@@ -5524,30 +4777,24 @@ TOOLS: dict[str, dict] = {
     "update_partie": {
         "title": "Corriger un contact",
         "description": (
-            "WRITE — REPLACES the values you name. Send ONLY the fields that "
-            "change: a field you omit is untouched, but a field sent EMPTY is "
-            "ERASED (the model writes the whole document). Never rebuild the "
-            "payload from a full get_partie card. "
-            "The same six-key ADDRESS BLOCK rule as create_partie: read the "
-            "current block from get_partie and send it back complete. "
-            "`type` is not changeable here (the required-name rule and "
-            "every display name hang on it). Compliance checks: "
-            "record_kyc_status; mandataires: update_partie_mandataire. A "
-            "role change is refused while it would unfit this contact as "
-            "someone's mandataire. The model re-validates the WHOLE merged "
-            "record: a legacy contact with an unparseable phone refuses "
-            "every edit, naming a field you did not touch — fix it first."
+            (
+            "ÉCRITURE — REMPLACE les champs nommés : envoyer SEULEMENT ce "
+            "qui change (omis = intact ; vide `` = EFFACÉ ; ne jamais "
+            "renvoyer toute la fiche `get_partie`). Même règle du BLOC "
+            "ADRESSE à 6 clés : relire `get_partie` et renvoyer complet. "
+            "`type` est immuable ; KYC via `record_kyc_status` ; mandataires "
+            "via `update_partie_mandataire`. Le modèle revalide toute la "
+            "fiche fusionnée (corriger d'abord un vieux téléphone invalide)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "partie_id": _id("The contact to correct (UUIDv4). Required."),
+                "partie_id": _id("UUIDv4 du contact à corriger. Requis."),
                 "contact_role": {
                     "type": "string", "enum": _CONTACT_ROLES,
                     "description": (
-                        "Change the contact's role. A contact made "
-                        "« fournisseur » leaves the lawyer's phone; made "
-                        "anything else, it returns there."
+                        "Changer le rôle : « fournisseur » retire du téléphone, tout autre l'y remet."
                     ),
                 },
                 **_partie_identity_props(),
@@ -5567,40 +4814,37 @@ TOOLS: dict[str, dict] = {
     "update_partie_mandataire": {
         "title": "Tenir les mandataires d'un contact",
         "description": (
-            "WRITE — ONE representation of a contact (a mandataire, a tutor, "
-            "a curator…). action \"add\": the mandataire must be an existing "
-            "INDIVIDUAL contact of the SAME contact_role as the represented "
-            "one, never the contact itself; the same representation again "
-            "writes nothing, a different kind or notes for one already listed "
-            "is refused (use update). \"update\": replaces its `kind` and/or "
-            "`notes`. \"remove\": DETACHES it — the mandataire contact stays, "
-            "the detach is journaled (list_deletions, mandataire). Every other "
-            "representation is written back as stored; notes are refused, "
-            "never altered, past 2000 characters or holding angle brackets. "
-            "get_partie lists them."
+            (
+            "ÉCRITURE — une représentation d'un contact (mandataire, tuteur, "
+            "curateur…). `add` : le mandataire doit être un contact "
+            "`individual` du MÊME `contact_role`, jamais soi-même (doublon "
+            "identique = sans écriture ; modification = `update`). `update` "
+            "remplace `kind` et/ou `notes`. `remove` DÉTACHE (contact "
+            "subsiste, tracé dans `list_deletions` `mandataire`). `notes` "
+            "refusées passé 2000 car. ou avec chevrons."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string", "enum": ["add", "update", "remove"],
-                    "description": "What to do.",
+                    "description": "Action souhaitée.",
                 },
-                "partie_id": _id("The REPRESENTED contact (UUIDv4)."),
+                "partie_id": _id("Contact REPRÉSENTÉ (UUIDv4)."),
                 "mandataire_partie_id": _id(
-                    "The mandataire's own contact id (list_parties)."
+                    "Contact du mandataire (UUIDv4, list_parties)."
                 ),
                 "kind": {
                     "type": "string", "enum": _MANDATAIRE_KINDS,
                     "description": (
-                        "add (required) / update: the kind of representation."
+                        "add (requis) / update : type de représentation."
                     ),
                 },
                 "notes": {
                     "type": "string", "maxLength": 2000,
                     "description": (
-                        "add / update: the representation's notes — REPLACED "
-                        "on update (\"\" clears them)."
+                        "add / update : notes de représentation — REMPLACÉES sur update (\"\" vide)."
                     ),
                 },
                 **_expected_etag_prop(_PARTIE_ETAG_READERS),
@@ -5618,51 +4862,28 @@ TOOLS: dict[str, dict] = {
     "record_kyc_status": {
         "title": "Inscrire une vérification de conformité (présumée)",
         "description": (
-            "WRITE — INSCRIBES a client's identity verification or "
-            "conflict-of-interest check as PRESUMED: stored as Claude's, "
-            "shown on the fiche « … (présumé) » — « inscrit par Claude le … "
-            "— à confirmer » —, and still reported OPEN by get_coverage_report "
-            "until the lawyer clicks « Confirmer » in the application — this "
-            "connector never confirms one. REFUSED on a check the lawyer "
-            f"decided or confirmed (get_partie: a decided status — "
-            f"{_KYC_DECIDED_TEXT} — whose "
-            "`*_presumed` is false): only he changes his attestation. Only "
-            "for a client (contact_role client, or a client of a dossier). "
-            "`notes` are APPENDED under a dated « [AAAA-MM-JJ — inscrit par "
-            "Claude] » line, never replacing the stored ones. The status "
-            "already stored with no notes writes nothing; non_vérifié "
-            "(« À faire ») withdraws your own presumed inscription. A "
-            "detected conflict "
-            "you inscribe: tell the lawyer at once — nothing notifies him "
-            "(the fiche shows it in red)."
+            f"ÉCRITURE — inscrit l'identité ou le conflit d'intérêts d'un client comme PRÉSUMÉ (« inscrit par Claude le … — à confirmer » ; reste OUVERT dans `get_coverage_report` jusqu'à confirmation dans l'app — jamais confirmé ici). REFUSÉ sur statut décidé — {_KYC_DECIDED_TEXT} — dont `*_presumed` est false : lui seul modifie son attestation. Client seulement. `notes` AJOUTÉES sous « [AAAA-MM-JJ — inscrit par Claude] ». `non_vérifié` (« À faire ») retire votre propre inscription présumée. Tout conflit détecté doit être signalé aussitôt à l'avocat (aucune notification automatique)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "partie_id": _id("The client's contact id (UUIDv4)."),
+                "partie_id": _id("Contact du client (UUIDv4)."),
                 "check": {
                     "type": "string", "enum": _KYC_CHECK_NAMES,
                     "description": (
-                        "identity = identity verification; conflict = "
-                        "conflict-of-interest check."
+                        "identity = vérification d'identité ; conflict = contrôle de conflit d'intérêts."
                     ),
                 },
                 "status": {
                     "type": "string", "enum": _KYC_STATUSES,
                     "description": (
-                        _KYC_STATUS_TEXT
-                        + " For identity, identifié = the client is "
-                        "identified (the particulars are on file) without a "
-                        "document check; vérifié = the identity was checked "
-                        "against reliable, independent documents. Inscribe "
-                        "either only on the lawyer's instruction."
+                        _KYC_STATUS_TEXT + " Pour identity, identifié = identité au dossier sans pièce ; vérifié = contrôlée sur documents fiables. N'inscrire que sur directive de l'avocat."
                     ),
                 },
                 "notes": {
                     "type": "string", "maxLength": 1000,
                     "description": (
-                        "Appended to the check's notes under a dated line — "
-                        "what was verified, how. Never quoted back."
+                        "Ajoutées aux notes du contrôle sous ligne datée (éléments vérifiés, méthode ; jamais recitées)."
                     ),
                 },
                 **_expected_etag_prop(_PARTIE_ETAG_READERS),
@@ -5685,40 +4906,19 @@ TOOLS: dict[str, dict] = {
     "get_document_text": {
         "title": "Texte d'un document",
         "description": (
-            "Read a stored document's TEXT LAYER — the reading companion of "
-            "list_documents (take document_id from there, or from the entity "
-            "of a write that created a document; a template is not one). PDF "
-            "and "
-            ".docx "
-            "only; a scanned or image-only page has NO text layer and is "
-            "reported honestly (has_text false, listed in "
-            "pages_without_text) — nothing is OCR'd and empty never means "
-            "the page is blank on paper. A page that could not be read "
-            "(malformed, or past a parser limit) is listed the same way but "
-            "named by a page_extraction_failed:<n> warning: not a scan. "
-            "Output is bounded per call "
-            f"({DOCUMENT_TEXT_MAX_CHARS} characters): follow next_page with "
-            "page_range to continue (pages for a PDF, computed segments for "
-            "a .docx). Files over the extraction ceiling, encrypted PDFs, "
-            ".doc/images/zip and other formats are refused with a French "
-            "message — consult those in the application. The content is "
-            "privileged legal material: quote only what the task requires, "
-            "and NEVER put any of it into a web_search query."
+            f"Lit la COUCHE TEXTE d'un document stocké (PDF et .docx ; pas les modèles), compagnon de `list_documents`. Page numérisée/image sans texte signalée honnêtement (`has_text: false`, `pages_without_text`) : aucune OCR ; échec de lecture signalé (`page_extraction_failed:<n>`). Sortie plafonnée à {DOCUMENT_TEXT_MAX_CHARS} car. par appel : suivre `next_page` via `page_range`. PDF chiffrés, `.doc`, images, ZIP refusés en français (consulter à l'app). Document privilégié : citer le strict nécessaire, JAMAIS dans `web_search`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "document_id": _id(
-                    "The document to read (UUIDv4), from list_documents."
+                    "UUIDv4 du document à lire (list_documents)."
                 ),
                 "page_range": {
                     "type": "string",
                     "maxLength": 12,
                     "description": (
-                        "\"4\" = from page 4 onward; \"2-6\" = that range "
-                        "(1-based, inclusive). Omit for page 1 onward. To "
-                        "continue, pass the previous response's next_page "
-                        "as a single number."
+                        "\"4\" = dès page 4 ; \"2-6\" = plage inclusive (1-based). Omis = depuis page 1 ; repasser `next_page` pour continuer."
                     ),
                 },
             },
@@ -5730,162 +4930,127 @@ TOOLS: dict[str, dict] = {
     "record_document_analysis": {
         "title": "Enregistrer l'analyse d'un document",
         "description": (
-            "WRITE — RECORDS a document analysis you have already performed. "
-            "Read the text with "
-            "get_document_text FIRST; never analyse from a filename. You "
-            "supply a `sous_nature` from the CLOSED table and the CODE "
-            "derives the category — you cannot choose or invent one here. "
-            "The derived category REPLACES a PRESUMED one (a FILES tool's, "
-            "an earlier analysis's) or a default nobody chose — NEVER a "
-            "category the lawyer chose or confirmed (list_documents: "
-            "category_set_by_lawyer): that one is KEPT, and a gap is flagged "
-            "(analyse.divergence_categorie + a warning) — tell him; he alone "
-            "decides. The "
-            "result becomes visible in the application: category badge, "
-            "protection level, summary. The analysis is ALWAYS marked "
-            "PRESUMED until the lawyer confirms it on screen — his "
-            "confirmation of an earlier analysis never covers a new one; "
-            "nothing you send here can confirm "
-            "it. Every run is journalled for ever and the previous category "
-            "is kept, so a replacement stays observable. Privileges are "
-            "CUMULATIVE and the code fails UPWARD: a protection level is "
-            "never lowered by a re-analysis — only the lawyer lowers one, in "
-            "the application. Never claim PUBLIC to fill a "
-            "gap — absence of a protection marker is not a marker of public "
-            "character. Names stay free strings; never resolve one to a "
-            "contact. A retry without idempotency_key records a SECOND "
-            "journal entry (nothing is lost, but it is noise)."
+            (
+            "ÉCRITURE — enregistre l'analyse d'un document lu via "
+            "`get_document_text` (jamais sur le seul nom de fichier). "
+            "Fournir une `sous_nature` de la table fermée (Annexe A) : la "
+            "catégorie en est DÉRIVÉE et remplace toute catégorie "
+            "présumée/défaut, JAMAIS celle choisie par l'avocat "
+            "(`category_set_by_lawyer` : conservée avec alerte "
+            "`analyse.divergence_categorie`). Toujours marquée PRÉSUMÉE "
+            "jusqu'à confirmation (une confirmation antérieure ne couvre "
+            "jamais un nouveau passage) ; chaque passage est journalisé "
+            "append-only. Privilèges CUMULATIFS vers le haut seulement (seul "
+            "l'avocat abaisse à l'app ; ne jamais inventer public). Passer "
+            "`idempotency_key`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "document_id": _id(
-                    "The document analysed (UUIDv4), from list_documents."
+                    "UUIDv4 du document analysé (list_documents)."
                 ),
                 "sous_nature": {
                     "type": "string",
                     "enum": _SOUS_NATURE_CODES,
                     "description": (
-                        "Closed sub-nature code (Annexe A). The category is "
-                        "DERIVED from it (stored unless the lawyer's is "
-                        "kept) — there is no category parameter, by design. "
-                        "Never invent a code: if none fits, say so instead "
-                        "of calling."
+                        "Code fermé (Annexe A) dont dérive la catégorie (sans paramètre catégorie). Ne jamais inventer un code."
                     ),
                 },
                 "privileges": {
                     "type": "array",
                     "items": {"type": "string", "enum": _PRIVILEGE_CODES},
                     "description": (
-                        "Protection regimes, CUMULATIVE (Annexe D). Under "
-                        "doubt between two, send BOTH — the highest governs. "
-                        "An empty list means « nothing established », which "
-                        "the code treats as confidential by default, never "
-                        "as public."
+                        "Régimes de protection CUMULATIFS (Annexe D) ; en cas de doute envoyer LES DEUX. [] = confidentiel par défaut, jamais public."
                     ),
                 },
                 "resume": {
                     "type": "string",
                     "maxLength": 2000,
                     "description": (
-                        "One short paragraph, in French, of what the "
-                        "document IS and says. Shown in the application."
+                        "Court paragraphe en français de ce qu'est et dit le document (affiché dans l'app)."
                     ),
                 },
                 "numero_dossier_cour": {
                     "type": "string",
                     "description": (
-                        "Court file number as it appears ON the document, "
-                        "verbatim. Omit when absent — an absence is a SIGNAL "
-                        "(a possibly undeposited draft), never a gap to fill "
-                        "by deduction."
+                        "Numéro de cour tel qu'inscrit VERBATIM sur la pièce ; omettre si absent (signal d'un projet non déposé)."
                     ),
                 },
                 "tribunal": {
                     "type": "string",
                     "description": (
-                        "Court named on the document. Omit if absent."
+                        "Tribunal nommé sur le document. Omettre si absent."
                     ),
                 },
                 "district_judiciaire": {
                     "type": "string",
                     "description": (
-                        "Judicial district on the document. Omit if absent."
+                        "District judiciaire nommé sur le document. Omettre si absent."
                     ),
                 },
                 "auteur": {
                     "type": "string",
                     "description": (
-                        "Signatory, bailiff, judge, clerk or stenographer "
-                        "named on the document. Omit if absent."
+                        "Signataire, huissier, juge, greffier ou sténographe nommé. Omettre si absent."
                     ),
                 },
                 "parties_mentionnees": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Party names as WRITTEN. FREE STRINGS — never "
-                        "resolve one to a contact of the dossier: linking "
-                        "the wrong contact is worse than not linking, and "
-                        "would propagate in silence."
+                        "Noms des parties tels qu'ÉCRITS (chaînes libres — ne jamais résoudre en contact du dossier)."
                     ),
                 },
                 "date_document_str": {
                     "type": "string",
                     "description": (
-                        "Date ON the document, YYYY-MM-DD. Omit if absent."
+                        "Date SUR le document, AAAA-MM-JJ. Omettre si absente."
                     ),
                 },
                 "date_signature_str": {
                     "type": "string",
                     "description": (
-                        "Signature date, YYYY-MM-DD. Omit if absent."
+                        "Date de signature, AAAA-MM-JJ. Omettre si absente."
                     ),
                 },
                 "contient_dispositif": {
                     "type": "boolean",
                     "description": (
-                        "True when a procès-verbal d'audience carries the "
-                        "judgment itself. SIGNAL it — a judgment rendered at "
-                        "the hearing starts appeal delays — but never "
-                        "compute the delay."
+                        "true si un PV d'audience contient le dispositif du jugement (signale un départ de délai d'appel sans le calculer)."
                     ),
                 },
                 "dispositif": {
                     "type": "string",
                     "maxLength": 2000,
                     "description": (
-                        "The operative wording, verbatim, when present."
+                        "Texte exact du dispositif lorsque présent."
                     ),
                 },
                 "indices_protection": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "What you OBSERVED that grounds the privileges, in "
-                        "plain words (« en-tête d'avocat », « mention sous "
-                        "toutes réserves »). This is what lets the lawyer "
-                        "check your reasoning."
+                        "Indices OBSERVÉS justifiant les privilèges (« en-tête d'avocat », « sous toutes réserves ») pour vérification par l'avocat."
                     ),
                 },
                 "langue_detectee": {
                     "type": "string",
                     "enum": ["fr", "en", "autre"],
-                    "description": "Main language of the document.",
+                    "description": "Langue principale du document.",
                 },
                 "confiance": {
                     "type": "string",
                     "enum": ["haute", "moyenne", "faible"],
                     "description": (
-                        "Your confidence in this classification. Say "
-                        "« faible » rather than guessing well."
+                        "Degré de confiance. Indiquer « faible » plutôt que deviner."
                     ),
                 },
                 "extraction_tronquee": {
                     "type": "boolean",
                     "description": (
-                        "True when you read only part of the text "
-                        "(pagination not followed to the end)."
+                        "true si seule une partie du texte a été lue."
                     ),
                 },
                 # ── Annexe C — the two axes of evidence law ──────────
@@ -5897,44 +5062,27 @@ TOOLS: dict[str, dict] = {
                     "type": "string",
                     "enum": _MOYEN_PREUVE_CODES,
                     "description": (
-                        "By WHICH MEANS this document could prove a fact "
-                        "(art. 2811 C.c.Q.). A procedural act proves "
-                        "nothing by itself — it carries the burden, it is "
-                        "not evidence — so leave this out for a "
-                        "`procédure`. NON_DETERMINE when you cannot tell; "
-                        "never guess."
+                        "Moyen de preuve (art. 2811 C.c.Q.) ; omettre sur une procédure ; NON_DETERMINE en cas de doute."
                     ),
                 },
                 "qualification_ecrit": {
                     "type": "string",
                     "enum": _QUALIFICATION_ECRIT_CODES,
                     "description": (
-                        "WHAT KIND of writing, and ONLY when moyen_preuve "
-                        "is ECRIT — the call is refused otherwise. This is "
-                        "a qualification with consequences (an acte "
-                        "authentique proves itself until inscription de "
-                        "faux, art. 2813-2814): say NON_DETERMINE unless "
-                        "the document itself establishes it."
+                        "Qualification de l'écrit (SEULEMENT si moyen_preuve == ECRIT) ; NON_DETERMINE sauf mention probante (art. 2813-2814 C.c.Q.)."
                     ),
                 },
                 "parait_original": {
                     "type": "boolean",
                     "description": (
-                        "Whether the document APPEARS to be the original "
-                        "rather than a copy (art. 2860 C.c.Q.). An "
-                        "observation, never a conclusion — a wet "
-                        "signature, a seal, an original stamp. Omit when "
-                        "nothing in the document says."
+                        "Si la pièce PARAÎT être l'original (sceau, signature manuscrite, art. 2860 C.c.Q.) — observation seulement."
                     ),
                 },
                 "qualite_reconnaissance": {
                     "type": "string",
                     "enum": _QUALITE_RECONNAISSANCE,
                     "description": (
-                        "How well the text came through, for a scan or a "
-                        "photograph. This MEASURES a need rather than "
-                        "qualifying the document: accumulated « faible » "
-                        "is what would justify a dedicated OCR pass."
+                        "Qualité d'extraction texte pour scan/photo (« faible » signale un besoin d'OCR)."
                     ),
                 },
                 **_expected_etag_prop(("list_documents",)),
@@ -5962,36 +5110,37 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — REPLACES the filing fields you name on one document (an "
-            "omitted field is untouched): display_name, document_date, tags, "
-            "folder_id (refiles it), category. Never its file, and never "
-            "notes_internes — the lawyer's own text. A category you set is "
-            "stored PRESUMED until the lawyer confirms it in the "
-            "application; it is refused on a category the lawyer chose or "
-            "confirmed (category_set_by_lawyer: true — tell him instead; a "
-            "document filed before that marker counts as his unless its "
-            "category is « autre »; an analysis keeps it too), "
-            "and on any OTHER document that carries an analysis, whose "
-            "category derives from it (use record_document_analysis). Values "
-            "already stored write nothing."
+            (
+            (
+            (
+            "ÉCRITURE — REMPLACE les champs de classement nommés (omis = "
+            "intact ; identique = sans écriture) : `display_name`, "
+            "`document_date`, `tags`, `folder_id` (reclasse), `category`. "
+            "Jamais le fichier ni `notes_internes`. Une `category` écrite "
+            "ici est PRÉSUMÉE ; refusée si posée par l'avocat "
+            "(`category_set_by_lawyer: true`, ou catégorie antérieure au suivi "
+            "autre qu'« autre », qu'une analyse conserve aussi) "
+            "ou sur tout document déjà analysé (qui dérive sa catégorie via "
+            "`record_document_analysis`)."
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "document_id": _id(
-                    "The document (UUIDv4), from list_documents."
+                    "UUIDv4 du document (list_documents)."
                 ),
                 "display_name": {
                     "type": "string", "minLength": 1,
                     "maxLength": DOCUMENT_NAME_MAX_CHARS,
                     "description": (
-                        "New display name, in French. Text between angle "
-                        "brackets is refused, never stripped."
+                        "Nouveau nom affiché en français (chevrons HTML refusés)."
                     ),
                 },
                 "document_date": _date(
-                    "The document's OWN date, YYYY-MM-DD; \"\" clears it. A "
-                    "malformed date is refused, never read as a clearing."
+                    "Date PROPRE du document, AAAA-MM-JJ ; \"\" l'efface (date invalide refusée)."
                 ),
                 "tags": {
                     "type": "array",
@@ -5999,25 +5148,19 @@ TOOLS: dict[str, dict] = {
                     "items": {
                         "type": "string", "minLength": 1,
                         "maxLength": DOCUMENT_TAG_MAX_CHARS,
-                        "description": "One tag, without a comma.",
+                        "description": "Une étiquette sans virgule.",
                     },
                     "description": (
-                        "The COMPLETE new tag list — it replaces the stored "
-                        "one; [] clears it. No comma in a tag (the "
-                        "application splits tags on commas), none twice."
+                        "Liste COMPLÈTE des étiquettes ([] vide ; sans virgule ni doublon)."
                     ),
                 },
                 "folder_id": _id(
-                    "Refile into this folder of the SAME dossier (id from "
-                    "list_documents with include_folders), or \"\" for the "
-                    "dossier root."
+                    "Reclasser dans ce répertoire du MÊME dossier (include_folders), ou \"\" pour la racine."
                 ),
                 "category": {
                     "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
                     "description": (
-                        "The category, stored PRESUMED (category_source "
-                        "« mcp »). Refused on an analysed document and on a "
-                        "category the lawyer set."
+                        "Catégorie stockée PRÉSUMÉE (`category_source` « mcp »). Refusée si document analysé ou posée par l'avocat."
                     ),
                 },
                 **_expected_etag_prop(_DOCUMENT_ETAG_READERS),
@@ -6040,19 +5183,13 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            f"WRITE — refile up to {DOCUMENT_MOVE_MAX} documents of ONE "
-            "dossier into one folder, or its root, in a single atomic write. "
-            "`results` answers each id IN REQUEST ORDER: moved, unchanged "
-            "(already there — nothing written) or refused with its reason (an "
-            "unknown id, another dossier's document); a refused row blocks "
-            "none of the others. An unknown target folder, an id named twice "
-            "or an unreadable store refuses the whole call — nothing moves."
+            f"ÉCRITURE — reclasse jusqu'à {DOCUMENT_MOVE_MAX} documents d'UN dossier dans un répertoire ou à la racine en une écriture atomique. `results` suit l'ordre demandé : `moved`, `unchanged` ou refus individuel sans bloquer les voisins. Répertoire cible inconnu, doublon d'id ou lecture défaillante refusent tout l'appel."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
-                    "The dossier the documents belong to (UUIDv4)."
+                    "UUIDv4 du dossier des documents."
                 ),
                 "document_ids": {
                     "type": "array",
@@ -6060,16 +5197,14 @@ TOOLS: dict[str, dict] = {
                     "maxItems": DOCUMENT_MOVE_MAX,
                     "items": {
                         "type": "string", "minLength": 1, "maxLength": 64,
-                        "description": "A document id, from list_documents.",
+                        "description": "UUIDv4 d'un document (list_documents).",
                     },
                     "description": (
-                        "The documents to refile, each once. The report "
-                        "follows this order."
+                        "Documents à reclasser sans doublon (ordre suivi dans le rapport)."
                     ),
                 },
                 "folder_id": _id(
-                    "The target folder of this dossier (list_documents with "
-                    "include_folders), or \"\" for the dossier root."
+                    "Répertoire cible du dossier (include_folders) ou \"\" pour la racine."
                 ),
                 **_write_protocol_props(),
             },
@@ -6089,52 +5224,51 @@ TOOLS: dict[str, dict] = {
     "manage_folder": {
         "title": "Organiser les dossiers de classement",
         "description": (
-            "WRITE — one folder of a dossier's filing tree. action \"create\": "
-            "name, and parent_folder_id (\"\" or omitted = dossier root); a "
-            "name already taken there is refused — or, with if_exists "
-            "\"reuse\", that folder is returned. \"rename\": folder_id + name. "
-            "\"move\": folder_id + parent_folder_id (\"\" = root); never into "
-            "itself or a subfolder, 5 levels deep at most. Seven folders are "
-            "the application's (a non-empty system_role): the four it files "
-            "into itself — « Factures » and « Déboursés » under « Mandat », "
-            "« Projets » under « Interne », « Reçus du portail » under "
-            "« Autres » — and those three parents. None is renamed or moved "
-            "here (filing documents INTO any of them is allowed); a deleted "
-            "one is recreated by the application. The other default folders are "
-            "ordinary. « Projets » and « Reçus du portail » stay reserved "
-            "names at the ROOT. A name is refused, never altered (no « / », "
-            "« \\ », angle brackets or control character). Nothing is ever "
-            "deleted."
+            (
+            (
+            (
+            (
+            (
+            "ÉCRITURE — gère les répertoires d'un dossier : `create` (`name` "
+            "+ `parent_folder_id`, refus ou `if_exists=\"reuse\"` si doublon), "
+            "`rename` (`folder_id` + `name`), `move` (`folder_id` + "
+            "`parent_folder_id`, max 5 niveaux). Répertoires système "
+            "(`system_role`, non renommables ni déplaçables ici) : « "
+            "Factures » et « Déboursés » sous « Mandat », « Projets » sous « "
+            "Interne », « Reçus du portail » sous « Autres », et ces trois "
+            "parents. « Projets » et « Reçus du portail » restent réservés à "
+            "la racine. Aucune suppression."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string", "enum": ["create", "rename", "move"],
-                    "description": "What to do.",
+                    "description": "Action souhaitée.",
                 },
                 "dossier_id": _id(
-                    "The dossier whose filing tree changes (UUIDv4)."
+                    "UUIDv4 du dossier dont modifier l'arborescence."
                 ),
                 "folder_id": _id(
-                    "rename / move: the folder, from list_documents with "
-                    "include_folders. Refused with create."
+                    "rename / move : répertoire (include_folders). Refusé pour create."
                 ),
                 "name": {
                     "type": "string", "minLength": 1,
                     "maxLength": FOLDER_NAME_MAX_CHARS,
-                    "description": "create / rename: the name, in French.",
+                    "description": "create / rename : nom en français.",
                 },
                 "parent_folder_id": _id(
-                    "create: where (\"\" or omitted = the dossier root). "
-                    "move: the new parent, REQUIRED (\"\" = the root)."
+                    "create : emplacement (\"\"/omis = racine). move : nouveau parent REQUIS (\"\" = racine)."
                 ),
                 "if_exists": {
                     "type": "string", "enum": ["refuse", "reuse"],
                     "description": (
-                        "create only: when that name is already taken there, "
-                        "\"refuse\" (default) or \"reuse\" — the existing "
-                        "folder is returned, untouched."
+                        "create seulement : si le nom existe déjà là, \"refuse\" (défaut) ou \"reuse\" (retourne l'existant)."
                     ),
                 },
                 **_expected_etag_only_for(
@@ -6154,51 +5288,41 @@ TOOLS: dict[str, dict] = {
     "fill_gabarit": {
         "title": "Remplir un gabarit",
         "description": (
-            "WRITE — fill a gabarit (kind « gabarit ») for ONE dossier and "
-            "save the .docx as a NEW document in its « Projets » folder "
-            "(under « Interne » in the default tree). "
-            "Call list_templates with template_id (and this dossier_id) "
-            "first: supply only the blocs and manual fields it reports, "
-            "names exact; every other field is filled by the application "
-            "from the dossier, its parties and the firm — never by you. "
-            "Write allegations as plain paragraphs separated by a BLANK "
-            "LINE, unnumbered: each inherits the gabarit's own Word "
-            "numbering (a single newline becomes a space). markdown true "
-            "only for internal formatting (headings, bold, a table). A text "
-            "holding « {{ » or « }} » is refused. The result is a draft, "
-            "never sent; a retry without idempotency_key saves a second one."
+            (
+            "ÉCRITURE — remplit un gabarit (`kind=\"gabarit\"`) pour UN "
+            "dossier et sauve le `.docx` dans son répertoire « Projets » "
+            "(sous « Interne »). Consulter d'abord "
+            "`list_templates(template_id, dossier_id)` et fournir seulement "
+            "les `blocs` et `champs_manuels` exacts demandés (champs auto "
+            "remplis par Athéna). Allégations en paragraphes non numérotés "
+            "séparés par une LIGNE VIDE (`markdown: true` seulement pour "
+            "titres/gras/tableaux). « `{{` » ou « `}}` » refusés. Brouillon "
+            "jamais envoyé ; passer `idempotency_key`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "template_id": _id(
-                    "The gabarit (UUIDv4), from list_templates — kind "
-                    "« gabarit » only."
+                    "UUIDv4 du gabarit (`kind` « gabarit » seulement, list_templates)."
                 ),
                 "dossier_id": _id(
-                    "REQUIRED: the dossier whose data fills the gabarit and "
-                    "whose « Projets » receives the document (no download "
-                    "path here)."
+                    "REQUIS : dossier source des données et de destination (« Projets »)."
                 ),
                 "client_id": _id(
-                    "The « client » slot: one of THIS dossier's clients "
-                    "(get_dossier). Needed when it has several and the "
-                    "gabarit reads client.*."
+                    "Slot « client » : un client de CE dossier (si multiple et utilisé)."
                 ),
                 "adverse_id": _id(
-                    "The « adverse » slot: one of THIS dossier's opposing "
-                    "parties. Same rule as client_id."
+                    "Slot « adverse » : une partie adverse de CE dossier (si multiple)."
                 ),
                 "destinataire_id": _id(
-                    "The addressee (any contact, list_parties). No default."
+                    "Contact destinataire (n'importe quel contact, list_parties ; aucun défaut)."
                 ),
                 "blocs": {
                     "type": "array",
                     "maxItems": BLOCS_MAX_ITEMS,
                     "description": (
-                        "The content blocks, one per bloc name. A bloc you "
-                        "omit stays « {{name}} » for the lawyer to write in "
-                        "Word."
+                        "Blocs de contenu par nom (un bloc omis laisse « {{nom}} » pour Word)."
                     ),
                     "items": {
                         "type": "object",
@@ -6207,26 +5331,20 @@ TOOLS: dict[str, dict] = {
                                 "type": "string", "minLength": 1,
                                 "maxLength": PLACEHOLDER_NAME_MAX_CHARS,
                                 "description": (
-                                    "The bloc's name without braces, exactly "
-                                    "as list_templates reports it (case "
-                                    "counts)."
+                                    "Nom exact du bloc sans accolades tel que listé par list_templates (sensible à la casse)."
                                 ),
                             },
                             "contenu": {
                                 "type": "string", "minLength": 1,
                                 "maxLength": BLOC_MAX_CHARS,
                                 "description": (
-                                    "The text, in French. Paragraphs "
-                                    "separated by a blank line."
+                                    "Texte en français (paragraphes séparés par une ligne vide)."
                                 ),
                             },
                             "markdown": {
                                 "type": "boolean",
                                 "description": (
-                                    "true = Word formatting from Markdown "
-                                    "(headings, bold, lists, tables). "
-                                    "Default false; never for numbered "
-                                    "allegations."
+                                    "true = formatage Word depuis Markdown (défaut false ; jamais pour allégations numérotées)."
                                 ),
                             },
                         },
@@ -6238,8 +5356,7 @@ TOOLS: dict[str, dict] = {
                     "type": "array",
                     "maxItems": CHAMPS_MANUELS_MAX_ITEMS,
                     "description": (
-                        "The manual fields list_templates reports. Omitted "
-                        "→ its default, else « [À COMPLÉTER : name] »."
+                        "Champs manuels listés par list_templates (omis = défaut ou « [À COMPLÉTER : nom] »)."
                     ),
                     "items": {
                         "type": "object",
@@ -6248,15 +5365,14 @@ TOOLS: dict[str, dict] = {
                                 "type": "string", "minLength": 1,
                                 "maxLength": PLACEHOLDER_NAME_MAX_CHARS,
                                 "description": (
-                                    "The field's name without braces, exact."
+                                    "Nom exact du champ sans accolades."
                                 ),
                             },
                             "valeur": {
                                 "type": "string",
                                 "maxLength": CHAMP_MANUEL_MAX_CHARS,
                                 "description": (
-                                    "Its value — one of its option values "
-                                    "when list_templates lists options."
+                                    "Valeur (parmi les options si listées par list_templates)."
                                 ),
                             },
                         },
@@ -6276,83 +5392,79 @@ TOOLS: dict[str, dict] = {
     "create_document": {
         "title": "Créer un document Word",
         "description": (
-            "WRITE — add a NEW Word document to a dossier; an existing "
-            "document is never changed. source \"markdown\": your Markdown "
-            "(title + markdown), printed on the note-print template the "
-            "lawyer designated ACTIVE — refused when none is; a `category` "
-            "you give is stored PRESUMED. source \"copy\": a copy of a "
-            "stored .docx (document_id), in ITS OWN dossier only — reuse "
-            "across dossiers goes through a gabarit; the copy keeps the "
-            "source's protection level, PRESUMED, and its category — "
-            "PRESUMED unless the lawyer had set it. Both land in "
-            "« Projets » unless folder_id names another folder (\"\" = the "
-            "dossier root). source \"invoice_note\": the Word note "
-            "d'honoraires of invoice_id, on the note-d'honoraires template "
-            "the lawyer designated ACTIVE, always into the dossier's "
-            "« Factures » folder (under « Mandat »); a note "
-            "identical to what it would print is returned instead of a "
-            "duplicate unless regenerate. A retry without idempotency_key "
-            "creates a second document."
+            (
+            (
+            (
+            (
+            (
+            "ÉCRITURE — ajoute un NOUVEAU `.docx` au dossier (aucune "
+            "modification d'existant). `source=\"markdown\"` : `title` + "
+            "`markdown` mis en page sur le gabarit `note` actif (`category` "
+            "PRÉSUMÉE). `source=\"copy\"` : copie d'un `.docx` dans SON PROPRE "
+            "dossier (protection conservée PRÉSUMÉE, catégorie PRÉSUMÉE sauf "
+            "choix antérieur de l'avocat). Atterrissent dans « Projets » "
+            "sauf `folder_id`. `source=\"invoice_note\"` : note d'honoraires "
+            "de `invoice_id` (gabarit `note_honoraires` actif) dans « "
+            "Factures » (sous « Mandat », réutilise l'identique sauf "
+            "`regenerate: true`). Passer `idempotency_key`."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "source": {
                     "type": "string", "enum": _CREATE_DOCUMENT_SOURCES,
-                    "description": "What the document is made from.",
+                    "description": "Source servant à produire le document.",
                 },
                 "dossier_id": _id(
-                    "markdown: REQUIRED, the dossier. copy: optional — if "
-                    "given, it must be the source's own dossier."
+                    "markdown : REQUIS. copy : optionnel (si fourni, même dossier que la source)."
                 ),
                 "title": {
                     "type": "string", "minLength": 1,
                     "maxLength": DOCUMENT_TITLE_MAX_CHARS,
                     "description": (
-                        "markdown: REQUIRED, the title (French) — the "
-                        "template's {{note.titre}} and the document's name."
+                        "markdown : REQUIS — titre en français ({{note.titre}} et nom du fichier)."
                     ),
                 },
                 "markdown": {
                     "type": "string", "minLength": 1,
                     "maxLength": MARKDOWN_DOCUMENT_MAX_CHARS,
                     "description": (
-                        "markdown: REQUIRED, the body. Raw HTML and angle "
-                        "brackets are refused; write links as [text](url)."
+                        "markdown : REQUIS — corps Markdown (HTML brut et chevrons refusés ; liens `[texte](url)`)."
                     ),
                 },
                 "category": {
                     "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
                     "description": (
-                        "markdown: stored PRESUMED. Omitted: the template's "
-                        "own category."
+                        "markdown : stockée PRÉSUMÉE (défaut : catégorie du gabarit)."
                     ),
                 },
                 "document_date": _date(
-                    "markdown: the document's OWN date, YYYY-MM-DD."
+                    "markdown : date PROPRE du document, AAAA-MM-JJ."
                 ),
                 "document_id": _id(
-                    "copy: REQUIRED, the stored .docx to copy "
-                    "(list_documents)."
+                    "copy : REQUIS — `.docx` stocké à copier (list_documents)."
                 ),
                 "display_name": {
                     "type": "string", "minLength": 1,
                     "maxLength": DOCUMENT_NAME_MAX_CHARS,
                     "description": (
-                        "copy: the copy's name. Default « Copie de … »."
+                        "copy : nom de la copie (défaut « Copie de … »)."
                     ),
                 },
                 "folder_id": _id(
-                    "A folder of the dossier (list_documents with "
-                    "include_folders); \"\" = the root. Omitted: « Projets »."
+                    "Répertoire du dossier (include_folders) ou \"\" pour racine (défaut « Projets »)."
                 ),
                 "invoice_id": _id(
-                    "invoice_note: REQUIRED, the invoice (list_invoices)."),
+                    "invoice_note : REQUIS — UUIDv4 de la facture (list_invoices)."),
                 "regenerate": {
                     "type": "boolean",
                     "description": (
-                        "invoice_note: file a new note even when an identical "
-                        "one exists (default false: that one is returned)."),
+                        "invoice_note : créer une nouvelle note même si une copie identique existe (défaut false)."),
                 },
                 **_write_protocol_props(),
             },
@@ -6371,92 +5483,68 @@ TOOLS: dict[str, dict] = {
     "begin_upload": {
         "title": "Ouvrir un téléversement",
         "description": (
-            "WRITE — step 1 of bringing an outside file in: a one-hour, "
-            "WRITE-ONLY upload ticket. purpose \"document\": a new document "
-            "of dossier_id, its filing given NOW (folder_id — omitted = the "
-            "dossier root —, category stored PRESUMED, display_name, "
-            "document_date, tags). purpose \"gabarit\": template_mode "
-            "\"create\" (name, category, kind, description — a special kind "
-            "is never designated active) or \"replace\" (template_id + "
-            "expected_version from list_templates; the version in force is "
-            "kept). purpose \"piece_justificative\": the receipt of the "
-            "administration entry tx_id (get_admin_ledger) — PDF, JPG, PNG, "
-            "TIFF, EML or MSG, 10 MB at most; to REPLACE the one it carries, "
-            "pass replaces_receipt_md5 (its `receipt`.md5_base64): the "
-            "replaced file is KEPT, never deleted; a dépense of a dossier "
-            "also gets its copy in « Mandat › Déboursés ». Confirm a "
-            "replacement with the user first. "
-            "Declare the file's exact size_bytes and md5_base64. "
-            "upload_url is a capability: PUT the exact bytes to it from your "
-            "code sandbox in ONE request with its headers, use it only in "
-            "that code — never repeat it to the user —, then call "
-            "finalize_upload. Needs sandbox egress to storage.googleapis.com: "
-            "if the network refuses the PUT, say so and stop — the ticket "
-            "expires unused, nothing filed. "
-            "A gabarit REQUIRES dossier_id — the dossier its file comes "
-            "from, whose names and numbers are then refused (accept_residual "
-            "on the lawyer's word only) — or aucun_dossier_source: true, "
-            "ONLY for a file from no dossier: nothing is then checked, and "
-            "the result says so."
+            (
+            "ÉCRITURE — étape 1 d'envoi d'un fichier externe : ticket "
+            "WRITE-ONLY valide 1 h. `purpose=\"document\"` (classe au dossier, "
+            "catégorie PRÉSUMÉE), `gabarit` (`create` ou `replace`, exige "
+            "`dossier_id` source pour contrôler les résidus sauf "
+            "`aucun_dossier_source: true`), `piece_justificative` (reçu "
+            "d'écriture `tx_id`, max 10 Mo ; `replaces_receipt_md5` pour "
+            "remplacer en gardant l'ancien ; copie auto au dossier si "
+            "dépense liée). Déclarer `size_bytes` et `md5_base64` exacts, "
+            "faire le PUT depuis le sandbox vers `upload_url` (ne JAMAIS "
+            "montrer cette URL ; requiert accès `storage.googleapis.com`), "
+            "puis appeler `finalize_upload`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "purpose": {
                     "type": "string", "enum": _UPLOAD_PURPOSES,
-                    "description": "What the file becomes.",
+                    "description": "Destination du fichier.",
                 },
                 "filename": {
                     "type": "string", "minLength": 1,
                     "maxLength": UPLOAD_FILENAME_MAX_CHARS,
                     "description": (
-                        "The file's name with its extension (PDF, Word, "
-                        "Excel, JPG, PNG, TIFF, ZIP, EML, MSG; .docx for a "
-                        "gabarit; PDF, JPG, PNG, TIFF, EML or MSG for a "
-                        "pièce justificative). No slash."
+                        "Nom complet avec extension (sans barre oblique ; `.docx` pour gabarit ; PDF/image/courriel pour pièce justificative)."
                     ),
                 },
                 "size_bytes": {
                     "type": "integer", "minimum": 1,
                     "maximum": UPLOAD_DOCUMENT_MAX_BYTES,
                     "description": (
-                        "The EXACT size in bytes (a gabarit or a pièce "
-                        "justificative: 10 MB at most)."
+                        "Taille EXACTE en octets (max 10 Mo pour gabarit ou pièce justificative)."
                     ),
                 },
                 "md5_base64": {
                     "type": "string", "minLength": 24, "maxLength": 24,
                     "description": (
-                        "base64 of the raw 16-byte MD5 digest of the bytes "
-                        "(base64.b64encode(hashlib.md5(data).digest())) — "
-                        "never the hex form."
+                        "Base64 du condensat MD5 brut sur 16 octets (`base64.b64encode(hashlib.md5(data).digest())`), jamais en hex."
                     ),
                 },
                 "dossier_id": _id(
-                    "document: REQUIRED, the dossier. gabarit: the dossier "
-                    "the file comes from, whose identifiers are then refused "
-                    "— or aucun_dossier_source."
+                    "document : REQUIS. gabarit : dossier source pour contrôle des résidus (ou aucun_dossier_source)."
                 ),
                 "folder_id": _id(
-                    "document: a folder of the dossier (list_documents with "
-                    "include_folders); omitted or \"\" = the root."
+                    "document : répertoire du dossier (omis/\"\" = racine)."
                 ),
                 "category": {
                     "type": "string", "enum": _DOCUMENT_CATEGORY_CHOICES,
                     "description": (
-                        "document: stored PRESUMED. gabarit create: "
-                        "procédure, correspondance or autre (default)."
+                        "document : PRÉSUMÉE. gabarit create : procédure, correspondance ou autre (défaut)."
                     ),
                 },
                 "display_name": {
                     "type": "string", "minLength": 1,
                     "maxLength": DOCUMENT_NAME_MAX_CHARS,
                     "description": (
-                        "document: its name. Default: the file name."
+                        "document : nom affiché (défaut : nom du fichier)."
                     ),
                 },
                 "document_date": _date(
-                    "document: its OWN date, YYYY-MM-DD."
+                    "document : date PROPRE, AAAA-MM-JJ."
                 ),
                 "tags": {
                     "type": "array",
@@ -6464,47 +5552,41 @@ TOOLS: dict[str, dict] = {
                     "items": {
                         "type": "string", "minLength": 1,
                         "maxLength": DOCUMENT_TAG_MAX_CHARS,
-                        "description": "One tag, without a comma.",
+                        "description": "Une étiquette sans virgule.",
                     },
-                    "description": "document: its tags, none twice.",
+                    "description": "document : étiquettes sans doublon.",
                 },
                 "template_mode": {
                     "type": "string", "enum": _TEMPLATE_MODES,
                     "description": (
-                        "gabarit: REQUIRED — a new template, or a new file "
-                        "for an existing one."
+                        "gabarit : REQUIS — `create` (nouveau) ou `replace` (nouvelle version)."
                     ),
                 },
                 "name": {
                     "type": "string", "minLength": 1,
                     "maxLength": TEMPLATE_NAME_MAX_CHARS,
                     "description": (
-                        "gabarit create: REQUIRED, its name — printed in "
-                        "every generated document's name, so checked like "
-                        "the file against dossier_id."
+                        "gabarit create : REQUIS — nom affiché sur tout document généré (contrôlé comme le fichier)."
                     ),
                 },
                 "description": {
                     "type": "string",
                     "maxLength": TEMPLATE_DESCRIPTION_MAX_CHARS,
-                    "description": "gabarit create: what it is for.",
+                    "description": "gabarit create : description d'usage.",
                 },
                 "kind": {
                     "type": "string", "enum": _TEMPLATE_KINDS,
                     "description": (
-                        "gabarit create: default « gabarit ». A special kind "
-                        "is created NOT active. « modele »: a contract "
-                        "model, never filled."
+                        "gabarit create : défaut « gabarit ». Sorte spéciale créée inactive ; « modele » jamais rempli."
                     ),
                 },
                 "template_id": _id(
-                    "gabarit replace: REQUIRED, the template (list_templates)."
+                    "gabarit replace : REQUIS — modèle cible (list_templates)."
                 ),
                 "expected_version": {
                     "type": "integer", "minimum": 1,
                     "description": (
-                        "gabarit replace: REQUIRED, its version as read — "
-                        "refused if another version landed since."
+                        "gabarit replace : REQUIS — version lue."
                     ),
                 },
                 "accept_residual": {
@@ -6514,43 +5596,32 @@ TOOLS: dict[str, dict] = {
                         "type": "string", "minLength": 1,
                         "maxLength": UPLOAD_ACCEPT_MAX_CHARS,
                         "description": (
-                            "One identifier exactly as a refusal named it."
+                            "Un identifiant exact tel que nommé dans le refus."
                         ),
                     },
                     "description": (
-                        "gabarit: residues the LAWYER accepts to keep in a "
-                        "firm-wide template."
+                        "gabarit : résidus que l'AVOCAT accepte de conserver."
                     ),
                 },
                 "scrub_properties": {
                     "type": "boolean",
                     "description": (
-                        "gabarit: empty the file's title, subject, author, "
-                        "last editor and description first (default false)."
+                        "gabarit : efface d'abord titre, sujet, auteur, dernier éditeur et description (défaut false)."
                     ),
                 },
                 "aucun_dossier_source": {
                     "type": "boolean",
                     "description": (
-                        "gabarit, without dossier_id: true DECLARES the file "
-                        "comes from no dossier — nothing is checked. Never "
-                        "for a file drawn from a matter; if unsure, ask the "
-                        "lawyer."
+                        "gabarit sans dossier_id : true déclare hors dossier (aucun contrôle ; demander si doute)."
                     ),
                 },
                 "tx_id": _id(
-                    "piece_justificative: the administration entry the "
-                    "receipt is attached to (an `id` from get_admin_ledger)."
+                    "piece_justificative : écriture admin cible (`id` de get_admin_ledger)."
                 ),
                 "replaces_receipt_md5": {
                     "type": "string", "minLength": 24, "maxLength": 24,
                     "description": (
-                        "piece_justificative: the md5_base64 of the receipt "
-                        "the entry carries NOW (`receipt` in get_admin_ledger "
-                        "— or in get_admin_receipt when the ledger shows "
-                        "null) — given only to REPLACE it, the replaced file "
-                        "kept. Omitted, an entry that already carries one "
-                        "refuses."
+                        "piece_justificative : `md5_base64` du reçu actuel pour le REMPLACER (l'ancien reste gardé)."
                     ),
                 },
                 **_write_protocol_props(),
@@ -6570,26 +5641,21 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — step 2: files the bytes PUT under ticket_id. They enter "
-            "only if their size and MD5 are exactly what begin_upload bound; "
-            "other bytes are refused and discarded. document → a NEW "
-            "document. gabarit → checked against the source dossier named "
-            "at begin_upload (nothing checked only when aucun_dossier_source "
-            "was declared), then a new template or a NEW version of the one "
-            "named (the replaced version is kept). piece_justificative → "
-            "attached to its entry if its receipt is still the one "
-            "begin_upload read (else stale_etag, nothing attached; a replaced "
-            "file is kept), plus the dossier copy of a dépense of a dossier "
-            "(`dossier_copy`). Nothing received yet → "
-            "refused, the ticket stays open: PUT, then call again. A ticket "
-            "already filed answers its result again — never upload that "
-            "file anew. A refused or expired ticket never reopens: begin "
-            "anew with a NEW idempotency_key."
+            (
+            "ÉCRITURE — étape 2 : classe les octets PUT sous `ticket_id` si "
+            "taille et MD5 correspondent exactement à `begin_upload` (sinon "
+            "refusés et rejetés). `document` → document ; `gabarit` → "
+            "contrôle résidus puis gabarit/version ; `piece_justificative` → "
+            "joint si reçu identique (`stale_etag` sinon) + copie au dossier "
+            "si dépense liée. Si rien encore reçu : refusé mais ticket reste "
+            "ouvert. Ticket déjà classé = rejeu ; expiré/refusé = "
+            "recommencer avec NOUVELLE `idempotency_key`."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "ticket_id": _id("The ticket_id begin_upload returned."),
+                "ticket_id": _id("`ticket_id` retourné par begin_upload."),
                 **_write_protocol_props(),
             },
             "required": ["ticket_id"],
@@ -6614,31 +5680,31 @@ TOOLS: dict[str, dict] = {
     "preview_templatize": {
         "title": "Aperçu d'une transformation en gabarit",
         "description": (
-            "READ — call BEFORE create_template with `substitutions`. For a "
-            "stored .docx (id from list_documents) it counts where each "
-            "literal → {{field}} replacement lands (body, headers, footers, "
-            "per part) and what stays in place (field results, footnotes, "
-            "document properties, text a {{…}} already holds); gives each "
-            "field's class (auto: the application fills it; manual: "
-            "prompted; passthrough: left for Word); and lists the source "
-            "dossier's identifiers — and your literals — that would REMAIN "
-            "in the result, as create_template's check finds them. Matching "
-            "is CASE-SENSITIVE: an ALL-CAPS variant of a name needs its own "
-            "substitution, with an ALL-CAPS field name. Adjust and preview "
-            "again until ready_to_create, then create_template with each "
-            "expected_occurrences = its `substituted` — and this "
-            "`document_id` passed as create_template's `source_document_id` "
-            "(same id, other name). Counts the file with "
-            "its document properties emptied, as create_template stores it. "
-            "Writes nothing, and never returns the document's text — counts "
-            "only."
+            (
+            (
+            (
+            (
+            "LECTURE — exécuter AVANT `create_template` avec "
+            "`substitutions`. Pour un `.docx` stocké (`document_id`), compte "
+            "où chaque remplacement littéral → `{{champ}}` s'applique "
+            "(corps, en-têtes, pieds de page) vs intact, classe les champs "
+            "(`auto`, `manual`, `passthrough`) et liste les identifiants "
+            "résiduels du dossier source. Sensible à la casse (prévoir une "
+            "règle dédiée pour chaque variante en MAJUSCULES). Itérer "
+            "jusqu'à `ready_to_create`, puis passer `document_id` en "
+            "`source_document_id` et chaque `substituted` en "
+            "`expected_occurrences` à `create_template`. Ne modifie ni ne "
+            "lit le texte."
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "document_id": _id(
-                    "The stored .docx (UUIDv4), from list_documents. Its "
-                    "OWN dossier's identifiers are the ones checked."
+                    "`.docx` stocké (UUIDv4, list_documents) ; son dossier source est contrôlé."
                 ),
                 "substitutions": _substitutions_prop(expected_required=False),
             },
@@ -6654,58 +5720,43 @@ TOOLS: dict[str, dict] = {
     "create_template": {
         "title": "Enregistrer un document comme gabarit",
         "description": (
-            "WRITE — registers a Word document ALREADY in a dossier (.docx, "
-            "10 MB at most, id from list_documents) as a NEW firm-wide "
-            "template. Without `substitutions`, its bytes unchanged. With "
-            "them, a templatized COPY: each literal becomes its {{field}} — "
-            "all or nothing, every count exact (run preview_templatize "
-            "first). scrub_properties first empties the file's title, "
-            "subject, author, last editor and description — always, with "
-            "substitutions. Refused while the stored file (after the "
-            "substitutions, their literals included) or `name` (literals "
-            "included too) still carries the source dossier's names, numbers "
-            "or addresses: each residue is named; list it in accept_residual "
-            "ONLY on the lawyer's word, and every accepted one is echoed "
-            "back. A special kind (note_honoraires, note_credit, note) is "
-            "created NOT active: only the lawyer designates the active one, "
-            "in the "
-            "application. The source document is never modified. Fields "
-            "Word fragmented come back in entity.validation_warnings. An "
-            "OUTSIDE .docx is templatized only once filed as a document of "
-            "its dossier (begin_upload purpose document): purpose gabarit "
-            "never templatizes."
+            (
+            "ÉCRITURE — enregistre un `.docx` DÉJÀ au dossier (max 10 Mo) "
+            "comme NOUVEAU modèle du cabinet. Sans `substitutions` : octets "
+            "intacts. Avec : copie gabaritisée tout-ou-rien selon les "
+            "comptes de `preview_templatize` (`scrub_properties` forcé). "
+            "Refusé si le fichier ou `name` porte encore des identifiants du "
+            "dossier source (passer `accept_residual` SEULEMENT sur mot de "
+            "l'avocat). Sortes spéciales créées inactives. Document source "
+            "intact ; fichier externe = `begin_upload` (`document`) d'abord."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "source_document_id": _id(
-                    "The stored .docx (UUIDv4), from list_documents — the "
-                    "`document_id` you gave preview_templatize. Its OWN "
-                    "dossier is the one checked."
+                    "`.docx` stocké (list_documents) passé à preview_templatize ; son dossier est contrôlé."
                 ),
                 "name": {
                     "type": "string", "minLength": 1,
                     "maxLength": TEMPLATE_NAME_MAX_CHARS,
                     "description": (
-                        "Its name, in French — printed in the name of every "
-                        "document generated from it, so checked like the "
-                        "file. Never a client's name."
+                        "Nom en français repris sur chaque document généré (contrôlé ; jamais le nom d'un client)."
                     ),
                 },
                 "description": {
                     "type": "string",
                     "maxLength": TEMPLATE_DESCRIPTION_MAX_CHARS,
-                    "description": "What it is for, in French.",
+                    "description": "Description d'usage en français.",
                 },
                 "category": {
                     "type": "string", "enum": _TEMPLATE_CATEGORIES,
-                    "description": "The template's OWN category.",
+                    "description": "Catégorie propre du gabarit.",
                 },
                 "kind": {
                     "type": "string", "enum": _TEMPLATE_KINDS,
                     "description": (
-                        "Default « gabarit ». A special kind is created NOT "
-                        "active. « modele »: a contract model, never filled."
+                        "Défaut « gabarit ». Sorte spéciale créée inactive ; « modele » jamais rempli."
                     ),
                 },
                 "accept_residual": {
@@ -6715,20 +5766,17 @@ TOOLS: dict[str, dict] = {
                         "type": "string", "minLength": 1,
                         "maxLength": UPLOAD_ACCEPT_MAX_CHARS,
                         "description": (
-                            "One identifier exactly as a refusal named it."
+                            "Un identifiant exact tel que nommé dans le refus."
                         ),
                     },
                     "description": (
-                        "Residues the LAWYER accepts to keep in a firm-wide "
-                        "template."
+                        "Résidus que l'AVOCAT accepte de garder dans le gabarit."
                     ),
                 },
                 "scrub_properties": {
                     "type": "boolean",
                     "description": (
-                        "Empty the file's document properties first "
-                        "(default false; always done with `substitutions`, "
-                        "where false is refused)."
+                        "Efface les propriétés du fichier (forcé true avec `substitutions`)."
                     ),
                 },
                 "substitutions": _substitutions_prop(expected_required=True),
@@ -6749,62 +5797,61 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "WRITE — corrects ONE template, in one of two calls. METADATA: "
-            "name, description, category, kind — an omitted field is "
-            "untouched; the kind of the ACTIVE template of a special kind "
-            "cannot change; a new name is checked against the dossiers its "
-            "files came from, when recorded (name_check says whether it "
-            "was) — a name prints on every document drawn from the template, "
-            "for any client: never a party's name. Or a new FILE: "
-            "source_document_id (a .docx "
-            "already in a dossier) + expected_version from list_templates — "
-            "installed as a NEW version, the one in force KEPT and "
-            "restorable in the application; refused while the file names "
-            "the source dossier (accept_residual on the lawyer's word only). "
-            "A new file for the active template prints at once on every "
-            "document of its kind. Never changes which template is active. "
-            "Values or a file already stored write nothing."
+            (
+            (
+            (
+            (
+            (
+            "ÉCRITURE — corrige un modèle en un de deux appels. MÉTADONNÉES "
+            "(`name`, `description`, `category`, `kind` — omis = intact ; "
+            "`kind` d'un spécial actif immuable ; nouveau `name` vérifié "
+            "contre dossiers sources). OU NOUVEAU FICHIER "
+            "(`source_document_id` + `expected_version` de `list_templates`) "
+            ": installé en NOUVELLE version (l'actuelle reste restaurable ; "
+            "résidus refusés sauf `accept_residual` sur mot de l'avocat). Un "
+            "nouveau fichier sur le modèle actif s'imprime aussitôt sur tout "
+            "nouveau document ; ne change jamais quel modèle est actif."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "template_id": _id(
-                    "The template (UUIDv4), from list_templates."
+                    "UUIDv4 du modèle (list_templates)."
                 ),
                 "name": {
                     "type": "string", "minLength": 1,
                     "maxLength": TEMPLATE_NAME_MAX_CHARS,
                     "description": (
-                        "Metadata: its new name, in French — printed in the "
-                        "name of every generated document: never a client's. "
-                        "Refused while it names a source dossier."
+                        "Métadonnées : nouveau nom en français (jamais un nom de client ; contrôlé contre dossiers sources)."
                     ),
                 },
                 "description": {
                     "type": "string",
                     "maxLength": TEMPLATE_DESCRIPTION_MAX_CHARS,
-                    "description": "Metadata: what it is for; \"\" clears it.",
+                    "description": "Métadonnées : description d'usage ; \"\" vide.",
                 },
                 "category": {
                     "type": "string", "enum": _TEMPLATE_CATEGORIES,
-                    "description": "Metadata: the template's OWN category.",
+                    "description": "Métadonnées : catégorie propre du modèle.",
                 },
                 "kind": {
                     "type": "string", "enum": _TEMPLATE_KINDS,
                     "description": (
-                        "Metadata: a special kind is never made active "
-                        "here. « modele »: a contract model, never filled."
+                        "Métadonnées : sorte spéciale jamais activée ici ; « modele » jamais rempli."
                     ),
                 },
                 "source_document_id": _id(
-                    "File: the stored .docx (UUIDv4, list_documents) whose "
-                    "bytes become the new version."
+                    "Fichier : `.docx` stocké (list_documents) devenant la nouvelle version."
                 ),
                 "expected_version": {
                     "type": "integer", "minimum": 1,
                     "description": (
-                        "File: REQUIRED — the version as read; refused if "
-                        "another version landed since."
+                        "Fichier : REQUIS — version lue."
                     ),
                 },
                 "accept_residual": {
@@ -6814,18 +5861,17 @@ TOOLS: dict[str, dict] = {
                         "type": "string", "minLength": 1,
                         "maxLength": UPLOAD_ACCEPT_MAX_CHARS,
                         "description": (
-                            "One identifier exactly as a refusal named it."
+                            "Un identifiant exact nommé au refus."
                         ),
                     },
                     "description": (
-                        "Residues the LAWYER accepts to keep — in the new "
-                        "file, or in a new name."
+                        "Résidus que l'AVOCAT accepte de conserver."
                     ),
                 },
                 "scrub_properties": {
                     "type": "boolean",
                     "description": (
-                        "File: empty the file's document properties first."
+                        "Fichier : efface les propriétés du document d'abord."
                     ),
                 },
                 **_expected_etag_prop(_TEMPLATE_ETAG_READERS),
@@ -6851,63 +5897,40 @@ TOOLS: dict[str, dict] = {
     "get_admin_ledger": {
         "title": "Registre d'administration",
         "description": (
-            "ACCOUNTING — READ. The administration "
-            "ledger: every operations account and corporate card — its "
-            "balance, its lock floor (the last completed reconciliation: "
-            "nothing dated on or before it moves) and its reconciliation "
-            "state, never a transit or an account number — and the entries "
-            "of a window (default the last 90 Montréal days), NEWEST first, "
-            "capped at `limit` with `truncated` and no cursor: narrow the "
-            "window to see older ones. Each row carries its `etag` "
-            "(update_admin_entry) and whether it is `locked` and why. A "
-            "running balance is given only for ONE account read without a "
-            "kind, status or category filter. A revenue, expense or "
-            "tax-credit (CTI/RTI) total counts only encaissement_facture and "
-            "recette_autre "
-            "(revenue) and dépense less remboursement_depense (expenses — a "
-            "row's net, TPS and TVQ mean something only on those two or "
-            "their correction), a correction counting as the entry it "
-            "reverses (`reverses_id`), sign inverted. Never in any such "
-            "total: prélèvement (the lawyer's DRAWING — not the method "
-            "« prélèvement », a pre-authorized debit), apport (money he puts "
-            "in), virement_interne_sortant / virement_interne_entrant (to or "
-            "from an account outside this ledger; `transfer_purpose` "
-            "« avances » marks advances moved to trust), avance_honoraires "
-            "(a client's advance received here: client money), "
-            "remise_tps_tvq / remboursement_tps_tvq (TPS/TVQ paid to or "
-            "refunded by the tax authorities: it settles the TPS/TVQ "
-            "balance, never an expense nor a tax credit) and paiement_carte "
-            "(between two accounts of this ledger). Each entry row carries "
-            "`receipt` — its pièce justificative's name, type, size and "
-            "md5_base64, null when none; get_admin_receipt reads it."
+            "COMPTABILITÉ — LECTURE. Grand livre d'administration : comptes "
+            "et cartes (soldes, plancher de conciliation complétée, état — "
+            "jamais transit/numéro de compte) et écritures de la fenêtre "
+            "(défaut 90 j Montréal, plus récentes d'abord, bornées à `limit` "
+            "avec `truncated`). Chaque ligne porte `etag`, `locked` et "
+            "`receipt` (`get_admin_receipt`). Solde cumulatif si un seul "
+            "compte sans filtre. Revenus = `encaissement_facture` et "
+            "`recette_autre` ; dépenses = `dépense` moins "
+            "`remboursement_depense` (seuls avec net/TPS/TVQ significatifs). "
+            "Hors résultats ni total CTI/RTI : `prélèvement`, "
+            "`apport`, `virement_interne_sortant`, "
+            "`virement_interne_entrant`, `avance_honoraires`, "
+            "`remise_tps_tvq`, `remboursement_tps_tvq` (solde TPS/TVQ), "
+            "`paiement_carte`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "account_id": _id(
-                    "One administration account (an id from `accounts`). "
-                    "Omit for every account."
+                    "Un compte d'administration (`id` dans `accounts`). Omettre pour tous."
                 ),
                 "date_from": _date(
-                    "First day, YYYY-MM-DD (default: 90 days before date_to)."
+                    "Premier jour, AAAA-MM-JJ (défaut : 90 j avant date_to)."
                 ),
                 "date_to": _date(
-                    "Last day, YYYY-MM-DD (default: today, Montréal)."
+                    "Dernier jour, AAAA-MM-JJ (défaut : aujourd'hui Montréal)."
                 ),
                 "kind": {"type": "string", "enum": _ADMIN_KINDS,
-                         "description": "Only the entries of this kind."},
+                         "description": "Seulement les écritures de cette nature."},
                 "status": {"type": "string", "enum": _REGISTER_STATUSES,
-                           "description": "Only the entries in this status."},
+                           "description": "Seulement les écritures à ce statut."},
                 "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
                              "description": (
-                                 "Only the dépenses and refunds of this ONE "
-                                 "category, never a heading of the "
-                                 "statements: their « Honoraires "
-                                 "professionnels » gathers notaire, expert, "
-                                 "avocat, honoraires_professionnels (« Autres "
-                                 "honoraires professionnels »), huissier and "
-                                 "sténographe — read without a category to "
-                                 "total them.")},
+                                 "Seulement les dépenses/remboursements de CETTE catégorie (« Honoraires professionnels » regroupe notaire, expert, avocat, huissier, sténographe et honoraires_professionnels « Autres honoraires professionnels » — lire sans filtre).")},
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -6919,35 +5942,28 @@ TOOLS: dict[str, dict] = {
     "get_admin_receipt": {
         "title": "Pièce justificative d'une écriture",
         "description": (
-            "ACCOUNTING — READ. The pièce justificative of ONE "
-            "administration entry (tx_id: an `id` from get_admin_ledger, "
-            "whose rows say whether one exists): its name, type, size, "
-            "md5_base64 and the dossier copy's document id, and its CONTENT. "
-            "A PDF: its text layer, paged like get_document_text "
-            "(page_range, next_page; a scanned page has NO text — nothing is "
-            "OCR'd). An email (.eml, .msg): its headers, body, attachments "
-            "listed, and the text of its PDF attachments. A JPG or PNG "
-            "photo: the IMAGE itself, reduced (`content_kind` \"image\") — "
-            "if your client did not show it to you, say so: never describe "
-            "a receipt you did not see. A TIFF, a photo too large even "
-            "reduced, or an unreadable file: `content_kind` \"none\" with a "
-            "French `reason` — consult it in the application. Never a link "
-            "nor a storage path. The content is the firm's own record: "
-            "quote only what the task requires, and NEVER put any of it "
-            "into a web_search query. To attach or replace one: begin_upload "
-            "with purpose \"piece_justificative\"."
+            (
+            "COMPTABILITÉ — LECTURE. Pièce justificative de `tx_id` "
+            "(`get_admin_ledger`) : métadonnées, `document_id` au dossier et "
+            "CONTENU (PDF : couche texte paginée sans OCR ; `.eml`/`.msg` : "
+            "en-têtes, corps, texte PDF joints ; JPG/PNG : image réduite "
+            "`content_kind=\"image\"` — jamais décrite si non vue). TIFF, "
+            "image trop grande ou illisible → `content_kind=\"none\"` avec "
+            "raison française. Jamais de lien ni chemin ; jamais dans "
+            "`web_search`. Joindre/remplacer via `begin_upload` "
+            "(`piece_justificative`)."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "tx_id": _id(
-                    "The administration entry (an `id` from get_admin_ledger)."
+                    "Écriture admin (`id` de get_admin_ledger)."
                 ),
                 "page_range": {
                     "type": "string", "maxLength": 12,
                     "description": (
-                        "A PDF receipt only: \"4\" from page 4 on, \"2-6\" "
-                        "that inclusive range (default: from page 1)."
+                        "Reçu PDF seulement : \"4\" dès page 4, \"2-6\" plage inclusive (défaut : depuis page 1)."
                     ),
                 },
             },
@@ -6961,40 +5977,25 @@ TOOLS: dict[str, dict] = {
     "get_financial_statements": {
         "title": "États financiers",
         "description": (
-            "READ. The firm's financial statements — the figures, French "
-            "labels and order of the application's « États financiers » page "
-            "(menu Finances) and its PDF — for up to 24 periods in ONE call, "
-            "all computed from ONE consistent read of the books: a "
-            "comparative never mixes two states of them. A period is a "
-            "month `2026-10`, a quarter `2026-T3` or a calendar year `2026` "
-            "(the fiscal year is the calendar year); none starts before the "
-            "books (2025-01-01) or after today, and a period holding today "
-            "is computed up to today (`in_progress`, `as_of`). Each section "
-            "gives `columns` and `rows`: a row's `key` is stable — the same "
-            "line carries the same key in every period, so line periods up "
-            "by it — with its `label`, `level`, `style` and one value per "
-            "column in `values_cents` / `values_display` (null on a heading "
-            "or a note). A category, cash-flow or write-off row absent from "
-            "a period is zero there. Revenue is billed: invoices envoyée, "
-            "en_retard or payée, at their invoice date, before tax — a "
-            "write-off (« radiation », a price reduction with a credit note) "
-            "takes nothing off it: net of the TPS/TVQ it claims, it is a "
-            "bad-debt EXPENSE at its date, « Créances irrécouvrables » among "
-            "the direct costs (row `creances_irrecouvrables`; a cancellation "
-            "gives it back); that TPS/TVQ is the `taxes` rows "
-            "`tps_creances_irrecouvrables` and `tvq_creances_irrecouvrables`, "
-            "and `redressements` lists each event; costs are net of "
-            "TPS/TVQ; the trust funds and the unbilled work are memos, "
-            "outside every total. A section that could not be computed "
-            "carries its French `unavailable` reason and NO rows: never "
-            "read it as zero. ALWAYS report, with the figures, the "
-            "period's `points` (« points à vérifier »: the data conditions "
-            "a figure rests on — `ids` are administration-ledger entry ids, "
-            "invoice numbers or invoice ids) and `points_incomplete`. "
-            "Present the figures as unaudited management statements « selon "
-            "l'état actuel des inscriptions »: a period not yet reconciled "
-            "(`reconciliations`) may still change. On a long series, ask "
-            "only the `sections` you need."
+            (
+            (
+            (
+            "LECTURE — états financiers du cabinet (« États financiers » et "
+            "PDF) jusqu'à 24 périodes en une lecture cohérente (`AAAA-MM`, "
+            "`AAAA-TQ`, `AAAA`, dès `2025-01-01`). Chaque section a "
+            "`columns`, `rows` à `key` stable et "
+            "`values_cents`/`values_display`. Revenus = factures "
+            "`envoyée`/`en_retard`/`payée` HT ; une radiation ne réduit rien "
+            "au revenu : nette de taxes, elle passe en charges directes (« "
+            "Créances irrécouvrables », `creances_irrecouvrables`) + "
+            "`tps_creances_irrecouvrables`/`tvq_creances_irrecouvrables` et "
+            "`redressements`. Fidéicommis et en-cours = hors totaux. "
+            "Toujours rapporter `unavailable`, `points` et "
+            "`points_incomplete`, et présenter « selon l'état actuel des "
+            "inscriptions » (non audités)."
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -7005,9 +6006,7 @@ TOOLS: dict[str, dict] = {
                     "maxItems": STATEMENT_PERIODS_MAX,
                     "items": {"type": "string", "maxLength": 7},
                     "description": (
-                        "The periods, in the order to report them: `YYYY-MM`, "
-                        "`YYYY-TQ` (T1 to T4) or `YYYY`; kinds may be mixed "
-                        "(2025-T3 beside 2026-T3). Each at most once."
+                        "Périodes dans l'ordre d'affichage (`AAAA-MM`, `AAAA-TQ` T1-T4 ou `AAAA`), sans doublon."
                     ),
                 },
                 "sections": {
@@ -7015,9 +6014,7 @@ TOOLS: dict[str, dict] = {
                     "minItems": 1,
                     "items": {"type": "string", "enum": _STATEMENT_SECTIONS},
                     "description": (
-                        "Only these sections (default: all of them), each at "
-                        "most once. The period's header, `kpis`, `points` "
-                        "and `points_incomplete` always come."
+                        "Sections voulues seulement (défaut : toutes) sans doublon ; en-tête, `kpis` et `points` toujours inclus."
                     ),
                 },
             },
@@ -7029,81 +6026,57 @@ TOOLS: dict[str, dict] = {
     "record_trust_entry": {
         "title": "Inscrire une écriture au fidéicommis",
         "description": (
-            "ACCOUNTING — WRITE to the trust register (RLRQ c. B-1, r. 5). "
-            "Records a movement that HAPPENED at the bank, dated the day it "
-            "happened: never future, never on or before the last completed "
-            "reconciliation, never before the account's last entry. It is "
-            "never deleted — corrected only by reverse_register_entry, both "
-            "entries staying in the register. A déboursé draws ONLY on the "
-            "client's CLEARED funds; no cash withdrawal (art. 57 — the "
-            "art. 72 cash refund is recorded in the application). "
-            "virement_honoraires is a FEE PAYMENT and RECORDS A PAYMENT: in "
-            "ONE transaction it withdraws the fees (chèque or virement only, "
-            "art. 58), records their recette in the operations account "
-            "`admin_account_id` at `admin_date`, and the payment on the "
-            "Pallas Athéna invoice `invoice_id` — sent by the lawyer, of "
-            "this dossier, addressed to THIS client (never another client's "
-            "invoice, nor one naming none in a dossier of several), no "
-            "provision imputed, up to its balance —, which may "
-            "turn it payée; its payee is only the lawyer or his firm. Any "
-            "refusal writes NOTHING anywhere. idempotency_key "
-            "REQUIRED; if the outcome is uncertain, re-read "
-            "list_trust_transactions before anything else."
+            (
+            "COMPTABILITÉ — ÉCRITURE au registre en fidéicommis (RLRQ c. "
+            "B-1, r. 5) pour un mouvement bancaire RÉEL à sa date (jamais "
+            "futur, jamais <= conciliation complétée ni avant dernière "
+            "écriture du compte). Append-only (correction : "
+            "`reverse_register_entry`). Déboursé exige fonds COMPENSÉS "
+            "suffisants du client ; aucun retrait comptant (art. 57). "
+            "`virement_honoraires` fait en UNE transaction : retrait "
+            "chèque/virement (art. 58), recette compte admin "
+            "`admin_account_id` à `admin_date` et paiement sur facture "
+            "`invoice_id` (envoyée, même dossier et client ; INSCRIT UN "
+            "PAIEMENT). Tout refus n'écrit rien. `idempotency_key` REQUISE."
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "account_id": _id("The trust account (get_trust_snapshot)."),
+                "account_id": _id("Compte en fidéicommis (get_trust_snapshot)."),
                 "direction": {
                     "type": "string", "enum": _TRUST_DIRECTIONS,
-                    "description": "recette (money in) or déboursé (money out).",
+                    "description": "recette (entrée) ou déboursé (sortie).",
                 },
                 "purpose": {
                     "type": "string", "enum": _TRUST_ENTRY_PURPOSES,
                     "description": (
-                        "Objet — it must agree with the direction (the "
-                        "model refuses otherwise): "
-                        "avance_honoraires / dépôt_client are recettes; "
-                        "remise_client / déboursé_tiers and "
-                        "virement_honoraires (a fee payment) déboursés. "
-                        "Only intérêts / frais_bancaires may carry no "
-                        "dossier, and then only as a recette (a déboursé "
-                        "draws on a client's cleared funds)."
+                        "Objet compatible avec `direction` : recettes (`avance_honoraires`, `dépôt_client`) ; déboursés (`remise_client`, `déboursé_tiers`, `virement_honoraires`). `intérêts`/`frais_bancaires` sans dossier en recette seulement."
                     ),
                 },
-                "amount_cents": _money_arg("Integer cents, > 0."),
-                "date": _date("Day of the bank movement, YYYY-MM-DD."),
+                "amount_cents": _money_arg("Cents entiers, > 0."),
+                "date": _date("Jour du mouvement bancaire, AAAA-MM-JJ."),
                 "method": {
                     "type": "string", "enum": _TRUST_METHODS,
-                    "description": "How the money moved.",
+                    "description": "Mode de paiement.",
                 },
                 "dossier_id": _id(
-                    "The client's dossier. Omitted, with client_id, only for "
-                    "intérêts or frais_bancaires."
+                    "Dossier du client (omis avec client_id seulement pour intérêts/frais_bancaires)."
                 ),
                 "client_id": _id(
-                    "The client whose funds move — a client of dossier_id "
-                    "(get_dossier)."
+                    "Client concerné — client de `dossier_id` (get_dossier)."
                 ),
                 **_register_text_props(
-                    "Required, except on a fee payment, where it may ONLY "
-                    "be the lawyer or his firm as the firm profile names "
-                    "them — either, for either method (art. 58); omitted, "
-                    "the lawyer on a chèque (a fee cheque is drawn to his "
-                    "order), the firm on a virement."
+                    "Requis sauf `virement_honoraires` où seule l'avocat ou son cabinet est admis (art. 58 ; défaut : avocat par chèque, cabinet par virement)."
                 ),
                 "invoice_id": _id(
-                    "Fee payment only, required: the invoice it settles "
-                    "(list_invoices) — never a paper invoice."
+                    "virement_honoraires seulement, requis : facture réglée (list_invoices)."
                 ),
                 "admin_account_id": _id(
-                    "Fee payment only, required: the operations account the "
-                    "fees reach (get_admin_ledger)."
+                    "virement_honoraires seulement, requis : compte admin destinataire (get_admin_ledger)."
                 ),
                 "admin_date": _date(
-                    "Fee payment only: the day the fees reached that "
-                    "account, YYYY-MM-DD — default the trust date; never "
-                    "earlier, never future."
+                    "virement_honoraires seulement : date d'arrivée au compte admin, AAAA-MM-JJ (défaut date fidéicommis ; ni antérieure ni future)."
                 ),
                 **_write_protocol_props(),
             },
@@ -7124,130 +6097,85 @@ TOOLS: dict[str, dict] = {
     "record_admin_entry": {
         "title": "Inscrire une écriture d'administration",
         "description": (
-            "ACCOUNTING — WRITE to the administration ledger. Dated the day "
-            "it HAPPENED: never "
-            "future, never on or before the account's last completed "
-            "reconciliation. The kind decides the sign — there is no "
-            "direction: dépense (a déboursé: `category` and `ventilation` "
-            "required); remboursement_depense (a recette: a supplier's "
-            "refund, `category` and `ventilation` as on a dépense — it "
-            "lowers that category); recette_autre; "
-            "encaissement_facture — RECORDS A PAYMENT on the Pallas Athéna "
-            "invoice `invoice_id` in the SAME transaction, up to its "
-            "balance, which may turn it payée (an operations account only; "
-            "the dossier is the invoice's) —; paiement_carte (pays the card "
-            "`card_account_id` FROM the operations account `account_id`: two "
-            "linked entries; paying a card of this ledger is always this, "
-            "never a virement interne). The natures OUTSIDE the firm's "
-            "results take no `category`, `ventilation`, invoice nor supplier "
-            "invoice; their split is the ledger's: prélèvement (a déboursé: "
-            "the lawyer's DRAWING — never the method « prélèvement », a "
-            "pre-authorized debit) and apport (a recette: money the lawyer "
-            "puts in), neither ever with a dossier; virement_interne_sortant "
-            "/ virement_interne_entrant (money moving to / from an account "
-            "OUTSIDE this ledger — the trust account, a savings account — "
-            "named as `counterparty`; a dossier allowed); avance_honoraires "
-            "(a client's advance received here, not in trust: client "
-            "money — see `transfer_purpose`); remise_tps_tvq / "
-            "remboursement_tps_tvq (TPS/TVQ paid to / refunded by the tax "
-            "authorities, its whole amount — never a dépense nor a "
-            "recette_autre; interest or penalties paid are a dépense apart, "
-            "interest received a recette_autre apart; never with a "
-            "dossier). Fees drawn from trust are never a virement interne: "
-            "record_trust_entry purpose virement_honoraires records them. "
-            "These natures and paiement_carte enter no revenue, expense or "
-            "tax-credit total. `already_cleared_date`: born compensée. "
-            "Corrected by update_admin_entry while editable, else by "
-            "reversal; never deleted here. idempotency_key REQUIRED."
+            (
+            (
+            (
+            (
+            (
+            "COMPTABILITÉ — ÉCRITURE au grand livre admin (mouvement RÉEL à "
+            "sa date, jamais future ni verrouillée). `kind` fixe le sens : "
+            "`dépense`/`remboursement_depense` (`category`+`ventilation`), "
+            "`recette_autre`, `encaissement_facture` (paie `invoice_id` — "
+            "INSCRIT UN PAIEMENT), `paiement_carte` (`account_id` → "
+            "`card_account_id`). Hors "
+            "résultats : `prélèvement` (retrait avocat), `apport`, "
+            "`virement_interne_sortant`/`virement_interne_entrant` (compte "
+            "externe en `counterparty`), `avance_honoraires` "
+            "(`transfer_purpose`), `remise_tps_tvq`/`remboursement_tps_tvq` "
+            "(sans dossier ; intérêts/pénalités à part). Honoraires "
+            "fidéicommis = `record_trust_entry`. `already_cleared_date` : "
+            "née compensée. `idempotency_key` REQUISE."
+        )
+        )
+        )
+        )
+        )
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "account_id": _id(
-                    "The administration account (get_admin_ledger) — for a "
-                    "paiement_carte, the operations account that pays."
+                    "Compte admin (get_admin_ledger) — pour `paiement_carte`, le compte d'opérations payeur."
                 ),
                 "kind": {
                     "type": "string", "enum": _ADMIN_ENTRY_KINDS,
                     "description": (
-                        "What happened; it decides the sign. prélèvement is "
-                        "the lawyer's drawing, never a pre-authorized debit."
+                        "Nature déterminant le sens (`prélèvement` = retrait de l'avocat, jamais le mode préautorisé)."
                     ),
                 },
                 "amount_cents": _money_arg(
-                    "Integer cents, > 0 — taxes included for a dépense."
+                    "Cents entiers > 0 (taxes comprises pour une dépense)."
                 ),
-                "date": _date("Day it happened, YYYY-MM-DD."),
+                "date": _date("Jour du mouvement, AAAA-MM-JJ."),
                 "method": {
                     "type": "string", "enum": _ADMIN_METHODS,
                     "description": (
-                        "How the money moved — « prélèvement » here is a "
-                        "pre-authorized debit, whatever the kind."
+                        "Mode de paiement (« prélèvement » ici = débit préautorisé)."
                     ),
                 },
                 "category": {
                     "type": "string", "enum": _ADMIN_CATEGORIES,
                     "description": (
-                        "dépense or remboursement_depense only, required. "
-                        "Usage-billed cloud and AI (API credits, hosting, "
-                        "compute; every Anthropic charge): infonuagique_ia; "
-                        "a flat monthly plan stays abonnements (« Logiciels "
-                        "et bureautique »). Law reports, journals, books: "
-                        "documentation; research billed by the search "
-                        "(SOQUIJ, land or bankruptcy registers): recherche; "
-                        "court stamps, greffe fees and copies: "
-                        "timbres_judiciaires (taxes_permis: permits, other "
-                        "duties); a notary, an expert, a lawyer: notaire, "
-                        "expert, avocat (any other professional: "
-                        "honoraires_professionnels); a room rented for a "
-                        "meeting or hearing: location_salle (an office's "
-                        "rent: loyer); a course or a degree, formation."
+                        "Requis pour `dépense` / `remboursement_depense`. IA/cloud à l'usage (Anthropic, API, hébergement) : `infonuagique_ia` (forfait mensuel : `abonnements`) ; recueils/livres : `documentation` ; recherche à l'acte (SOQUIJ, registres) : `recherche` ; timbres/greffe : `timbres_judiciaires` (`taxes_permis` : permis/droits) ; notaire/expert/avocat : clé dédiée (sinon `honoraires_professionnels`) ; salle ponctuelle : `location_salle` (bureau : `loyer`) ; cours : `formation`."
                     ),
                 },
                 **_ventilation_props(),
                 "invoice_id": _id(
-                    "encaissement_facture only, required: the invoice paid "
-                    "(list_invoices)."
+                    "encaissement_facture seulement, requis : facture payée (list_invoices)."
                 ),
                 "card_account_id": _id(
-                    "paiement_carte only, required: the card paid "
-                    "(get_admin_ledger)."
+                    "paiement_carte seulement, requis : carte payée (get_admin_ledger)."
                 ),
                 "dossier_id": _id(
-                    "dépense, remboursement_depense, recette_autre, "
-                    "avance_honoraires or a virement interne only: an "
-                    "optional dossier link — never on a prélèvement, an "
-                    "apport, a remise_tps_tvq or a remboursement_tps_tvq."
+                    "Lien optionnel pour dépense, remboursement_depense, recette_autre, avance_honoraires ou virement interne (jamais prélèvement, apport, remise_tps_tvq, remboursement_tps_tvq)."
                 ),
                 "supplier_invoice_ref": {
                     "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
                     "description": (
-                        "dépense / remboursement_depense / recette_autre "
-                        "only: the supplier's own invoice number."
+                        "dépense / remboursement_depense / recette_autre seulement : n° de facture du fournisseur."
                     ),
                 },
                 "transfer_purpose": {
                     "type": "string", "enum": _ADMIN_TRANSFER_PURPOSES,
                     "description": (
-                        "virement_interne_sortant only: « avances » when it "
-                        "moves to trust the advances received here "
-                        "(avance_honoraires) — then neither touches the "
-                        "results, and the statements settle the advances "
-                        "owed with it; omit (or \"\") for any other transfer."
+                        "virement_interne_sortant seulement : « avances » si transfert d'avances client vers fidéicommis (\"\" sinon)."
                     ),
                 },
                 **_register_text_props(
-                    "Required, except on a paiement_carte, which takes none "
-                    "(its two accounts name each other). On a virement "
-                    "interne, the other account (« Compte en fidéicommis », "
-                    "a savings account); on a remise_tps_tvq or a "
-                    "remboursement_tps_tvq, the tax authority; on an "
-                    "avance_honoraires, the client."
+                    "Requis sauf `paiement_carte` (aucun). Sur virement interne : autre compte ; sur `remise_tps_tvq` ou `remboursement_tps_tvq` : autorité fiscale ; sur `avance_honoraires` : le client."
                 ),
                 "already_cleared_date": _date(
-                    "The bank statement date, YYYY-MM-DD, when the movement "
-                    "already cleared (not before `date`). Not for a "
-                    "paiement_carte: each leg clears on its own statement."
+                    "Date du relevé bancaire (AAAA-MM-JJ >= `date`) si déjà compensé (pas pour `paiement_carte`)."
                 ),
                 **_write_protocol_props(),
             },
@@ -7272,74 +6200,55 @@ TOOLS: dict[str, dict] = {
         # identical second call is refused, never applied twice.
         "annotations": {"idempotentHint": True},
         "description": (
-            "ACCOUNTING — WRITE. REPLACES the fields you name on ONE "
-            "administration entry, against `expected_etag` "
-            "(get_admin_ledger); a field you omit is left alone, values "
-            "already stored write nothing, and each change is recorded in the "
-            "entry's revision trail (its latest 25 kept). Only an EDITABLE "
-            "entry: en circulation, "
-            "after the last completed reconciliation, linked to no invoice, "
-            "fee payment or card payment, part of no reversal — anything "
-            "else is corrected by reverse_register_entry. A new `kind` keeps "
-            "the bank movement's sign: dépense, prélèvement, "
-            "virement_interne_sortant and remise_tps_tvq (déboursés) move "
-            "among themselves, recette_autre, apport, "
-            "virement_interne_entrant, remboursement_tps_tvq, "
-            "remboursement_depense and avance_honoraires (recettes) among "
-            "themselves; across signs only dépense <-> recette_autre, the "
-            "sign following. Any other change of sign is refused: reverse "
-            "the entry, then record the right one. Changing the amount of a "
-            "dépense or a remboursement_depense, or making an entry one, "
-            "REQUIRES `ventilation` (the latter `category` too). Net, TPS "
-            "and TVQ mean something only on a dépense or a "
-            "remboursement_depense: no other kind takes `category` or "
-            "`ventilation` (the natures outside the results get the "
-            "ledger's own split, no TPS/TVQ claimed, whatever their amount). "
-            "`transfer_purpose` goes only on a virement_interne_sortant. A "
-            "prélèvement, an apport, a remise_tps_tvq or a "
-            "remboursement_tps_tvq never carries a dossier: making a linked "
-            "entry one requires `dossier_id` \"\". idempotency_key REQUIRED."
+            "COMPTABILITÉ — REMPLACE les champs nommés d'UNE écriture admin "
+            "contre `expected_etag` (`get_admin_ledger`) ; omis = intact ; "
+            "garde 25 révisions. Seulement si ÉDITABLE (`en_circulation`, "
+            "après conciliation, hors facture/virement honoraires/carte/"
+            "contrepassation — sinon `reverse_register_entry`). `kind` "
+            "conserve le sens bancaire : `dépense`, `prélèvement`, "
+            "`virement_interne_sortant` et `remise_tps_tvq` (déboursés) ; "
+            "`recette_autre`, `apport`, `virement_interne_entrant`, "
+            "`remboursement_tps_tvq`, `remboursement_depense` et "
+            "`avance_honoraires` (recettes) — entre sens, seul "
+            "`dépense` <-> `recette_autre` (sinon contrepasser/réinscrire). "
+            "`ventilation`/`category` requis si `dépense`/`remboursement_depense`. "
+            "`prélèvement`, `apport`, `remise_tps_tvq` et "
+            "`remboursement_tps_tvq` sans dossier (`dossier_id=\"\"`). "
+            "`idempotency_key` REQUISE."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "tx_id": _id("The entry (get_admin_ledger)."),
+                "tx_id": _id("ID de l'écriture (get_admin_ledger)."),
                 **_expected_etag_prop(_ADMIN_ETAG_READERS),
-                "date": _date("New date, YYYY-MM-DD."),
+                "date": _date("Nouvelle date, AAAA-MM-JJ."),
                 "kind": {"type": "string", "enum": _ADMIN_EDIT_KINDS,
                          "description": (
-                             "New kind, of the same sign (or dépense <-> "
-                             "recette_autre, its sign following)."
+                             "Nouvelle nature de même sens (ou dépense <-> recette_autre)."
                          )},
-                "amount_cents": _money_arg("New amount, integer cents."),
+                "amount_cents": _money_arg("Nouveau montant, cents entiers."),
                 "method": {"type": "string", "enum": _ADMIN_METHODS,
                            "description": (
-                               "New method — « prélèvement » is a "
-                               "pre-authorized debit, not the kind."
+                               "Nouveau mode (« prélèvement » = débit préautorisé)."
                            )},
                 "category": {"type": "string", "enum": _ADMIN_CATEGORIES,
-                             "description": ("New category of a dépense or a "
-                                             "remboursement_depense.")},
+                             "description": ("Nouvelle catégorie d'une `dépense` ou `remboursement_depense`.")},
                 **_ventilation_props(),
                 "dossier_id": {
                     "type": "string", "maxLength": 64,
                     "description": (
-                        "New dossier link; '' removes it — never one on a "
-                        "prélèvement, an apport, a remise_tps_tvq or a "
-                        "remboursement_tps_tvq."
+                        "Nouveau dossier (\"\" retire ; jamais pour prélèvement, apport, remise_tps_tvq, remboursement_tps_tvq)."
                     ),
                 },
                 "transfer_purpose": {
                     "type": "string", "enum": _ADMIN_TRANSFER_PURPOSES,
                     "description": (
-                        "virement_interne_sortant only: « avances » marks "
-                        "the advances (avance_honoraires) it moved to "
-                        "trust; \"\" removes the mark."
+                        "virement_interne_sortant seulement : « avances » marque le transfert d'avances (\"\" retire)."
                     ),
                 },
                 "supplier_invoice_ref": {
                     "type": "string", "maxLength": REGISTER_REFERENCE_MAX_CHARS,
-                    "description": "The supplier's own invoice number.",
+                    "description": "N° de facture du fournisseur.",
                 },
                 **_register_text_props(),
                 **_write_protocol_props(),
@@ -7356,18 +6265,16 @@ TOOLS: dict[str, dict] = {
     "clear_register_entries": {
         "title": "Compenser des écritures",
         "description": (
-            "ACCOUNTING — WRITE. Marks 1 to 50 entries of ONE account "
-            "« compensée » at `cleared_date` — the date the BANK STATEMENT "
-            "shows: on or after each entry's date, never future, after the "
-            "last completed reconciliation. All or nothing: one entry that "
-            "cannot be cleared refuses the call, each named. There is no "
-            "« un-clear ». In the trust register, clearing a deposit makes "
-            "its funds AVAILABLE for a déboursé (`released_funds` says "
-            "which): never clear what the statement does not show. An "
-            "administration entry stays editable until it is cleared, so "
-            "`register` admin REQUIRES `expected_etags` — the version of "
-            "each entry you compared with the statement. "
-            "idempotency_key REQUIRED."
+            (
+            "COMPTABILITÉ — ÉCRITURE. Marque de 1 à 50 écritures d'UN compte "
+            "« compensée » à `cleared_date` (date du RELEVÉ BANCAIRE : >= "
+            "date de l'écriture, jamais future, après dernière "
+            "conciliation). Tout ou rien (aucun « décompenser »). En "
+            "fidéicommis, compenser un dépôt rend ses fonds disponibles pour "
+            "déboursé (`released_funds`). En admin (éditable jusqu'à "
+            "compensation), `expected_etags` est REQUIS dans l'ordre de "
+            "`tx_ids`. `idempotency_key` REQUISE."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -7375,36 +6282,28 @@ TOOLS: dict[str, dict] = {
                 "register": {
                     "type": "string", "enum": _REGISTERS,
                     "description": (
-                        "trust (list_trust_transactions) or admin "
-                        "(get_admin_ledger)."
+                        "trust (list_trust_transactions) ou admin (get_admin_ledger)."
                     ),
                 },
                 "tx_ids": {
                     "type": "array", "minItems": 1,
                     "maxItems": REGISTER_CLEAR_MAX,
                     "items": {"type": "string", "maxLength": 64,
-                              "description": "An entry id."},
+                              "description": "ID d'une écriture."},
                     "description": (
-                        f"1 to {REGISTER_CLEAR_MAX} distinct entries of one "
-                        "account, en circulation."
+                        f"1 à {REGISTER_CLEAR_MAX} écritures distinctes d'un compte, en circulation."
                     ),
                 },
                 "cleared_date": _date(
-                    "The bank statement date, YYYY-MM-DD. Required."
+                    "Date du relevé bancaire, AAAA-MM-JJ. Requis."
                 ),
                 "expected_etags": {
                     "type": "array", "minItems": 1,
                     "maxItems": REGISTER_CLEAR_MAX,
                     "items": {"type": "string", "maxLength": 64,
-                              "description": "One entry's etag."},
+                              "description": "etag d'une écriture."},
                     "description": (
-                        "admin only, and REQUIRED there: the `etag` "
-                        "get_admin_ledger showed for each entry, in the SAME "
-                        "order as `tx_ids`. Clearing states that THIS amount "
-                        "is on the statement: an entry changed since your "
-                        "read refuses the whole call, nothing cleared — "
-                        "re-read, then retry. Refused at trust, whose "
-                        "entries never change."
+                        "admin seulement et REQUIS : `etag` lu sur get_admin_ledger pour chaque écriture dans l'ORDRE de `tx_ids` (refusé sur trust)."
                     ),
                 },
                 **_write_protocol_props(),
@@ -7430,23 +6329,19 @@ TOOLS: dict[str, dict] = {
     "reverse_register_entry": {
         "title": "Contre-passer une écriture",
         "description": (
-            "ACCOUNTING — WRITE. The ONLY correction of a trust entry, and of "
-            "an administration entry update_admin_entry can no longer edit: "
-            "an opposite « Correction » entry; the original and its reversal "
-            "stay in the register for good. An entry en circulation and its "
-            "reversal both become annulée; a compensée one stays compensée "
-            "and its reversal enters en circulation (a real movement to "
-            "come). A trust reversal is dated today; an administration one "
-            "may carry `reversal_date`. A fee payment reverses WITH its "
-            "administration recette(s) and the payment on each invoice, in "
-            "ONE transaction; a card-payment leg carries its pair; an "
-            "encaissement reduces its invoice's payment. Refused: a "
-            "correction, an entry already reversed, the administration "
-            "recette of a fee payment (reverse its trust entry), a leg of a "
-            "transfer between dossiers (the application's). A trust "
-            "reversal skips the cleared-funds control: a warning says when "
-            "the client's cleared balance turns negative. idempotency_key "
-            "REQUIRED."
+            (
+            "COMPTABILITÉ — ÉCRITURE. Seule correction d'une écriture en "
+            "fidéicommis ou d'une écriture admin verrouillée : crée une « "
+            "Correction » opposée (les deux restent). `en_circulation` → les "
+            "deux passent `annulée` ; `compensée` → originale reste "
+            "compensée et contrepassation passe `en_circulation`. "
+            "Fidéicommis daté aujourd'hui ; admin accepte `reversal_date`. "
+            "Contrepasse en UNE transaction : paiement honoraires + recette "
+            "admin + paiement facture, paire `paiement_carte`, ou "
+            "`encaissement_facture`. Refuse correction, déjà annulée, "
+            "recette admin d'honoraires ou transfert inter-dossiers. "
+            "`idempotency_key` REQUISE."
+        )
         ),
         "input_schema": {
             "type": "object",
@@ -7454,20 +6349,17 @@ TOOLS: dict[str, dict] = {
                 "register": {
                     "type": "string", "enum": _REGISTERS,
                     "description": (
-                        "trust (list_trust_transactions) or admin "
-                        "(get_admin_ledger)."
+                        "trust (list_trust_transactions) ou admin (get_admin_ledger)."
                     ),
                 },
-                "tx_id": _id("The entry to reverse."),
+                "tx_id": _id("Écriture à contrepasser."),
                 "reason": {
                     "type": "string", "minLength": 1,
                     "maxLength": REVERSAL_REASON_MAX_CHARS,
-                    "description": "Why, in French — printed in the register.",
+                    "description": "Motif en français — inscrit au registre.",
                 },
                 "reversal_date": _date(
-                    "admin only, YYYY-MM-DD: between the original's date and "
-                    "today, after the last completed reconciliation "
-                    "(default today)."
+                    "admin seulement, AAAA-MM-JJ : entre date d'origine et aujourd'hui, après dernière conciliation (défaut aujourd'hui)."
                 ),
                 **_write_protocol_props(),
             },
@@ -7498,10 +6390,8 @@ TOOLS: dict[str, dict] = {
 # policy, applied here so a ninth required tool is described by its
 # declaration alone.
 REQUIRED_KEY_DESCRIPTION = (
-    "Caller-chosen key for THIS write — REQUIRED here: refused without it, "
-    "or when its replay record cannot be read. Within 24 h the same key "
-    "returns the stored result, never a second write; with other arguments "
-    "it is refused."
+    "Clé choisie pour CETTE écriture — REQUISE ici (refusée sans clé ou si "
+    "le journal de rejeu est illisible ; rejeu 24 h)."
 )
 
 
@@ -7566,23 +6456,17 @@ def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict
         # same status is a no-op that writes nothing — while every creator
         # would append again.
         annotations.update(spec.get("annotations") or {})
+        # Verify the server-side output contract exists without emitting
+        # outputSchema on the wire (MCP-Socle parity; conformance stays pinned
+        # by tests/test_mcp_output_schemas.py against the real handlers).
+        _ = OUTPUT_SCHEMAS[name]
         out.append(
             {
                 "name": name,
                 "title": spec["title"],
                 "description": spec["description"],
                 "inputSchema": spec["input_schema"],
-                # A declared outputSchema is a CONTRACT: structuredContent
-                # MUST conform (MCP 2025-06-18). Direct indexing, no .get —
-                # a tool without one must fail the registry test, not ship
-                # schema-less. Conformance is pinned by
-                # tests/test_mcp_output_schemas.py against the REAL handlers.
-                "outputSchema": OUTPUT_SCHEMAS[name],
-                # `title` moved to the descriptor top level in 2025-06-18;
-                # 2025-03-26 clients read the display name from
-                # annotations.title. Mirror it so the French titles survive
-                # on both protocol revisions.
-                "annotations": {**annotations, "title": spec["title"]},
+                "annotations": annotations,
             }
         )
     return out

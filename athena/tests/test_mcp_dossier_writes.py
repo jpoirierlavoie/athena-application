@@ -302,12 +302,14 @@ _DOSSIER_RESOLVING_CALLS = {
     "create_hearing": lambda did: handlers.create_hearing(
         {"dossier_id": did, "title": "Audience", "date": "2026-10-15",
          "start_time": "09:30"}),
-    "create_time_entry": lambda did: handlers.create_time_entry(
-        {"dossier_id": did, "date": "2026-09-01", "description": "Appel",
-         "hours": 1.0}),
-    "create_expense": lambda did: handlers.create_expense(
-        {"dossier_id": did, "date": "2026-09-01", "description": "Timbre",
-         "amount_cents": 1000}),
+    "create_time_entries_bulk": lambda did: handlers.create_time_entries_bulk(
+        {"entries": [{"dossier_id": did, "date": "2026-09-01",
+                      "description": "Appel", "hours": 1.0}],
+         "idempotency_key": "cle-doss-unreadable-t"}),
+    "create_expenses_bulk": lambda did: handlers.create_expenses_bulk(
+        {"entries": [{"dossier_id": did, "date": "2026-09-01",
+                      "description": "Timbre", "amount_cents": 1000}],
+         "idempotency_key": "cle-doss-unreadable-x"}),
     "create_protocol": lambda did: handlers.create_protocol(
         {"dossier_id": did, "protocol_type": "conventionnel",
          "start_date": "2026-09-01"}),
@@ -348,7 +350,13 @@ def test_an_unreadable_dossier_refuses_every_write_that_names_it(
     assert str(err.value) == _UNREADABLE
     assert err.value.reason == "read_unavailable"
     assert "introuvable" not in str(err.value)
-    assert db.commits == []
+    if call in ("create_time_entries_bulk", "create_expenses_bulk"):
+        for commit in db.commits:
+            for _op, path in commit.ops:
+                assert path.startswith(f"{write_support.COLLECTION}/"), (call, commit.ops)
+        assert db.peek_collection(write_support.COLLECTION) == {}
+    else:
+        assert db.commits == []
     assert [r for r in caplog.records if r.name == "pallas.unexpected"
             and "mcp dossier write: dossier unreadable" in r.getMessage()]
 
@@ -579,7 +587,7 @@ def test_the_lawyer_goes_by_one_name_across_the_connector():
         tools.TOOLS["update_dossier_party"]["input_schema"],
         {"action": "update", "dossier_id": "d", "partie_id": "p",
          "avocat_id": "av1"})
-    assert errors and "`avocat_id` is not a supported argument" in errors[0]
+    assert errors and "`avocat_id` n'est pas un paramètre pris en charge" in errors[0]
     assert "`avocat_partie_id`" in errors[0]
     out = output_schemas.OUTPUT_SCHEMAS["update_dossier_party"]
     party = out["properties"]["party"]["properties"]

@@ -802,9 +802,9 @@ def test_the_filter_says_what_a_mandataire_row_s_title_names():
 
     text = tools.TOOLS["list_deletions"]["input_schema"]["properties"][
         "entity_type"]["description"]
-    assert "title = the contact it REPRESENTED" in text
-    assert "entity_id = the mandataire" in text
-    assert "status = the side it left" in text
+    assert "`title` = contact REPRÉSENTÉ" in text
+    assert "`entity_id` = mandataire" in text
+    assert "`status` = camp quitté" in text
 
 
 # ══════════════════════════════════════════════════════════════════════

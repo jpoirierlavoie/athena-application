@@ -1,13 +1,13 @@
-# Athena — plugin 1.9.3
+# Athena — plugin 2.0.0
 
 Une compétence qui apprend à Claude à se servir du connecteur Athena **avec le moins
-d'appels possible** : d'où vient chaque identifiant, la suite d'appels la plus courte pour
-chaque demande courante, ce qu'aucun outil ne fait. Elle ne recopie pas les descriptions des
-outils : le serveur les envoie, et la tête de ses INSTRUCTIONS porte le noyau de sécurité.
+d'appels possible** : routage clair, suite d'appels minimale par demande courante,
+confirmation graduée et cloisonnement du *secret professionnel* face aux outils
+externes (`droit-civil-quebecois` et recherche web).
 
-- `skills/athena/SKILL.md` — le noyau et quatre recettes; moins de 10 Ko.
-- `recettes/*.md` — six domaines, lus seulement quand la demande y mène.
-- `references/index-outils.md` — **généré**; lu quand aucune recette ne convient.
+- `skills/athena/SKILL.md` — routeur unique + `SAFETY-KERNEL` et quatre recettes (`R1`–`R4`) ; ≤ 1 000 mots.
+- `skills/athena/references/*.md` — six feuilles terminales (dossiers/contacts, agenda/protocole, notes/documents, facturation/budget, comptabilité/états, reprise), ≤ 1 500 mots chacune.
+- `skills/athena/references/index-outils.md` — **généré** ; lu seulement quand aucune recette ne convient.
 - `.mcp.json` — désigne le connecteur **par son nom, « Athena »**, jamais par une URL : dans
   Claude Code, une URL masquerait le connecteur claude.ai sans pouvoir s'authentifier. Le
   plugin ne crée donc pas le connecteur : il s'ajoute une fois dans claude.ai.
@@ -15,37 +15,35 @@ outils : le serveur les envoie, et la tête de ses INSTRUCTIONS porte le noyau d
 ## Réglages par surface
 
 - **claude.ai** : le connecteur se nomme **« Athena »** (`https://athena.poirierlavoie.ca/mcp`),
-  en mode « Sur demande »; « Exécution de code et création de fichiers » activée, sans quoi
+  en mode « Sur demande » ; « Exécution de code et création de fichiers » activée, sans quoi
   aucune compétence ne se charge. Envisager « Bloqué » pour `preview_templatize`,
   `create_template` et `import_invoice` — à débloquer le temps d'une gabarisation ou d'une reprise.
 - **Remplace `pallas-athena`** : retirer cet ancien plugin (bibliothèque de l'organisation et
   « Mes téléversements »), sinon ses copies restent chargées, Claude Code compris.
-- **Complément Excel et Toolbox** : désactiver le connecteur — en 30 jours, 149 de leurs 168
-  chargements n'ont été suivis d'aucun appel.
+- **Complément Excel et Toolbox** : désactiver le connecteur lorsque non requis pour éviter les
+  chargements d'outils inutiles.
 
 ## Reconstruire et livrer
 
 La source vit ici, hors d'`athena/` : elle n'est jamais déployée. Les lignes `{{GEN:…}}` se
-remplissent à la construction; ne jamais les écrire à la main.
+remplissent à la construction ; ne jamais les écrire à la main.
 
-```
+```bash
 cd athena
 python -m pytest tests/test_plugin_athena.py -q   # la porte, d'abord
-python -m scripts.exporter_plugin_athena           # → ../dist/athena-1.9.3.plugin (non versionné)
+python -m scripts.exporter_plugin_athena           # → ../dist/athena-2.0.0.plugin (non versionné)
 rm -rf ../../athena-plugin/plugins/athena
 python -m scripts.exporter_plugin_athena --deplie ../../athena-plugin/plugins/athena
 ```
 
-Puis, dans ce miroir (GitHub `jpoirierlavoie/athena-plugin`) : reporter la version dans
+Puis, dans ce miroir (`jpoirierlavoie/athena-plugin`) : reporter la version `2.0.0` dans
 `.claude-plugin/marketplace.json`, valider, pousser. claude.ai s'y synchronise (réglage de
-l'organisation), puis Claude Code : rien à téléverser. Une version GitHub portant l'archive
-reste facultative (point de téléchargement).
+l'organisation), puis Claude Code : rien à téléverser.
 
 ## Ce qui le protège
 
 `athena/tests/test_plugin_athena.py`, dans la porte de déploiement, échoue quand une citation
-se périme (outil ou paramètre renommé, valeur retirée) ou qu'un budget casse ; il vérifie aussi
-l'en-tête, les termes retirés, `.mcp.json` et les champs de chaque recette. `--check` compare une
-reconstruction à l'archive de `dist/` : s'il échoue (ou qu'aucune archive n'existe), la source ou
-le connecteur ont changé — reconstruire et livrer. Un changement du registre qui ne touche
-que les parties générées laisse le test vert : `--check` le voit.
+se périme (outil/paramètre renommé ou retiré, valeur d'énumération absente), qu'un budget de
+mots ou d'octets casse, qu'un lien croisé `../` ou entre feuilles apparaît, ou qu'un scénario
+d'évaluation hors ligne échoue ; `--check` vérifie que l'archive de `dist/` correspond exactement à
+la reconstruction courante.

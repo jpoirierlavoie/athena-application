@@ -264,8 +264,8 @@ def test_the_hand_copied_vocabularies_are_the_models_own():
     for key in ("infonuagique_ia", "abonnements"):
         assert key in category["description"] and key in category["enum"]
         assert key in al.ADMIN_EXPENSE_CATEGORIES
-    assert "Usage-billed cloud and AI" in category["description"]
-    assert "a flat monthly plan stays abonnements" in category["description"]
+    assert "IA/cloud à l'usage" in category["description"]
+    assert "forfait mensuel : `abonnements`" in category["description"]
     # The decisions of 2026-11-08 reach it the same way: a court stamp is no
     # longer taxes_permis; a notary, an expert, a lawyer and a room rented
     # by the occasion have categories of their own. The phrases that bind
@@ -275,12 +275,9 @@ def test_the_hand_copied_vocabularies_are_the_models_own():
                 "honoraires_professionnels", "location_salle", "loyer"):
         assert key in category["enum"], key
     for phrase in (
-            "court stamps, greffe fees and copies: timbres_judiciaires "
-            "(taxes_permis: permits, other duties)",
-            "a notary, an expert, a lawyer: notaire, expert, avocat "
-            "(any other professional: honoraires_professionnels)",
-            "a room rented for a meeting or hearing: location_salle "
-            "(an office's rent: loyer)"):
+            "timbres/greffe : `timbres_judiciaires` (`taxes_permis` : permis/droits)",
+            "notaire/expert/avocat : clé dédiée (sinon `honoraires_professionnels`)",
+            "salle ponctuelle : `location_salle` (bureau : `loyer`)"):
         assert phrase in category["description"], phrase
     # A filter matches ONE code: the statements' heading is no category, and
     # the reader is told which codes it gathers — the model's own group.
@@ -1176,7 +1173,7 @@ def test_the_train_s_pilot_moves_the_balance_as_deployment_says_and_locks_both_s
     # reversal itself: the ACCOUNTING partial said it in French until
     # 2026-11-10 (the consent screen cut short); the tool says it.
     desc = tools.TOOLS["update_admin_entry"]["description"]
-    assert "part of no reversal" in desc
+    assert "contrepassation" in desc
     assert "and never reversed" not in desc
 
 
@@ -2541,8 +2538,8 @@ def test_a_nature_without_its_counterparty_is_told_whom_to_name(fake, kind):
     assert _entries(fake, "admin_transactions") == before
     described = tools.TOOLS["record_admin_entry"]["input_schema"][
         "properties"]["counterparty"]["description"]
-    assert ("on a remise_tps_tvq or a remboursement_tps_tvq, the tax "
-            "authority; on an avance_honoraires, the client.") in described
+    assert ("sur `remise_tps_tvq` ou `remboursement_tps_tvq` : autorité fiscale ; "
+            "sur `avance_honoraires` : le client.") in described
 
 
 def test_the_model_refuses_what_the_handler_refuses_first(fake):

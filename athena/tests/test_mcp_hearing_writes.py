@@ -559,19 +559,19 @@ def test_every_surface_states_the_d10_lock():
     from mcp import disclosure
 
     desc = tools.TOOLS["update_hearing"]["description"]
-    assert "ONLY dossier_id, notes and notes_append are accepted" in desc
-    assert "only this connector is restricted" in desc
+    assert "seuls `dossier_id`, `notes`, `notes_append` sont admis ici" in desc
+    assert "seul ce connecteur est restreint" in desc
     # Outlook for the reschedule and the cancellation, the application for
     # the rest — never « make it in Outlook » for everything (review).
-    assert "a reschedule or a cancellation is made in Outlook" in desc
-    assert "anything else the lawyer edits in the application" in desc
+    assert "reporter ou annuler se fait dans Outlook" in desc
+    assert "toute autre modification à l'application" in desc
     assert "Outlook" in tools.TOOLS["decide_rendez_vous"]["description"]
     text = disclosure.build_instructions()
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: the BOOKINGS line keeps the lock; its detail is pinned above
     # (update_hearing) and here (decide_rendez_vous).
-    assert ("a CONFIRMED rendez-vous is never rescheduled or cancelled here "
-            "— that is done in Outlook") in text
-    assert "An already-CONFIRMED rendez-vous is not refused here" in (
+    assert ("un rendez-vous CONFIRMÉ ne se reporte ni ne s'annule ici "
+            "(Outlook)") in text
+    assert "Un rendez-vous déjà CONFIRMÉ n'est pas refusé ici" in (
         tools.TOOLS["decide_rendez_vous"]["description"])
     assert not hasattr(handlers, "_BOOKINGS_NOT_UPDATED")
     assert not hasattr(handlers, "_BOOKINGS_UNCANCELLED")

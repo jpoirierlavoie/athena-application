@@ -124,9 +124,10 @@ def _reads_of(fake, monkeypatch, collection: str) -> None:
 
 
 def _time_entry_args(**over) -> dict:
-    return {"dossier_id": "d1", "date": "2026-09-20", "hours": 1.5,
-            "description": "Rédaction de la requête",
-            "idempotency_key": f"cle-creation-{next(_KEYS):04d}", **over}
+    row = {"dossier_id": "d1", "date": "2026-09-20", "hours": 1.5,
+           "description": "Rédaction de la requête", **over}
+    return {"entries": [row],
+            "idempotency_key": f"cle-creation-{next(_KEYS):04d}"}
 
 
 def _series_args() -> dict:
@@ -153,12 +154,12 @@ def test_a_time_entry_whose_answer_was_lost_is_the_committed_one(fake, monkeypat
     _land_then(fake, monkeypatch, gexc.InternalServerError("answer lost"),
                "/timeentries/")
     args = _time_entry_args()
-    payload = _call("create_time_entry", args)
+    payload = _call("create_time_entries_bulk", args)
     rows = fake.peek_collection("timeentries")
     assert len(rows) == 1
-    assert payload["entity"]["id"] in rows
+    assert payload["entities"][0]["id"] in rows
     # The same-key retry replays the stored result — never a second row.
-    again = _call("create_time_entry", args)
+    again = _call("create_time_entries_bulk", args)
     assert again["idempotent_replay"] is True
     assert len(fake.peek_collection("timeentries")) == 1
 
@@ -182,7 +183,7 @@ def test_a_series_whose_answer_was_lost_is_the_committed_one(fake, monkeypatch):
 
 
 @pytest.mark.parametrize("tool, args_fn, collection", [
-    ("create_time_entry", _time_entry_args, "timeentries"),
+    ("create_time_entries_bulk", _time_entry_args, "timeentries"),
     ("create_hearing_series", _series_args, "hearings"),
 ])
 def test_an_unconfirmable_create_keeps_the_claim_and_never_writes_twice(
@@ -209,12 +210,12 @@ def test_an_unconfirmable_create_keeps_the_claim_and_never_writes_twice(
 def test_a_create_that_did_not_land_is_the_plain_save_error(fake, monkeypatch):
     _fail_before_applying(fake, monkeypatch, "/timeentries/")
     args = _time_entry_args()
-    first = _refused("create_time_entry", args)
+    first = _refused("create_time_entries_bulk", args)
     assert "Erreur lors de la sauvegarde" in str(first)
     assert first.reason != "write_outcome_uncertain"
     assert fake.peek_collection("timeentries") == {}
     # The claim was released: the same key now writes ONE row.
-    _call("create_time_entry", args)
+    _call("create_time_entries_bulk", args)
     assert len(fake.peek_collection("timeentries")) == 1
 
 

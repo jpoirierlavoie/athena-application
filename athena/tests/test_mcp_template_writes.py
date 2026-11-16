@@ -601,11 +601,11 @@ def test_a_rename_is_checked_against_the_source_dossier_and_the_texts_say_so(
     assert "refused while it or the template's name" not in text
     assert "checked against no dossier" not in text
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it.
-    assert "or `name` (literals included too) still carries the source " in (
+    assert "si le fichier ou `name` porte encore des identifiants du dossier source" in (
         tools.TOOLS["create_template"]["description"])
-    assert "never a party's name" in (
-        tools.TOOLS["update_template"]["description"])
-    assert "a new name is checked against the dossiers its files came from" in (
+    assert "jamais le nom d'un client" in (
+        tools.TOOLS["create_template"]["input_schema"]["properties"]["name"]["description"])
+    assert "vérifié contre dossiers sources" in (
         tools.TOOLS["update_template"]["description"])
     # The TEMPLATES consent partial said it too until 2026-11-10 (the
     # screen cut short at the lawyer's request): the descriptions above.
@@ -1143,7 +1143,7 @@ def test_the_instructions_and_the_consent_name_the_template_tools():
     text = endpoint.INSTRUCTIONS
     assert "`create_template`" in text and "`update_template`" in text
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: a stored file is refused while it names its source dossier.
-    assert "still carries the source dossier's names" in (
+    assert "si le fichier ou `name` porte encore des identifiants du dossier source" in (
         tools.TOOLS["create_template"]["description"])
     # REWRITTEN in lot 2A (T11): the template paragraph moved with its tools
     # from the FILES partial to the TEMPLATES family's own.

@@ -159,8 +159,13 @@ def _add_security_headers(response: Response) -> Response:
     h["Permissions-Policy"] = (
         "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
     )
-    h["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
-    h["Pragma"] = "no-cache"
+    # Public SEP-2127 discovery card sets its own Cache-Control (max-age=600).
+    if not (
+        request.path == "/mcp/server-card"
+        and response.status_code in (200, 204)
+    ):
+        h["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        h["Pragma"] = "no-cache"
     _add_early_hints(response)
     return response
 
@@ -514,6 +519,7 @@ _APPCHECK_EXEMPT_PREFIXES = (
     "/dav/",
     "/.well-known/",
     "/auth/",
+    "/mcp/",
 )
 
 
@@ -555,6 +561,8 @@ def _verify_app_check() -> Optional[Response]:
         return None
 
     # Skip exempt paths
+    if request.path == "/mcp":
+        return None
     for prefix in _APPCHECK_EXEMPT_PREFIXES:
         if request.path.startswith(prefix):
             return None

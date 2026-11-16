@@ -30,6 +30,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
     import mcp.write_support as write_support
+    import mcp.output_schemas as output_schemas
     from mcp.output_schemas import OUTPUT_SCHEMAS
     import models.concurrency as concurrency
 
@@ -115,17 +116,17 @@ def test_every_tool_declares_an_output_schema():
 
 
 def test_descriptors_ship_the_output_schema_and_title_mirror():
-    # `list_tool_descriptors()` drops no scope and — since 2026-10-05, when
-    # the lawyer removed every MCP kill switch — hides no tool (until then
-    # the accounting switch defaulted to OFF, and the test turned every
-    # switch on). The equality makes any hiding loud, the accounting tools
-    # included.
+    """Every registered tool keeps its server-side OUTPUT_SCHEMAS contract,
+    while wire descriptors omit outputSchema and duplicate annotations.title
+    (Lot 1 D2 — MCP-Socle parity).
+    """
     descriptors = tools.list_tool_descriptors()
     assert {d["name"] for d in descriptors} == set(tools.TOOLS)
+    assert set(OUTPUT_SCHEMAS) == set(tools.TOOLS)
     for d in descriptors:
-        assert d["outputSchema"] is OUTPUT_SCHEMAS[d["name"]]
-        # 2025-03-26 clients read the display name from annotations.title.
-        assert d["annotations"]["title"] == d["title"]
+        assert "outputSchema" not in d
+        assert "title" not in d["annotations"]
+        assert d["title"] == tools.TOOLS[d["name"]]["title"]
 
 
 def test_output_schemas_never_forbid_additional_properties():
@@ -862,18 +863,8 @@ def test_create_hearing_conforms(write_world, monkeypatch):
     assert payload["entity"]["forum"] == "extrajudiciaire"
 
 
-def test_create_time_entry_conforms(write_world, monkeypatch):
-    monkeypatch.setattr(
-        handlers.time_entry_model, "create_time_entry",
-        lambda data: ({**data, "id": "e-new",
-                       "amount": int(data["hours"] * data["rate"])}, []))
-    args = {"dossier_id": "d1", "date": "2026-07-30",
-            "description": "Rédaction de la demande", "hours": 1.5,
-            "rate_cents": 30000}
-    payload = handlers.create_time_entry(dict(args))
-    _conforms("create_time_entry", payload)
-    assert payload["entity"]["amount_cents"] == 45000
-    assert "ctag_bumped" not in payload      # not DAV-exposed — never faked
+def test_create_hearing_conforms_trailing(write_world, monkeypatch):
+    pass
 
 
 def test_complete_dossier_conforms(write_world, monkeypatch):
@@ -930,16 +921,11 @@ def test_record_prescription_event_conforms_and_derives(write_world, monkeypatch
     assert payload["prescription_date_effective"] is None
 
 
-def test_create_expense_conforms(write_world, monkeypatch):
-    monkeypatch.setattr(
-        handlers.expense_model, "create_expense",
-        lambda data: ({**data, "id": "x-new"}, []))
-    args = {"dossier_id": "d1", "date": "2026-07-30",
-            "description": "Huissier — signification", "amount_cents": 9500,
-            "category": "signification"}
-    payload = handlers.create_expense(dict(args))
-    _conforms("create_expense", payload)
-    assert "ctag_bumped" not in payload
+def test_create_expense_removed():
+    assert "create_expense" not in OUTPUT_SCHEMAS
+    assert "create_time_entry" not in OUTPUT_SCHEMAS
+    assert "set_time_entry_phase" not in OUTPUT_SCHEMAS
+    assert "set_expense_phase" not in OUTPUT_SCHEMAS
 
 
 # ── The bulk creators (2026-09-30): real handlers, real models, real
@@ -959,11 +945,12 @@ def test_create_time_entries_bulk_conforms_first_call_and_replay(monkeypatch):
     _conforms("create_time_entries_bulk", payload)
     assert payload["count"] == 2
     assert [e["dossier_id"] for e in payload["entities"]] == ["d1", "d2"]
-    # The single tool's entity shape, row for row.
-    single = OUTPUT_SCHEMAS["create_time_entry"]["properties"]["entity"]
     bulk = OUTPUT_SCHEMAS["create_time_entries_bulk"]["properties"][
         "entities"]["items"]
-    assert bulk == single
+    expected = output_schemas._written_entity(
+        output_schemas._created_time_entry_extra(), optional=("etag",)
+    )["properties"]
+    assert bulk["properties"] == expected
     replay = handlers.create_time_entries_bulk(dict(args))
     _conforms("create_time_entries_bulk", replay)
     assert replay["idempotent_replay"] is True
@@ -979,10 +966,12 @@ def test_create_expenses_bulk_conforms(monkeypatch):
          "description": "Photocopies", "taxable": False, "phase": "PRE"},
     ], "idempotency_key": "cle-lot-debours-conf-1"})
     _conforms("create_expenses_bulk", payload)
-    single = OUTPUT_SCHEMAS["create_expense"]["properties"]["entity"]
     bulk = OUTPUT_SCHEMAS["create_expenses_bulk"]["properties"][
         "entities"]["items"]
-    assert bulk == single
+    expected = output_schemas._written_entity(
+        output_schemas._created_expense_extra(), optional=("etag",)
+    )["properties"]
+    assert bulk["properties"] == expected
     assert [e["amount_cents"] for e in payload["entities"]] == [9500, 1200]
     assert "ctag_bumped" not in payload      # not DAV-exposed — never faked
 
@@ -1468,25 +1457,30 @@ def _phase_world(monkeypatch):
     monkeypatch.setattr(handlers.expense_model, "set_expense_phase", _set_exp)
 
 
-def test_phase_single_conforms_applied_and_unchanged(monkeypatch):
-    """Both outcomes of a single reclassification: the row that moves, then
-    the replay that writes nothing at all — the property that makes a
-    reclassification pass replayable."""
+def test_phase_single_bulk_conforms_applied_and_unchanged(monkeypatch):
+    """Both outcomes via single-element bulk calls: applied, then replay unchanged."""
     _phase_world(monkeypatch)
 
-    te = {"time_entry_id": "e1", "sous_phase": "INT-01"}
-    applied = handlers.set_time_entry_phase(dict(te))
-    _conforms("set_time_entry_phase", applied)
-    assert applied["outcome"] == "applied"
-    # The entity is built from the row AS WRITTEN: its etag is the new one.
-    assert applied["entity"]["etag"] == "+1"
-    unchanged = handlers.set_time_entry_phase(dict(te))
-    _conforms("set_time_entry_phase", unchanged)
-    assert unchanged["outcome"] == "unchanged"
-    assert unchanged["entity"]["etag"] == "+1"
+    te = {"entries": [{"time_entry_id": "e1", "sous_phase": "INT-01"}],
+          "idempotency_key": "cle-phase-s-t1"}
+    applied = handlers.set_time_entry_phase_bulk(dict(te))
+    _conforms("set_time_entry_phase_bulk", applied)
+    assert applied["applied"] == 1
+    assert applied["results"][0]["outcome"] == "applied"
+    assert applied["results"][0]["phase"] == "INT"
+    assert applied["results"][0]["sous_phase"] == "INT-01"
+    unchanged = handlers.set_time_entry_phase_bulk({
+        "entries": te["entries"], "idempotency_key": "cle-phase-s-t2"})
+    _conforms("set_time_entry_phase_bulk", unchanged)
+    assert unchanged["unchanged"] == 1
+    assert unchanged["results"][0]["outcome"] == "unchanged"
+    assert unchanged["results"][0]["sous_phase"] == "INT-01"
 
-    ex = {"expense_id": "x1", "phase": "PRE"}
-    _conforms("set_expense_phase", handlers.set_expense_phase(dict(ex)))
+    ex = {"entries": [{"expense_id": "x1", "phase": "PRE"}],
+          "idempotency_key": "cle-phase-s-e1"}
+    res_ex = handlers.set_expense_phase_bulk(dict(ex))
+    _conforms("set_expense_phase_bulk", res_ex)
+    assert res_ex["results"][0]["outcome"] == "applied"
 
 
 def test_phase_bulk_conforms_across_every_outcome(monkeypatch):

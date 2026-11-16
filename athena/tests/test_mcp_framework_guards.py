@@ -385,11 +385,11 @@ def test_the_key_s_description_says_what_its_policy_does():
         text = prop["description"]
         if name in required:
             assert text == tools.REQUIRED_KEY_DESCRIPTION, name
-            assert "REQUIRED" in text and "Recommended" not in text, name
+            assert "REQUISE" in text and "Recommandée" not in text, name
         else:
-            assert "Pass one on every write" in text, name
+            assert "Passez-en une à chaque écriture" in text, name
             assert "unattended/scheduled" not in text, name
-            assert "REQUIRED" not in text, name
+            assert "REQUISE" not in text, name
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -760,8 +760,7 @@ def test_the_concurrency_guard_is_not_vacuous():
     guarded = sorted(n for n, spec in tools.TOOLS.items()
                      if spec.get("concurrency") in _ETAGGED)
     assert {"update_partie", "update_dossier", "update_time_entry",
-            "update_expense", "set_time_entry_phase",
-            "set_expense_phase"} <= set(guarded), guarded
+            "update_expense"} <= set(guarded), guarded
     assert all(tools.TOOLS[n]["concurrency"] for n in tools.EDIT_TOOLS)
 
 

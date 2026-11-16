@@ -117,7 +117,7 @@ def test_le_delai_d_une_action_est_annonce_comme_indicatif():
     certaines lignes est voulu (la source n'a pas de période unique) : il ne
     doit pas se lire comme une lacune à combler."""
     description = tools.TOOLS["get_reference_vocabulary"]["description"]
-    assert "INDICATIVE" in description
+    assert "INDICATIF" in description
     payload = handlers.get_reference_vocabulary(
         {"kind": "actions", "domaine": "REC"}
     )
@@ -1091,17 +1091,22 @@ def test_un_quart_d_heure_s_importe_exactement(billing, monkeypatch):
     imprime 75,00 $ — en silence, et l'écart faisait ensuite échouer la
     réconciliation de la facture par une différence que l'appelant ne pouvait
     pas combler."""
+    from tests._fake_firestore import install
+    import mcp.write_support as write_support
+    install(monkeypatch, write_support)
     created = {}
     _stub_dossier_reads(monkeypatch,
                         lambda i: {"id": "d1", "file_number": "2019-014",
                                    "title": "T", "status": "actif",
                                    "hourly_rate": 30000})
     monkeypatch.setattr(
-        handlers.time_entry_model, "create_time_entry",
-        lambda data: (created.update(data) or ({**data, "id": "e",
-                                                "amount": 7500}, [])))
-    handlers.create_time_entry({"dossier_id": "d1", "date": "2019-11-04",
-                                "description": "Appel", "hours": 0.25})
+        handlers.time_entry_model, "create_time_entries_bulk",
+        lambda rows: ([created.update(rows[0]) or {**rows[0], "id": "e",
+                                                  "amount": 7500}], []))
+    handlers.create_time_entries_bulk({
+        "entries": [{"dossier_id": "d1", "date": "2019-11-04",
+                     "description": "Appel", "hours": 0.25}],
+        "idempotency_key": "cle-quart-heure-import"})
     assert created["hours"] == 0.25
 
     handlers.update_time_entry({"time_entry_id": "e1", "hours": 0.75})
@@ -1362,9 +1367,12 @@ def test_l_ancre_d_import_est_atteignable_sur_le_temps_et_le_debourse():
     """CONSTAT 2. find_imported annonce chercher dans timeentries et
     expenses ; sans legacy_ref sur ces quatre outils, une reprise reprise
     après 24 h n'y trouvait RIEN et recréait chaque ligne."""
-    for name in ("create_time_entry", "create_expense",
-                 "update_time_entry", "update_expense"):
+    for name in ("update_time_entry", "update_expense"):
         assert "legacy_ref" in tools.TOOLS[name]["input_schema"]["properties"]
+    for name in ("create_time_entries_bulk", "create_expenses_bulk"):
+        item_props = (tools.TOOLS[name]["input_schema"]["properties"]
+                      ["entries"]["items"]["properties"])
+        assert "legacy_ref" in item_props
 
 
 def test_les_collections_cherchees_sont_celles_qu_on_peut_ancrer():
@@ -1373,7 +1381,13 @@ def test_les_collections_cherchees_sont_celles_qu_on_peut_ancrer():
     ancrables = {
         coll
         for name, spec in tools.TOOLS.items()
-        if "legacy_ref" in spec["input_schema"]["properties"]
+        if (
+            "legacy_ref" in spec["input_schema"]["properties"]
+            or "legacy_ref" in (
+                spec["input_schema"]["properties"]
+                .get("entries", {}).get("items", {}).get("properties", {})
+            )
+        )
         for coll in _collections_written_by(name)
     }
     cherchees = {coll for _t, coll in handlers._LEGACY_COLLECTIONS}
@@ -1384,9 +1398,9 @@ def _collections_written_by(tool: str) -> set:
     return {
         "create_partie": {"parties"}, "update_partie": {"parties"},
         "create_dossier": {"dossiers"}, "update_dossier": {"dossiers"},
-        "create_time_entry": {"timeentries"},
+        "create_time_entries_bulk": {"timeentries"},
         "update_time_entry": {"timeentries"},
-        "create_expense": {"expenses"}, "update_expense": {"expenses"},
+        "create_expenses_bulk": {"expenses"}, "update_expense": {"expenses"},
         "import_invoice": {"invoices"},
     }.get(tool, set())
 

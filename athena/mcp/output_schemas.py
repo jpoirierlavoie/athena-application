@@ -3101,61 +3101,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     # schemas above still say « always false », and they still tell the
     # truth: their handlers refuse an invoiced row.
 
-    "set_time_entry_phase": _obj({
-        "updated": {"type": "boolean", "enum": [True]},
-        "entity_type": _str("Always « time_entry »."),
-        "outcome": {
-            "type": "string", "enum": ["applied", "unchanged"],
-            "description": (
-                "« unchanged » = the entry already carried that exact code "
-                "and NOTHING was written (no updated_at, no etag). A refusal "
-                "is an error, never an outcome here."),
-        },
-        "entity": _obj({
-            "id": _str(),
-            "dossier_id": _str(),
-            "label": _str("The billing narrative — echoed, never changed."),
-            "date": _nstr("YYYY-MM-DD."),
-            "hours": _num("Echoed unchanged: this tool cannot move it."),
-            "billable": _bool("Echoed unchanged."),
-            "invoiced": _bool(
-                "MAY be true — the phase is correctable on a billed entry."),
-            **_phase_pair(),
-            **_money("rate", "Echoed unchanged."),
-            **_money("amount", "Echoed unchanged — no figure moves here."),
-            **_written_etag(),
-        }, optional=("etag",)),
-        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
-        **_write_protocol_keys(),
-    }),
-
-    "set_expense_phase": _obj({
-        "updated": {"type": "boolean", "enum": [True]},
-        "entity_type": _str("Always « expense »."),
-        "outcome": {
-            "type": "string", "enum": ["applied", "unchanged"],
-            "description": (
-                "« unchanged » = the disbursement already carried that code; "
-                "nothing was written."),
-        },
-        "entity": _obj({
-            "id": _str(),
-            "dossier_id": _str(),
-            "label": _str("Echoed, never changed."),
-            "date": _nstr("YYYY-MM-DD."),
-            "category": _str(
-                "The DISBURSEMENT category — a different, orthogonal "
-                "vocabulary from the litigation phase. Echoed unchanged."),
-            "taxable": _bool("Echoed unchanged."),
-            "invoiced": _bool("MAY be true."),
-            **_phase_pair(),
-            **_money("amount", "Echoed unchanged."),
-            **_written_etag(),
-        }, optional=("etag",)),
-        "warnings": _arr(_str()),
-        **_write_protocol_keys(),
-    }),
-
     "set_time_entry_phase_bulk": _phase_bulk_result("time_entry"),
     "set_expense_phase_bulk": _phase_bulk_result("expense"),
 
@@ -4022,12 +3967,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     ),
 
     "decide_rendez_vous": _decide_rendez_vous_result(),
-
-    "create_time_entry": _entity_write_result(
-        _created_time_entry_extra(), dav=False, entity_optional=("etag",)),
-
-    "create_expense": _entity_write_result(
-        _created_expense_extra(), dav=False, entity_optional=("etag",)),
 
     "create_time_entries_bulk": _entry_bulk_result(
         "time_entry", _created_time_entry_extra()),

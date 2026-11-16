@@ -140,24 +140,22 @@ FAMILIES: tuple[Family, ...] = (
         scope=SCOPE_WRITE,
         tools=(
             "create_note", "append_to_note", "create_task", "create_hearing",
-            "create_time_entry", "create_expense",
             "create_time_entries_bulk", "create_expenses_bulk",
             "create_partie", "create_dossier", "complete_dossier",
             "record_signification", "record_prescription_event",
         ),
         title_fr="Créer",
         consent_fr=(
-            "notes, tâches, événements, temps et déboursés (aussi par lots), "
+            "notes, tâches, événements, temps et déboursés par lots, "
             "contacts et dossiers&nbsp;; compléter un dossier"
         ),
         instructions_en=(
-            "`create_note`, `append_to_note`, `create_task`, "
-            "`create_hearing`, `create_time_entry`, `create_expense` (their "
-            "batch forms `create_time_entries_bulk`, `create_expenses_bulk`: "
-            "up to {entry_bulk_max} rows, ALL OR NOTHING), `create_partie`, "
-            "`create_dossier`; `complete_dossier` fills ONLY empty fields "
-            "and refuses to overwrite; `record_signification` and "
-            "`record_prescription_event` append to the dossier's registers."
+            "`create_note`, `append_to_note`, `create_task`, `create_hearing`, "
+            "`create_time_entries_bulk`, `create_expenses_bulk` (jusqu'à "
+            "{entry_bulk_max} lignes, TOUT OU RIEN), `create_partie`, "
+            "`create_dossier` ; `complete_dossier` remplit UNIQUEMENT les "
+            "champs vides et refuse d'écraser ; `record_signification` et "
+            "`record_prescription_event` inscrivent aux registres du dossier."
         ),
     ),
     Family(
@@ -175,9 +173,9 @@ FAMILIES: tuple[Family, ...] = (
         ),
         instructions_en=(
             "`update_partie`, `update_dossier`, `update_time_entry`, "
-            "`update_expense` REPLACE what you name (an entry only while "
-            "un-invoiced); `complete_task` closes a task and never reopens a "
-            "closed one — that is `reopen_task`."
+            "`update_expense` REMPLACENT les champs nommés (une écriture "
+            "facturée est figée) ; `complete_task` clôt une tâche et ne "
+            "rouvre jamais une tâche close (utilisez `reopen_task`)."
         ),
     ),
     Family(
@@ -195,11 +193,11 @@ FAMILIES: tuple[Family, ...] = (
             "cause"
         ),
         instructions_en=(
-            "`update_task`, `reopen_task`, `update_note`, `edit_analyse` (the "
-            "théorie de la cause), `create_protocol`, `update_protocol`, "
+            "`update_task`, `reopen_task`, `update_note`, `edit_analyse` "
+            "(théorie de la cause), `create_protocol`, `update_protocol`, "
             "`add_protocol_step`, `update_protocol_step`, `update_hearing`, "
-            "`create_hearing_series`; closing or reopening cascades between a "
-            "task, its step and the protocol."
+            "`create_hearing_series` ; clore ou rouvrir répercute l'état "
+            "entre tâche, étape et protocole."
         ),
     ),
     Family(
@@ -213,10 +211,9 @@ FAMILIES: tuple[Family, ...] = (
             "annule la réunion Outlook et <strong>en avise le client</strong>"
         ),
         instructions_en=(
-            "`decide_rendez_vous` confirms or refuses a pending Bookings "
-            "request (refusing: the outbound effect above); a CONFIRMED "
-            "rendez-vous is never rescheduled or cancelled here — that is "
-            "done in Outlook."
+            "`decide_rendez_vous` confirme ou refuse une demande Bookings en "
+            "attente (refus : l'effet sortant ci-dessus) ; un rendez-vous "
+            "CONFIRMÉ ne se reporte ni ne s'annule ici (Outlook)."
         ),
     ),
     Family(
@@ -224,17 +221,15 @@ FAMILIES: tuple[Family, ...] = (
         label="RECLASSIFY",
         scope=SCOPE_WRITE,
         tools=(
-            "set_time_entry_phase", "set_expense_phase",
             "set_time_entry_phase_bulk", "set_expense_phase_bulk",
         ),
         title_fr="Phase",
         consent_fr="reclasser la phase du litige, même d'une entrée facturée",
         instructions_en=(
-            "`set_time_entry_phase`, `set_expense_phase`, "
-            "`set_time_entry_phase_bulk`, `set_expense_phase_bulk` (up to "
-            "{phase_bulk_max} rows a call) change ONLY the litigation phase — "
-            "the only writes that change a row WHILE it stays carried to an "
-            "invoice (a void releases it instead)."
+            "`set_time_entry_phase_bulk`, `set_expense_phase_bulk` (jusqu'à "
+            "{phase_bulk_max} lignes par appel) modifient UNIQUEMENT la phase "
+            "du litige, même sur une entrée portée à une facture (seule "
+            "l'annulation de facture la libère)."
         ),
     ),
     Family(
@@ -245,8 +240,8 @@ FAMILIES: tuple[Family, ...] = (
         title_fr="Reprise",
         consent_fr="reprendre les factures de votre ancien système",
         instructions_en=(
-            "`import_invoice` recreates a previous system's invoice under ITS "
-            "number and date: it NEVER allocates a number and lands in "
+            "`import_invoice` recrée une facture d'un ancien système sous SON "
+            "numéro et SA date : n'alloue JAMAIS de numéro et atterrit au "
             "brouillon."
         ),
     ),
@@ -263,11 +258,11 @@ FAMILIES: tuple[Family, ...] = (
             "facture&nbsp;; versions du budget"
         ),
         instructions_en=(
-            "`create_invoice` issues a NEW brouillon (read `preview_invoice` "
-            "first) and CONSUMES the year's next number for ever; "
-            "`update_invoice` corrects ONLY a brouillon, marks envoyée or "
-            "en_retard (sending NOTHING) or voids; `create_budget_version` "
-            "adds a budget version (read `get_budget` first)."
+            "`create_invoice` émet un NOUVEAU brouillon (`preview_invoice` "
+            "d'abord) et CONSOMME à jamais le prochain numéro annuel ; "
+            "`update_invoice` corrige un brouillon, marque envoyée/en_retard "
+            "(sans rien envoyer) ou annule ; `create_budget_version` ajoute "
+            "une version (`get_budget` d'abord)."
         ),
     ),
     Family(
@@ -281,9 +276,9 @@ FAMILIES: tuple[Family, ...] = (
             "votre confirmation"
         ),
         instructions_en=(
-            "`record_document_analysis` records a qualification: the CODE "
-            "derives the category — never over the lawyer's — and a "
-            "protection level only ever RISES."
+            "`record_document_analysis` enregistre une qualification : le CODE "
+            "dérive la catégorie — jamais sur celle de l'avocat — et le "
+            "niveau de protection ne fait qu'AUGMENTER."
         ),
     ),
     Family(
@@ -300,12 +295,11 @@ FAMILIES: tuple[Family, ...] = (
             "justificative (une pièce remplacée reste conservée)"
         ),
         instructions_en=(
-            "`update_document`, `move_documents`, `manage_folder` file "
-            "documents (a category set here stays PRESUMED); `fill_gabarit`, "
-            "`create_document` make NEW Word documents; `begin_upload` then "
-            "`finalize_upload` bring an outside file in: a document, a "
-            "gabarit, or an administration entry's receipt (purpose "
-            "piece_justificative; a replaced receipt is KEPT)."
+            "`update_document`, `move_documents`, `manage_folder` classent "
+            "(catégorie ici = PRÉSUMÉE) ; `fill_gabarit`, `create_document` "
+            "créent de NOUVEAUX documents Word ; `begin_upload` puis "
+            "`finalize_upload` versent document, gabarit ou pièce "
+            "justificative (piece_justificative ; pièce remplacée conservée)."
         ),
     ),
     Family(
@@ -323,10 +317,10 @@ FAMILIES: tuple[Family, ...] = (
         # own description, which is never formatted (tests/test_mcp_generation
         # pins both).
         instructions_en=(
-            "`create_template`, `update_template` register or correct a "
-            "gabarit, a replaced file kept (templatizing with "
-            "`substitutions`: read `preview_templatize` first); only the "
-            "lawyer designates the ACTIVE ones."
+            "`create_template`, `update_template` enregistrent ou corrigent "
+            "un gabarit, version précédente conservée (`substitutions` : "
+            "`preview_templatize` d'abord) ; seul l'avocat désigne les "
+            "gabarits ACTIFS."
         ),
     ),
     Family(
@@ -340,9 +334,9 @@ FAMILIES: tuple[Family, ...] = (
             "(le contact reste)"
         ),
         instructions_en=(
-            "`set_dossier_status` (fermé / archivé DRAINS its DavX5 "
-            "collection) and `update_dossier_party` (a party's roles or "
-            "lawyer; a detach removes a LINK — the contact stays)."
+            "`set_dossier_status` (fermé/archivé VIDE sa collection DavX5) et "
+            "`update_dossier_party` (rôles ou avocat d'une partie ; détacher "
+            "retire un LIEN — le contact reste)."
         ),
     ),
     Family(
@@ -356,9 +350,9 @@ FAMILIES: tuple[Family, ...] = (
             "<strong>présumées</strong> jusqu'à votre confirmation"
         ),
         instructions_en=(
-            "`update_partie_mandataire` and `record_kyc_status`, which "
-            "INSCRIBES a PRESUMED check — it counts as NOT done until the "
-            "lawyer confirms it."
+            "`update_partie_mandataire` et `record_kyc_status`, qui INSCRIT "
+            "une vérification PRÉSUMÉE — elle compte comme NON faite tant que "
+            "l'avocat ne l'a pas confirmée."
         ),
     ),
     # Lot 5b — ACCOUNTING (plan D1, D2, D14, D16). Under its own scope,
@@ -383,12 +377,10 @@ FAMILIES: tuple[Family, ...] = (
         instructions_en=(
             "`record_trust_entry`, `record_admin_entry`, "
             "`update_admin_entry`, `clear_register_entries`, "
-            "`reverse_register_entry` (read: `get_admin_ledger`): record ONLY "
-            "movements that HAPPENED at the bank, at their date, each "
-            "confirmed with the user; an idempotency_key is REQUIRED (refused "
-            "when the replay "
-            "store is unreadable); an uncertain outcome → re-read before "
-            "retrying with the SAME key."
+            "`reverse_register_entry` (`get_admin_ledger` en lecture) : "
+            "mouvements RÉELLEMENT SURVENUS à la banque, à leur date, confirmés "
+            "avec l'utilisateur ; `idempotency_key` REQUISE (refus si rejeu "
+            "illisible) ; résultat incertain : relire, puis MÊME clé."
         ),
     ),
 )
@@ -458,8 +450,8 @@ NEVERS: tuple[Never, ...] = (
         # line: « le contact reste »).
         fr="<strong>supprimer</strong> quoi que ce soit",
         en=(
-            "DELETE anything (a cancelled item is kept; detaching a party or "
-            "a mandataire removes a LINK — the contact stays)"
+            "rien SUPPRIMER (un élément annulé est conservé ; détacher une "
+            "partie ou un mandataire retire un LIEN, le contact reste)"
         ),
         in_core=True,
         forbidden=(r"delete_\w+", r"record_deletion"),
@@ -483,7 +475,7 @@ NEVERS: tuple[Never, ...] = (
         # own transaction; record_trust_entry and record_admin_entry name
         # which.
         en=(
-            "record a payment outside the accounting registers"
+            "inscrire un paiement hors des registres comptables"
         ),
         in_core=True,
         # Lot 5a (step 2): the ledger now STAGES the payment itself, through
@@ -507,7 +499,7 @@ NEVERS: tuple[Never, ...] = (
         key="invoice_send",
         fr="<strong>envoyer</strong> une facture",
         en=(
-            "SEND an invoice to anyone (marking one envoyée sends nothing)"
+            "ENVOYER une facture (marquer envoyée n'envoie rien)"
         ),
         in_core=True,
         # Sending an invoice is an email: the connector never imports the
@@ -521,7 +513,7 @@ NEVERS: tuple[Never, ...] = (
             "marquer une facture <strong>payée</strong> sans paiement inscrit"
         ),
         en=(
-            "mark an invoice payée by a status change"
+            "marquer payée une facture par changement de statut"
         ),
         in_core=True,
         # A payload promise: update_invoice's status enum has no « payée »,
@@ -541,8 +533,8 @@ NEVERS: tuple[Never, ...] = (
         key="invoice_sources",
         fr="écarter <strong>en silence</strong> une entrée d'une facture",
         en=(
-            "It never drops a named time entry or disbursement from an "
-            "invoice silently: one unusable source refuses the whole invoice."
+            "Ne jamais écarter en silence une entrée nommée sur une "
+            "facture : une source inutilisable fait refuser toute la facture."
         ),
         # create_invoice SKIPS an unusable source in silence unless told
         # otherwise — so every connector call must say so.
@@ -586,8 +578,8 @@ NEVERS: tuple[Never, ...] = (
             "conflits, ni changer la vôtre"
         ),
         en=(
-            "CONFIRM an identity or conflict check, or change one the lawyer "
-            "decided or confirmed"
+            "CONFIRMER une vérification d'identité ou de conflits, ni écraser "
+            "celle décidée ou confirmée par l'avocat"
         ),
         in_core=True,
         forbidden=("confirm_kyc_status", "link_kyc_document"),
@@ -612,8 +604,8 @@ NEVERS: tuple[Never, ...] = (
         key="uncancel",
         fr="<strong>défaire une annulation</strong> sans demande expresse",
         en=(
-            "It never silently undoes a cancellation: reopening an annulée "
-            "task requires reopen_cancelled true."
+            "Ne jamais défaire silencieusement une annulation : rouvrir une "
+            "tâche annulée exige `reopen_cancelled` à true."
         ),
         # A four-state toggle: it sends annulée AND terminée back to
         # à_faire, silently un-cancelling a cancelled task. Lot 1b's
@@ -635,7 +627,7 @@ NEVERS: tuple[Never, ...] = (
         # refusal, whose text is fixed.
         fr="<strong>écrire</strong> à un client ou à un tiers",
         en=(
-            "compose a message to anyone outside the practice"
+            "rédiger un message vers un tiers hors du cabinet"
         ),
         in_core=True,
         # The Graph verbs that send or rewrite something in a mailbox or a
@@ -671,8 +663,8 @@ NEVERS: tuple[Never, ...] = (
         # source stays byte-identical (tests/test_mcp_templatize.py).
         fr="modifier le <strong>fichier</strong> d'un document",
         en=(
-            "It never changes an existing document's FILE: a generated "
-            "project, a copy or an upload is always a NEW document."
+            "Ne jamais modifier le FICHIER d'un document existant : un projet "
+            "généré, une copie ou un téléversement crée un NOUVEAU document."
         ),
         forbidden=(
             "upload_from_file", "upload_from_string", "upload_from_filename",
@@ -694,8 +686,8 @@ NEVERS: tuple[Never, ...] = (
         # the « document » promise's), so the behaviour is pinned instead.
         fr="perdre une version d'un <strong>gabarit</strong>",
         en=(
-            "It never replaces a template's file without keeping the previous "
-            "one, restorable in the application."
+            "Ne jamais remplacer le fichier d'un gabarit sans conserver le "
+            "précédent, rétablissable dans l'application."
         ),
         behavioural_test=(
             "tests/test_mcp_template_writes.py::"
@@ -714,10 +706,10 @@ NEVERS: tuple[Never, ...] = (
         # module or reached service can ever mint a READ link.
         fr="obtenir un <strong>lien de lecture</strong> d'un fichier",
         en=(
-            "It never hands out a link that reads or downloads a stored file, "
-            "nor a storage path: its ONE link is `begin_upload`'s "
-            "`upload_url` — write-only, for one declared file within the "
-            "hour."
+            "Ne jamais remettre de lien pour lire ou télécharger un fichier "
+            "stocké ni de chemin de stockage : le SEUL lien remis est "
+            "`upload_url` de `begin_upload` (écriture seule, un fichier dans "
+            "l'heure)."
         ),
         forbidden=(
             "get_signed_url", "sign_blob_url", "generate_signed_url",
@@ -742,7 +734,7 @@ NEVERS: tuple[Never, ...] = (
         # « éditer, c'est confirmer »).
         fr="<strong>confirmer</strong> une catégorie ou une analyse présumées",
         en=(
-            "confirm a presumed category or analysis"
+            "confirmer une catégorie ou une analyse présumées"
         ),
         in_core=True,
         forbidden=(
@@ -776,8 +768,8 @@ NEVERS: tuple[Never, ...] = (
         # template makes every invoice note refuse.
         fr="<strong>désigner un gabarit actif</strong>",
         en=(
-            "It never designates, nor withdraws, the ACTIVE note-d'honoraires "
-            "or note-print template: only the lawyer does."
+            "Ne jamais désigner ni retirer le gabarit ACTIF de note "
+            "d'honoraires ou d'impression de note : seul l'avocat le fait."
         ),
         forbidden=("set_active_template", "clear_active_template"),
     ),
@@ -801,10 +793,11 @@ NEVERS: tuple[Never, ...] = (
         key="register_delete",
         fr="<strong>supprimer</strong> une écriture comptable",
         en=(
-            "It never deletes a register entry: a trust entry is corrected "
-            "only by a reversal (both kept for good), an administration "
-            "entry with `update_admin_entry` while editable, by a reversal "
-            "afterwards."
+            "Ne jamais supprimer une écriture comptable : une écriture au "
+            "fidéicommis ne se corrige que par contre-passation (les deux "
+            "restent pour toujours), une écriture d'administration par "
+            "`update_admin_entry` tant qu'elle est modifiable, sinon par "
+            "contre-passation."
         ),
         # The registers' deleters, named beside the « delete » promise's
         # pattern (which matches them too): a promise about ENTRIES keeps
@@ -822,10 +815,9 @@ NEVERS: tuple[Never, ...] = (
             "modifier un compte"
         ),
         en=(
-            "It never starts, completes or abandons a reconciliation, nor "
-            "attaches, replaces or removes its bank statement, nor creates "
-            "or modifies an account: only the lawyer does, in the "
-            "application."
+            "Ne jamais ouvrir, clore ou abandonner une conciliation, ni "
+            "joindre, remplacer ou retirer son relevé bancaire, ni créer ou "
+            "modifier un compte : seul l'avocat le fait dans l'application."
         ),
         forbidden=_REGISTER_SETUP_WRITERS,
     ),
@@ -833,9 +825,9 @@ NEVERS: tuple[Never, ...] = (
         key="register_transfer",
         fr="<strong>virer des fonds</strong> du fidéicommis entre dossiers",
         en=(
-            "It never transfers trust funds between dossiers, nor reverses "
-            "a leg of such a transfer: only the lawyer does, in the "
-            "application."
+            "Ne jamais virer des fonds du fidéicommis entre dossiers, ni "
+            "contre-passer une jambe d'un tel virement : seul l'avocat le "
+            "fait dans l'application."
         ),
         # The writer is swept; the reversal of a leg is refused by the
         # handler before the model (a leg's reversal moves one client's
@@ -850,8 +842,8 @@ NEVERS: tuple[Never, ...] = (
         key="trust_withdrawal",
         fr="retirer du fidéicommis <strong>en espèces</strong>",
         en=(
-            "It never withdraws trust funds in cash (art. 57 — the art. 72 "
-            "cash refund is recorded in the application)."
+            "Ne jamais retirer du fidéicommis en espèces (art. 57 — le "
+            "remboursement en espèces art. 72 s'inscrit dans l'application)."
         ),
         # The model refuses a cash withdrawal unless it cites the art. 72
         # cash receipt — so no tool may even DECLARE that input.
@@ -868,11 +860,10 @@ NEVERS: tuple[Never, ...] = (
             "ou d'un autre client"
         ),
         en=(
-            "It never backs a fee payment with a paper invoice, with an "
-            "invoice not yet sent, with an invoice that imputes a "
-            "provision, or with another client's invoice than the one whose "
-            "funds leave trust (nor one naming no client, in a dossier of "
-            "several)."
+            "Ne jamais payer des honoraires sur une facture papier, non "
+            "envoyée, imputant une provision ou visant un autre client que "
+            "celui dont les fonds sortent du fidéicommis (ou sans client "
+            "nommé dans un dossier à plusieurs clients)."
         ),
         # The model refuses an unsent invoice (facture_non_émise), a
         # provision (facture_avec_provision) and — decision D21, 2026-09-29 —
@@ -901,8 +892,8 @@ NEVERS: tuple[Never, ...] = (
             "cabinet</strong>"
         ),
         en=(
-            "It never makes a fee payment to anyone but the lawyer or his "
-            "firm, as the firm profile names them (art. 58)."
+            "Ne jamais payer des honoraires à un autre bénéficiaire que "
+            "l'avocat ou son cabinet tels qu'inscrits au profil (art. 58)."
         ),
         behavioural_test=(
             "tests/test_mcp_accounting.py::"
@@ -912,7 +903,7 @@ NEVERS: tuple[Never, ...] = (
     Never(
         key="account_number",
         fr="afficher un <strong>numéro de compte</strong>",
-        en="It never shows a bank transit or account number.",
+        en="Ne jamais afficher de numéro de transit ou de compte bancaire.",
         behavioural_test=(
             "tests/test_mcp_accounting.py::"
             "test_no_accounting_payload_ever_carries_a_transit_or_account_number"
@@ -998,75 +989,49 @@ HEAD_LIMIT = 2_048
 
 # The opening of the core — the product, then what the core is for.
 _CORE_LEAD_EN = (
-    "Pallas Athena (single-user Quebec civil litigation practice manager). "
-    "SAFETY CORE — read before ANY write."
+    "Pallas Athena (pratique de litige civil québécois, utilisateur unique). "
+    "NOYAU DE SÉCURITÉ — lire avant TOUTE écriture."
 )
 
-# The one effect reaching outside the practice, stated with the promises —
-# « Only ONE »: the sentence is a promise that nothing ELSE leaves the
-# practice, and « ONE effect reaches » alone reads as « one such effect ».
+# The one effect reaching outside the practice, stated with the promises.
 _CORE_OUTBOUND_EN = (
-    "Only ONE effect reaches anyone outside the practice: "
-    "`decide_rendez_vous` refusing a Bookings request cancels the client's "
-    "Outlook meeting, notifying them."
+    "UN SEUL effet joint un tiers hors du cabinet : refuser Bookings via "
+    "`decide_rendez_vous` annule la réunion Outlook du client et l'en avise."
 )
 
 # The write protocol: confirm, idempotency (in flight / uncertain /
 # interrupted / committed), the etag, and re-read before any retry.
-# Compressed 2026-09-30 to leave the CONVENTIONS room within the head —
-# every rule kept, the two explanations left to the refusal messages, each
-# of which carries its own: « une étape qui la suit a échoué » (tools.
-# CommittedWriteError) and « il ne peut plus être en cours » (write_support.
-# _refuse_pending — added to that refusal the same day, since it is what
-# makes the re-read reliable before a NEW key). « …, never blindly » left
-# too: it restated « redo the write on the current record », which already
-# excludes resending the stale arguments.
 _CORE_PROTOCOL_EN = (
-    "Writes are permanent and may sync to the lawyer's phone: read first; "
-    "confirm with the user unless a standing instruction authorizes it. "
-    "Pass an `idempotency_key` on EVERY write (24 h replay, never a second "
-    "write): refused as still in flight → wait, then the SAME key, never a "
-    "new one; UNCERTAIN → re-read, retry only with the SAME key; refused as "
-    "INTERRUPTED → re-read, a NEW key only if nothing was written; "
-    "« ENREGISTRÉE — NE PAS RÉESSAYER » = committed: do NOT retry, re-read. "
-    "`expected_etag` = your latest read's `etag`; stale_etag (also without "
-    "`expected_etag`, if the record changed during the call) wrote nothing: "
-    "re-read, then redo the write on the current record. "
-    "Each tool's description carries its own rules: read it first."
+    "Écritures permanentes (synchro téléphone possible) : lire d'abord ; "
+    "confirmer avec l'utilisateur sauf instruction permanente. "
+    "Passer une `idempotency_key` sur CHAQUE écriture (rejeu 24 h) : "
+    "refusée « encore en cours » → attendre, MÊME clé ; INCERTAIN → relire, "
+    "réessayer avec la MÊME clé ; INTERROMPU → relire, NOUVELLE clé si "
+    "rien écrit ; « ENREGISTRÉE — NE PAS RÉESSAYER » = validée : NE PAS "
+    "réessayer, relire. `expected_etag` = `etag` lu (`stale_etag`, même sans "
+    "`expected_etag`, n'a rien écrit : relire et refaire sur l'état actuel). "
+    "Lire la description de l'outil d'abord."
 )
 
 # The conventions a caller needs to READ any result and to WRITE any
-# argument — the two paragraphs (formats, provenance) that used to close
-# the text, merged and moved into the head. Provenance is the server's: a
-# model that typed its own « par Claude » line would double the stamp. But
-# the stamps ALREADY in a text must travel back with it: update_task stores
-# a `description` exactly as sent (the old one is NOT kept), update_note
-# re-stamps only the LEADING revision line (handlers._without_leading_
-# stamp), so a body re-sent without its « Créée / Ajouté / rédigée par
-# Claude » lines would lose, for good, the one visible mark of what Claude
-# wrote. Hence « never add a stamp, keep those a re-sent text holds » — NOT
-# « never type it », which a model obeys by stripping them (review of the
-# context-cost lot). The row fields hold only where a read row declares
-# them, and `created_via` only on what the connector CREATED.
+# argument — merged and kept within HEAD_LIMIT characters and UTF-8 bytes.
 _CONVENTIONS_EN = (
-    "CONVENTIONS: French data; Markdown notes, raw HTML refused. Money: "
-    "integer `*_cents` + `*_display` (CAD). Timestamps ISO 8601 "
-    "America/Montreal; date-only fields `YYYY-MM-DD`. IDs UUIDv4, verbatim. "
-    "Provenance is the server's — never add a stamp, keep those a re-sent "
-    "text holds: `updated_via` \"mcp\" (`created_via` on creations), "
-    "`mcp_updated_at`, where declared; « … par Claude le … » lines (notes, "
-    "tasks, events created; note text added or replaced); "
-    "« par Claude (connecteur) » (`genere_depuis`); `*_source` \"mcp\", "
-    "« [AAAA-MM-JJ — inscrit par Claude] » (compliance checks)."
+    "CONVENTIONS : Données en français ; notes Markdown, HTML brut refusé. "
+    "Montants : `*_cents` entier + `*_display` (CAD). Horodatages ISO 8601 "
+    "America/Montreal ; dates seules `AAAA-MM-JJ`. IDs UUIDv4 verbatim. "
+    "Provenance serveur — n'ajoutez aucune mention, conservez celles d'un "
+    "texte renvoyé : `updated_via` \"mcp\" (`created_via` à la création), "
+    "`mcp_updated_at` si déclaré ; « … par Claude le … » (notes/tâches/"
+    "événements) ; « par Claude (connecteur) » (`genere_depuis`) ; "
+    "`*_source` \"mcp\", « [AAAA-MM-JJ — inscrit par Claude] »."
 )
 
 _READ_CONTENT_EN = (
-    "READ-CONTENT: `get_document_text` reads a stored document's TEXT LAYER "
-    "(a template is not a document); empty never means blank on paper — "
-    "nothing is OCR'd. `get_admin_receipt` reads an administration entry's "
-    "receipt: a PDF's or an email's text, a JPG/PNG photo as the image "
-    "itself. Document and receipt content is privileged: quote only what "
-    "the task requires."
+    "LECTURE DE CONTENU : `get_document_text` lit la COUCHE TEXTE d'un "
+    "document (un gabarit n'est pas un document) ; vide ne veut pas dire "
+    "vierge sur papier (aucun OCR). `get_admin_receipt` lit la pièce d'une "
+    "écriture d'administration (texte d'un PDF/courriel, image telle quelle "
+    "d'un JPG/PNG). Contenu privilégié : ne citez que le nécessaire."
 )
 
 
@@ -1081,7 +1046,7 @@ def safety_core_en() -> str:
     nevers = "; ".join(n.en for n in core_nevers())
     return " ".join((
         _CORE_LEAD_EN,
-        f"NEVER, whatever the tool: {nevers}.",
+        f"JAMAIS, quel que soit l'outil : {nevers}.",
         _CORE_OUTBOUND_EN,
         _CORE_PROTOCOL_EN,
     ))
@@ -1095,7 +1060,7 @@ def conventions_en() -> str:
 def instructions_head_en() -> str:
     """The HEAD of INSTRUCTIONS: the SAFETY CORE, then the CONVENTIONS —
     identical in every variant, and complete within :data:`HEAD_LIMIT`
-    characters (tests/test_mcp_descriptor_budget.py)."""
+    characters and UTF-8 bytes (tests/test_mcp_descriptor_budget.py)."""
     return f"{safety_core_en()} {conventions_en()}"
 
 
@@ -1105,23 +1070,7 @@ def build_instructions(
     *,
     entry_bulk_max: Optional[int] = None,
 ) -> str:
-    """The ``initialize`` instructions, assembled from the registry.
-
-    In order: the HEAD (:func:`instructions_head_en` — the SAFETY CORE then
-    the CONVENTIONS, within :data:`HEAD_LIMIT` characters); the counts and
-    the index, ONE line per family naming its tools; READ-CONTENT; the
-    scope sentence; the promises the core does not state, one sentence
-    each. The counts and the family list are DERIVED —
-    recopied by hand the counts went stale twice, and a model told « 29
-    read » looks for tools that are not there. The arguments exist for
-    tests; by default the live registry is read (lazily: ``mcp.tools``
-    imports this module).
-
-    ONE text for every token since 2026-10-05: the variant a token holding
-    ``athena:comptabilite`` read (the ACCOUNTING family, its read and the
-    promises that grant kept) left with the scope — every family and every
-    promise is in it.
-    """
+    """The ``initialize`` instructions, assembled from the registry."""
     if registry is None or phase_bulk_max is None or entry_bulk_max is None:
         from mcp import tools as _tools
 
@@ -1138,8 +1087,8 @@ def build_instructions(
     reads = len([n for n in registry if n not in writes])
     parts = [
         instructions_head_en(),
-        f"TOOLS: {reads} tools read; {len(writes)} write, in "
-        f"{len(families)} families:",
+        f"OUTILS : {reads} en lecture ; {len(writes)} en écriture, en "
+        f"{len(families)} familles :",
     ]
     for family in families:
         parts.append(
@@ -1149,8 +1098,8 @@ def build_instructions(
         )
     parts.append(_READ_CONTENT_EN)
     parts.append(
-        "Write tools appear only when the lawyer granted the `athena:write` "
-        "scope."
+        "Les outils d'écriture n'apparaissent que si l'avocat a accordé la "
+        "portée `athena:write`."
     )
     parts.extend(n.en for n in NEVERS if not n.in_core)
     return " ".join(parts)

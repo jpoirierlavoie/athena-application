@@ -147,16 +147,29 @@ def test_unsupported_protocol_version_header_400(client):
         headers={"MCP-Protocol-Version": "2020-01-01"},
     )
     assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["id"] == 1
+    assert body["error"]["code"] == mcp_pkg.protocol.UNSUPPORTED_PROTOCOL_VERSION
+    assert body["error"]["data"] == {
+        "supported": list(mcp_pkg.SUPPORTED_PROTOCOL_VERSIONS),
+        "requested": "2020-01-01",
+    }
 
 
 def test_supported_protocol_version_headers_accepted(client):
-    for version in ("2025-06-18", "2025-03-26"):
+    for version in ("2025-11-25", "2025-06-18", "2025-03-26"):
         resp = _rpc(
             client,
             {"jsonrpc": "2.0", "id": 1, "method": "ping"},
             headers={"MCP-Protocol-Version": version},
         )
         assert resp.status_code == 200
+    resp_modern = _rpc(
+        client,
+        {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "ping"},
+    )
+    assert resp_modern.status_code == 200
 
 
 # ── initialize ──────────────────────────────────────────────────────────
@@ -174,14 +187,15 @@ def _initialize(client, protocol_version):
 
 def test_initialize_echoes_supported_version(client):
     assert _initialize(client, "2025-03-26")["protocolVersion"] == "2025-03-26"
+    assert _initialize(client, "2026-07-28")["protocolVersion"] == "2026-07-28"
 
 
 def test_initialize_unsupported_version_returns_newest(client):
-    assert _initialize(client, "1999-01-01")["protocolVersion"] == "2025-06-18"
+    assert _initialize(client, "1999-01-01")["protocolVersion"] == "2025-11-25"
 
 
 def test_initialize_missing_version_returns_newest(client):
-    assert _initialize(client, None)["protocolVersion"] == "2025-06-18"
+    assert _initialize(client, None)["protocolVersion"] == "2025-11-25"
 
 
 def test_initialize_shape(client):
@@ -198,7 +212,7 @@ def test_initialize_shape(client):
     assert "create_note" in instructions
     assert "complete_dossier" in instructions
     assert "athena:write" in instructions
-    assert "refuses to overwrite" in instructions
+    assert "refuse d'écraser" in instructions
     assert "idempotency_key" in instructions
     # `dry_run` was removed on 2026-08-27 and every write schema carries
     # additionalProperties: False, so a lingering mention here would be
@@ -206,7 +220,7 @@ def test_initialize_shape(client):
     # that is now REFUSED, and the write it was asked for would never
     # happen. The retry advice that replaced it must be present instead.
     assert "dry_run" not in instructions
-    assert "re-read" in instructions
+    assert "relire" in instructions
     # What the connector still cannot do. « CREATE-ONLY » and « never
     # writable » died with lot Q — asserting them would now pin a lie.
     # REWRITTEN deliberately (finitions, contracts-1 part 2): INSTRUCTIONS
@@ -218,28 +232,28 @@ def test_initialize_shape(client):
     desc = {name: spec["description"] for name, spec in _tools.TOOLS.items()}
     assert instructions.startswith(disclosure.safety_core_en())
     assert len(instructions.encode("utf-8")) <= 8_000
-    assert "NEVER allocates" in instructions
+    assert "n'alloue JAMAIS" in instructions
     assert "brouillon" in instructions
-    assert "record a payment outside the accounting registers" in instructions
-    assert "DELETE anything" in instructions
+    assert "inscrire un paiement hors des registres comptables" in instructions
+    assert "rien SUPPRIMER" in instructions
     # What the accounting tools never do, told to EVERY token since
     # 2026-10-05 — until then only to a token holding the separate
     # athena:comptabilite grant, and the « trust » promise (« without the
     # separate grant it never writes to trust accounting ») left with it.
-    assert "It never deletes a register entry" in instructions
-    assert "It never transfers trust funds between dossiers" in instructions
-    assert "It never withdraws trust funds in cash" in instructions
-    assert "It never shows a bank transit or account number" in instructions
+    assert "Ne jamais supprimer une écriture comptable" in instructions
+    assert "Ne jamais virer des fonds du fidéicommis entre dossiers" in instructions
+    assert "Ne jamais retirer du fidéicommis en espèces" in instructions
+    assert "Ne jamais afficher de numéro de transit ou de compte bancaire." in instructions
     assert "trust accounting" not in instructions
     # The repair path must be stated: voiding the invoice releases every
     # source. Saying nothing would leave the model believing an import is
     # irreversible. Rewritten deliberately (lot 3b): the connector voids too
     # (update_invoice), and the promises that replaced « never changes an
     # invoice's status » / « never allocates an invoice number » are stated.
-    assert "voided (update_invoice, status annulée" in desc["import_invoice"]
-    assert "SEND an invoice to anyone (marking one envoyée sends nothing)" in (
+    assert "jusqu'à annulation (`update_invoice` `annulée`)" in desc["import_invoice"]
+    assert "ENVOYER une facture (marquer envoyée n'envoie rien)" in (
         instructions)
-    assert "mark an invoice payée by a status change" in instructions
+    assert "marquer payée une facture par changement de statut" in instructions
     assert "never changes an invoice's status" not in instructions
     assert "It never allocates an invoice number" not in instructions
     # Lot 3b (the text step): the BILL paragraph states what the consent
@@ -247,10 +261,10 @@ def test_initialize_shape(client):
     # voided and reissued), the sources an invoice bills freeze until a
     # void, and each budget version is kept as the proof of what the client
     # was told.
-    assert "ONLY a brouillon" in instructions
-    assert "frozen, their phase aside, until update_invoice voids it" in (
+    assert "corrige un brouillon" in instructions
+    assert "Sources gelées (sauf phase via `set_*_phase_bulk`) jusqu'à annulation" in (
         desc["create_invoice"])
-    assert "the proof of what the client was told, and when" in (
+    assert "référence du PDF client « Estimation »" in (
         desc["create_budget_version"])
     # Lot 0a (disclosure step): the text is ASSEMBLED from mcp/disclosure,
     # and three things it used to say were false. Voiding does NOT free the
@@ -259,27 +273,27 @@ def test_initialize_shape(client):
     # task » became false as a CONNECTOR promise — what stays true is that
     # complete_task never does it, and that no tool undoes a cancellation
     # without being told to in so many words.
-    assert "frees the number" not in instructions
-    assert "the number itself stays on the voided invoice" in (
+    assert "se libère" not in instructions and "frees the number" not in instructions
+    assert "la facture annulée garde son n°" in (
         desc["import_invoice"])
-    assert "never reopens a closed one — that is `reopen_task`" in instructions
-    assert "never silently undoes a cancellation" in instructions
-    assert "five families" not in instructions
+    assert "ne rouvre jamais une tâche close (utilisez `reopen_task`)" in instructions
+    assert "Ne jamais défaire silencieusement une annulation" in instructions
+    assert "cinq familles" not in instructions and "five families" not in instructions
     # ONE text for every token since 2026-10-05: every tool counted, every
     # family indexed — ACCOUNTING and its read included —, and no word of
     # the separate accounting grant the lawyer removed (a model told of a
     # scope that no longer exists would send the lawyer looking for it).
     families = [f for f in disclosure.FAMILIES if f.tools]
     reads = len(set(tools.TOOLS) - tools.WRITE_TOOLS)
-    assert (f"TOOLS: {reads} tools read; {len(tools.WRITE_TOOLS)} write, "
-            f"in {len(families)} families:") in instructions
+    assert (f"OUTILS : {reads} en lecture ; {len(tools.WRITE_TOOLS)} en "
+            f"écriture, en {len(families)} familles :") in instructions
     assert "ACCOUNTING: `record_trust_entry`" in instructions
     assert "`get_admin_ledger`" in instructions
     assert "athena:comptabilite" not in instructions
     assert "Accounting tools appear only under" not in instructions
     # The lot 0a write-protocol rules the client model must follow.
     assert "`expected_etag`" in instructions
-    assert "do NOT retry" in instructions
+    assert "NE PAS réessayer" in instructions
     assert "`updated_via`" in instructions
     # RECLASSIFY names the bulk tools literally, not as « their _bulk forms ».
     assert "`set_time_entry_phase_bulk`" in instructions
@@ -289,14 +303,14 @@ def test_initialize_shape(client):
     # promises the lot falsified are gone from it, while « nothing can be
     # deleted » carries the precision that keeps it true.
     assert "DOSSIERS: " in instructions and "CONTACTS: " in instructions
-    assert "fermé / archivé DRAINS its DavX5 collection" in instructions
+    assert "fermé/archivé VIDE sa collection DavX5" in instructions
     # Reworded by the finitions (contracts-8): the repair is the first of
     # three ordered retry cases.
-    assert "the SAME status under the SAME idempotency_key" in (
+    assert "MÊME statut + MÊME clé" in (
         desc["set_dossier_status"])
-    assert "counts as NOT done" in instructions
-    assert "removes a LINK — the contact stays" in instructions
-    assert "CONFIRM an identity or conflict check" in instructions
+    assert "compte comme NON faite" in instructions
+    assert "retire un LIEN, le contact reste" in instructions
+    assert "CONFIRMER une vérification d'identité ou de conflits" in instructions
     assert "can never be changed here" not in instructions
     assert "identity verification or conflict-of-interest checks" not in (
         instructions)
@@ -644,34 +658,22 @@ def test_initialize_tells_every_token_the_same_instructions(monkeypatch, scope):
     assert instructions == endpoint.INSTRUCTIONS
     assert "ACCOUNTING: `record_trust_entry`" in instructions
     assert "`get_admin_ledger`" in instructions
-    assert ("Write tools appear only when the lawyer granted the "
-            "`athena:write` scope.") in instructions
+    assert ("Les outils d'écriture n'apparaissent que si l'avocat a accordé "
+            "la portée `athena:write`.") in instructions
     bearer.reset_brake_state()
 
 
-# The numbers the lawyer reads off `tools/list` in the deploy train
-# (DEPLOYMENT.md §15), LITERAL on purpose: every other assertion of this
-# module derives its set from the registry, and a derived check passes
-# whatever the registry holds. 90 = 34 reads + 56 writes (86 → 88 on
-# 2026-09-30, deliberately: the two bulk creators create_time_entries_bulk /
-# create_expenses_bulk; 88 → 89 on 2026-11-10: the read
-# get_financial_statements; 89 → 90 the same day: the read
-# get_admin_receipt). Since 2026-10-05 — the separate accounting scope
-# and every MCP kill switch removed — there are two token shapes: a
-# read-only token lists the 34 reads, get_admin_ledger among them; a
-# read + write token lists all 90, the five ACCOUNTING writes among them. A
-# token still carrying the retired accounting string lists no more.
 @pytest.mark.parametrize("scope, expected", [
     ("athena:read", 34),
-    ("athena:read athena:write", 90),
+    ("athena:read athena:write", 86),
     (f"athena:read {_RETIRED_SCOPE}", 34),
-    (f"athena:read athena:write {_RETIRED_SCOPE}", 90),
+    (f"athena:read athena:write {_RETIRED_SCOPE}", 86),
 ])
 def test_tools_list_counts_per_token_are_the_train_s_checklist(
     monkeypatch, scope, expected
 ):
     bearer.reset_brake_state()
-    assert len(tools.TOOLS) == 90 and len(tools.WRITE_TOOLS) == 56
+    assert len(tools.TOOLS) == 86 and len(tools.WRITE_TOOLS) == 52
     # The five accounting writes, by name — the set the recorder tests above
     # dispatch, every one of them.
     assert tools.ACCOUNTING_WRITE_TOOLS == set(_ACCOUNTING_CALLS) == {
@@ -698,7 +700,10 @@ def test_tools_call_unknown_tool(client):
             "params": {"name": "drop_tables", "arguments": {}},
         },
     )
-    assert resp.get_json()["error"]["code"] == -32602
+    body = resp.get_json()
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "Unknown tool" in body["result"]["content"][0]["text"]
 
 
 def test_tools_call_invalid_arguments(client):
@@ -712,8 +717,9 @@ def test_tools_call_invalid_arguments(client):
         },
     )
     body = resp.get_json()
-    assert body["error"]["code"] == -32602
-    assert "days_ahead" in body["error"]["message"]
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "days_ahead" in body["result"]["content"][0]["text"]
 
 
 def test_tools_call_unknown_argument_rejected(client):
@@ -726,7 +732,10 @@ def test_tools_call_unknown_argument_rejected(client):
             "params": {"name": "get_agenda", "arguments": {"bogus": 1}},
         },
     )
-    assert resp.get_json()["error"]["code"] == -32602
+    body = resp.get_json()
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "bogus" in body["result"]["content"][0]["text"]
 
 
 def _call_parse_tool(client, headers=None):
@@ -751,15 +760,23 @@ def test_tools_call_success_envelope(client):
     payload = json.loads(result["content"][0]["text"])
     assert payload["tribunal"] == "Cour supérieure"
     assert payload["palais_de_justice"] == "Montréal"
-    # Default protocol (2025-03-26): no structuredContent.
     assert "structuredContent" not in result
 
 
-def test_tools_call_structured_content_on_2025_06_18(client):
-    result = _call_parse_tool(
-        client, headers={"MCP-Protocol-Version": "2025-06-18"}
-    ).get_json()["result"]
-    assert result["structuredContent"]["tribunal"] == "Cour supérieure"
+def test_tools_call_omits_structured_content_across_revisions(client):
+    for headers in (
+        {"MCP-Protocol-Version": "2025-06-18"},
+        {"MCP-Protocol-Version": "2025-11-25"},
+        {
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "parse_court_file_number",
+        },
+    ):
+        result = _call_parse_tool(client, headers=headers).get_json()["result"]
+        assert "structuredContent" not in result
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["tribunal"] == "Cour supérieure"
 
 
 def test_tool_exception_is_error_result_not_protocol_error(client, monkeypatch):
@@ -772,7 +789,7 @@ def test_tool_exception_is_error_result_not_protocol_error(client, monkeypatch):
     assert body["result"]["isError"] is True
 
 
-def test_tool_argument_error_maps_to_minus_32602(client):
+def test_tool_argument_error_maps_to_is_error_result(client):
     resp = _rpc(
         client,
         {
@@ -790,8 +807,9 @@ def test_tool_argument_error_maps_to_minus_32602(client):
         },
     )
     body = resp.get_json()
-    assert body["error"]["code"] == -32602
-    assert "start_date" in body["error"]["message"]
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "start_date" in body["result"]["content"][0]["text"]
 
 
 # ── Refusal logging, replays and revalidation (lot 0a, step 2) ─────────
@@ -845,9 +863,10 @@ def test_a_schema_refused_write_is_logged_by_count_never_by_text(
             "champ_SECRET_inconnu": "valeur SECRÈTE",   # not a property
         }).get_json()
 
-    assert body["error"]["code"] == -32602
+    assert "error" not in body
+    assert body["result"]["isError"] is True
     # The client is told exactly what is wrong — that is its only channel.
-    assert "champ_SECRET_inconnu" in body["error"]["message"]
+    assert "champ_SECRET_inconnu" in body["result"]["content"][0]["text"]
     assert _events(caplog, "mcp_write_refused") == [{
         "event": "mcp_write_refused", "outcome": "refused",
         "tool": "create_note", "reason": "schema_invalid", "error_count": 2,
@@ -874,11 +893,12 @@ def test_a_bulk_creator_s_schema_refusal_names_each_row_through_the_endpoint(
         body = _call(write_client, "create_time_entries_bulk", {
             "entries": rows, "idempotency_key": "cle-lot-endpoint",
         }).get_json()
-    assert body["error"]["code"] == -32602
-    message = body["error"]["message"]
-    assert "`entries[12].hours` must be <= 24" in message
-    assert "`entries[37].hours` is required" in message
-    assert "`entries[44].phase` must be one of" in message
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    message = body["result"]["content"][0]["text"]
+    assert "`entries[12].hours` doit être <= 24" in message
+    assert "`entries[37].hours` est requis" in message
+    assert "`entries[44].phase` doit valoir l'une des valeurs" in message
     assert "; `hours`" not in message and not message.startswith("`hours`")
     (refused,) = _events(caplog, "mcp_write_refused")
     assert refused["reason"] == "schema_invalid"
@@ -891,7 +911,9 @@ def test_non_object_arguments_to_a_write_are_a_schema_refusal(
     _forbid_handler(monkeypatch)
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
         body = _call(write_client, "create_note", ["SECRET"]).get_json()
-    assert body["error"]["message"] == "arguments must be an object"
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert body["result"]["content"][0]["text"] == "arguments must be an object"
     (refused,) = _events(caplog, "mcp_write_refused")
     assert refused["reason"] == "schema_invalid"
     assert refused["error_count"] == 1
@@ -903,7 +925,8 @@ def test_a_read_tool_schema_refusal_logs_no_write_refusal(client, caplog):
     argument changes nothing and must not inflate the import signal."""
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
         body = _call(client, "get_agenda", {"days_ahead": 900}).get_json()
-    assert body["error"]["code"] == -32602
+    assert "error" not in body
+    assert body["result"]["isError"] is True
     assert not _events(caplog, "mcp_write_refused")
 
 
@@ -922,8 +945,9 @@ def test_a_handler_refused_write_is_logged_by_reason_never_by_text(
             "dossier_id": dossier_id, "title": "T", "content": "C",
         }).get_json()
 
-    assert body["error"]["code"] == -32602
-    assert "SECRÈTE" in body["error"]["message"]      # the client, only
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "SECRÈTE" in body["result"]["content"][0]["text"]  # the client, only
     assert _events(caplog, "mcp_write_refused") == [{
         "event": "mcp_write_refused", "outcome": "refused",
         "tool": "create_note", "reason": "argument_refused",
@@ -1008,7 +1032,8 @@ def test_a_read_tool_handler_refusal_logs_no_write_refusal(client, caplog):
             "start_date": "not-a-date", "delay_days": 10,
             "direction": "after",
         }).get_json()
-    assert body["error"]["code"] == -32602
+    assert "error" not in body
+    assert body["result"]["isError"] is True
     assert not _events(caplog, "mcp_write_refused")
 
 
@@ -1071,8 +1096,9 @@ def test_a_key_conflict_is_logged_under_its_own_reason(
             write_client, "create_note", _note_args(title="B SECRET"), rid=2
         ).get_json()
 
-    assert body["error"]["code"] == -32602
-    assert "idempotency_key" in body["error"]["message"]
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "idempotency_key" in body["result"]["content"][0]["text"]
     (refused,) = _events(caplog, "mcp_write_refused")
     assert refused["reason"] == "idempotency_conflict"
     assert refused["tool"] == "create_note"
@@ -1213,8 +1239,9 @@ def test_an_in_flight_key_is_refused_under_its_own_reason(
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
         body = _call(write_client, "create_note", args).get_json()
 
-    assert body["error"]["code"] == -32602
-    assert "MÊME clé" in body["error"]["message"]
+    assert "error" not in body
+    assert body["result"]["isError"] is True
+    assert "MÊME clé" in body["result"]["content"][0]["text"]
     (refused,) = _events(caplog, "mcp_write_refused")
     assert refused["reason"] == "idempotency_in_flight"
     assert run_write_note == []                    # never executed

@@ -1731,11 +1731,12 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 
 (TTL is garbage collection only — expiry is enforced in code regardless.)
 
-- If you use Cloudflare Access at all, ensure it **does NOT cover** `/mcp`, `/oauth/*`, or
-  `/.well-known/oauth*` (only `/dav/*`).
+- If you use Cloudflare Access at all, ensure it **does NOT cover** `/mcp`,
+  `/mcp/server-card`, `/oauth/*`, or `/.well-known/oauth*` (only `/dav/*`).
 - Add a Cloudflare **Configuration Rule** disabling Browser Integrity Check on
-  those paths (Claude's server is not a browser); watch Security → Events for
-  Super Bot Fight Mode challenging Anthropic's egress.
+  `/mcp`, `/mcp/server-card`, `/oauth/*`, and `/.well-known/oauth*` (Claude's
+  server is not a browser); watch Security → Events for Super Bot Fight Mode
+  challenging Anthropic's egress.
 - In claude.ai: **Settings → Connectors → Add custom connector →**
   `https://yourdomain.example/mcp`, then complete Firebase login + MFA on the
   consent screen and click **« Autoriser »**.
@@ -1837,8 +1838,8 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   (Attaching a receipt left that list on 2026-11-10: the connector now
   attaches or replaces one, the replaced file kept. A reconciliation's
   bank statement joined it the same day: only the lawyer attaches it.) A write token lists
-  them the moment it is granted — **90** tools (34 read, 56 write) since
-  2026-11-10 —, a read-only one the **34** reads, `get_admin_ledger` and
+  them the moment it is granted — **86** tools (34 read, 52 write) —, a
+  read-only one the **34** reads, `get_admin_ledger` and
   `get_admin_receipt` among them. Before the first real bank movement
   recorded through the
   connector, §15 « Lot 5 », steps 6 and 7, are the recipe for a supervised
@@ -1860,6 +1861,19 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   the 24 h `expire_at` run out (or revoke the connector) before writing
   again. Nothing to migrate in the other direction — the new code replays a
   legacy entry (no `status`) unchanged.
+- **v2.0.0 connector & plugin modernization.** Transport aligned to MCP
+  `2026-07-28` (`server/discover`, public `/mcp/server-card`, omitted wire
+  `outputSchema`/`structuredContent`, and `ToolResult(isError=True)` for tool
+  errors), concise French `INSTRUCTIONS` (`HEAD <= 2 048` chars/bytes) and
+  tool descriptions (`<= 900` chars), and retirement of the 4 singular write
+  tools (`create_time_entry`, `create_expense`, `set_time_entry_phase`,
+  `set_expense_phase`) in favour of `create_time_entries_bulk`,
+  `create_expenses_bulk`, `set_time_entry_phase_bulk`, and
+  `set_expense_phase_bulk` (1 to 50 rows). Run
+  `python -m scripts.revoke_mcp_tokens`, remove the connector in claude.ai,
+  deploy, then re-add and re-consent under the updated `consent.html` text,
+  and sync `plugin/athena` `2.0.0` (`python -m scripts.exporter_plugin_athena
+  --deplie ...`) to the plugin mirror.
 
 ---
 

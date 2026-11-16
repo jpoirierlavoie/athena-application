@@ -1,4 +1,4 @@
-"""Construit le greffon claude.ai « athena » (compétence 1.9.3)
+"""Construit le greffon claude.ai « athena » (compétence 2.0.0)
 depuis sa source manuscrite et le registre des outils du connecteur.
 
     python -m scripts.exporter_plugin_athena [--sortie CHEMIN.plugin]
@@ -76,24 +76,30 @@ DIST = RACINE / "dist"
 sys.path.insert(0, str(ATHENA))
 
 NOM = "athena"
-VERSION = "1.9.3"
+VERSION = "2.0.0"
 
 SKILL = "skills/athena/SKILL.md"
 INDEX = "skills/athena/references/index-outils.md"
-RECETTES = tuple(
-    f"skills/athena/recettes/{nom}.md"
-    for nom in ("facturation", "dossiers", "notes-documents", "agenda",
-                "reprise", "comptabilite")
+REFERENCES = tuple(
+    f"skills/athena/references/{nom}.md"
+    for nom in (
+        "dossiers-et-contacts",
+        "agenda-et-protocole",
+        "notes-et-documents",
+        "facturation-et-budget",
+        "comptabilite-et-etats",
+        "reprise-historique",
+    )
 )
-COMPTABILITE = "skills/athena/recettes/comptabilite.md"
-REPRISE = "skills/athena/recettes/reprise.md"
+COMPTABILITE = "skills/athena/references/comptabilite-et-etats.md"
+REPRISE = "skills/athena/references/reprise-historique.md"
 PLUGIN_JSON = ".claude-plugin/plugin.json"
 MCP_JSON = ".mcp.json"
 README = "README.md"
 
 #: Les fichiers de la SOURCE, et rien d'autre : un fichier de trop (une
 #: copie de travail, une sauvegarde d'éditeur) partirait dans l'archive.
-SOURCES: tuple[str, ...] = (PLUGIN_JSON, MCP_JSON, README, SKILL, *RECETTES)
+SOURCES: tuple[str, ...] = (PLUGIN_JSON, MCP_JSON, README, SKILL, *REFERENCES)
 #: Ce que le script ajoute.
 GENERES: tuple[str, ...] = (INDEX,)
 
@@ -104,57 +110,33 @@ GENERES: tuple[str, ...] = (INDEX,)
 MCP_JSON_ATTENDU = b'{\n  "mcpServers": {\n    "Athena": {}\n  }\n}\n'
 
 #: Plafonds en OCTETS (UTF-8), fichier livré. SKILL.md se charge en entier
-#: quand la compétence se déclenche : à ~3 k jetons, il survit entier à une
-#: compaction de Claude Code. Les recettes se lisent une par une.
+#: quand la compétence se déclenche : à ≤ 1 000 mots, il survit entier à une
+#: compaction de Claude Code. Les feuilles terminales se lisent une par une
+#: (≤ 1 500 mots et ≤ 12 Ko chacune).
 BUDGETS: dict[str, int] = {
     PLUGIN_JSON: 512,
     README: 3_072,
     SKILL: 10_240,
-    "skills/athena/recettes/facturation.md": 4_096,
-    "skills/athena/recettes/dossiers.md": 4_096,
-    "skills/athena/recettes/notes-documents.md": 4_608,
-    "skills/athena/recettes/agenda.md": 3_584,
-    REPRISE: 2_048,
-    # 2 560 jusqu'à la 1.4.0 (2026-11-07), relevé délibérément : les
-    # amorces qui mènent ici une remise ou un remboursement de TPS/TVQ et un
-    # usage infonuagique, et les pièges qui inscriraient la remise en dépense
-    # (`taxes_permis`), le remboursement en autre recette, un autre paiement
-    # à Revenu Québec sans demander ce qu'il règle, et l'usage en
-    # `abonnements` — la recette restait à 10 octets du plafond.
-    # 3 072 jusqu'à la 1.5.0 (2026-11-08), relevé délibérément : les
-    # amorces de l'avance d'un client reçue au compte d'opérations et du
-    # remboursement d'un fournisseur, et les pièges qui les inscriraient
-    # en autre recette, oublieraient l'objet « avances » du virement au
-    # fidéicommis, ou classeraient en `abonnements` une revue, un ouvrage
-    # ou une recherche (les catégories `documentation` et `recherche`).
-    # 3 584 jusqu'à la 1.6.0 (2026-11-08), relevé délibérément : les
-    # pièges qui classeraient un timbre ou des frais de greffe en
-    # `taxes_permis`, un notaire, un expert ou un avocat en
-    # `honoraires_professionnels`, une salle louée en `loyer` (les
-    # catégories `timbres_judiciaires`, `notaire`, `expert`, `avocat` et
-    # `location_salle`).
-    # 4 096 jusqu'à la 1.7.0 (2026-11-10), relevé délibérément : la
-    # recette des pièces justificatives (joindre, remplacer en gardant
-    # l'ancienne, consulter — une photo vue telle quelle), que l'avocat
-    # a ouverte au connecteur ce jour-là ; la recette restait à 56
-    # octets du plafond.
-    COMPTABILITE: 5_120,
-    INDEX: 5_120,
+    **{chemin: 12_288 for chemin in REFERENCES},
+    INDEX: 8_192,
 }
-#: Un fichier LIÉ depuis SKILL.md (recette, référence) de plus de 100
-#: lignes demande une table des matières (guide des compétences) ; aucun
-#: ici n'en a besoin. SKILL.md, lui, se charge en entier : son plafond est
-#: celui des octets.
+SKILL_MAX_WORDS = 1_000
+LEAF_MAX_WORDS = 1_500
+#: Un fichier LIÉ depuis SKILL.md (référence) de plus de 100 lignes demande une
+#: table des matières ; aucun ici n'en a besoin.
 LIGNES_MAX = 100
-#: La DESCRIPTION de la compétence : plafond de claude.ai.
-DESCRIPTION_MAX = 1_024
+#: La DESCRIPTION de la compétence : plafond resserré v2.0.0.
+DESCRIPTION_MAX = 850
+
+SAFETY_KERNEL_START = "<!-- SAFETY-KERNEL:START -->"
+SAFETY_KERNEL_END = "<!-- SAFETY-KERNEL:END -->"
 
 #: La fin du NOYAU (Noyau + Conventions) : ce titre, le premier qui les
 #: suit, doit commencer avant cet octet de SKILL.md. Une troncature et une
 #: compaction gardent toutes deux le DÉBUT du fichier : ce qui gouverne une
 #: écriture doit y être.
 FIN_DU_NOYAU = "## L'application en une minute"
-FIN_DU_NOYAU_MAX = 3_500
+FIN_DU_NOYAU_MAX = 4_096
 
 _GABARIT = re.compile(r"^\{\{GEN:([a-z_]+)\}\}$")
 _RECETTE_ID = re.compile(r"^#{2,3} ((?:Doc|[RFDNA])\d+)\b")
@@ -598,9 +580,23 @@ def construire(source: Optional[Path] = None) -> dict[str, bytes]:
     return dict(sorted(fichiers.items()))
 
 
+def _corps_sans_entete(texte: str) -> str:
+    if texte.startswith("---\n"):
+        fin = texte.find("\n---\n", 4)
+        if fin != -1:
+            return texte[fin + 5:]
+    return texte
+
+
+def _compter_mots(texte: str) -> int:
+    sans_comm = re.sub(r"<!--.*?-->", " ", _corps_sans_entete(texte), flags=re.S)
+    return len(sans_comm.split())
+
+
 def problemes(fichiers: dict[str, bytes]) -> list[str]:
-    """Ce qui interdit de livrer : budgets d'octets et de lignes, gabarit
-    resté non rempli, fin du noyau trop tardive, ``.mcp.json`` changé."""
+    """Ce qui interdit de livrer : budgets d'octets/mots/lignes, gabarit
+    resté non rempli, noyau hors bornes ou sans balises, liens croisés dans
+    les feuilles terminales, routage 1:1 manquant, ``.mcp.json`` changé."""
     erreurs = []
     for chemin, donnees in fichiers.items():
         plafond = BUDGETS.get(chemin)
@@ -610,22 +606,65 @@ def problemes(fichiers: dict[str, bytes]) -> list[str]:
             texte = donnees.decode("utf-8")
             if chemin.startswith("skills/") and "{{GEN:" in texte:
                 erreurs.append(f"{chemin} : gabarit non rempli")
-            lie = chemin.startswith(("skills/athena/recettes/",
-                                     "skills/athena/references/"))
-            if lie and texte.count("\n") >= LIGNES_MAX:
-                erreurs.append(
-                    f"{chemin} : {texte.count(chr(10))} lignes, plafond "
-                    f"{LIGNES_MAX - 1}")
+            if chemin == SKILL:
+                mots = _compter_mots(texte)
+                if mots > SKILL_MAX_WORDS:
+                    erreurs.append(f"{chemin} : {mots} mots, plafond {SKILL_MAX_WORDS}")
+            if chemin in REFERENCES:
+                mots = _compter_mots(texte)
+                if mots > LEAF_MAX_WORDS:
+                    erreurs.append(f"{chemin} : {mots} mots, plafond {LEAF_MAX_WORDS}")
+                if texte.count("\n") >= LIGNES_MAX:
+                    erreurs.append(
+                        f"{chemin} : {texte.count(chr(10))} lignes, plafond "
+                        f"{LIGNES_MAX - 1}")
+                if "../" in texte:
+                    erreurs.append(f"{chemin} : lien parent « ../ » interdit")
+                cites_md = re.findall(r"[\w./-]+\.md\b", texte)
+                if cites_md:
+                    erreurs.append(
+                        f"{chemin} : lien inter-feuilles interdit ({cites_md})")
     if fichiers.get(MCP_JSON) != MCP_JSON_ATTENDU:
         erreurs.append(f"{MCP_JSON} : ne désigne pas le connecteur « Athena »")
-    skill = fichiers.get(SKILL, b"")
-    position = skill.find(("\n" + FIN_DU_NOYAU + "\n").encode("utf-8"))
+    skill_bytes = fichiers.get(SKILL, b"")
+    skill_text = skill_bytes.decode("utf-8", errors="replace")
+    if skill_text.startswith("---\n") and "\n---\n" in skill_text[4:]:
+        entete = skill_text[4:skill_text.index("\n---\n", 4)]
+        cles = dict(line.partition(": ")[0::2] for line in entete.split("\n"))
+        if set(cles) != {"name", "description"}:
+            erreurs.append(f"{SKILL} : clés d'entête inattendues ({list(cles)})")
+        desc = cles.get("description", "").strip('"')
+        if not desc or len(desc) > DESCRIPTION_MAX:
+            erreurs.append(
+                f"{SKILL} : description {len(desc)} car., plafond {DESCRIPTION_MAX}")
+        if "<" in desc or ">" in desc:
+            erreurs.append(f"{SKILL} : chevrons interdits dans description")
+    else:
+        erreurs.append(f"{SKILL} : entête YAML manquante")
+    if SAFETY_KERNEL_START not in skill_text or SAFETY_KERNEL_END not in skill_text:
+        erreurs.append(f"{SKILL} : balises SAFETY-KERNEL manquantes")
+    else:
+        start_i = skill_text.index(SAFETY_KERNEL_START)
+        end_i = skill_text.index(SAFETY_KERNEL_END)
+        if not (start_i < end_i):
+            erreurs.append(f"{SKILL} : ordre SAFETY-KERNEL invalide")
+    position = skill_bytes.find(("\n" + FIN_DU_NOYAU + "\n").encode("utf-8"))
     if position < 0:
         erreurs.append(f"{SKILL} : titre « {FIN_DU_NOYAU} » introuvable")
-    elif position + 1 >= FIN_DU_NOYAU_MAX:
+    else:
+        if position + 1 >= FIN_DU_NOYAU_MAX:
+            erreurs.append(
+                f"{SKILL} : le noyau finit à l'octet {position + 1}, plafond "
+                f"{FIN_DU_NOYAU_MAX}")
+        if SAFETY_KERNEL_END in skill_text and skill_text.index(SAFETY_KERNEL_END) > len(skill_bytes[:position].decode("utf-8", errors="replace")):
+            erreurs.append(f"{SKILL} : SAFETY-KERNEL:END après {FIN_DU_NOYAU}")
+    routes_attendues = {p.removeprefix("skills/athena/") for p in (*REFERENCES, INDEX)}
+    routes_trouvees = set(re.findall(r"references/[a-z0-9-]+\.md", skill_text))
+    if routes_attendues != routes_trouvees:
         erreurs.append(
-            f"{SKILL} : le noyau finit à l'octet {position + 1}, plafond "
-            f"{FIN_DU_NOYAU_MAX}")
+            f"{SKILL} : routage 1:1 incomplet "
+            f"(manque {sorted(routes_attendues - routes_trouvees)}, "
+            f"en trop {sorted(routes_trouvees - routes_attendues)})")
     return erreurs
 
 

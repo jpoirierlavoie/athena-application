@@ -693,7 +693,7 @@ def test_the_files_family_and_its_promises():
     templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
     assert set(templates.tools) == {"create_template", "update_template"}
     text = endpoint.INSTRUCTIONS
-    assert "FILES: " in text and "PRESUMED" in text
+    assert "FILES: " in text and "PRÉSUMÉE" in text
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it.
     assert "« Projets »" in tools.TOOLS["fill_gabarit"]["description"]
     assert "notes_internes" in tools.TOOLS["update_document"]["description"]

@@ -890,8 +890,8 @@ def rpc(fake, monkeypatch):
 def test_no_log_record_carries_the_stored_value_on_any_path(fake, rpc, caplog):
     """Every connector path over an unreadable amount — the four reads that
     build an invoice row, the same-status call, the void, the send and the
-    draft correction — answers a -32602 that names the field and the
-    invoice, never the value; nothing is written; and no record of any
+    draft correction — answers an isError tool result that names the field and
+    the invoice, never the value; nothing is written; and no record of any
     logger, at any level, carries the value — in its message, its fields,
     its exception text or its traceback."""
     _seed(fake, _invoice(amount_paid=TEXT))
@@ -920,8 +920,9 @@ def test_no_log_record_carries_the_stored_value_on_any_path(fake, rpc, caplog):
     with caplog.at_level(logging.DEBUG):
         for name, arguments in calls:
             body = rpc(name, arguments)
-            assert body["error"]["code"] == -32602, (name, arguments, body)
-            message = body["error"]["message"]
+            assert "error" not in body, (name, arguments, body)
+            assert body["result"]["isError"] is True, (name, arguments, body)
+            message = body["result"]["content"][0]["text"]
             assert "illisible" in message and "doit d'abord être réparée" in (
                 message), (name, message)
             for needle in _SEARCHED:

@@ -808,13 +808,13 @@ def test_the_texts_say_a_new_analysis_is_always_presumed():
     assert "confirmée avant cette analyse" not in line
     assert "avec votre confirmation" not in line
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it.
-    assert "never over the lawyer's" in families["analyse"].instructions_en
+    assert "jamais sur celle de l'avocat" in families["analyse"].instructions_en
     from mcp import tools as _tools
-    assert "or a default nobody chose" in (
+    assert "remplace toute catégorie présumée/défaut" in (
         _tools.TOOLS["record_document_analysis"]["description"])
     update_doc = _tools.TOOLS["update_document"]["description"]
-    assert "on any OTHER document that carries an analysis" in update_doc
-    assert "an analysis keeps it too" in update_doc
+    assert "sur tout document déjà analysé" in update_doc
+    assert "qu'une analyse conserve aussi" in update_doc
 
 
 def test_the_anterior_confirmation_special_case_is_gone():

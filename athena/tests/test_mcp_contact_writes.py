@@ -720,7 +720,7 @@ def test_a_detected_conflict_is_the_caller_s_to_report(db):
                for w in payload["warnings"])
     description = tools.TOOLS["record_kyc_status"]["description"]
     assert "is reported to the lawyer" not in description
-    assert "tell the lawyer at once — nothing notifies him" in description
+    assert "signalé aussitôt à l'avocat (aucune notification automatique)" in description
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -740,7 +740,7 @@ def test_exempte_is_neither_offered_nor_accepted(db):
     errors = tools.validate_args(schema, {
         "partie_id": "p1", "check": "identity", "status": "exempté"})
     assert len(errors) == 1, errors
-    assert errors[0].startswith("`status` must be one of:"), errors
+    assert errors[0].startswith("`status` doit valoir l'une des valeurs :"), errors
     assert "'identifié'" in errors[0]
 
     _contact(db, "p1", "Jean", "Tremblay")
@@ -860,9 +860,9 @@ def test_the_status_description_derives_every_label_and_names_no_retired_status(
         assert f"{check}: {listed}." in status_text, check
     decided = ", ".join(dict.fromkeys(
         kyc.DECIDED[kyc.FIELD_IDENTITY] + kyc.DECIDED[kyc.FIELD_CONFLICT]))
-    assert f"a decided status — {decided} — whose" in spec["description"]
+    assert f"statut décidé — {decided} — dont" in spec["description"]
     todo = kyc.STATUS_LABELS[kyc.NON_VERIFIE]
-    assert f"{kyc.NON_VERIFIE} (« {todo} ») withdraws" in spec["description"]
+    assert f"`{kyc.NON_VERIFIE}` (« {todo} ») retire" in spec["description"]
     assert "exempt" not in repr(spec).lower()
 
 

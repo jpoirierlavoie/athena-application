@@ -477,8 +477,8 @@ def test_the_revenue_sentence_names_the_write_off_rows_the_model_prints(fake):
     (september,) = _call(periods=["2031-09"])["periods"]
     printed = {r["key"] for s in september["sections"] for r in s["rows"]}
     description = tools.TOOLS[TOOL]["description"]
-    assert "write-off" in description and "radiation" in description
-    assert "takes nothing off it" in description and "EXPENSE" in description
+    assert "radiation" in description
+    assert "ne réduit rien au revenu" in description and "charges directes" in description
     assert "« Créances irrécouvrables »" in description
     for key in ("creances_irrecouvrables", "tps_creances_irrecouvrables",
                 "tvq_creances_irrecouvrables"):

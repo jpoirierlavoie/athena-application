@@ -694,7 +694,7 @@ def test_edit_analyse_empty_replace_keeps_only_the_revision_line(fake):
     assert body.strip() == _today_stamp(handlers._BLOC_REVISION_STAMP)
     mode = (tools.TOOLS["edit_analyse"]["input_schema"]["properties"]
             ["operations"]["items"]["properties"]["mode"]["description"])
-    assert "revision line" in mode
+    assert "ligne de révision" in mode
 
 
 def test_edit_analyse_several_operations_make_one_revision(fake):
@@ -928,4 +928,5 @@ def test_complete_task_en_cours_on_an_open_task_reopens_a_step_left_complete(
     assert fake.peek(f"protocols/{P}")["status"] == "actif"
     assert payload["protocol_step_effect"]["linked_step_found"] is False
     description = tools.TOOLS["complete_task"]["description"]
-    assert "does not show" in description and "OPEN task" in description
+    assert ("non reflétée par `protocol_step_effect` sur protocole fermé"
+            in description and "tâche ouverte" in description)

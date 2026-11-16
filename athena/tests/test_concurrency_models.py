@@ -1111,11 +1111,6 @@ _HANDLER_CASES = {
     "update_expense": ("expenses", _expense, "expense_id",
                        {"description": "Timbre (corrigé)"},
                        ("description", "Timbre (corrigé)")),
-    "set_time_entry_phase": ("timeentries", _time_entry, "time_entry_id",
-                             {"sous_phase": "INT-01"},
-                             ("sous_phase", "INT-01")),
-    "set_expense_phase": ("expenses", _expense, "expense_id",
-                          {"sous_phase": "INT-01"}, ("sous_phase", "INT-01")),
     # Lot 1b — the agenda edits.
     "update_task": ("tasks", _task, "task_id",
                     {"title": "Titre révisé"}, ("title", "Titre révisé")),
@@ -1223,8 +1218,6 @@ _HANDLER_GETTERS = {
     # « introuvable ».
     "update_time_entry": (time_entry_model, "get_time_entry_strict"),
     "update_expense": (expense_model, "get_expense_strict"),
-    "set_time_entry_phase": (time_entry_model, "get_time_entries_bulk"),
-    "set_expense_phase": (expense_model, "get_expenses_bulk"),
     "update_task": (task_model, "get_task_strict"),
     "reopen_task": (task_model, "get_task_strict"),
     "update_note": (note_model, "get_note_strict"),
@@ -1588,9 +1581,9 @@ def test_two_parallel_significations_both_survive_or_one_is_refused(
 
 
 @pytest.mark.parametrize("creator, editor, id_key, edit", [
-    ("create_time_entry", "update_time_entry", "time_entry_id",
+    ("create_time_entries_bulk", "update_time_entry", "time_entry_id",
      {"description": "Révision"}),
-    ("create_expense", "update_expense", "expense_id",
+    ("create_expenses_bulk", "update_expense", "expense_id",
      {"description": "Timbre (corrigé)"}),
 ])
 def test_a_created_entry_hands_back_the_etag_its_next_edit_presents(
@@ -1598,13 +1591,14 @@ def test_a_created_entry_hands_back_the_etag_its_next_edit_presents(
 ):
     db = _e2e_db(monkeypatch)
     dossier_id = _dossier_with_parties(db)
-    args = {"dossier_id": dossier_id, "date": "2026-03-04",
-            "description": "Premier jet"}
-    args.update({"hours": 1.5} if creator == "create_time_entry"
-                else {"amount_cents": 5000, "category": "timbre_judiciaire"})
-    created = getattr(handlers, creator)(args)
-    entity = created["entity"]
-    coll = "timeentries" if creator == "create_time_entry" else "expenses"
+    row = {"dossier_id": dossier_id, "date": "2026-03-04",
+           "description": "Premier jet"}
+    row.update({"hours": 1.5} if creator == "create_time_entries_bulk"
+               else {"amount_cents": 5000, "category": "timbre_judiciaire"})
+    created = getattr(handlers, creator)({
+        "entries": [row], "idempotency_key": f"cle-etag-{creator}"})
+    entity = created["entities"][0]
+    coll = "timeentries" if creator == "create_time_entries_bulk" else "expenses"
     assert entity["etag"] == db.peek(f"{coll}/{entity['id']}")["etag"]
 
     edited = getattr(handlers, editor)(
@@ -1647,7 +1641,7 @@ def test_the_handed_back_etags_are_declared_and_never_required():
         assert "dossier_etag" not in schema.get("required", []), tool
         entity = schema["properties"].get("entity", {})
         assert "etag" not in entity.get("properties", {}), tool
-    for tool in ("create_time_entry", "create_expense"):
-        entity = OUTPUT_SCHEMAS[tool]["properties"]["entity"]
+    for tool in ("create_time_entries_bulk", "create_expenses_bulk"):
+        entity = OUTPUT_SCHEMAS[tool]["properties"]["entities"]["items"]
         assert entity["properties"]["etag"]["type"] == "string", tool
         assert "etag" not in entity.get("required", []), tool

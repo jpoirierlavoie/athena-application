@@ -757,7 +757,7 @@ for _c in CASES:
 def test_the_reach_is_derived_and_not_vacuous():
     reach = _handler_reach()
     assert ("partie", "update_partie") in reach["update_partie"]
-    assert ("time_entry", "set_time_entry_phase") in reach["set_time_entry_phase"]
+    assert ("time_entry", "set_time_entry_phase") in reach["set_time_entry_phase_bulk"]
     assert ("note", "update_note") in reach["append_to_note"]
     assert ("task", "update_task") in reach["complete_task"]
     assert ("document", "record_analyse") in reach["record_document_analysis"]

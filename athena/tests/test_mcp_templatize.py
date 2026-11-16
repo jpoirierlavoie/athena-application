@@ -1037,7 +1037,8 @@ def test_the_preview_is_advertised_read_only():
     descriptor = next(d for d in tools.list_tool_descriptors(None)
                       if d["name"] == "preview_templatize")
     assert descriptor["annotations"]["readOnlyHint"] is True
-    assert descriptor["outputSchema"] is OUTPUT_SCHEMAS["preview_templatize"]
+    assert "outputSchema" not in descriptor
+    assert "preview_templatize" in OUTPUT_SCHEMAS
 
 
 def test_the_texts_name_the_workflow():
@@ -1045,9 +1046,9 @@ def test_the_texts_name_the_workflow():
     assert "`preview_templatize`" in text and "`substitutions`" in text
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: the case rule is the preview's, the field syntax
     # create_template's — neither goes through str.format any more.
-    assert "ALL-CAPS variant of a name needs its own substitution" in (
+    assert "variante en MAJUSCULES" in (
         tools.TOOLS["preview_templatize"]["description"])
-    assert "each literal becomes its {{field}}" in (
+    assert "copie gabaritisée" in (
         tools.TOOLS["create_template"]["description"])
     templates = next(f for f in disclosure.FAMILIES if f.key == "templates")
     # The TEMPLATES line of the consent screen (its partial left on
@@ -1058,7 +1059,7 @@ def test_the_texts_name_the_workflow():
     assert "relisez" in line
     assert "{{" not in line             # Jinja would read it as an expression
     desc = tools.TOOLS["preview_templatize"]["description"]
-    assert "CASE-SENSITIVE" in desc and "Writes nothing" in desc
+    assert "Sensible à la casse" in desc and "Ne modifie ni ne lit le texte" in desc
     assert "preview_templatize" in tools.TOOLS["create_template"]["description"]
     # Completeness review of lot 2B: the upload ticket files a gabarit
     # UNtemplatized (finalize_upload takes no substitutions), so the route
@@ -1069,9 +1070,8 @@ def test_the_texts_name_the_workflow():
     # create_template's own sentence now — where a caller about to
     # templatize reads it — since the TEMPLATES paragraph became an index
     # line.
-    assert ("An OUTSIDE .docx is templatized only once filed as a document "
-            "of its dossier (begin_upload purpose document): purpose gabarit "
-            "never templatizes") in tools.TOOLS["create_template"]["description"]
+    assert ("fichier externe = `begin_upload` (`document`) d'abord"
+            ) in tools.TOOLS["create_template"]["description"]
     assert "substitutions" not in tools.TOOLS["finalize_upload"]["input_schema"][
         "properties"]
     assert "substitutions" not in tools.TOOLS["begin_upload"]["input_schema"][
@@ -1123,7 +1123,8 @@ def test_a_read_only_grant_previews_through_the_endpoint(world, read_only_client
         "arguments": {"document_id": "src", "substitutions": FULL}},
     ).get_json()["result"]
     assert result["isError"] is False
-    content = result["structuredContent"]
+    assert "structuredContent" not in result
+    content = json.loads(result["content"][0]["text"])
     assert tools.validate_args(OUTPUT_SCHEMAS["preview_templatize"], content) == []
     assert content["ready_to_create"] is True
     # The schema refuses what the handler refuses: an unknown key per item.
@@ -1132,7 +1133,8 @@ def test_a_read_only_grant_previews_through_the_endpoint(world, read_only_client
         "arguments": {"document_id": "src", "substitutions": [
             {"literal": "Jean Tremblay", "placeholder": "x", "whole_word": 1}]}},
     ).get_json()
-    assert "error" in refused or refused["result"]["isError"] is True
+    assert "error" not in refused
+    assert refused["result"]["isError"] is True
     # And the write stays out of reach of that grant.
     denied = _rpc(read_only_client, "tools/call", {
         "name": "create_template",

@@ -6,17 +6,19 @@ server-initiated messages). Notifications are acknowledged with an empty
 202. ``GET``/``DELETE`` fall through to Flask's automatic 405.
 """
 
+import json
 import time
 from typing import Any, Optional
 
-from flask import Response, jsonify, request
+from flask import Response, current_app, jsonify, request
 
+from config import Config
 from mcp import (
     DEFAULT_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
     mcp_bp,
 )
-from mcp import disclosure, jsonrpc, tools
+from mcp import disclosure, jsonrpc, protocol, tools
 from mcp.bearer import (
     ScopeRequired,
     granted_scopes,
@@ -42,27 +44,86 @@ INSTRUCTIONS = disclosure.build_instructions()
 SERVER_INFO = {
     "name": "pallas-athena",
     "title": "Pallas Athéna",
-    "version": "1.0.0",
+    "version": "2.0.0",
 }
 
 
-def _protocol_version() -> tuple[Optional[str], Optional[Response]]:
-    """Resolve the MCP-Protocol-Version header (absent → 2025-03-26)."""
+def _resolve_protocol_version(
+    method: str, params: dict[str, Any], request_id: jsonrpc.RequestId
+) -> tuple[Optional[str], Optional[Response]]:
+    """Negotiate the MCP-Protocol-Version header (absent → 2025-03-26)."""
     header = request.headers.get("MCP-Protocol-Version")
     if header is None:
+        if not protocol.absent_version_allowed(
+            method, serves_pre_2025_06_18=True
+        ):
+            resp = jsonify(
+                jsonrpc.error_response(
+                    request_id,
+                    protocol.HEADER_MISMATCH,
+                    "En-tête « MCP-Protocol-Version » manquant.",
+                )
+            )
+            resp.status_code = 400
+            return None, resp
+        req_ver = params.get("protocolVersion")
+        if isinstance(req_ver, str) and req_ver in SUPPORTED_PROTOCOL_VERSIONS:
+            return req_ver, None
         return DEFAULT_PROTOCOL_VERSION, None
-    if header in SUPPORTED_PROTOCOL_VERSIONS:
-        return header, None
-    resp = jsonify(
-        jsonrpc.error_response(
-            None,
-            jsonrpc.INVALID_REQUEST,
-            f"Unsupported MCP-Protocol-Version; supported: "
-            f"{', '.join(SUPPORTED_PROTOCOL_VERSIONS)}",
-        )
+    version, ver_err = protocol.negotiate_version(
+        header, SUPPORTED_PROTOCOL_VERSIONS
     )
-    resp.status_code = 400
-    return None, resp
+    if ver_err is not None:
+        resp = jsonify({"jsonrpc": "2.0", "id": request_id, "error": ver_err})
+        resp.status_code = 400
+        return None, resp
+    return version, None
+
+
+@mcp_bp.route("/mcp/server-card", methods=["GET", "HEAD", "OPTIONS"])
+@limiter.limit("60 per minute")
+def mcp_server_card() -> Response:
+    """Public SEP-2127 discovery document (zero secrets or client PII)."""
+    if request.method == "OPTIONS":
+        return Response(
+            "",
+            status=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "Accept, Content-Type",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
+    origin = current_app.config.get(
+        "MCP_CANONICAL_ORIGIN", Config.MCP_CANONICAL_ORIGIN
+    )
+    card = protocol.build_server_card(
+        origin=origin,
+        supported_versions=SUPPORTED_PROTOCOL_VERSIONS,
+        server_info=SERVER_INFO,
+    )
+    body = "" if request.method == "HEAD" else json.dumps(card, ensure_ascii=False)
+    return Response(
+        body,
+        status=200,
+        headers={
+            "Content-Type": protocol.SERVER_CARD_CONTENT_TYPE,
+            "Cache-Control": "public, max-age=600",
+            "X-Content-Type-Options": "nosniff",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@mcp_bp.route("/mcp/server-card", methods=["POST", "PUT", "DELETE", "PATCH"])
+def mcp_server_card_method_not_allowed() -> Response:
+    """Restrict /mcp/server-card to read-only discovery verbs."""
+    resp = jsonify({"error": "method_not_allowed"})
+    resp.status_code = 405
+    resp.headers["Allow"] = "GET, HEAD, OPTIONS"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
 
 
 @mcp_bp.route("/mcp", methods=["GET", "DELETE"])
@@ -82,10 +143,6 @@ def mcp_method_not_allowed() -> Response:
 @limiter.limit("240 per minute")
 @mcp_auth_required
 def mcp_endpoint() -> Any:
-    protocol_version, version_error = _protocol_version()
-    if version_error is not None:
-        return version_error
-
     try:
         message = jsonrpc.parse_message(request.get_data())
     except jsonrpc.JsonRpcError as exc:
@@ -98,6 +155,26 @@ def mcp_endpoint() -> Any:
     request_id = message["id"]
     method = message["method"]
     params = message.get("params") or {}
+
+    protocol_version, version_error = _resolve_protocol_version(
+        method, params, request_id
+    )
+    if version_error is not None:
+        return version_error
+    assert protocol_version is not None
+
+    if protocol.is_modern(protocol_version) and method != "initialize":
+        header_err = protocol.validate_modern_headers(
+            request.headers, method, params
+        )
+        if header_err is not None:
+            resp = jsonify(
+                jsonrpc.error_response(
+                    request_id, protocol.HEADER_MISMATCH, header_err
+                )
+            )
+            resp.status_code = 400
+            return resp
 
     with span("mcp.request", method=method):
         try:
@@ -134,25 +211,46 @@ def _dispatch(
     request_id: jsonrpc.RequestId,
     protocol_version: str,
 ) -> dict:
+    modern = protocol.is_modern(protocol_version)
+    if method == "server/discover":
+        return protocol.build_discovery_result(
+            supported_versions=SUPPORTED_PROTOCOL_VERSIONS,
+            capabilities={"tools": {"listChanged": False}},
+            server_info=SERVER_INFO,
+            instructions=INSTRUCTIONS,
+            ttl_ms=3_600_000,
+            cache_scope="private",
+        )
     if method == "initialize":
         return _initialize(params)
     if method == "ping":
-        return {}
+        return protocol.wrap_modern_result(
+            {}, modern=modern, server_info=SERVER_INFO
+        )
     if method == "tools/list":
-        return {"tools": tools.list_tool_descriptors(granted_scopes())}
+        # Private cache scope only: advertised tools depend on token scopes.
+        return protocol.wrap_modern_result(
+            {"tools": tools.list_tool_descriptors(granted_scopes())},
+            modern=modern,
+            ttl_ms=3_600_000,
+            cache_scope="private",
+            server_info=SERVER_INFO,
+        )
     if method == "tools/call":
-        return _tools_call(params, protocol_version)
+        return protocol.wrap_modern_result(
+            _tools_call(params, protocol_version),
+            modern=modern,
+            server_info=SERVER_INFO,
+        )
     raise jsonrpc.JsonRpcError(
         jsonrpc.METHOD_NOT_FOUND, f"Method not found: {method}", request_id
     )
 
 
 def _initialize(params: dict) -> dict:
-    requested = params.get("protocolVersion")
-    if requested in SUPPORTED_PROTOCOL_VERSIONS:
-        negotiated = requested
-    else:
-        negotiated = SUPPORTED_PROTOCOL_VERSIONS[0]
+    negotiated = protocol.negotiate_initialize(
+        params.get("protocolVersion"), SUPPORTED_PROTOCOL_VERSIONS
+    )
     client_info = params.get("clientInfo") or {}
     log_mcp_event(
         "mcp_initialize",
@@ -196,9 +294,8 @@ def _log_write_refused(name: str, reason: str, **fields: Any) -> None:
 def _tools_call(params: dict, protocol_version: str) -> dict:
     name = params.get("name")
     if not isinstance(name, str) or name not in tools.TOOLS:
-        raise jsonrpc.JsonRpcError(
-            jsonrpc.INVALID_PARAMS,
-            f"Unknown tool: {sanitize_log_value(str(name))[:80]}",
+        return tools.error_result(
+            f"Unknown tool: {sanitize_log_value(str(name))[:80]}"
         )
 
     # Authorization BEFORE argument validation and before any handler runs,
@@ -218,9 +315,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         arguments = {}
     if not isinstance(arguments, dict):
         _log_write_refused(name, "schema_invalid", error_count=1)
-        raise jsonrpc.JsonRpcError(
-            jsonrpc.INVALID_PARAMS, "arguments must be an object"
-        )
+        return tools.error_result("arguments must be an object")
 
     schema = tools.TOOLS[name]["input_schema"]
     validation_errors = tools.validate_args(schema, arguments)
@@ -230,9 +325,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         _log_write_refused(
             name, "schema_invalid", error_count=len(validation_errors)
         )
-        raise jsonrpc.JsonRpcError(
-            jsonrpc.INVALID_PARAMS, "; ".join(validation_errors)
-        )
+        return tools.error_result("; ".join(validation_errors))
 
     # The span attribute and every `mcp_tool_call` line carry the dossier
     # only when it is SHAPED like an id. On any path — success included (a
@@ -342,9 +435,10 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
             argument_reason,
             **({"dossier_id": dossier_id} if dossier_id else {}),
         )
-        # Raised outside the span, so its (user-derived) text never reaches
-        # the exporter. It still reaches the client, which is the point.
-        raise jsonrpc.JsonRpcError(jsonrpc.INVALID_PARAMS, argument_error)
+        # Returned as an isError tool result (outside the span, so user-derived
+        # text never reaches Cloud Trace), allowing the caller model to read
+        # the refusal and recover.
+        return tools.error_result(argument_error)
 
     duration_ms = round((time.perf_counter() - started) * 1000, 1)
     if name in tools.WRITE_TOOLS:

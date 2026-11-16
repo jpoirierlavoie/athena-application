@@ -69,7 +69,7 @@ def test_validator_rejects_unknown_key():
 
 def test_validator_enforces_required():
     errors = tools.validate_args(_SCHEMA, {})
-    assert any("days" in e and "required" in e for e in errors)
+    assert any("days" in e and "requis" in e for e in errors)
 
 
 def test_validator_integer_bounds_and_message():
@@ -81,7 +81,7 @@ def test_validator_integer_bounds_and_message():
     assert tools.validate_args(_SCHEMA, {"days": 90}) == []
     # Wrong type with bounds produces the spec's canonical message.
     errors = tools.validate_args(_SCHEMA, {"days": "ten"})
-    assert errors == ["`days` must be an integer between 1 and 90"]
+    assert errors == ["`days` doit être un entier entre 1 et 90"]
 
 
 def test_validator_bool_is_not_an_integer():
@@ -126,10 +126,10 @@ def test_validator_enforces_min_and_max_items():
     assert tools.validate_args(_BOUNDED, {"rows": ["a"]}) == []
     assert tools.validate_args(_BOUNDED, {"rows": ["a", "b", "c"]}) == []
     assert tools.validate_args(_BOUNDED, {"rows": []}) == [
-        "`rows` must contain at least 1 item(s) (0 given)"
+        "`rows` doit contenir au moins 1 élément(s) (0 fourni(s))"
     ]
     assert tools.validate_args(_BOUNDED, {"rows": ["a"] * 4}) == [
-        "`rows` must contain at most 3 items (4 given)"
+        "`rows` doit contenir au plus 3 élément(s) (4 fourni(s))"
     ]
     # An absent array has nothing to count; `required` is the keyword for
     # presence, and this one does not declare it.
@@ -141,10 +141,10 @@ def test_an_oversized_array_is_refused_on_its_count_not_item_by_item():
     echo 500 errors back in one refusal, work and response size both
     chosen by the caller."""
     errors = tools.validate_args(_BOUNDED, {"rows": ["too-long"] * 500})
-    assert errors == ["`rows` must contain at most 3 items (500 given)"]
+    assert errors == ["`rows` doit contenir au plus 3 élément(s) (500 fourni(s))"]
     # Within the bound, the items are still validated one by one.
     errors = tools.validate_args(_BOUNDED, {"rows": ["ok", "too-long"]})
-    assert errors == ["`rows[1]` must be at most 2 characters"]
+    assert errors == ["`rows[1]` doit compter au plus 2 caractères"]
 
 
 _NESTED = {
@@ -177,15 +177,15 @@ def test_a_nested_field_is_named_by_its_path_never_bare():
         "meta": {},
     })
     assert errors == [
-        "`days` must be >= 1",
-        ("`rows[1].extra` is not a supported argument "
-         "(supported: `hours`, `name`)"),
-        "`rows[1].name` is required",
-        "`rows[1].hours` must be <= 24",
-        "`rows[2]` must be an object",
-        "`meta.label` is required",
+        "`days` doit être >= 1",
+        ("`rows[1].extra` n'est pas un paramètre pris en charge "
+         "(admis : `hours`, `name`)"),
+        "`rows[1].name` est requis",
+        "`rows[1].hours` doit être <= 24",
+        "`rows[2]` doit être de type object",
+        "`meta.label` est requis",
     ]
-    assert tools.validate_args(_NESTED, "x") == ["`arguments` must be an object"]
+    assert tools.validate_args(_NESTED, "x") == ["`arguments` doit être de type object"]
 
 
 @pytest.mark.parametrize(
@@ -331,20 +331,18 @@ def test_true_timestamps_render_in_montreal():
 
 def test_tool_result_envelope():
     payload = {"titre": "Réponse déposée", "montant": 1}
-    result = tools.tool_result(payload, "2025-03-26")
-    assert result["isError"] is False
-    assert "structuredContent" not in result
-    text = result["content"][0]["text"]
-    assert "Réponse déposée" in text  # ensure_ascii=False
-
-    result_new = tools.tool_result(payload, "2025-06-18")
-    assert result_new["structuredContent"] == payload
+    for version in ("2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"):
+        result = tools.tool_result(payload, version)
+        assert result["isError"] is False
+        assert "structuredContent" not in result
+        text = result["content"][0]["text"]
+        assert "Réponse déposée" in text  # ensure_ascii=False
 
 
 def test_tool_result_text_is_compact_json_of_the_structured_content():
     """The text block is paid in the model's context on every call: compact
-    JSON (2026-09-30 — it was indent=2), never a lossy rendering — it
-    parses back to exactly the structuredContent, which is unchanged."""
+    JSON (no duplicate structuredContent on the wire), parsing back cleanly
+    to the exact payload."""
     import json
 
     payload = {
@@ -355,12 +353,13 @@ def test_tool_result_text_is_compact_json_of_the_structured_content():
         "truncated": False,
     }
     result = tools.tool_result(payload, "2025-06-18")
+    assert "structuredContent" not in result
     text = result["content"][0]["text"]
     assert "\n" not in text
     assert ": " not in text and ", " not in text
     assert text == json.dumps(payload, ensure_ascii=False,
                               separators=(",", ":"))
-    assert json.loads(text) == result["structuredContent"] == payload
+    assert json.loads(text) == payload
     assert "Réponse déposée" in text  # ensure_ascii=False still
 
 
@@ -371,7 +370,7 @@ def test_registry_shape():
     # creators create_time_entries_bulk / create_expenses_bulk. 88 -> 89
     # (2026-11-10, deliberately): the read get_financial_statements. 89 ->
     # 90 (2026-11-10, deliberately): the read get_admin_receipt.
-    assert len(tools.TOOLS) == 90  # 34 lectures + 56 ecritures
+    assert len(tools.TOOLS) == 86  # 34 lectures + 52 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -386,7 +385,6 @@ def test_registry_shape():
 # membership list is one copy that drifts.
 _IDEMPOTENT_WRITES = frozenset({
     "complete_task",
-    "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
     # Lot 1b. Values already stored write nothing (update_task,
     # update_note, reopen_task on its own target); a content replacement
@@ -453,7 +451,6 @@ def test_write_tools_set_is_pinned():
     assert tools.WRITE_TOOLS == frozenset({
         "create_note", "append_to_note",
         "create_task", "create_hearing",
-        "create_time_entry", "create_expense",
         # 2026-09-30 — the batch forms of the two creators, up to 50 rows,
         # ALL OR NOTHING, the key REQUIRED (money).
         "create_time_entries_bulk", "create_expenses_bulk",
@@ -467,7 +464,6 @@ def test_write_tools_set_is_pinned():
         "import_invoice",
         # Reclassement de phase : les seules ecritures qui franchissent le
         # mur `invoiced`, et elles ne touchent que phase/sous_phase.
-        "set_time_entry_phase", "set_expense_phase",
         "set_time_entry_phase_bulk", "set_expense_phase_bulk",
         # Analyse documentaire (SPEC Phase K §8-9, 2026-08-27). Ecriture
         # d'un genre nouveau : elle REMPLACE la categorie stockee du
@@ -534,7 +530,6 @@ def test_edit_tools_set_is_pinned():
         "update_partie", "update_dossier",
         "update_time_entry", "update_expense",
         "import_invoice",
-        "set_time_entry_phase", "set_expense_phase",
         "set_time_entry_phase_bulk", "set_expense_phase_bulk",
         "complete_task",
         # Lot 1b — every agenda edit REPLACES a stored value (a field, a
@@ -761,7 +756,7 @@ def test_validate_args_blocks_id_injection():
         schema,
         {"dossier_id": "d1", "title": "T", "content": "C", "id": "existing-note"},
     )
-    assert any("`id` is not a supported argument" in e for e in errors)
+    assert any("`id` n'est pas un paramètre pris en charge" in e for e in errors)
 
 
 # ── Handler helpers ─────────────────────────────────────────────────────
@@ -2339,36 +2334,45 @@ def test_create_hearing_defaults_to_rencontre(monkeypatch, bumps):
 
 
 def test_create_time_entry_defaults_to_the_dossier_rate(monkeypatch):
+    from tests._fake_firestore import install
+    import mcp.write_support as write_support
+    install(monkeypatch, write_support)
     _stub_dossier_reads(monkeypatch,
         lambda i: {**_wdossier(), "hourly_rate": 32500},
     )
-    created = {}
+    created = []
     monkeypatch.setattr(
-        handlers.time_entry_model, "create_time_entry",
-        lambda data: (created.update(data) or ({**data, "id": "e",
-                                                "amount": 48750}, [])),
+        handlers.time_entry_model, "create_time_entries_bulk",
+        lambda rows: (created.extend(rows) or [{**rows[0], "id": "e",
+                                               "amount": 48750}], []),
     )
-    payload = handlers.create_time_entry({
-        "dossier_id": "d1", "date": "2026-07-30",
-        "description": "Rédaction", "hours": 1.5,
+    payload = handlers.create_time_entries_bulk({
+        "entries": [{"dossier_id": "d1", "date": "2026-07-30",
+                     "description": "Rédaction", "hours": 1.5}],
+        "idempotency_key": "cle-tools-t-1",
     })
-    assert created["rate"] == 32500                # dossier default
-    assert created["invoiced"] is False
-    assert created["created_via"] == "mcp"
+    assert created[0]["rate"] == 32500             # dossier default
+    assert created[0]["invoiced"] is False
+    assert created[0]["created_via"] == "mcp"
     # NO provenance text — the description prints on the client's invoice.
-    assert "Claude" not in created["description"]
+    assert "Claude" not in created[0]["description"]
     assert "ctag_bumped" not in payload            # not DAV-exposed
 
 
 def test_create_expense_requires_dossier_and_positive_amount(monkeypatch):
     _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
-    with pytest.raises(tools.ToolArgumentError, match="dossier_id"):
-        handlers.create_expense({"date": "2026-07-30",
-                                 "description": "X", "amount_cents": 100})
-    with pytest.raises(tools.ToolArgumentError, match="amount_cents"):
-        handlers.create_expense({"dossier_id": "d1", "date": "2026-07-30",
-                                 "description": "X", "amount_cents": 0})
+    errors = tools.validate_args(
+        tools.TOOLS["create_expenses_bulk"]["input_schema"],
+        {"entries": [{"date": "2026-07-30", "description": "X", "amount_cents": 100}],
+         "idempotency_key": "cle-tools-e-1"})
+    assert any("dossier_id" in e for e in errors)
+    errors2 = tools.validate_args(
+        tools.TOOLS["create_expenses_bulk"]["input_schema"],
+        {"entries": [{"dossier_id": "d1", "date": "2026-07-30",
+                      "description": "X", "amount_cents": 0}],
+         "idempotency_key": "cle-tools-e-2"})
+    assert any("amount_cents" in e for e in errors2)
 
 
 def test_wp16_enums_track_the_models():
@@ -2384,8 +2388,9 @@ def test_wp16_enums_track_the_models():
             ["category"]["enum"] == list(task_model.VALID_CATEGORIES))
     assert (tools.TOOLS["create_hearing"]["input_schema"]["properties"]
             ["hearing_type"]["enum"] == list(hearing_model.VALID_HEARING_TYPES))
-    assert (tools.TOOLS["create_expense"]["input_schema"]["properties"]
-            ["category"]["enum"] == list(expense_model.VALID_CATEGORIES))
+    assert (tools.TOOLS["create_expenses_bulk"]["input_schema"]["properties"]
+            ["entries"]["items"]["properties"]["category"]["enum"]
+            == list(expense_model.VALID_CATEGORIES))
 
 
 # ── WP17 dossier mutators: fill-only + append-only recorders ────────────
@@ -3682,7 +3687,7 @@ def test_the_two_outstanding_definitions_deliberately_disagree():
     assert "amount_due" not in summary_src             # …never amount_due
     assert '"annulée"' in summary_src                  # only annulée excluded
     description = tools.TOOLS["list_invoices"]["description"]
-    assert "will not agree" in description             # said out loud
+    assert "ne concordent pas à dessein" in description
 
 
 # ── Lot 1: cabinet-wide search ──────────────────────────────────────────
@@ -3919,8 +3924,8 @@ def test_document_query_is_metadata_only_and_says_so():
     """Reserving the meaning of `query` now is what keeps a future
     content-search tool from having to contradict it."""
     description = tools.TOOLS["list_documents"]["description"]
-    assert "METADATA" in description
-    assert "NEVER the text inside the file" in description
+    assert "MÉTADONNÉES" in description
+    assert "jamais le texte" in description
 
 
 def test_document_query_names_exactly_the_fields_the_model_searches():
@@ -3938,8 +3943,8 @@ def test_document_query_names_exactly_the_fields_the_model_searches():
     snippet = source[start:source.index("]).lower()", start)]
     searched = set(_re.findall(r'\.get\("(\w+)"', snippet))
     spoken = {
-        "display_name": "display name", "filename": "file name",
-        "analyse": "the analysis summary", "resume": "the analysis summary",
+        "display_name": "nom", "filename": "fichier",
+        "analyse": "résumé d'analyse", "resume": "résumé d'analyse",
         "notes_internes": "notes_internes", "genere_depuis": "genere_depuis",
         "tags": "tags",
     }
@@ -4190,10 +4195,9 @@ def test_the_report_never_promises_the_connector_will_fix_it(cov):
     details = [f["detail"] for i in payload["items"] for f in i["findings"]]
     assert details
     description = tools.TOOLS["get_coverage_report"]["description"]
-    assert "only INSCRIBE an identity or conflict check as PRESUMED" in (
-        description)
-    assert "keeps it OPEN until the lawyer confirms it" in description
-    assert "in the application" in description
+    assert "inscrit seulement identité/conflit PRÉSUMÉ" in description
+    assert "jusqu'à confirmation à l'écran" in description
+    assert "à l'app" in description
     assert "never verifies an identity or a conflict" not in description
     assert "cannot create a protocol" not in description
 
@@ -4216,8 +4220,7 @@ def test_the_report_names_the_connector_path_beside_the_application(cov):
     assert "PRESUMED" in doc and "OPEN until the lawyer confirms" in doc
 
     description = tools.TOOLS["get_coverage_report"]["description"]
-    assert "says what to do in the application and, where a tool" in (
-        description)
+    assert "dit quoi faire à l'app et nomme l'outil" in description
     for tool in ("create_protocol", "record_signification"):
         assert tool in description, tool
 
@@ -4556,12 +4559,12 @@ def test_every_phased_tool_says_what_omitting_the_pair_does():
     # once, never twice.
     own = {
         "update_task":
-            "Omitting both phase keys leaves the classification alone",
+            "Omettre les deux clés de phase laisse le classement intact",
         "update_time_entry":
-            "Omitting BOTH phase keys leaves the classification alone",
+            "Omettre les deux clés de phase laisse le classement intact",
     }
     phased = _phased_tools()
-    assert len(phased) >= 10, phased     # garde contre un balayage vide
+    assert len(phased) >= 6, phased      # 6 top-level phased + 4 bulk items
     for tool in phased:
         spec = tools.TOOLS[tool]
         text = spec["input_schema"]["properties"]["phase"]["description"]
@@ -4572,20 +4575,19 @@ def test_every_phased_tool_says_what_omitting_the_pair_does():
         else:
             assert text.endswith(clause), tool
             assert not any(c in text for c in clauses - {clause}), tool
-    for tool in ("create_task", "create_time_entry", "create_expense",
-                 "add_protocol_step"):
+    for tool in ("create_task", "add_protocol_step"):
         assert tools._PHASE_OMIT_UNCLASSIFIED in (
             tools.TOOLS[tool]["input_schema"]["properties"]["phase"]
             ["description"]), tool
+    for bulk_tool in ("create_time_entries_bulk", "create_expenses_bulk"):
+        item_p = (tools.TOOLS[bulk_tool]["input_schema"]["properties"]
+                  ["entries"]["items"]["properties"]["phase"]["description"])
+        assert tools._PHASE_OMIT_UNCLASSIFIED in item_p, bulk_tool
     # ... and TRUE: omission resolves to the unclassified pair, and no
     # handler reads the protocol's current phase the way the web forms do.
     assert handlers._resolve_phase_pair({}) == ("", "")
     assert "get_current_phase_for_dossier" not in inspect.getsource(handlers)
     # The bulk twins say it on the array that carries the items.
-    # REWRITTEN deliberately (2026-09-30): every `entries` array with a
-    # phase used to be a reclassifier's; the bulk CREATORS carry one too,
-    # and theirs stores an omitted pair unclassified, like the single
-    # creators — so the clause is derived from the name here as well.
     bulk = []
     for tool, spec in tools.TOOLS.items():
         entries = spec["input_schema"]["properties"].get("entries", {})
@@ -4594,13 +4596,12 @@ def test_every_phased_tool_says_what_omitting_the_pair_does():
             continue
         bulk.append(tool)
         if tool.startswith("set_"):
-            assert ("naming neither `phase` nor `sous_phase` is refused"
-                    in entries["description"]), tool
+            assert ("sinon refusée" in entries["description"]), tool
         else:
             assert tool.startswith("create_"), tool
             assert items["phase"]["description"].endswith(
                 tools._PHASE_OMIT_UNCLASSIFIED), tool
-            assert "is refused" not in entries["description"], tool
+            assert "sinon refusée" not in entries["description"], tool
     assert len(bulk) >= 4, bulk
 
 
@@ -4629,42 +4630,54 @@ def test_resolve_phase_pair_ergonomics():
 
 
 def test_create_time_entry_stores_and_echoes_phase(monkeypatch):
+    from tests._fake_firestore import install
+    import mcp.write_support as write_support
+    install(monkeypatch, write_support)
     _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
-    seen = {}
+    seen = []
 
-    def _create(data):
-        seen.update(data)
-        return {**data, "id": "te-new", "amount": 30000}, []
+    def _create(rows):
+        seen.extend(rows)
+        return [{**rows[0], "id": "te-new", "amount": 30000}], []
 
-    monkeypatch.setattr(handlers.time_entry_model, "create_time_entry", _create)
-    payload = handlers.create_time_entry({
-        "dossier_id": "d1", "date": "2026-08-10",
-        "description": "Rédaction de la défense", "hours": 1.0,
-        "sous_phase": "CTS-02",   # alone: the parent derives from the prefix
+    monkeypatch.setattr(handlers.time_entry_model, "create_time_entries_bulk", _create)
+    payload = handlers.create_time_entries_bulk({
+        "entries": [{
+            "dossier_id": "d1", "date": "2026-08-10",
+            "description": "Rédaction de la défense", "hours": 1.0,
+            "sous_phase": "CTS-02",   # alone: the parent derives from the prefix
+        }],
+        "idempotency_key": "cle-tools-phase-1",
     })
-    assert seen["phase"] == "CTS"
-    assert seen["sous_phase"] == "CTS-02"
-    assert payload["entity"]["phase"] == "CTS"
-    assert payload["entity"]["sous_phase"] == "CTS-02"
+    assert seen[0]["phase"] == "CTS"
+    assert seen[0]["sous_phase"] == "CTS-02"
+    assert payload["entities"][0]["phase"] == "CTS"
+    assert payload["entities"][0]["sous_phase"] == "CTS-02"
 
 
 def test_create_expense_without_phase_stays_blank(monkeypatch):
+    from tests._fake_firestore import install
+    import mcp.write_support as write_support
+    install(monkeypatch, write_support)
     _stub_dossier_reads(monkeypatch,
                         lambda i: _wdossier())
-    seen = {}
+    seen = []
 
-    def _create(data):
-        seen.update(data)
-        return {**data, "id": "e-new"}, []
+    def _create(rows):
+        seen.extend(rows)
+        return [{**rows[0], "id": "e-new"}], []
 
-    monkeypatch.setattr(handlers.expense_model, "create_expense", _create)
-    payload = handlers.create_expense({
-        "dossier_id": "d1", "date": "2026-08-10",
-        "description": "Timbre", "amount_cents": 10500,
+    monkeypatch.setattr(handlers.expense_model, "create_expenses_bulk", _create)
+    payload = handlers.create_expenses_bulk({
+        "entries": [{
+            "dossier_id": "d1", "date": "2026-08-10",
+            "description": "Timbre", "amount_cents": 10500,
+        }],
+        "idempotency_key": "cle-tools-phase-2",
     })
-    assert seen["phase"] == "" and seen["sous_phase"] == ""
-    assert payload["entity"]["phase"] == ""
+    assert seen[0]["phase"] == "" and seen[0]["sous_phase"] == ""
+    assert payload["entities"][0]["phase"] == ""
 
 
 def test_create_task_contradictory_pair_refused_before_write(monkeypatch, bumps):
