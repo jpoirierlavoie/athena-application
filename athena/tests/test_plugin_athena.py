@@ -1,4 +1,4 @@
-"""The claude.ai plugin « athena » (skill 2.0.0) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 2.0.1) — the deploy gate.
 
 ``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
 source (``plugin/athena/`` at the repo root) and the tool registry.
@@ -50,12 +50,13 @@ _CALL = re.compile(r"([a-z][a-z0-9_]*)\((.*)\)", re.S)
 _LEAD = re.compile(r"([a-z][a-z0-9_]*)(?=\(|$)")
 _QUOTED = re.compile(r'"([^"\n]*)"')
 
-#: Retired strings — never in a file the model reads. Includes v1.x skill
-#: names and legacy folder layout replaced in 2.0.0.
+#: Retired strings — never in a file the model reads. Includes v1.x/v2.x skill
+#: names and legacy folder layout replaced in 2.0.0 / 2.0.1.
 _BANNED = (
     "mcp__", "save_draft", "get_draft", "revise_draft", "qclaw_", "canlii_",
     "pratique-civile-quebecoise", "analyse-documentaire",
     "calendrier-procedural", "deontologie-professionnelle", "recettes/",
+    "analyse-juridique", "administration-litige", "deontologie-et-pratique",
 )
 #: Retired singular write tools replaced by their *_bulk equivalents (checked at
 #: identifier boundaries so ``create_expenses_bulk`` etc. stay valid).
@@ -416,21 +417,36 @@ def test_word_and_routing_budgets(shipped):
         assert re.findall(r"[\w./-]+\.md\b", leaf) == [], ref
 
 
-def test_droit_civil_v2_firewall_and_tiers(shipped):
+def test_droit_civil_v3_routing_firewall_and_tiers(shipped):
     skill = shipped[ex.SKILL].decode("utf-8")
     for name in (
         "droit-civil-quebecois",
         "recherche-juridique",
+        "analyse-et-strategie",
         "redaction-juridique",
-        "analyse-juridique",
-        "administration-litige",
-        "deontologie-et-pratique",
+        "production-et-conformite",
+        "gestion-du-mandat",
+        "phase-ouverture-dossier",
+        "phase-introduction-reponse",
+        "phase-interrogatoires-instruction",
+        "phase-preparation-audience",
+        "phase-jugement-et-suites",
     ):
         assert name in skill, name
     for prefix in ("lois.", "juris.", "outils."):
         assert prefix in skill, prefix
+    assert "opèrent localement" in skill
+    assert "appels réseau sortants" in skill
+    for contradiction in ("sans lui exposer", "faits caviardés", "transmis hors Athena"):
+        assert contradiction not in skill, contradiction
     for tier in ("Lecture", "Écriture courante", "Écriture à fort impact"):
         assert tier in skill, tier
+    agenda = shipped["skills/athena/references/agenda-et-protocole.md"].decode("utf-8")
+    dossiers = shipped["skills/athena/references/dossiers-et-contacts.md"].decode("utf-8")
+    notes = shipped["skills/athena/references/notes-et-documents.md"].decode("utf-8")
+    assert "gestion-du-mandat" in agenda and "gestion-du-mandat" in dossiers
+    assert "recherche-juridique" in dossiers and "phase-ouverture-dossier" in dossiers
+    assert "analyse-et-strategie" in notes and "production-et-conformite" in notes
 
 
 def test_version_line_follows_the_frontmatter(shipped):
@@ -1037,7 +1053,19 @@ _SCENARIO_EVALS: tuple[dict, ...] = (
         "expected_tools": (),
         "forbidden_tools": (),
         "expected_params": {},
-        "firewall_tokens": ("recherche-juridique", "redaction-juridique", "administration-litige", "lois.", "juris.", "outils."),
+        "firewall_tokens": (
+            "opèrent localement",
+            "appels réseau sortants",
+            "lois.find_relevant",
+            "lois.search_text",
+            "juris.",
+            "outils.calendrier_deadlines",
+            "outils.interets_1619",
+            "outils.registre_search",
+            "outils.registre_get_entity",
+            "outils.adresse_verify",
+            "outils.greffe_parse_number",
+        ),
     },
 )
 

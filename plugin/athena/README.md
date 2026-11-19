@@ -1,9 +1,9 @@
-# Athena — plugin 2.0.0
+# Athena — plugin 2.0.1
 
 Une compétence qui apprend à Claude à se servir du connecteur Athena **avec le moins
 d'appels possible** : routage clair, suite d'appels minimale par demande courante,
-confirmation graduée et cloisonnement du *secret professionnel* face aux outils
-externes (`droit-civil-quebecois` et recherche web).
+confirmation graduée et cloisonnement du *secret professionnel* face aux appels
+réseau sortants (connecteurs de `droit-civil-quebecois` et recherche web).
 
 - `skills/athena/SKILL.md` — routeur unique + `SAFETY-KERNEL` et quatre recettes (`R1`–`R4`) ; ≤ 1 000 mots.
 - `skills/athena/references/*.md` — six feuilles terminales (dossiers/contacts, agenda/protocole, notes/documents, facturation/budget, comptabilité/états, reprise), ≤ 1 500 mots chacune.
@@ -31,12 +31,12 @@ remplissent à la construction ; ne jamais les écrire à la main.
 ```bash
 cd athena
 python -m pytest tests/test_plugin_athena.py -q   # la porte, d'abord
-python -m scripts.exporter_plugin_athena           # → ../dist/athena-2.0.0.plugin (non versionné)
+python -m scripts.exporter_plugin_athena           # → ../dist/athena-2.0.1.plugin (non versionné)
 rm -rf ../../athena-plugin/plugins/athena
 python -m scripts.exporter_plugin_athena --deplie ../../athena-plugin/plugins/athena
 ```
 
-Puis, dans ce miroir (`jpoirierlavoie/athena-plugin`) : reporter la version `2.0.0` dans
+Puis, dans ce miroir (`jpoirierlavoie/athena-plugin`) : reporter la version `2.0.1` dans
 `.claude-plugin/marketplace.json`, valider, pousser. claude.ai s'y synchronise (réglage de
 l'organisation), puis Claude Code : rien à téléverser.
 

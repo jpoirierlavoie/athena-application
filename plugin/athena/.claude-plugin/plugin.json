@@ -1,6 +1,6 @@
 {
   "name": "athena",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Mode d'emploi du connecteur Athena : la suite d'appels la plus courte pour chaque demande, d'où vient chaque identifiant et ce que seule l'application fait. Désigne le connecteur Athena par son nom.",
   "author": {
     "name": "Jason Poirier Lavoie",

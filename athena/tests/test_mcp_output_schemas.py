@@ -717,6 +717,8 @@ def test_parse_court_file_number_three_branches_conform():
     _conforms("parse_court_file_number", handlers.parse_court_file_number(
         {"court_file_number": "500-05-123456-241"}))
     _conforms("parse_court_file_number", handlers.parse_court_file_number(
+        {"court_file_number": "500-17-12"}))
+    _conforms("parse_court_file_number", handlers.parse_court_file_number(
         {"court_file_number": "TAL-12345"}))
     _conforms("parse_court_file_number", handlers.parse_court_file_number(
         {"court_file_number": "n'importe quoi"}))

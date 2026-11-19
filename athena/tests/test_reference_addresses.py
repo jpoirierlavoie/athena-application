@@ -196,5 +196,24 @@ def test_parse_court_file_number_still_resolves():
     """The address columns must not disturb the parser."""
     result = reference.parse_court_file_number("500-05-123456-241")
     assert result["parse_error"] is None
+    assert result["format_warning"] is None
     assert result["greffe"]["palais_de_justice"] == "Montréal"
     assert result["juridiction"]["tribunal"] == "Cour supérieure"
+
+
+def test_parse_court_file_number_format_hint_has_three_trailing_digits():
+    result = reference.parse_court_file_number("500")
+    assert result["parse_error"] is not None
+    assert "NNN-NN-NNNNNN-NNN" in result["parse_error"]
+    assert "NNN-NN-NNNNNN-NN " not in result["parse_error"]
+
+
+def test_parse_court_file_number_incomplete_number_resolves_with_warning():
+    result = reference.parse_court_file_number("500-17-12")
+    assert result["parse_error"] is None
+    assert result["greffe_number"] == "500"
+    assert result["juridiction_number"] == "17"
+    assert result["greffe"]["palais_de_justice"] == "Montréal"
+    assert result["juridiction"]["tribunal"] == "Cour supérieure"
+    assert result["format_warning"] is not None
+    assert "NNN-NN-NNNNNN-NNN" in result["format_warning"]

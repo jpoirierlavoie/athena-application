@@ -1,6 +1,6 @@
 # Notes, théorie de la cause, documents et gabarits
 
-Méthode d'analyse probante : `analyse-juridique` ; rédaction d'actes : `redaction-juridique` (faits anonymisés, aucun nom ni pièce brute transmis hors Athena).
+Analyse probante et théorie : `analyse-et-strategie` ; rédaction d'actes : `redaction-juridique` ; bordereaux, cotes, cahiers, endos et conformité formelle : `production-et-conformite` ; jugement et appel : `phase-jugement-et-suites` (compétences locales en session ; aucun nom, n° dossier ni extrait de pièce vers le web, `lois.find_relevant` / `lois.search_text` ou `juris.*`).
 
 ## N1 Trouver, lire ou modifier une note
 {{GEN:charger}}

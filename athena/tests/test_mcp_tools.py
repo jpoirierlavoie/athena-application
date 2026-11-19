@@ -2003,6 +2003,18 @@ def test_parse_court_file_number_success():
     assert payload["palais_de_justice"] == "Montréal"
     assert payload["is_administrative"] is False
     assert payload["parse_error"] is None
+    assert "format_warning" not in payload
+
+
+def test_parse_court_file_number_incomplete_warns_without_failing():
+    payload = handlers.parse_court_file_number(
+        {"court_file_number": "500-17-12"}
+    )
+    assert payload["greffe_number"] == "500"
+    assert payload["juridiction_number"] == "17"
+    assert payload["tribunal"] == "Cour supérieure"
+    assert payload["parse_error"] is None
+    assert "NNN-NN-NNNNNN-NNN" in payload["format_warning"]
 
 
 def test_parse_court_file_number_administrative():
