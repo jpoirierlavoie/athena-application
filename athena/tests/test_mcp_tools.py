@@ -1897,7 +1897,8 @@ def test_compute_judicial_deadline_weekend_extension():
     assert payload["raw_date"] == "2026-07-11"
     assert payload["deadline"] == "2026-07-13"
     assert payload["was_adjusted"] is True
-    assert "Saturday" in payload["adjustment_reason"]
+    assert "samedi" in payload["adjustment_reason"]
+    assert "art. 83 al. 3 C.p.c." in payload["adjustment_reason"]
 
 
 def test_compute_judicial_deadline_holiday_extension():
@@ -1907,7 +1908,7 @@ def test_compute_judicial_deadline_holiday_extension():
     )
     assert payload["raw_date"] == "2027-06-24"
     assert payload["deadline"] == "2027-06-25"
-    assert "holiday" in payload["adjustment_reason"]
+    assert "jour férié" in payload["adjustment_reason"]
 
 
 def test_compute_judicial_deadline_extends_past_26_december(monkeypatch):
@@ -1934,8 +1935,8 @@ def test_compute_judicial_deadline_names_an_art_82_day_skipped_on_the_way():
     assert payload["raw_date"] == "2025-12-25"
     assert payload["deadline"] == "2025-12-29"
     reason = payload["adjustment_reason"]
-    assert reason.startswith("2025-12-25 is a Québec statutory holiday")
-    assert "2025-12-26 also skipped" in reason
+    assert reason.startswith("2025-12-25 est un jour férié québécois")
+    assert "2025-12-26 également sauté" in reason
     assert "art. 82 C.p.c." in reason
 
     # Same on New Year's Day → Fri 2 Jan 2026 skipped too.
@@ -1943,7 +1944,7 @@ def test_compute_judicial_deadline_names_an_art_82_day_skipped_on_the_way():
         {"start_date": "2025-12-31", "delay_days": 1, "direction": "after"}
     )
     assert payload["deadline"] == "2026-01-05"
-    assert "2026-01-02 also skipped" in payload["adjustment_reason"]
+    assert "2026-01-02 également sauté" in payload["adjustment_reason"]
 
     # Backward: Sat 27 Dec 2025 → Wed 24 Dec, passing Fri 26 and Thu 25.
     payload = handlers.compute_judicial_deadline(
@@ -1951,7 +1952,9 @@ def test_compute_judicial_deadline_names_an_art_82_day_skipped_on_the_way():
     )
     assert payload["raw_date"] == "2025-12-27"
     assert payload["deadline"] == "2025-12-24"
-    assert "2025-12-26 also skipped" in payload["adjustment_reason"]
+    assert "2025-12-26 également sauté" in payload["adjustment_reason"]
+    assert "reculé par prudence" in payload["adjustment_reason"]
+    assert "délai à rebours" in payload["adjustment_reason"]
 
 
 def test_compute_judicial_deadline_says_nothing_of_art_82_when_not_crossed():
@@ -1968,7 +1971,7 @@ def test_compute_judicial_deadline_says_nothing_of_art_82_when_not_crossed():
     )
     assert payload["raw_date"] == "2026-12-25"
     assert payload["deadline"] == "2026-12-28"
-    assert "also skipped" not in payload["adjustment_reason"]
+    assert "également sauté" not in payload["adjustment_reason"]
 
 
 def test_compute_judicial_deadline_june_25_is_juridical():
@@ -2015,6 +2018,22 @@ def test_parse_court_file_number_incomplete_warns_without_failing():
     assert payload["tribunal"] == "Cour supérieure"
     assert payload["parse_error"] is None
     assert "NNN-NN-NNNNNN-NNN" in payload["format_warning"]
+
+
+def test_parse_court_file_number_unicode_dashes_warn_but_resolve_and_spaces_fail():
+    payload = handlers.parse_court_file_number(
+        {"court_file_number": "500\u201305\u2013123456\u2013241"}
+    )
+    assert payload["greffe_number"] == "500"
+    assert payload["juridiction_number"] == "05"
+    assert payload["tribunal"] == "Cour supérieure"
+    assert payload["parse_error"] is None
+    assert "Tiret(s) typographique(s)" in payload["format_warning"]
+
+    spaced = handlers.parse_court_file_number(
+        {"court_file_number": "500 17 123456 241"}
+    )
+    assert spaced["parse_error"] is not None
 
 
 def test_parse_court_file_number_administrative():
