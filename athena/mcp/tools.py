@@ -2813,7 +2813,7 @@ TOOLS: dict[str, dict] = {
         "description": (
             (
             "Analyse un numéro de dossier judiciaire québécois "
-            "(NNN-NN-NNNNNN-NN) en greffe, tribunal, compétence, palais de "
+            "(NNN-NN-NNNNNN-NNN) en greffe, tribunal, compétence, palais de "
             "justice et district judiciaire. Un préfixe de lettres (TAL, "
             "TAQ…) signale un tribunal administratif."
         )

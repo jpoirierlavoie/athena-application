@@ -3316,7 +3316,7 @@ def parse_court_file_number(args: dict) -> dict:
     # fills the same nullable `tribunal` key the judicial path uses, so a
     # client asking « which tribunal » gets the answer either way (PA-D09).
     forum = result.get("forum") or {}
-    return {
+    out = {
         "greffe_number": result.get("greffe_number"),
         "juridiction_number": result.get("juridiction_number"),
         "palais_de_justice": greffe.get("palais_de_justice"),
@@ -3328,6 +3328,9 @@ def parse_court_file_number(args: dict) -> dict:
         "is_administrative": bool(result.get("is_administrative")),
         "parse_error": result.get("parse_error"),
     }
+    if result.get("format_warning"):
+        out["format_warning"] = result["format_warning"]
+    return out
 
 
 # ── 15. get_trust_balance ────────────────────────────────────────────────

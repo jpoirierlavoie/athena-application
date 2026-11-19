@@ -439,7 +439,8 @@ def parse_court_file_number(court_file_number: str) -> dict:
                                         # judicial numbers and unmapped
                                         # prefixes
             "is_administrative": False,
-            "parse_error": None or "error message"
+            "parse_error": None or "error message",
+            "format_warning": None or "warning if incomplete NNN-NN-NNNNNN-NNN"
         }
     """
     result = {
@@ -450,6 +451,7 @@ def parse_court_file_number(court_file_number: str) -> dict:
         "forum": None,
         "is_administrative": False,
         "parse_error": None,
+        "format_warning": None,
     }
 
     if not court_file_number or not court_file_number.strip():
@@ -486,7 +488,7 @@ def parse_court_file_number(court_file_number: str) -> dict:
     parts = cleaned.split("-")
     if len(parts) < 2:
         result["parse_error"] = (
-            "Format invalide. Attendu : NNN-NN-NNNNNN-NN "
+            "Format invalide. Attendu : NNN-NN-NNNNNN-NNN "
             "(ex. : 500-05-123456-241)"
         )
         return result
@@ -529,6 +531,18 @@ def parse_court_file_number(court_file_number: str) -> dict:
         result["parse_error"] = (
             f"{existing_error}{sep}Juridiction « {juridiction_str} » "
             "introuvable dans les données de référence."
+        )
+
+    if not result["parse_error"] and not (
+        len(parts) == 4
+        and len(parts[2]) == 6
+        and parts[2].isdigit()
+        and len(parts[3]) == 3
+        and parts[3].isdigit()
+    ):
+        result["format_warning"] = (
+            "Numéro judiciaire incomplet. Format complet attendu : "
+            "NNN-NN-NNNNNN-NNN (ex. : 500-05-123456-241)."
         )
 
     return result

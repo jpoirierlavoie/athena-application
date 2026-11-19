@@ -1,6 +1,6 @@
 # Agenda et protocole : tâches, audiences, Bookings, échéances, protocole
 
-Délais en mois, calendrier d'instance C.p.c. et règles de computation complexes : `administration-litige` (dates neutres seulement, sans identifiants client).
+Délais en mois, calendrier d'instance C.p.c. et règles de computation complexes : `gestion-du-mandat` (compétence locale ; dates neutres sans dossier vers `outils.calendrier_deadlines` / `outils.calendrier_holidays`).
 
 ## A1 Tâches
 {{GEN:charger}}
@@ -30,12 +30,12 @@ Délais en mois, calendrier d'instance C.p.c. et règles de computation complexe
 - **Déclencheur** : « signifié le …, 15 jours : inscris l'échéance ».
 - **Appels** : (1) ancrage connu : `compute_judicial_deadline(start_date, delay_days, direction)` en jours (plusieurs par tour) ; (2) confirmer, puis `create_task(dossier_id, title, due_date, description)` avec la base du calcul dans `description`.
 - **Au besoin** : une échéance déjà inscrite se lit (`get_agenda`, `list_protocol_steps(dossier_id)`, `next_deadline_date`) sans la recalculer.
-- **Arrêt** : rapporter la date et la tâche ; délais en mois / computation C.p.c. → `administration-litige`.
+- **Arrêt** : rapporter la date et la tâche ; délais en mois / computation C.p.c. → `gestion-du-mandat` (dates neutres vers `outils.calendrier_deadlines`).
 - **À éviter** : recalculer systématiquement chaque échéance de l'agenda.
 
 ## A5 Protocole de l'instance
 {{GEN:charger}}
 - **Déclencheur** : « crée le protocole », « ajoute une étape ».
 - **Appels** : (1) `list_protocol_steps(dossier_id)` : le statut dérivé gouverne ; (2) CQ ou CS : un seul `create_protocol(dossier_id, protocol_type, start_date, create_linked_tasks=true)` confirmé (`false` sans tâches) ; (3) étape sur mesure : `add_protocol_step(protocol_id, title, deadline_date, create_linked_task=true)` ; modifier : `update_protocol_step(protocol_id, step_id, …, expected_etag)`.
-- **Arrêt** : pas de relecture.
+- **Arrêt** : pas de relecture ; phases d'instance → `phase-introduction-reponse`, `phase-interrogatoires-instruction`, `phase-preparation-audience`.
 - **À éviter** : un `create_task` par étape de protocole ; `list_protocol_steps` par item d'un breffage.

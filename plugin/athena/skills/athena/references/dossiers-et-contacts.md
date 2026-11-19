@@ -1,6 +1,6 @@
 # Dossiers et contacts : trouver, créer, corriger, conformité, registres
 
-`find_imported` et `legacy_ref` : en reprise historique seulement. Conformité déontologique et délais substantiels : `deontologie-et-pratique` et `administration-litige` (sans exposer d'identité client).
+`find_imported` et `legacy_ref` : reprise historique seulement. Déontologie, mandats et délais C.p.c. : `gestion-du-mandat` ; prescription et droit substantiel : `recherche-juridique` ; ouverture : `phase-ouverture-dossier` (compétences locales ; pare-feu sur appels sortants `lois.*` / `outils.*`).
 
 ## D1 Trouver un contact, ou ses dossiers
 {{GEN:charger}}
@@ -34,7 +34,7 @@
 {{GEN:charger}}
 - **Déclencheur** : « vérifie les conflits », « vérifie KYC ».
 - **Appels** : (1) actifs : `get_coverage_report(checks=["CONFLIT_NON_VERIFIE", "IDENTITE_NON_VERIFIEE"])` ; un client : `get_partie(partie_id)` ; (2) TOUJOURS confirmer, puis `record_kyc_status(partie_id, check, status, notes, expected_etag)`.
-- **Arrêt** : dire « inscrit, présumé — à confirmer à l'application », jamais « vérifié » ni « identifié » ; règles déontologiques : `deontologie-et-pratique`.
+- **Arrêt** : dire « inscrit, présumé — à confirmer à l'application », jamais « vérifié » ni « identifié » ; règles déontologiques : `gestion-du-mandat` (accueil : `phase-ouverture-dossier`).
 - **À éviter** : appeler `get_partie` par client pour un balayage global.
 
 ## D6 Signification, événement de prescription
@@ -42,5 +42,5 @@
 - **Déclencheur** : « signifié le … », « la demande est déposée ».
 - **Appels** : (1) depuis le dossier lu (sinon `get_dossier`) : `partie_id` et `significations[]` ; (2) confirmer, puis `record_signification(dossier_id, partie_id, date, mode)` (un par partie, en parallèle) ; (3) `record_prescription_event(dossier_id, type, date)`.
 - **Au besoin** : délai en jours résultant → `compute_judicial_deadline(start_date, delay_days, direction)` puis `create_task`.
-- **Arrêt** : rapporter l'échéance ou l'alerte mise à jour ; délais en mois / droit substantiel → `administration-litige` (sans données nominatives).
+- **Arrêt** : rapporter l'échéance ou l'alerte mise à jour ; délais C.p.c. → `gestion-du-mandat`, prescription / droit substantiel → `recherche-juridique` (dates neutres sans dossier vers `outils.calendrier_deadlines`, droit abstrait vers `lois.*`).
 - **À éviter** : réinscrire pour « corriger » : ces registres sont append-only.

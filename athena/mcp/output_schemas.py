@@ -3508,7 +3508,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "greffe_type": _nstr("GC / GP / GI."),
         "is_administrative": _bool(),
         "parse_error": _nstr("null on success."),
-    }),
+        "format_warning": _str("Completeness warning when segments 3–4 are incomplete."),
+    }, optional=("format_warning",)),
 
     "get_trust_balance": _found_or_not(
         _obj({

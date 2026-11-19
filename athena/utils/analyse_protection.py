@@ -164,7 +164,7 @@ def _acces_restreint(
 
 
 def _segment_juridiction(numero: str) -> str:
-    """Les deux chiffres de juridiction d'un « NNN-NN-NNNNNN-NN ».
+    """Les deux chiffres de juridiction d'un « NNN-NN-NNNNNN-NNN ».
 
     Volontairement minimal et tolérant : ce module ne refait pas l'analyse
     du numéro de cour (models/reference la fait), il ne lit qu'un segment
