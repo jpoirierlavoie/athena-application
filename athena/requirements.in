@@ -4,13 +4,13 @@
 # reports across the major series. Dependabot's weekly minor/patch group
 # (see .github/dependabot.yml) keeps these moving.
 Flask==3.1.3
-firebase-admin==7.7.0
+firebase-admin==7.8.0
 flask-wtf==1.3.0
 flask-limiter==4.1.1
-gunicorn==26.2.0
+gunicorn==27.0.0
 google-cloud-firestore==2.34.1
 google-cloud-storage==3.17.1
-google-cloud-secret-manager==2.31.0
+google-cloud-secret-manager==2.32.0
 google-cloud-logging==3.17.0
 # Portail client (spec L1): the portal enqueues events onto the « portail »
 # Cloud Tasks queue; the main service's handler consumes them. Reused as-is
@@ -372,10 +372,10 @@ pyasn1==0.6.5
 # the dominant CPU cost on a crafted file. utils/pdf_text.py drops that one
 # message with a filter on the pypdf._cmap logger itself (one on the parent
 # "pypdf" logger would not apply: logger filters are not inherited). Checked
-# at 6.21.4: same logger, same prefix. Re-check its prefix at every pypdf
+# at 7.0.1: same logger, same prefix. Re-check its prefix at every pypdf
 # bump; tests/test_pdf_text.py fails if pypdf stops logging the notice under
 # that logger and prefix.
-pypdf==6.21.4
+pypdf==7.0.1
 # olefile reads the text of a pièce justificative filed as an Outlook .msg
 # (2026-11-10, the lawyer's decision): pure Python, BSD-2, no dependency of
 # its own — no system library. Its one consumer is utils/msg_text.py,
