@@ -3258,23 +3258,32 @@ def compute_judicial_deadline(args: dict) -> dict:
     adjustment_reason: Optional[str] = None
     if was_adjusted:
         if raw.weekday() == 5:
-            landed = "a Saturday"
+            landed = "un samedi"
         elif raw.weekday() == 6:
-            landed = "a Sunday"
+            landed = "un dimanche"
         elif raw in deadlines.get_quebec_holidays(
             raw.year, regime=deadlines.CIVIL
         ):
-            landed = "a Québec statutory holiday"
+            landed = "un jour férié québécois"
         elif deadlines.is_art_82_day(raw):
-            landed = ("26 December or 2 January, a holiday in civil "
-                      "procedure (art. 82 C.p.c.)")
+            landed = (
+                "le 26 décembre ou le 2 janvier, jour non juridique en "
+                "procédure civile (art. 82 C.p.c.)"
+            )
         else:
-            landed = "a non-juridical day"
-        moved = "forward" if direction == "after" else "backward"
-        adjustment_reason = (
-            f"{raw.isoformat()} is {landed}; "
-            f"extended {moved} to the nearest juridical day (art. 83 C.p.c.)"
-        )
+            landed = "un jour non juridique"
+        if direction == "after":
+            adjustment_reason = (
+                f"{raw.isoformat()} est {landed} ; "
+                "prolongé au jour ouvrable suivant le plus proche (art. 83 al. 3 C.p.c.)"
+            )
+        else:
+            adjustment_reason = (
+                f"{raw.isoformat()} est {landed} ; "
+                "reculé par prudence au jour ouvrable précédent "
+                "(l'art. 83 al. 3 C.p.c. vise les délais prospectifs ; "
+                "vérifier le texte ou l'ordonnance applicable pour ce délai à rebours)"
+            )
         # The extension can ALSO pass over a weekday 26 December / 2 January
         # (raw on 25 Dec or 1 Jan, a Saturday before them…). Named, or a
         # reader sees a Friday skipped with no stated cause and « corrects »
@@ -3290,9 +3299,9 @@ def compute_judicial_deadline(args: dict) -> dict:
         ]
         if skipped_82:
             adjustment_reason += (
-                f"; {', '.join(day.isoformat() for day in skipped_82)} also "
-                "skipped — 26 December and 2 January are holidays in civil "
-                "procedure every year (art. 82 C.p.c.)"
+                f" ; {', '.join(day.isoformat() for day in skipped_82)} également "
+                "sauté — les 26 décembre et 2 janvier sont non juridiques en "
+                "procédure civile chaque année (art. 82 C.p.c.)"
             )
 
     return {

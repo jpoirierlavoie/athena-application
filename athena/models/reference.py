@@ -484,8 +484,12 @@ def parse_court_file_number(court_file_number: str) -> dict:
             result["is_administrative"] = True
         return result
 
-    # Parse: expect NNN-NN-...
-    parts = cleaned.split("-")
+    # Parse: expect NNN-NN-... (normalize typographic Unicode dashes to ASCII '-' without altering spaces)
+    normalized_dashes = cleaned.translate(
+        str.maketrans("\u2010\u2011\u2012\u2013\u2014\u2212", "------")
+    )
+    dash_normalized = normalized_dashes != cleaned
+    parts = normalized_dashes.split("-")
     if len(parts) < 2:
         result["parse_error"] = (
             "Format invalide. Attendu : NNN-NN-NNNNNN-NNN "
@@ -533,6 +537,9 @@ def parse_court_file_number(court_file_number: str) -> dict:
             "introuvable dans les données de référence."
         )
 
+    warnings: list[str] = []
+    if dash_normalized:
+        warnings.append("Tiret(s) typographique(s) normalisé(s) en tiret ASCII '-'.")
     if not result["parse_error"] and not (
         len(parts) == 4
         and len(parts[2]) == 6
@@ -540,9 +547,11 @@ def parse_court_file_number(court_file_number: str) -> dict:
         and len(parts[3]) == 3
         and parts[3].isdigit()
     ):
-        result["format_warning"] = (
+        warnings.append(
             "Numéro judiciaire incomplet. Format complet attendu : "
             "NNN-NN-NNNNNN-NNN (ex. : 500-05-123456-241)."
         )
+    if warnings:
+        result["format_warning"] = " ".join(warnings)
 
     return result
