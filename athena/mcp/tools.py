@@ -66,7 +66,8 @@ class ToolArgumentError(Exception):
         self, message: str, *, reason: str = DEFAULT_REFUSAL_REASON,
         keep_claim: bool = False,
     ) -> None:
-        super().__init__(message)
+        self.client_message = str(message)
+        super().__init__(self.client_message)
         self.reason = reason
         self.keep_claim = bool(keep_claim)
 
@@ -1395,7 +1396,6 @@ _PHASE_OMIT_UNCLASSIFIED = (
     "Omettre les deux : stockée non renseignée (jamais déduite du protocole)."
 )
 _PHASE_OMIT_KEPT = "Omettre les deux : la paire actuelle reste inchangée."
-_PHASE_OMIT_REFUSED = "Ne nommer aucun des deux est refusé."
 
 
 def _phase_props(*, on_omit: Optional[str]) -> dict:
@@ -1500,7 +1500,7 @@ def _hearing_create_props() -> dict:
         },
     }
 
-PHASE_BULK_MAX = 50
+PHASE_BULK_MAX = disclosure.PHASE_BULK_MAX
 
 
 def _phase_bulk_items(id_key: str, id_description: str) -> dict:
@@ -1525,7 +1525,7 @@ def _phase_bulk_items(id_key: str, id_description: str) -> dict:
     }
 
 
-ENTRY_BULK_MAX = 50
+ENTRY_BULK_MAX = disclosure.ENTRY_BULK_MAX
 
 
 def _time_entry_fields() -> dict:

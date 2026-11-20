@@ -4583,7 +4583,6 @@ def test_every_phased_tool_says_what_omitting_the_pair_does():
         "create_": tools._PHASE_OMIT_UNCLASSIFIED,
         "add_": tools._PHASE_OMIT_UNCLASSIFIED,
         "update_": tools._PHASE_OMIT_KEPT,
-        "set_": tools._PHASE_OMIT_REFUSED,
     }
     clauses = set(by_prefix.values())
     # The tools whose own DESCRIPTION already said it (on_omit=None) — said

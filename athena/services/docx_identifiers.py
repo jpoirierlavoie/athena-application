@@ -65,6 +65,7 @@ class IdentifiersUnavailable(Exception):
     """The identifiers could not ALL be built. French message, no content."""
 
     def __init__(self, message: str, *, missing: int = 0) -> None:
+        self.message = message
         super().__init__(message)
         self.missing = missing
 

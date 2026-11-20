@@ -117,6 +117,7 @@ def revoke_current_session() -> None:
         try:
             firebase_auth.revoke_refresh_tokens(user_id)
         except Exception:
+            # Best-effort server-side revocation; local session revocation above already stands.
             pass
 
 

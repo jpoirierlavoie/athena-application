@@ -42,7 +42,8 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     # Every model the dashboard reads, imported before the fake is installed
     # so that none of them keeps the mocked client.
-    from models import dossier, hearing, protocol, task, time_entry, trust  # noqa: F401
+    from models import dossier, hearing, protocol, task, time_entry, trust
+    _PRELOADED_MODELS = (dossier, hearing, protocol, task, time_entry, trust)
     from models import invoice as invoice_model
     import mcp.handlers as handlers  # get_billing_snapshot, the other « impayé »
     import routes.dashboard as dashboard_routes
@@ -74,9 +75,10 @@ LATE = 57490
 
 
 def _fake_modules() -> list:
-    return [m for n, m in sorted(sys.modules.items())
-            if (n.startswith("models.") or n == "dav.sync")
-            and getattr(m, "db", None) is not None]
+    discovered = [m for n, m in sorted(sys.modules.items())
+                  if (n.startswith("models.") or n == "dav.sync")
+                  and getattr(m, "db", None) is not None]
+    return list(dict.fromkeys([*_PRELOADED_MODELS, *discovered]))
 
 
 @pytest.fixture

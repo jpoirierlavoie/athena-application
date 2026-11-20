@@ -165,6 +165,7 @@ def _prefetch_secrets(
         try:
             _from_secret_manager(sid)
         except Exception:
+            # Cold-start cache warm-up only; actual reads in _secret() enforce required secrets.
             pass
 
     with ThreadPoolExecutor(max_workers=len(secret_ids)) as pool:

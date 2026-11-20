@@ -444,20 +444,20 @@ def test_the_flow_prefixes_are_the_builders_own_namespaces():
     row_keys = {k for region in rows.values() for row in region for k in row}
     assert row_keys and {k.split(".", 1)[0] + "." for k in row_keys} == {
         "h.", "d.", "p."}
-    assert handlers._FLOW_PREFIXES["note_honoraires"] == ("facture.", "h.", "d.", "p.")
+    from utils.template_fields import (
+        CATALOG, CREDIT_NOTE_INVOICE_FIELDS, FLAT_ALIASES, FLOW_NAMES,
+        FLOW_PREFIXES, is_flow_field,
+    )
+    assert FLOW_PREFIXES["note_honoraires"] == ("facture.", "h.", "d.", "p.")
 
     ctx = build_note_context({"title": "T"}, dossier=None, firm={},
                              today=datetime(2026, 9, 27).date())
     own = {k for k in ctx.values if "." in k and k.split(".", 1)[0] == "note"}
     assert own and all(k.startswith("note.") for k in {*own, *ctx.rich_values})
-    assert handlers._FLOW_PREFIXES["note"] == ("note.",)
+    assert FLOW_PREFIXES["note"] == ("note.",)
     # Lot 3d — the credit note: its own nc.* and the few facture.* fields it
     # prints, EXACTLY the builder's keys outside the catalog's header.
     from utils.invoice_docx import CREDIT_NOTE_FIELDS, build_credit_note_context
-    from utils.template_fields import (
-        CATALOG, CREDIT_NOTE_INVOICE_FIELDS, FLAT_ALIASES, FLOW_NAMES,
-        is_flow_field,
-    )
     credit = build_credit_note_context(
         {"invoice_number": "2031-F001"}, _CREDIT_WRITE_OFF, firm={},
         destinataire=None, dossier=None, today=datetime(2031, 3, 10).date(),
@@ -465,7 +465,7 @@ def test_the_flow_prefixes_are_the_builders_own_namespaces():
     header = set(CATALOG) | set(FLAT_ALIASES)
     own = {k for k in credit.values if k not in header}
     assert own == set(CREDIT_NOTE_FIELDS) | set(CREDIT_NOTE_INVOICE_FIELDS)
-    assert handlers._FLOW_PREFIXES["note_credit"] == ("nc.",)
+    assert FLOW_PREFIXES["note_credit"] == ("nc.",)
     assert all(k.startswith("nc.") for k in CREDIT_NOTE_FIELDS)
     assert FLOW_NAMES == {"note_credit": CREDIT_NOTE_INVOICE_FIELDS}
     assert all(is_flow_field(k, "note_credit") for k in own)
@@ -475,10 +475,10 @@ def test_the_flow_prefixes_are_the_builders_own_namespaces():
     assert is_flow_field("facture.total_apres_taxes", "note_honoraires")
     assert not is_flow_field("nc.numero", "gabarit")
     # One table per special kind, no more, no less.
-    assert set(handlers._FLOW_PREFIXES) == set(tpl_model.SPECIAL_KINDS)
+    assert set(FLOW_PREFIXES) == set(tpl_model.SPECIAL_KINDS)
     assert set(FLOW_NAMES) <= set(tpl_model.SPECIAL_KINDS)
     # No catalog field lives in a flow namespace (it would be mis-filed).
-    for prefixes in handlers._FLOW_PREFIXES.values():
+    for prefixes in FLOW_PREFIXES.values():
         assert not [c for c in CATALOG if c.lower().startswith(prefixes)]
     for names in FLOW_NAMES.values():
         assert not set(names) & set(CATALOG)
@@ -576,8 +576,10 @@ def test_a_credit_note_preview_mirrors_its_own_flow(store):
 def test_every_special_kind_has_its_flow_tables():
     """Each table is read by kind (`_FLOW_SOURCES_FR[kind]`): a special kind
     missing from one would crash the preview — lot 3d adds the third."""
+    from utils.template_fields import FLOW_PREFIXES
+
     special = set(tpl_model.SPECIAL_KINDS)
-    for table in (handlers._FLOW_PREFIXES, handlers._FLOW_SOURCES_FR,
+    for table in (FLOW_PREFIXES, handlers._FLOW_SOURCES_FR,
                   handlers._FLOW_SLOTS, handlers._FLOW_ORIGIN_FR):
         assert set(table) == special
     assert set(handlers._GABARIT_FLOWS_FR) == set(tpl_model.VALID_KINDS) - {"gabarit"}

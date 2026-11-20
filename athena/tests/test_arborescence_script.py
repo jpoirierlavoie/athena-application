@@ -23,7 +23,7 @@ os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
 os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
-with mock.patch("google.cloud.firestore.Client"):
+with mock.patch("google.cloud.firestore.Client"), mock.patch.dict(sys.modules, {"dotenv": None}):
     import models.folder as folder
     import scripts.arborescence_par_defaut as script
 

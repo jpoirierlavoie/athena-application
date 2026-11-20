@@ -82,8 +82,14 @@ class _NoFirestore:
         self.touched: list[str] = []
 
     def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         self.touched.append(name)
-        raise RuntimeError("firestore indisponible")
+
+        def _unavailable(*_args, **_kwargs):
+            raise RuntimeError("firestore indisponible")
+
+        return _unavailable
 
 
 @pytest.fixture()

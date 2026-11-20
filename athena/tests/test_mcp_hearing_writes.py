@@ -566,7 +566,7 @@ def test_every_surface_states_the_d10_lock():
     assert "reporter ou annuler se fait dans Outlook" in desc
     assert "toute autre modification à l'application" in desc
     assert "Outlook" in tools.TOOLS["decide_rendez_vous"]["description"]
-    text = disclosure.build_instructions()
+    text = disclosure.build_instructions(tools.TOOLS)
     # REWRITTEN deliberately (finitions, contracts-1 part 2): the family paragraph became a one-line INSTRUCTIONS index entry; the fact is pinned in the tool description that now carries it: the BOOKINGS line keeps the lock; its detail is pinned above
     # (update_hearing) and here (decide_rendez_vous).
     assert ("un rendez-vous CONFIRMÉ ne se reporte ni ne s'annule ici "

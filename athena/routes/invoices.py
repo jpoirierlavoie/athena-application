@@ -72,7 +72,6 @@ from models.invoice import (
     DRAFT_NOTES_MAX_LENGTH,
     STATUS_LABELS,
     VALID_STATUSES,
-    WRITE_OFF_KINDS,
     WRITE_OFF_REASON_MAX_LENGTH,
     WriteOffsUnreadable,
     # The statuses whose lateness the model judges (is_overdue): the sheet

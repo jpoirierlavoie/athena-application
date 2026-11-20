@@ -215,7 +215,6 @@ from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
 from utils.template_fields import (
     EMPTY_OPTION_VALUE,
-    FLOW_PREFIXES,
     classify_placeholders,
     is_flow_field,
     is_uppercase_name,
@@ -2032,7 +2031,6 @@ _SLOT_ENTRIES_FR = {"client_id": "clients", "adverse_id": "parties adverses"}
 # catalogue's module (utils/template_fields.FLOW_PREFIXES / is_flow_field),
 # which the gabarit page reads too; tests/test_mcp_template_reads.py pins it
 # against the builders.
-_FLOW_PREFIXES = FLOW_PREFIXES
 # Each flow runs on BOTH surfaces — the application's button and the
 # connector's create_document (lot 2A: source « markdown »; lot 3b: source
 # « invoice_note ») — so neither is named alone. The credit note (lot 3d)
@@ -11521,7 +11519,7 @@ def _analyse_operations_text(
             stamp=f"*Ajouté par Claude le {format_date_fr(day)}*",
         )
     except analyse_blocs.BlocStructureError as exc:
-        raise ToolArgumentError(f"{exc} Rien n'a été modifié.")
+        raise ToolArgumentError(f"{exc.message} Rien n'a été modifié.")
     field = f"bloc:{ops[0]['bloc']}" if len(ops) == 1 else "content"
     return new, changed, field
 
@@ -11543,7 +11541,7 @@ def _analyse_rewrite_text(full: Any, day: date) -> str:
     try:
         parsed = analyse_blocs.validate_full_rewrite(text)
     except analyse_blocs.BlocStructureError as exc:
-        raise ToolArgumentError(f"{exc} Rien n'a été modifié.")
+        raise ToolArgumentError(f"{exc.message} Rien n'a été modifié.")
     at = parsed.entete.body_start
     head = text[:at]
     rest = _without_leading_stamp(text[at:], _ANALYSE_REWRITE_STAMP)
@@ -11555,7 +11553,7 @@ def _analyse_rewrite_text(full: Any, day: date) -> str:
     try:
         analyse_blocs.validate_full_rewrite(new)
     except analyse_blocs.BlocStructureError as exc:
-        raise ToolArgumentError(f"{exc} Rien n'a été modifié.")
+        raise ToolArgumentError(f"{exc.message} Rien n'a été modifié.")
     return new
 
 
@@ -15132,7 +15130,7 @@ def _check_template_name(dossier: dict, name: str, accept: list[str],
     try:
         found = text_residues(name, identifiers, accept=accept)
     except LeakScanError as exc:
-        raise ToolArgumentError(f"{exc} {_NOTHING_OPENED}",
+        raise ToolArgumentError(f"{exc.message} {_NOTHING_OPENED}",
                                 reason="upload_residue")
     if found.residues:
         listed = "; ".join(
@@ -15418,7 +15416,7 @@ def _rehydrate_begin_upload(stored: dict) -> dict:
     try:
         ticket, reason = upload_ticket_model.get_open_ticket(ticket_id)
     except upload_ticket_model.TicketStoreUnavailable as exc:
-        raise ToolArgumentError(str(exc), reason="upload_store_unavailable")
+        raise ToolArgumentError(exc.message, reason="upload_store_unavailable")
     if reason == upload_ticket_model.REASON_FILED:
         raise ToolArgumentError(
             upload_ticket_model.message_for(reason),
@@ -15881,7 +15879,7 @@ def _finalize_upload_impl(args: dict) -> dict:
     try:
         claim = upload_ticket_model.claim_ticket(ticket_id)
     except upload_ticket_model.TicketStoreUnavailable as exc:
-        raise ToolArgumentError(str(exc), reason="upload_store_unavailable")
+        raise ToolArgumentError(exc.message, reason="upload_store_unavailable")
     if claim.state == upload_ticket_model.DONE:
         # The first finalizer may have closed the ticket and died before
         # consuming its bytes: consume them now (idempotent).
@@ -16647,7 +16645,7 @@ def _template_name_accepted(name: str, identifiers: list, accept: list[str],
     try:
         found = text_residues(name, identifiers, accept=accept)
     except LeakScanError as exc:
-        raise ToolArgumentError(f"{exc} {nothing}")
+        raise ToolArgumentError(f"{exc.message} {nothing}")
     if found.residues:
         listed = "; ".join(
             f"« {r} »" for r in found.residues[:_RESIDUES_LISTED_MAX])
@@ -16689,12 +16687,12 @@ def _template_file_checked(
         try:
             result = scrub_core_properties(data)
         except LeakScanError as exc:
-            raise ToolArgumentError(f"{exc} {nothing}")
+            raise ToolArgumentError(f"{exc.message} {nothing}")
         data, scrubbed = result.data, list(result.emptied)
     try:
         scan = scan_identifiers(data, identifiers, accept=accept)
     except LeakScanError as exc:
-        raise ToolArgumentError(f"{exc} {nothing}")
+        raise ToolArgumentError(f"{exc.message} {nothing}")
     if scan.residues:
         listing, scrub_hint = _residue_listing(
             scan, scrubbed=scrub or already_scrubbed)
@@ -16928,7 +16926,7 @@ def _scrubbed_source(data: bytes, scrub: bool, nothing: str
     try:
         result = scrub_core_properties(data)
     except LeakScanError as exc:
-        raise ToolArgumentError(f"{exc} {nothing}")
+        raise ToolArgumentError(f"{exc.message} {nothing}")
     return result.data, list(result.emptied)
 
 
@@ -17459,7 +17457,7 @@ def _checked_rename(template: dict, name: str, accept: list[str],
     try:
         check = template_names.check_rename(template, name, accept=accept)
     except template_names.NameCheckUnavailable as exc:
-        raise ToolArgumentError(f"{exc} {nothing}", reason="template_retry")
+        raise ToolArgumentError(f"{exc.message} {nothing}", reason="template_retry")
     if check.residues:
         listed = "; ".join(
             f"« {r} »" for r in check.residues[:_RESIDUES_LISTED_MAX])

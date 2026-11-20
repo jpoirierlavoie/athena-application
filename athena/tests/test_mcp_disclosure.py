@@ -474,7 +474,7 @@ def test_instructions_name_every_write_tool_and_derive_their_counts():
     read (get_admin_ledger) included, with counts DERIVED from the
     registry."""
     text = endpoint.INSTRUCTIONS
-    assert text == disclosure.build_instructions()
+    assert text == disclosure.build_instructions(tools.TOOLS)
     for name in tools.WRITE_TOOLS | {"get_admin_ledger"}:
         assert f"`{name}`" in text, name
     families = [f for f in disclosure.FAMILIES if f.tools]

@@ -116,7 +116,8 @@ def test_a_phone_photo_is_reduced_to_claude_s_reading_size():
     assert (out.width, out.height) == (1568, 1176)
     assert (out.source_width, out.source_height) == (4032, 3024)
     assert len(out.data) <= receipt_image.OUTPUT_MAX_BYTES
-    assert Image.open(io.BytesIO(out.data)).format == "JPEG"
+    image_format = Image.open(io.BytesIO(out.data)).format
+    assert image_format == "JPEG"
 
 
 def test_a_small_photo_is_never_enlarged():

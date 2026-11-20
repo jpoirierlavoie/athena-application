@@ -1728,9 +1728,8 @@ def test_gemini_md_is_identical_to_claude_md_and_accounting_md_is_linked():
     claude_text = claude_bytes.decode("utf-8")
     assert "GEMINI.md" in claude_text, "CLAUDE.md ne mentionne pas GEMINI.md"
     assert "ACCOUNTING.md" in claude_text, "CLAUDE.md ne mentionne pas ACCOUNTING.md"
-    assert io.open(accounting_path, encoding="utf-8").read().strip(), (
-        "ACCOUNTING.md est vide"
-    )
+    accounting_text = pathlib.Path(accounting_path).read_text(encoding="utf-8")
+    assert accounting_text.strip(), "ACCOUNTING.md est vide"
 
 
 def _chemins_athena_cites(texte: str) -> set:
@@ -2329,3 +2328,42 @@ def test_the_observability_table_restates_SECURITY_METRICS_row_for_row():
         assert rangee in obs, rangee
     # Sa phrase sur la fenêtre, dérivée de la constante comme celle de §6.10.
     assert _phrases_de_fenetre()[0] in obs
+
+
+def test_exported_modules_declare_complete_literal_all():
+    """Modules whose public constants/helpers are read across packages must
+    declare a static literal ``__all__`` covering every public AST definition
+    (CodeQL py/unused-global-variable)."""
+    targets = (
+        ("utils.occupations", pathlib.Path(_ATHENA, "utils", "occupations.py")),
+        ("utils.contact_roles", pathlib.Path(_ATHENA, "utils", "contact_roles.py")),
+        ("services.comptabilite", pathlib.Path(_ATHENA, "services", "comptabilite.py")),
+    )
+    for mod_name, path in targets:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        public_defs: list[str] = []
+        all_literals: list[str] | None = None
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if not node.name.startswith("_"):
+                    public_defs.append(node.name)
+            elif isinstance(node, ast.Assign):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        if tgt.id == "__all__":
+                            assert isinstance(node.value, ast.List), mod_name
+                            all_literals = []
+                            for elt in node.value.elts:
+                                assert isinstance(elt, ast.Constant) and isinstance(elt.value, str), mod_name
+                                all_literals.append(elt.value)
+                        elif not tgt.id.startswith("_"):
+                            public_defs.append(tgt.id)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if not node.target.id.startswith("_"):
+                    public_defs.append(node.target.id)
+        assert all_literals is not None, f"{mod_name} missing literal __all__"
+        assert set(all_literals) == set(public_defs), (
+            f"{mod_name} __all__ mismatch: "
+            f"missing={set(public_defs) - set(all_literals)}, "
+            f"extra={set(all_literals) - set(public_defs)}"
+        )
