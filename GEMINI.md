@@ -81,7 +81,7 @@ Code comments cite these numbers: keep them.
 
 See [SECURITY.md](SECURITY.md) for full posture and rotation recipes.
 
-- **Edge.** Traffic transits Cloudflare, enforced on both services by App Engine firewall (Cloudflare + `0.1.0.2/32`; `DEPLOYMENT.md` §7), `X-Origin-Auth`, and `*.appspot.com` rejection so `CF-Connecting-IP` keys rate limits. Only `/_ah/` and `X-AppEngine-QueueName`/`X-Appengine-Cron` skip checks (`security.is_appengine_internal_request`); machine handlers re-check headers.
+- **Edge.** Traffic transits Cloudflare (Cloudflare One `Gateway` Access gates `default` save MCP/TWA/legal; `DEPLOYMENT.md` §7.1), enforced on both services by App Engine firewall (Cloudflare + `0.1.0.2/32`), `X-Origin-Auth`, and `*.appspot.com` rejection so `CF-Connecting-IP` keys rate limits. Only `/_ah/` and `X-AppEngine-QueueName`/`X-Appengine-Cron` skip checks (`security.is_appengine_internal_request`); machine handlers re-check headers.
 - **CSRF.** Browser writes carry CSRF tokens. Never place browser routes on CSRF-exempt blueprints (DAV, MCP, `taches_*`) or special-cased prefixes.
 - **CSP.** `<script nonce="{{ csp_nonce }}">`, zero inline `on*` (`addEventListener` on `data-*`), JSON in `<script type="application/json">`, Alpine `x-data` via `|jsattr`, vendored assets (Google origins serve App Check reCAPTCHA only). App responses are `no-store`; SW caches only static vendor/icons/offline assets.
 - **Secrets.** Loaded only from Secret Manager via `config.py`/`client/config.py` (env vars locally; `DEPLOYMENT.md` §4). Compare via `hmac.compare_digest` on bytes; verify expiries in code on read.

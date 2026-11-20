@@ -84,7 +84,8 @@ grants — is §6.9.
 **Accounts**
 - A **Google Cloud** account with billing enabled.
 - A **Cloudflare** account on the **Pro plan** (≈ US$25/mo) — required for
-  Early Hints. (Zero Trust / Access is optional — this deployment does not use it.)
+  Early Hints. (Cloudflare Zero Trust Free is used for the Cloudflare One VPN
+  perimeter in §7.1; optional for adopters.)
 - A **domain name** you control (this guide uses `yourdomain.example`).
 - *Optional:* a **Google Play Console** account (only for the Android TWA, §12).
 - *Optional:* a **claude.ai** account (only for the MCP connector, §11).
@@ -1635,6 +1636,77 @@ rejects direct access. Set up, in order:
    `security.py`) so the two never disagree. The portal host also gets its
    rate-limiting rule (§6.9).
 
+### 7.1 Optional — Cloudflare One VPN perimeter (Zero Trust Access & Gateway)
+
+To lock the main practice application (`yourdomain.example`), `/dav/*`, and
+`/oauth/authorize` behind VPN-enrolled devices on Cloudflare Zero Trust Free
+while leaving `portail.yourdomain.example` public for clients:
+
+1. **Gateway posture check (never `WARP`):** create a **Gateway** device posture
+   check (not `WARP`, which accepts any consumer 1.1.1.1 WARP user — `Gateway`
+   verifies enrollment in *your* Zero Trust organization) and delete any unused
+   `Warp` posture check so it cannot be selected by mistake. Keep Gateway
+   **`tls_decrypt` and HTTP antivirus disabled** (preserving end-to-end TLS and
+   avoiding certificate-pinned mobile app breakage), keep
+   `protocol_detection` enabled, enable Gateway **activity logging**
+   (`activity_log.enabled: true`, `redact_pii: false` so the Super
+   Administrator can identify which enrolled device triggered a DNS/L4 event
+   while `tls_decrypt: false` ensures HTTPS URLs, search queries, and payloads
+   are never inspected), and optionally block confirmed DNS security threat
+   categories (Malware, Phishing, C2/Botnet, Spyware, Scam, DGA, DNS
+   Tunneling, Compromised, Cryptomining) without blocking private IPs or newly
+   seen domains.
+2. **Device enrollment (`Warp Login App`):** attach your IdP (Microsoft Entra ID
+   only; delete any unused `onetimepin` IdP so Entra ID is the sole IdP in the
+   Zero Trust account) and restrict enrollment strictly to
+   `AUTHORIZED_USER_EMAIL` (`require` that IdP `login_method`). In Microsoft
+   Entra ID (**Enterprise applications → Properties**), set **Assignment
+   required? = Yes** *after* assigning `AUTHORIZED_USER_EMAIL` under **Users
+   and groups**. Do not require a device-posture check on the enrollment app
+   itself.
+3. **Hybrid Device Profiles:**
+   - **Workstations (`os.name in {"windows" "mac" "linux"}`, precedence 10):**
+     Split Tunnel **Include** mode containing `yourdomain.example`,
+     `<team>.cloudflareaccess.com`, and `login.microsoftonline.com` (browsers
+     must keep Secure DNS on OS/automatic so the client sees hostname lookups).
+   - **Default profile (mobile `android` / `ios`):** Split Tunnel **Exclude**
+     mode (Cloudflare's default local/RFC1918 exclusions plus
+     `exclude_office_ips: true`), `captive_portal: 180`, and `auto_connect: 900`.
+     On Android, enable **Always-on VPN** in system settings **without** turning
+     on « Block connections without VPN », so courthouse/hotel captive portals
+     and Wireless Android Auto continue to function.
+4. **Public `Bypass` Access applications (exact paths, ≤ 5 destinations each):**
+   - Machine MCP/OAuth endpoints: `yourdomain.example/mcp`,
+     `yourdomain.example/oauth/token`, `yourdomain.example/oauth/register`,
+     `yourdomain.example/oauth/revoke` (`decision: bypass`, `Everyone`).
+   - Discovery, Android TWA & static legal pages:
+     `yourdomain.example/.well-known/oauth-authorization-server`,
+     `yourdomain.example/.well-known/oauth-protected-resource`,
+     `yourdomain.example/.well-known/assetlinks.json`,
+     `yourdomain.example/privacy`, `yourdomain.example/terms`.
+   - **Never bypass** `/oauth/authorize`, `/dav/*`, `/.well-known/carddav`, or
+     `/.well-known/caldav`.
+5. **Root `yourdomain.example` Access application:** attach two reusable
+   policies in order:
+   1. **`Service Auth` (`non_identity`), Include `Gateway` posture:** passes
+      enrolled VPN traffic transparently without a second browser login,
+      `CF_Authorization` cookies, or CSP/HTMX session-expiry redirects.
+   2. **`Allow`, Include `Email == AUTHORIZED_USER_EMAIL` + Require `Gateway`
+      posture:** catches off-VPN requests and answers **`302 Found`** instead
+      of a raw `403 Forbidden` — preventing DAVx⁵'s `CollectionsWithoutHomeSetRefresher`
+      from wiping local phone calendars/tasks/contacts if a sync runs during a
+      brief captive-portal pause (`dav/__init__.py`).
+   - Also scope any country-based WAF blocks away from VPN-gated web and DAV
+     routes (keeping `CA`/`US` geo-blocking on the public MCP endpoints and
+     Turnstile on `portail.yourdomain.example`) so international travel on the
+     VPN never triggers Turnstile on HTMX or a `403` DAV wipe, and include
+     `/mcp` and `/mcp/server-card` in the `120 req/min` Cloudflare edge
+     rate-limiting rule alongside `portail` and `/dav/*` so unauthenticated
+     floods cannot saturate App Engine workers.
+6. **Break-glass recovery:** `dash.cloudflare.com` is outside the Access
+   application; if all enrolled devices are ever lost simultaneously, sign in to
+   the Cloudflare dashboard (password + 2FA) and disable the root Access app.
+
 ---
 
 ## 8. First deploy + smoke test
@@ -1699,14 +1771,15 @@ Skip this if you don't need Android sync. If you keep it:
   Basic credentials: username = `AUTHORIZED_USER_EMAIL`, password = the plaintext
   whose bcrypt hash is in `dav-password-hash`.
 - `/dav/*` is defended by the App Engine firewall, the origin-secret check, the
-  bcrypt Basic auth and a per-IP brute-force brake. **Do not put Cloudflare
-  Access in front of it** without reading this first: DavX5 has no
-  custom-header setting, so a service token cannot be presented (verified on
-  device, 2026-08-11). Its only mTLS-capable path is a *client certificate*
-  (Advanced login → select a certificate from the Android KeyChain) — and
-  Cloudflare enables mTLS **per hostname, not per path**, so switching it on
-  for a host that also serves the web UI and the MCP endpoint affects every
-  client of that host. If you want Access on DAV, give DAV its own hostname.
+  bcrypt Basic auth and a per-IP brute-force brake. With the Cloudflare One VPN
+  perimeter (§7.1), Cloudflare Access enforces **`Service Auth` (`Gateway`
+  posture)** in front of `/dav/*` plus an **`Allow` (`Require: Gateway`)**
+  fallback: DAVx⁵ needs neither custom service-token headers nor hostname-wide
+  mTLS (which would break the web UI and MCP connector) while the Android
+  Cloudflare One client is connected, and receives a harmless **`302`** (never
+  a `403`, which triggers local DAVx⁵ collection deletion; `dav/__init__.py`)
+  if a sync fires during a brief VPN pause. (Only if you require interactive
+  Access without the Cloudflare One client would DAV need its own hostname.)
 
 ---
 
@@ -1731,12 +1804,16 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 
 (TTL is garbage collection only — expiry is enforced in code regardless.)
 
-- If you use Cloudflare Access at all, ensure it **does NOT cover** `/mcp`,
-  `/mcp/server-card`, `/oauth/*`, or `/.well-known/oauth*` (only `/dav/*`).
+- With the Cloudflare One VPN perimeter (§7.1), Cloudflare Access **bypasses**
+  only the machine-facing MCP/OAuth endpoints (`/mcp`, `/mcp/server-card`,
+  `/oauth/token`, `/oauth/register`, `/oauth/revoke`, `/.well-known/oauth-*`),
+  keeping `/oauth/authorize` (the consent screen) behind the VPN alongside the
+  web UI and `/dav/*`.
 - Add a Cloudflare **Configuration Rule** disabling Browser Integrity Check on
   `/mcp`, `/mcp/server-card`, `/oauth/*`, and `/.well-known/oauth*` (Claude's
-  server is not a browser); watch Security → Events for Super Bot Fight Mode
-  challenging Anthropic's egress.
+  server is not a browser), and include `/mcp` and `/mcp/server-card` in the
+  `120 req/min` Cloudflare edge rate-limiting rule (§7.1); watch Security →
+  Events for Super Bot Fight Mode challenging Anthropic's egress.
 - In claude.ai: **Settings → Connectors → Add custom connector →**
   `https://yourdomain.example/mcp`, then complete Firebase login + MFA on the
   consent screen and click **« Autoriser »**.

@@ -46,11 +46,11 @@ GST/QST, hearings, tasks, case protocols, notes, procedural documents, and
 
 Python 3.13 · Flask · Jinja2 + HTMX + Alpine.js + precompiled Tailwind
 (no SPA, no build step) · Google App Engine Standard · Firestore (native mode) ·
-Firebase Auth (+ Phone MFA) + App Check · Firebase Storage · Cloudflare (Pro).
+Firebase Auth (+ Phone MFA) + App Check · Firebase Storage · Cloudflare (Pro + Zero Trust VPN).
 
 ```
-Browser / DavX5 / Claude → Cloudflare → App Engine (Flask)
-                                          → Firestore / Storage / Auth / Secret Manager
+Browser / DavX5 (Cloudflare One VPN) & Claude (MCP) → Cloudflare → App Engine (Flask)
+                                                                  → Firestore / Storage / Auth / Secret Manager
 ```
 
 ## Design assumptions (read before adopting)
