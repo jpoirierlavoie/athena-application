@@ -261,6 +261,22 @@ _DEPLOY_ONLY_FR: dict[str, tuple[str, str]] = {
         "Même portée Exchange que la boîte expéditrice. Une migration de "
         "boîte est de toute façon une opération Exchange.",
     ),
+    "courrier_graph_client_id": (
+        "Identifiant d'application Entra (Courrier)",
+        "Inscription dédiée au module Courrier (sans permission d'envoi "
+        "Mail.Send). Le secret qui l'accompagne (`courrier-graph-client-secret`) "
+        "vit dans Secret Manager.",
+    ),
+    "courrier_upn": (
+        "Boîte et OneDrive du module Courrier",
+        "Doit correspondre à la boîte couverte par la portée Exchange RBAC "
+        "de l'application Courrier et au compte OneDrive cible.",
+    ),
+    "courrier_onedrive_root": (
+        "Dossier racine OneDrive (Courrier)",
+        "Sous-dossier à la racine du OneDrive cible (par défaut "
+        "`4 - Dossiers`) hors duquel toute écriture est refusée.",
+    ),
 }
 
 

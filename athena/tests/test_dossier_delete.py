@@ -93,7 +93,7 @@ def test_an_empty_dossier_leaves_with_its_whole_tree_in_one_commit(db, did):
         did, "Mes brouillons", folder_model.node_folder_id(did, "interne"))
     assert errors == [], errors
     before = _folders_of(db, did)
-    assert len(before) == 19
+    assert len(before) == 20
     db.reset_logs()
 
     ok, message, report = dossier_model.delete_dossier(did)
@@ -172,7 +172,7 @@ def test_each_remaining_child_collection_refuses(db, did, collection):
     assert ok is False and report["code"] == "contenu"
     assert db.commits == []
     assert db.peek(f"dossiers/{did}") is not None
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
 
 
 def test_a_trust_history_still_blocks_forever(db, did):
@@ -261,7 +261,7 @@ def test_a_commit_failure_is_echec_and_deletes_nothing(db, did):
     # CERTAIN: the re-read found the dossier — nothing to journal, ever.
     assert report["dossier"] is None and report["folders"] == []
     assert db.peek(f"dossiers/{did}") is not None
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
 
 
 def _commit_raises_then_rereads_fail(monkeypatch, db, did, *, lands: bool):
@@ -309,7 +309,7 @@ def test_an_unknowable_outcome_never_says_nothing_was_deleted(
     assert message == ("La suppression n'a peut-être pas abouti — rechargez "
                        "la page pour le vérifier.")
     assert report["dossier"]["file_number"] == "2026-001"
-    assert len(report["folders"]) == 18
+    assert len(report["folders"]) == 19
     assert (db.peek(f"dossiers/{did}") is None) is lands
 
 
@@ -343,7 +343,7 @@ def test_a_commit_that_landed_with_its_answer_lost_is_a_success(
     monkeypatch.setattr(server, "commit", commit)
     ok, _m, report = dossier_model.delete_dossier(did)
     assert ok is True and report["code"] == ""
-    assert len(report["folders"]) == 18
+    assert len(report["folders"]) == 19
     assert report["dossier"]["file_number"] == "2026-001"
     assert db.peek(f"dossiers/{did}") is None and _folders_of(db, did) == {}
 
@@ -387,7 +387,7 @@ def test_a_document_versed_during_the_delete_makes_it_refuse(db, did):
     assert ok is False and report["code"] == "contenu"
     assert db.peek(f"dossiers/{did}") is not None
     folders = _folders_of(db, did)
-    assert len(folders) == 18
+    assert len(folders) == 19
     assert db.peek("documents/late")["folder_id"] in folders
 
 

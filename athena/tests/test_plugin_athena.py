@@ -161,7 +161,7 @@ _PINNED_VERBS = frozenset({
     "add", "append", "begin", "clear", "complete", "compute", "create",
     "decide", "edit", "fill", "finalize", "find", "get", "import", "list",
     "manage", "move", "parse", "preview", "record", "reopen", "reverse",
-    "set", "update",
+    "save", "set", "update",
 })
 _TOOL_VERBS = _PINNED_VERBS | {name.split("_", 1)[0] for name in tools.TOOLS}
 _FIELDS = _all_property_names()

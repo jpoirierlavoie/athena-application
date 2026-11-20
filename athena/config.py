@@ -65,6 +65,7 @@ _STARTUP_SECRET_IDS = (
     "dav-password-hash",
     "cf-origin-secret",
     "graph-client-secret",
+    "courrier-graph-client-secret",
 )
 
 
@@ -279,6 +280,32 @@ class Config:
     FACTURES_RETARD_ACTIF: bool = (
         os.environ.get("FACTURES_RETARD_ACTIF", "true").lower() == "true"
     )
+
+    # Courrier module (Outlook + OneDrive intake). Dedicated Entra app
+    # registration in Application mode (client credentials), zero Mail.Send.
+    # Shipped off in app.yaml until Phase 6 acceptance tests pass.
+    COURRIER_ACTIF: bool = (
+        os.environ.get("COURRIER_ACTIF", "false").lower() == "true"
+    )
+    COURRIER_GRAPH_CLIENT_ID: str = os.environ.get("COURRIER_GRAPH_CLIENT_ID", "")
+    COURRIER_GRAPH_CLIENT_SECRET: str = _secret(
+        "courrier-graph-client-secret", "COURRIER_GRAPH_CLIENT_SECRET", required=False
+    )
+    COURRIER_UPN: str = os.environ.get("COURRIER_UPN", "")
+    COURRIER_ONEDRIVE_ROOT: str = (
+        os.environ.get("COURRIER_ONEDRIVE_ROOT", "4 - Dossiers").strip().strip("/")
+    )
+
+    @classmethod
+    def courrier_configured(cls) -> bool:
+        """True when every credential and target needed by the Courrier module is set."""
+        return bool(
+            cls.GRAPH_TENANT_ID
+            and cls.COURRIER_GRAPH_CLIENT_ID
+            and cls.COURRIER_GRAPH_CLIENT_SECRET
+            and cls.COURRIER_UPN
+            and cls.COURRIER_ONEDRIVE_ROOT
+        )
 
     # Intake trigger (phase L3). False in L2: the confirmation screen shows the
     # « envoyer le formulaire d'ouverture » checkbox DISABLED with a tooltip,

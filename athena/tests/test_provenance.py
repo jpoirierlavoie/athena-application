@@ -557,8 +557,9 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     # adopts a legacy one, or creates it with its parent — every write in
     # the ONE writer of the tree, which the sweep then holds.
     ("folder", "ensure_system_folder"): (("folder", "_ensure"),),
-    # The default tree of a dossier (create_dossier) — the same writer.
+    # The default tree of a dossier (create_dossier) and targeted tree nodes — the same writer.
     ("folder", "ensure_default_tree"): (("folder", "_ensure"),),
+    ("folder", "ensure_tree_folder"): (("folder", "_ensure"),),
     # A copy IS an ingestion of the source's object (a GCS rewrite).
     ("document", "copy_document"): (("document", "ingest_blob_as_document"),),
     # Lot 2A (T9): finalize_upload replaces a template's file through it;

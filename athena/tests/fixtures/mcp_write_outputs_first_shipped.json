@@ -786,6 +786,29 @@
    ".warnings"
   ]
  },
+ "move_courriels": {
+  "first_shipped_in": "courrier-phase4",
+  "required": [
+   ".avertissements",
+   ".classes",
+   ".differes",
+   ".echecs",
+   ".essai",
+   ".idempotent_replay",
+   ".introuvables",
+   ".laisses",
+   ".messages",
+   ".messages[].action",
+   ".messages[].cle",
+   ".messages[].dossier",
+   ".messages[].dossier_outlook_cree",
+   ".messages[].erreur",
+   ".messages[].id_immuable_verifie",
+   ".messages[].outlook_folder_id",
+   ".messages[].statut",
+   ".messages[].statut_outlook_cible"
+  ]
+ },
  "move_documents": {
   "first_shipped_in": "mcp-ecriture-lot2",
   "required": [
@@ -895,6 +918,30 @@
    ".invoice.status_before",
    ".recorded",
    ".warnings"
+  ]
+ },
+ "record_courriels_temps": {
+  "first_shipped_in": "courrier-phase5",
+  "required": [
+   ".courriels_lies",
+   ".creees",
+   ".entrees",
+   ".entrees[].amount_cents",
+   ".entrees[].amount_display",
+   ".entrees[].billable",
+   ".entrees[].cles",
+   ".entrees[].date",
+   ".entrees[].dossier",
+   ".entrees[].dossier_id",
+   ".entrees[].hours",
+   ".entrees[].legacy_ref",
+   ".entrees[].phase",
+   ".entrees[].rate_cents",
+   ".entrees[].rate_display",
+   ".entrees[].sous_phase",
+   ".entrees[].time_entry_id",
+   ".essai",
+   ".idempotent_replay"
   ]
  },
  "record_document_analysis": {
@@ -1203,6 +1250,32 @@
    ".reversals[].trust_transaction_id",
    ".reversed",
    ".warnings"
+  ]
+ },
+ "save_courriels": {
+  "first_shipped_in": "courrier-phase3",
+  "required": [
+   ".differes",
+   ".echecs",
+   ".essai",
+   ".idempotent_replay",
+   ".messages",
+   ".messages[].cle",
+   ".messages[].dossier",
+   ".messages[].dossier_onedrive_cree",
+   ".messages[].erreur",
+   ".messages[].fichiers",
+   ".messages[].fichiers[].document_id",
+   ".messages[].fichiers[].onedrive_item_id",
+   ".messages[].fichiers[].quickxorhash",
+   ".messages[].fichiers[].renomme_index",
+   ".messages[].fichiers[].sha256",
+   ".messages[].fichiers[].slot",
+   ".messages[].fichiers[].statut_athena",
+   ".messages[].fichiers[].statut_onedrive",
+   ".messages[].fichiers[].taille",
+   ".messages[].statut",
+   ".traites"
   ]
  },
  "set_dossier_status": {

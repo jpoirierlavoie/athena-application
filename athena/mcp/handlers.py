@@ -142,6 +142,7 @@ from typing import Any, Callable, Optional
 
 from google.api_core.exceptions import NotFound
 
+from config import Config
 from dav.sync import (
     ACTIVE_DOSSIER_STATUSES,
     bump_ctag,
@@ -158,6 +159,7 @@ from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import budget as budget_model
 from models import concurrency
+from models import courrier as courrier_model
 from models import dav_ids
 from models import doc_template as doc_template_model
 from models import dossier as dossier_model
@@ -178,6 +180,7 @@ from models import upload_ticket as upload_ticket_model
 from security import TAG_RE, sanitize
 from services import carnet
 from services import comptabilite as comptabilite_service
+from services import courrier as courrier_service
 from services import docx_identifiers as identifiers_service
 from services import dossier_dav as dossier_dav_service
 from services import financial_statements as statements_service
@@ -193,8 +196,8 @@ from services import template_names
 from tz import MTL, mtl_to_utc
 from utils import (
     analyse_blocs, budget_math, civilite, contact_roles, cron_schedule, deadlines,
-    docx_templatize, email_text, kyc, msg_text, pdf_text, periods, phases,
-    receipt_image, recurrence, storage_identity, taxonomie,
+    docx_templatize, email_text, graph_courrier, kyc, msg_text, pdf_text, periods,
+    phases, receipt_image, recurrence, storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
 from utils.docx_fill import _CONTROL_RE, extract_placeholders, validate_template
@@ -208,8 +211,8 @@ from utils.docx_leak_scan import (
 )
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import (
-    log_dossier_event, log_hearing_series_event, log_partie_event,
-    log_unexpected,
+    log_courrier_event, log_dossier_event, log_hearing_series_event,
+    log_partie_event, log_unexpected,
 )
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
@@ -18419,6 +18422,259 @@ def get_financial_statements(args: dict) -> dict:
             first.floors_error if first.floors is None else ""),
         "periods": [_statement_period(st, sections) for st in statements],
     }
+
+
+# ── get_courrier_connexion (read) ───────────────────────────────────────
+
+
+def get_courrier_connexion(args: dict) -> dict:
+    """Return the Courrier Graph connection, scope, and probe status."""
+    raw = dict(graph_courrier.verifier_connexion())
+    expiration_utc = raw.pop("expiration_utc", None)
+    raw["expiration"] = iso_mtl(_as_utc(expiration_utc))
+    healthy = bool(
+        raw.get("jeton_valide")
+        and raw.get("boite_accessible")
+        and raw.get("onedrive_accessible")
+        and raw.get("envoi_absent")
+    )
+    log_courrier_event(
+        "courrier_connexion",
+        "success" if healthy else "failure",
+        configure=bool(raw.get("configure")),
+        jeton_valide=bool(raw.get("jeton_valide")),
+        boite_accessible=bool(raw.get("boite_accessible")),
+        onedrive_accessible=bool(raw.get("onedrive_accessible")),
+        envoi_absent=bool(raw.get("envoi_absent")),
+    )
+    return raw
+
+
+# ── list_courriels (read) ───────────────────────────────────────────────
+
+
+def list_courriels(args: dict) -> dict:
+    """Inventory Outlook Inbox oldest-first with bounded attachment previews."""
+    if not Config.courrier_configured():
+        raise ToolArgumentError("Le module Courrier n'est pas configuré.")
+    premier = int(args.get("premier", 0))
+    nombre = int(args.get("nombre", courrier_service.DEFAULT_NOMBRE))
+    try:
+        return courrier_service.inventorier_courriels(
+            premier=premier,
+            nombre=nombre,
+        )
+    except graph_courrier.CourrierGraphError as exc:
+        log_courrier_event(
+            "courrier_inventaire",
+            "failure",
+            reason="graph_error",
+            status_code=exc.status_code,
+        )
+        raise ToolArgumentError(graph_courrier.format_graph_error_fr(exc))
+    except Exception:
+        log_unexpected("mcp list_courriels failed")
+        raise ToolArgumentError(
+            "L'inventaire de la boîte de réception a échoué — réessayez dans un instant."
+        )
+
+
+# ── save_courriels (WRITE) ──────────────────────────────────────────────
+
+
+def _save_courriels_impl(args: dict) -> dict:
+    essai = bool(args.get("essai", False))
+    if not Config.COURRIER_ACTIF:
+        log_courrier_event(
+            "courrier_enregistrement",
+            "refused",
+            essai=essai,
+            reason="switch_off",
+        )
+        raise ToolArgumentError(
+            "Le module Courrier est désactivé (COURRIER_ACTIF=false)."
+        )
+    if not Config.courrier_configured():
+        raise ToolArgumentError("Le module Courrier n'est pas configuré.")
+    uid = None
+    if not essai:
+        try:
+            uid = storage_identity.owner_uid()
+        except storage_identity.StorageIdentityUnavailable as exc:
+            raise ToolArgumentError(
+                storage_identity.public_message(exc)
+            ) from exc
+    messages = list(args.get("messages") or [])
+    try:
+        payload = courrier_service.enregistrer_courriels(
+            messages,
+            essai=essai,
+            user_id=uid,
+        )
+    except graph_courrier.CourrierNotConfigured as exc:
+        raise ToolArgumentError(
+            "Le module Courrier n'est pas configuré."
+        ) from exc
+    except graph_courrier.CourrierGraphError as exc:
+        raise ToolArgumentError(
+            graph_courrier.format_graph_error_fr(exc)
+        ) from exc
+    except PermissionError as exc:
+        raise ToolArgumentError(
+            "Le module Courrier est désactivé (COURRIER_ACTIF=false)."
+        ) from exc
+    except ValueError as exc:
+        raise ToolArgumentError(
+            "Paramètres de sauvegarde Courrier invalides."
+        ) from exc
+    except Exception:
+        log_unexpected("mcp save_courriels failed")
+        raise
+    if (
+        essai
+        or payload.get("echecs", 0) > 0
+        or payload.get("differes", 0) > 0
+    ):
+        payload[NO_REPLAY_KEY] = True
+    return payload
+
+
+def save_courriels(args: dict) -> dict:
+    """Save approved Outlook emails & attachments into OneDrive, Athena, and registry."""
+    return run_write("save_courriels", args, lambda: _save_courriels_impl(args))
+
+
+# ── move_courriels (WRITE) ──────────────────────────────────────────────
+
+
+def _move_courriels_impl(args: dict) -> dict:
+    essai = bool(args.get("essai", False))
+    if not Config.COURRIER_ACTIF:
+        log_courrier_event(
+            "courrier_classement",
+            "refused",
+            essai=essai,
+            reason="switch_off",
+        )
+        raise ToolArgumentError(
+            "Le module Courrier est désactivé (COURRIER_ACTIF=false)."
+        )
+    if not Config.courrier_configured():
+        raise ToolArgumentError("Le module Courrier n'est pas configuré.")
+    messages = list(args.get("messages") or [])
+    try:
+        payload = courrier_service.deplacer_courriels(
+            messages,
+            essai=essai,
+        )
+    except graph_courrier.CourrierNotConfigured as exc:
+        raise ToolArgumentError(
+            "Le module Courrier n'est pas configuré."
+        ) from exc
+    except graph_courrier.CourrierGraphError as exc:
+        raise ToolArgumentError(
+            graph_courrier.format_graph_error_fr(exc)
+        ) from exc
+    except PermissionError as exc:
+        raise ToolArgumentError(
+            "Le module Courrier est désactivé (COURRIER_ACTIF=false)."
+        ) from exc
+    except ValueError as exc:
+        raise ToolArgumentError(
+            "Paramètres de classement Courrier invalides."
+        ) from exc
+    except Exception:
+        log_unexpected("mcp move_courriels failed")
+        raise
+    if (
+        essai
+        or payload.get("echecs", 0) > 0
+        or payload.get("differes", 0) > 0
+    ):
+        payload[NO_REPLAY_KEY] = True
+    return payload
+
+
+def move_courriels(args: dict) -> dict:
+    """Move saved Outlook emails under Archive > Dossiers or tag them for triage."""
+    return run_write("move_courriels", args, lambda: _move_courriels_impl(args))
+
+
+# ── record_courriels_temps (WRITE) ──────────────────────────────────────
+
+
+def _record_courriels_temps_impl(args: dict) -> dict:
+    essai = bool(args.get("essai", False))
+    if not Config.COURRIER_ACTIF:
+        log_courrier_event(
+            "courrier_temps",
+            "refused",
+            essai=essai,
+            reason="switch_off",
+        )
+        raise ToolArgumentError(
+            "Le module Courrier est désactivé (COURRIER_ACTIF=false)."
+        )
+    entrees = list(args.get("entrees") or [])
+    try:
+        payload, errors = courrier_service.inscrire_temps_courriels(
+            entrees,
+            essai=essai,
+        )
+    except PermissionError as exc:
+        raise ToolArgumentError(
+            "Le module Courrier est désactivé (COURRIER_ACTIF=false)."
+        ) from exc
+    except Exception as exc:
+        log_unexpected("mcp record_courriels_temps read failed")
+        raise ToolArgumentError(
+            "La lecture préalable des dossiers ou du registre Courrier a "
+            "échoué — réessayez ; rien n'a été enregistré.",
+            reason="read_unavailable",
+        ) from exc
+
+    _raise_if_outcome_uncertain(errors, reread="find_imported")
+    if errors or payload is None:
+        raise ToolArgumentError("; ".join(errors))
+
+    formatted_entrees: list[dict[str, Any]] = []
+    for row in payload["entrees"]:
+        stored_doc = row.get("time_entry_doc")
+        entry_out: dict[str, Any] = {
+            "legacy_ref": row["legacy_ref"],
+            "dossier_id": row["dossier_id"],
+            "dossier": row["dossier"],
+            "date": row["date"],
+            "hours": row["hours"],
+            "billable": row["billable"],
+            "phase": row["phase"],
+            "sous_phase": row["sous_phase"],
+            "cles": list(row["cles"]),
+            "time_entry_id": row["time_entry_id"],
+            "etag": concurrency.etag_of(stored_doc) if stored_doc else None,
+        }
+        _money(entry_out, "rate", row["rate_cents"])
+        _money(entry_out, "amount", row["amount_cents"])
+        formatted_entrees.append(entry_out)
+
+    result: dict[str, Any] = {
+        "essai": payload["essai"],
+        "creees": payload["creees"],
+        "courriels_lies": payload["courriels_lies"],
+        "entrees": formatted_entrees,
+    }
+    if essai:
+        result[NO_REPLAY_KEY] = True
+    return result
+
+
+def record_courriels_temps(args: dict) -> dict:
+    """Atomically record time entries and link them to saved Courrier emails."""
+    return run_write(
+        "record_courriels_temps",
+        args,
+        lambda: _record_courriels_temps_impl(args),
+    )
 
 
 # ── record_trust_entry (WRITE) ──────────────────────────────────────────

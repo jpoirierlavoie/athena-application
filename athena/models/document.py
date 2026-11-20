@@ -49,8 +49,8 @@ def projet_document_name(reference: str, template_name: str, day: date) -> str:
     ]
     return " - ".join(p for p in parts if p)
 
-# Allowed MIME types for upload (11 since the 2026-08-13 user decision —
-# Excel — after 2026-08-11 widened the original 6 with ZIP and email files)
+# Allowed MIME types for upload (13 — widened with ZIP/emails in 2026-08,
+# Excel in 2026-08, and plain text / CSV in 2026-11 for Courrier intake)
 ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/msword",
@@ -63,12 +63,14 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.ms-outlook",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain",
+    "text/csv",
 }
 
 # Allowed extensions (fallback when MIME detection fails)
 ALLOWED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
-    ".zip", ".eml", ".msg", ".xls", ".xlsx",
+    ".zip", ".eml", ".msg", ".xls", ".xlsx", ".txt", ".csv",
 }
 
 # Expected MIME type for each allowed extension (used to detect a
@@ -87,6 +89,8 @@ EXTENSION_MIME_TYPES = {
     ".msg": "application/vnd.ms-outlook",
     ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
 }
 
 # Max document size: 200 MB (user decision 2026-08-12 — was 25 MB; the
@@ -201,6 +205,8 @@ FILE_TYPE_ICONS = {
     "application/vnd.ms-outlook": "mail",
     "application/vnd.ms-excel": "sheet",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "sheet",
+    "text/plain": "file",
+    "text/csv": "sheet",
 }
 
 # Types the app never renders inline: their blobs are stored with
@@ -212,6 +218,8 @@ _ATTACHMENT_ONLY_TYPES = {
     "application/vnd.ms-outlook",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain",
+    "text/csv",
 }
 
 # Download-filename extensions, deterministic across platforms —
@@ -224,6 +232,8 @@ _DOWNLOAD_EXTENSIONS = {
     "application/vnd.ms-outlook": ".msg",
     "application/vnd.ms-excel": ".xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/plain": ".txt",
+    "text/csv": ".csv",
 }
 
 
@@ -823,7 +833,7 @@ def _validate_file(filename: str, file_size: int) -> list[str]:
         errors.append(
             "Type de fichier non autorisé. Formats acceptés : PDF, "
             "Word (DOC/DOCX), Excel (XLS/XLSX), JPG, PNG, TIFF, ZIP, "
-            "courriels (EML/MSG)."
+            "courriels (EML/MSG), texte (TXT/CSV)."
         )
 
     if file_size > MAX_FILE_SIZE:
@@ -857,6 +867,33 @@ def _looks_like_eml(head: bytes) -> bool:
     if not sep or not 0 < len(name) <= 77:
         return False
     return all(33 <= b <= 126 for b in name)
+
+
+def _looks_like_text(head: bytes) -> bool:
+    """True when *head* is non-empty printable UTF-8 or CP1252 text without
+    NUL or binary control bytes. Checked only after binary magic bytes."""
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    if not head:
+        return False
+    if any(b == 0x7F or (b < 0x20 and b not in (0x09, 0x0A, 0x0C, 0x0D)) for b in head):
+        return False
+    try:
+        head.decode("utf-8")
+        return True
+    except UnicodeDecodeError as exc:
+        # Handle a multi-byte UTF-8 sequence split at the 512-byte probe cut.
+        if len(head) >= _SNIFF_PROBE_BYTES - 3 and exc.start >= len(head) - 3:
+            try:
+                head[:exc.start].decode("utf-8")
+                return True
+            except UnicodeDecodeError:
+                pass
+    try:
+        decoded = head.decode("cp1252")
+    except UnicodeDecodeError:
+        return False
+    return not any(0x80 <= ord(ch) <= 0x9F for ch in decoded)
 
 
 def _sniff_content_type(file_stream: BinaryIO, ext: str) -> Optional[str]:
@@ -920,6 +957,10 @@ def _sniff_header(header: bytes, ext: str) -> Optional[str]:
         return None
     if ext == ".eml" and _looks_like_eml(header):
         return "message/rfc822"
+    if ext == ".txt" and _looks_like_text(header):
+        return "text/plain"
+    if ext == ".csv" and _looks_like_text(header):
+        return "text/csv"
     return None
 
 
@@ -1202,7 +1243,7 @@ def ingest_blob_as_document(
         return None, [
             "Le contenu du fichier ne correspond à aucun format autorisé. "
             "Formats acceptés : PDF, Word (DOC/DOCX), Excel (XLS/XLSX), "
-            "JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
+            "JPG, PNG, TIFF, ZIP, courriels (EML/MSG), texte (TXT/CSV)."
         ]
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]
@@ -1559,7 +1600,7 @@ def upload_document(
         return None, [
             "Le contenu du fichier ne correspond à aucun format autorisé. "
             "Formats acceptés : PDF, Word (DOC/DOCX), Excel (XLS/XLSX), "
-            "JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
+            "JPG, PNG, TIFF, ZIP, courriels (EML/MSG), texte (TXT/CSV)."
         ]
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]

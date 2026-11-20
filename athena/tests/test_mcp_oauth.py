@@ -565,6 +565,7 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "financiers, sans numéro de compte ni de transit",
         "les demandes Bookings en attente, avec le nom et le courriel du "
         "demandeur",
+        "la boîte de réception Outlook, l'aperçu des pièces et OneDrive",
     ):
         assert must in flat, must
     # WRITE — the box, what it does, and what the lines must still say: the
@@ -613,7 +614,8 @@ def test_the_consent_screen_stays_short(client, fake):
     once, in a few words, and this budget keeps it so: a line that grows
     back fails here first. Measured with the client asking for write (the
     longest screen)."""
-    budget = 450
+    # 465 -> 485 (2026-11-20, deliberately): Courrier Phase 3 write family line.
+    budget = 485
     client_doc = _register_client(fake)
     _, challenge = _pkce_pair()
     _, page = _consent_form(client, client_doc, challenge,

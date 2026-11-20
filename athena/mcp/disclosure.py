@@ -383,6 +383,26 @@ FAMILIES: tuple[Family, ...] = (
             "illisible) ; résultat incertain : relire, puis MÊME clé."
         ),
     ),
+    Family(
+        key="courrier",
+        label="COURRIER",
+        scope=SCOPE_WRITE,
+        tools=("save_courriels", "move_courriels", "record_courriels_temps"),
+        title_fr="Courrier",
+        consent_fr=(
+            "enregistrer les courriels et pièces dans OneDrive et Athéna "
+            "(catégorie <strong>présumée</strong>, sans écraser), inscrire le "
+            "temps et classer dans Outlook"
+        ),
+        instructions_en=(
+            "`save_courriels` (`list_courriels` d'abord) verse `.eml`/pièces "
+            "dans OneDrive (`4 - Dossiers`) et Athéna (sans écraser) ; "
+            "`record_courriels_temps` crée les entrées et lie le registre ; "
+            "`move_courriels` classe sous `Archive > Dossiers` après "
+            "enregistrement ou marque « à classer » ; `idempotency_key` "
+            "REQUISE ; `essai` simule."
+        ),
+    ),
 )
 
 

@@ -4,7 +4,6 @@ import base64
 import json
 import os
 import sys
-import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -41,6 +40,7 @@ def configured(monkeypatch):
         ("GRAPH_CLIENT_SECRET", "secret-val"),
         ("BOOKINGS_JURISTE_UPN", UPN),
         ("GRAPH_SENDER_UPN", UPN),
+        ("COURRIER_GRAPH_CLIENT_ID", ""),
     ):
         monkeypatch.setattr(Config, key, val)
 
@@ -309,12 +309,12 @@ def test_verifier_connexion_teams_reports_missing_roles_and_403_policy(
         classmethod(lambda cls: True),
         raising=False,
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "utils.graph_courrier",
-        types.SimpleNamespace(
-            verifier_connexion=lambda: {"onedrive_accessible": True}
-        ),
+    from utils import graph_courrier
+
+    monkeypatch.setattr(
+        graph_courrier,
+        "verifier_connexion",
+        lambda: {"onedrive_accessible": True},
     )
 
     res = gt.verifier_connexion_teams()

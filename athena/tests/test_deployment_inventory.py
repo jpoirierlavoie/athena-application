@@ -119,12 +119,13 @@ def test_the_inventory_calls_no_builtin_open():
     assert "eval" not in appels and "exec" not in appels
 
 
-# ── Les six secrets ──────────────────────────────────────────────────────
+# ── Les sept secrets ─────────────────────────────────────────────────────
 
 def test_there_are_six_secrets_not_four():
     """`check_config` en vérifiait quatre et DEPLOYMENT.md §4.2 l'écrivait
-    encore, alors que `portail-secret-key` et `graph-client-secret` existent."""
-    assert len(SECRETS) == 6
+    encore, alors que `portail-secret-key`, `graph-client-secret` et
+    `courrier-graph-client-secret` existent."""
+    assert len(SECRETS) == 7
     assert set(SECRET_IDS) == {
         "flask-secret-key",
         "portail-secret-key",
@@ -132,6 +133,7 @@ def test_there_are_six_secrets_not_four():
         "dav-password-hash",
         "cf-origin-secret",
         "graph-client-secret",
+        "courrier-graph-client-secret",
     }
 
 
@@ -151,6 +153,7 @@ def test_exactly_four_secrets_are_writable():
         "dav-password-hash",
         "cf-origin-secret",
         "graph-client-secret",
+        "courrier-graph-client-secret",
     }
 
 
@@ -1021,8 +1024,10 @@ def test_the_deployment_doc_lists_every_secret_and_says_six():
     doc = _deployment_md()
     for sid in SECRET_IDS:
         assert f"`{sid}`" in doc, sid
-    assert "The six Secret Manager secrets" in doc
+    assert "The seven Secret Manager secrets" in doc
+    assert "The six Secret Manager secrets" not in doc
     assert "The four Secret Manager secrets" not in doc
+    assert "(6 secrets)" not in doc, "le schéma de §1 comptait encore six"
     assert "(4 secrets)" not in doc, "le schéma de §1 comptait encore quatre"
 
 

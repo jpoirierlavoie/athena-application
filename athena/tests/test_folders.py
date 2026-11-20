@@ -412,7 +412,7 @@ def test_the_deterministic_id_is_per_dossier_and_per_role():
     assert len(ids) == 2 * len(folder.VALID_SYSTEM_ROLES) == 14
     nodes = {folder.node_folder_id(d, n.key) for d in ("d1", "d2")
              for n in folder.DEFAULT_TREE}
-    assert len(nodes) == 2 * len(folder.DEFAULT_TREE) == 36 and ids <= nodes
+    assert len(nodes) == 2 * len(folder.DEFAULT_TREE) == 38 and ids <= nodes
     assert folder.system_folder_id("d1", "projets") == folder.system_folder_id("d1", "projets")
     with pytest.raises(ValueError):
         folder.system_folder_id("d1", "autre")

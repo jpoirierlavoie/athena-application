@@ -69,6 +69,9 @@ DEPLOY_ONLY_FIELDS: tuple[str, ...] = (
     "graph_client_id",
     "graph_sender_upn",
     "bookings_juriste_upn",
+    "courrier_graph_client_id",
+    "courrier_upn",
+    "courrier_onedrive_root",
 )
 
 # Deliberately on NEITHER list. A kill switch reachable only through the
@@ -78,6 +81,7 @@ DEPLOY_ONLY_FIELDS: tuple[str, ...] = (
 KILL_SWITCHES: tuple[str, ...] = (
     "bookings_sync_active",
     "miroir_outlook_actif",
+    "courrier_actif",
     "teams_reunions_actif",
 )
 

@@ -233,7 +233,7 @@ def stray_whitespace(value: str) -> Optional[str]:
     )
 
 
-# ── Secrets — SIX, not four ──────────────────────────────────────────────
+# ── Secrets — SEVEN ──────────────────────────────────────────────────────
 
 # D'OÙ vient la valeur. Ce n'est pas une étiquette : c'est ce qui DÉRIVE la
 # première étape de la recette `gcloud`, et donc ce qui empêche une recette
@@ -353,6 +353,16 @@ SECRETS: tuple[Secret, ...] = (
         label="Secret client Microsoft Graph",
         required_for=frozenset(),
         consequence="le courriel sortant est désactivé",
+        writable=True,
+        origin=ORIGIN_EXTERNAL,
+        shape=_shape_ascii_token(20, 256),
+    ),
+    Secret(
+        secret_id="courrier-graph-client-secret",
+        env_var="COURRIER_GRAPH_CLIENT_SECRET",
+        label="Secret client Microsoft Graph (Courrier)",
+        required_for=frozenset(),
+        consequence="le module Courrier est désactivé",
         writable=True,
         origin=ORIGIN_EXTERNAL,
         shape=_shape_ascii_token(20, 256),
@@ -555,7 +565,7 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
     1. `IFS= read -rs` — la valeur ne paraît pas à l'écran, n'entre pas dans
        l'historique du shell, et `IFS=` empêche que les blancs de tête et de
        queue soient mangés (ce qui masquerait le défaut qu'on cherche).
-       ⚠ `read` ne retient que la PREMIÈRE LIGNE. Les six secrets de cette
+       ⚠ `read` ne retient que la PREMIÈRE LIGNE. Les sept secrets de cette
        table sont tous d'une seule ligne par construction (un jeton, une clé
        d'API, une empreinte bcrypt, un secret Entra), donc un collage
        multiligne signifie qu'on a collé la mauvaise chose — et le collage
@@ -650,7 +660,7 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
             "Coller la valeur remise par la console, puis Entrée. Rien ne "
             "s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger "
             "les blancs — s'il y en a, on veut les VOIR, pas les perdre en "
-            "silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les six "
+            "silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les sept "
             "secrets sont d'une seule ligne par construction, donc un collage "
             "multiligne signifie qu'on a collé la mauvaise chose — et le "
             "collage tronqué a l'air complet à l'écran. C'est la mesure qui "
@@ -726,7 +736,7 @@ REQUIRED_APIS: tuple[Api, ...] = (
     Api(
         service="secretmanager.googleapis.com",
         reason=(
-            "Les six secrets de §4.2. Sans elle, `config.py` lève à l'import "
+            "Les sept secrets de §4.2. Sans elle, `config.py` lève à l'import "
             "et le service ne démarre pas du tout."
         ),
         consumer="config.py, client/config.py",
@@ -1366,7 +1376,7 @@ RESOURCES: tuple[Resource, ...] = (
     Resource(
         key="ttl-firestore",
         label=("Politiques TTL (oauth_codes, oauth_tokens, mcp_idempotency, "
-               "mcp_upload_tickets)"),
+               "mcp_upload_tickets, courrier_messages)"),
         phase=PHASE_DONNEES,
         detect=("gcloud", "firestore", "fields", "ttls", "list",
                 "--collection-group=oauth_codes", "--project={project}",
@@ -1375,7 +1385,7 @@ RESOURCES: tuple[Resource, ...] = (
         symptom=(
             "aucune conséquence de SÉCURITÉ — l'expiration est appliquée dans "
             "le code à chaque lecture ; le TTL n'est que du ramassage. Les "
-            "quatre sont d'ailleurs déclarés en `fieldOverrides` dans "
+            "cinq sont d'ailleurs déclarés en `fieldOverrides` dans "
             "firestore.indexes.json, donc le déploiement des index les pose "
             "déjà : les commandes `ttls update` que DEPLOYMENT.md §11 énumère sont "
             "redondantes (constaté 2026-09-13)"
@@ -1662,6 +1672,7 @@ OWNER_LITERALS: dict[str, str] = {
     "Firm email": "reception@poirierlavoie.ca",
     "Graph tenant id": "4c5c39a5-2e63-4b04-8408-973c58cd88c7",
     "Graph client id": "988bf117-3aef-463b-8062-7dac226e50d9",
+    "Courrier Graph client id": "32925bdd-6028-4f4a-8a91-5f951bd205d7",
     # La RÉGION App Engine. `client/config.py` la code en dur comme défaut de
     # `TASKS_LOCATION`, et ce fichier EST balayé — mais le balayage ne peut
     # signaler que ce qu'on lui donne à chercher. Un adoptant qui déploie

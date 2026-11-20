@@ -84,6 +84,7 @@ SENSITIVE_KEYS: set[str] = {
     "cf_origin_secret",
     "origin_secret",
     "graph_client_secret",
+    "courrier_graph_client_secret",
     "flask_secret_key",
     "portail_secret_key",
     "code_verifier",
@@ -563,6 +564,7 @@ _PALLAS_SETTINGS = logging.getLogger("pallas.settings")
 _PALLAS_INVOICE = logging.getLogger("pallas.invoice")
 _PALLAS_PROTOCOL = logging.getLogger("pallas.protocol")
 _PALLAS_PARTIE = logging.getLogger("pallas.partie")
+_PALLAS_COURRIER = logging.getLogger("pallas.courrier")
 
 
 AuthEvent = Literal[
@@ -959,6 +961,17 @@ BookingsEvent = Literal[
     "teams_connexion_verifiee",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
+# Courrier intake (Phase 5). Counts, booleans, technical `cle` keys (when single
+# or anonymized), dossier numbers and machine codes ONLY — never email subjects,
+# addresses, sender/recipient names, filenames, folder names, or descriptions.
+CourrierEvent = Literal[
+    "courrier_connexion",
+    "courrier_inventaire",
+    "courrier_enregistrement",
+    "courrier_classement",
+    "courrier_temps",
+]
+CourrierOutcome = Literal["success", "failure", "refused"]
 
 
 def _emit(
@@ -1442,6 +1455,34 @@ def log_protocol_event(
     _emit(_PALLAS_PROTOCOL, level, event, fields)
 
 
+def log_courrier_event(
+    event: CourrierEvent,
+    outcome: CourrierOutcome = "success",
+    *,
+    essai: Optional[bool] = None,
+    reason: Optional[str] = None,
+    **counts: Any,
+) -> None:
+    """Emit a Courrier intake event — logger ``pallas.courrier``.
+
+    ``success`` emits at INFO, ``refused`` at WARNING, ``failure`` at ERROR.
+    Carries counts, booleans, status codes and machine reasons ONLY — never
+    email subjects, email addresses, sender/recipient names, filenames, folder
+    names, or time-entry descriptions (zero-PII invariant, Loi 25).
+    """
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **counts}
+    if essai is not None:
+        fields["essai"] = bool(essai)
+    if reason is not None:
+        fields["reason"] = reason
+    level = {
+        "success": logging.INFO,
+        "refused": logging.WARNING,
+        "failure": logging.ERROR,
+    }[outcome]
+    _emit(_PALLAS_COURRIER, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -1480,6 +1521,7 @@ __all__: Iterable[str] = (
     "log_admin_ledger_event",
     "log_auth_event",
     "log_bookings_event",
+    "log_courrier_event",
     "log_dav_operation",
     "log_dossier_event",
     "log_hearing_series_event",

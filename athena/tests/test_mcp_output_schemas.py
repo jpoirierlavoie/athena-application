@@ -3295,3 +3295,604 @@ def test_record_kyc_status_conforms_applied_unchanged_and_withdrawn(monkeypatch)
     card = handlers.get_partie({"partie_id": "p1"})
     _conforms("get_partie", card)
     assert card["partie"]["conflict_check_presumed"] is False
+
+
+def test_get_courrier_connexion_conforms_unconfigured_and_healthy(monkeypatch):
+    from config import Config
+    from utils import graph_courrier
+
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", False)
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "")
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "")
+    monkeypatch.setattr(Config, "COURRIER_UPN", "")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    graph_courrier.detect_execution_region.cache_clear()
+
+    unconfigured = handlers.get_courrier_connexion({})
+    _conforms("get_courrier_connexion", unconfigured)
+    assert unconfigured["configure"] is False
+    assert unconfigured["expiration"] is None
+
+    monkeypatch.setattr(
+        graph_courrier,
+        "verifier_connexion",
+        lambda: {
+            "interrupteur_actif": True,
+            "configure": True,
+            "compte": "avocat@cabinet.example",
+            "racine_onedrive": "4 - Dossiers",
+            "region": "northamerica-northeast1",
+            "mode_auth": "application",
+            "jeton_valide": True,
+            "expiration_utc": DT,
+            "reconsentement_requis": False,
+            "portees": ["Mail.ReadWrite", "Files.ReadWrite.All"],
+            "envoi_absent": True,
+            "boite_accessible": True,
+            "onedrive_accessible": True,
+            "erreur": None,
+        },
+    )
+    healthy = handlers.get_courrier_connexion({})
+    _conforms("get_courrier_connexion", healthy)
+    assert healthy["jeton_valide"] is True
+    assert healthy["expiration"] is not None
+    assert healthy["erreur"] is None
+
+
+def test_list_courriels_conforms(monkeypatch):
+    import io
+    import zipfile
+    from config import Config
+    from models import courrier as courrier_model
+    from tests._fake_firestore import install
+    from utils import graph_courrier
+
+    fake = install(monkeypatch, courrier_model)
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "cid")
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tid")
+    monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+
+    cle_saved = courrier_model.compute_cle("<msg-1@cabinet.example>")
+    fake.seed(
+        f"courrier_messages/{cle_saved}",
+        {
+            "cle": cle_saved,
+            "graph_id": "msg-1",
+            "etat": "enregistre",
+            "dossier_id": "d1",
+            "dossier_numero": "2026-001",
+            "fichiers": [],
+            "legacy_ref": "recep:2026-001:2026-11-20:" + cle_saved,
+            "time_entry_id": "",
+            "outlook_folder_id": "",
+            "saved_at": DT,
+            "moved_at": None,
+            "expire_at": None,
+        },
+    )
+
+    docx_buf = io.BytesIO()
+    with zipfile.ZipFile(docx_buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Mise en demeure</w:t></w:r></w:p></w:body></w:document>")
+    docx_bytes = docx_buf.getvalue()
+
+    def fake_get(path, *, params=None, immutable_id=True, prefer=(), follow_next=True):
+        if path.endswith("/mailFolders/Inbox"):
+            return {"id": "inbox-1", "totalItemCount": 2}
+        if path.endswith("/mailFolders/Inbox/messages"):
+            skip = (params or {}).get("$skip", 0)
+            if skip > 0:
+                return {
+                    "value": [
+                        {
+                            "id": "msg-6",
+                            "internetMessageId": "<msg-6@cabinet.example>",
+                            "conversationId": "conv-6",
+                            "receivedDateTime": "2026-11-20T15:00:00Z",
+                            "from": {"emailAddress": {"name": "Alice", "address": "a@ex.com"}},
+                            "toRecipients": [],
+                            "ccRecipients": [],
+                            "subject": "Page 2",
+                            "isRead": True,
+                            "flag": {"flagStatus": "notFlagged"},
+                            "categories": [],
+                            "webLink": "https://outlook.office.com/mail/id/msg-6",
+                            "uniqueBody": {"contentType": "text", "content": "Texte page 2"},
+                            "hasAttachments": False,
+                        }
+                    ]
+                }
+            return {
+                "value": [
+                    {
+                        "id": "msg-1",
+                        "internetMessageId": "<msg-1@cabinet.example>",
+                        "conversationId": "conv-1",
+                        "receivedDateTime": "2026-11-20T13:30:00Z",
+                        "from": {"emailAddress": {"name": "Me Jean", "address": "jean@ex.com"}},
+                        "toRecipients": [{"emailAddress": {"address": "avocat@cabinet.example"}}],
+                        "ccRecipients": [{"emailAddress": {"address": "adj@ex.com"}}],
+                        "subject": "2026-001 Signification",
+                        "isRead": False,
+                        "flag": {"flagStatus": "flagged"},
+                        "categories": ["Réception — à classer"],
+                        "webLink": "https://outlook.office.com/mail/id/msg-1",
+                        "uniqueBody": {"contentType": "text", "content": "Bonjour Me,"},
+                        "hasAttachments": True,
+                    }
+                ]
+            }
+        if path.endswith("/attachments"):
+            return {
+                "value": [
+                    {
+                        "id": "att-1",
+                        "name": "mise_en_demeure.docx",
+                        "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "size": len(docx_bytes),
+                        "isInline": False,
+                    },
+                    {
+                        "id": "att-2",
+                        "name": "gros.pdf",
+                        "contentType": "application/pdf",
+                        "size": 11 * 1024 * 1024,
+                        "isInline": False,
+                    },
+                    {
+                        "id": "att-3",
+                        "name": "image001.png",
+                        "contentType": "image/png",
+                        "size": 1200,
+                        "isInline": False,
+                    },
+                ]
+            }
+        if path.endswith("/messages") and params and "$filter" in params:
+            if "conv-1" in params["$filter"]:
+                return {
+                    "value": [
+                        {"id": "msg-1", "parentFolderId": "inbox-1"},
+                        {"id": "msg-0", "parentFolderId": "fold-2026-001"},
+                    ]
+                }
+            return {"value": [{"id": "msg-6", "parentFolderId": "inbox-1"}]}
+        if path.endswith("/mailFolders"):
+            return {"value": [{"id": "arch-1", "displayName": "Archive"}]}
+        if "/mailFolders/arch-1/childFolders" in path:
+            return {"value": [{"id": "doss-1", "displayName": "Dossiers"}]}
+        if "/mailFolders/doss-1/childFolders" in path:
+            return {
+                "value": [
+                    {"id": "st-actifs", "displayName": "Actifs"},
+                    {"id": "st-susp", "displayName": "Suspendu"},
+                    {"id": "st-cons", "displayName": "Services-conseils"},
+                ]
+            }
+        if "/mailFolders/st-actifs/childFolders" in path:
+            return {"value": [{"id": "fold-2026-001", "displayName": "2026-001 - Dossier A"}]}
+        if "/childFolders" in path:
+            return {"value": []}
+        if path.endswith("/children"):
+            return {
+                "value": [
+                    {"id": "od-1", "name": "2026-001 - Dossier A", "folder": {"childCount": 1}},
+                ]
+            }
+        if "/drive/root:/" in path:
+            return {"id": "od-root", "folder": {"childCount": 1}}
+        raise AssertionError(f"unexpected courrier_get {path}")
+
+    monkeypatch.setattr(graph_courrier, "courrier_get", fake_get)
+    monkeypatch.setattr(
+        graph_courrier,
+        "courrier_get_bytes",
+        lambda path, *, max_bytes, immutable_id=True: docx_bytes,
+    )
+
+    page1 = handlers.list_courriels({"premier": 0, "nombre": 1})
+    _conforms("list_courriels", page1)
+    assert page1["messages"][0]["etat"] == "enregistre"
+    assert page1["messages"][0]["pieces"][0]["apercu"] == "Mise en demeure"
+    assert page1["messages"][0]["pieces"][1]["apercu_omis"] == "taille_depassee"
+    assert page1["messages"][0]["pieces"][2]["ignore"] == "image_signature"
+    assert page1["messages"][0]["fil"] == {"2026-001": 1}
+    assert page1["outlook"] is not None
+    assert page1["onedrive"] is not None
+    assert page1["suite"] is True
+
+    page2 = handlers.list_courriels({"premier": 1, "nombre": 5})
+    _conforms("list_courriels", page2)
+    assert page2["outlook"] is None
+    assert page2["onedrive"] is None
+    assert page2["messages"][0]["etat"] == "inventorie"
+    assert page2["suite"] is False
+    assert fake.commits == []
+
+
+def test_save_courriels_conforms(monkeypatch):
+    from contextlib import contextmanager
+    from config import Config
+    from models import courrier as courrier_model
+    from models import document as document_model
+    from models import dossier as dossier_model
+    from models import folder as folder_model
+    from tests._fake_firestore import install
+    from tests._fake_gcs import FakeBucket
+    from utils import graph_courrier, storage_identity
+    from utils.quickxorhash import quickxorhash_b64
+
+    modules = [
+        m
+        for n, m in sorted(sys.modules.items())
+        if (n.startswith("models.") or n in ("dav.sync", "mcp.write_support"))
+        and getattr(m, "db", None) is not None
+    ]
+    fake = install(monkeypatch, *modules)
+    bucket = FakeBucket()
+    monkeypatch.setattr(courrier_model.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(document_model.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(storage_identity, "owner_uid", lambda: "u1")
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "cid")
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tid")
+    monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+
+    did = "a0000000-0000-4000-8000-000000000001"
+    fake.seed(
+        f"dossiers/{did}",
+        {
+            "id": did,
+            "file_number": "2026-001",
+            "title": "Tremblay c. Lavoie",
+            "status": "actif",
+            "clients": [],
+            "opposing_parties": [],
+            "other_parties": [],
+        },
+    )
+
+    eml_bytes = b"From: jean@ex.com\r\nSubject: Piece\r\n\r\nBonjour\r\n"
+    pdf_bytes = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n"
+    imid = "<save-conform-1@cabinet.example>"
+    cle = courrier_model.compute_cle(imid)
+
+    def fake_get(path, *, params=None, immutable_id=True, prefer=(), follow_next=True):
+        if path.endswith("/drive/root:/4%20-%20Dossiers"):
+            return {"id": "od-root", "folder": {"childCount": 1}}
+        if path.endswith("/drive/root:/4%20-%20Dossiers:/children"):
+            return {
+                "value": [
+                    {"id": "od-d1", "name": "2026-001 - Dossier A", "folder": {"childCount": 0}}
+                ]
+            }
+        if path.endswith("/messages/msg-1"):
+            return {
+                "id": "msg-1",
+                "internetMessageId": imid,
+                "receivedDateTime": "2026-11-20T14:30:00Z",
+                "from": {"emailAddress": {"name": "Me Jean Tremblay", "address": "jean@ex.com"}},
+                "hasAttachments": True,
+            }
+        if path.endswith("/messages/msg-1/attachments"):
+            return {
+                "value": [
+                    {
+                        "id": "att-1",
+                        "name": "piece.pdf",
+                        "contentType": "application/pdf",
+                        "size": len(pdf_bytes),
+                        "isInline": False,
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected courrier_get {path}")
+
+    @contextmanager
+    def fake_stream(path, *, max_bytes, immutable_id=True):
+        if path.endswith("/attachments/att-1/$value"):
+            yield iter([pdf_bytes])
+        elif path.endswith("/messages/msg-1/$value"):
+            yield iter([eml_bytes])
+        else:
+            raise AssertionError(f"unexpected stream {path}")
+
+    od_folders = {"od-d1": {}}
+    od_items = {}
+
+    def fake_read_od(path, *, params=None):
+        if ":/Correspondance" in path and ":/Courriels" not in path and ":/Emails" not in path:
+            return {"id": "od-corr", "folder": {"childCount": 0}} if "od-corr" in od_folders else None
+        if ":/Courriels" in path:
+            return {"id": "od-courriels", "folder": {"childCount": 0}} if "od-courriels" in od_folders else None
+        if ":/Emails" in path:
+            return None
+        if ":/Pi" in path:
+            return {"id": "od-pieces", "folder": {"childCount": 0}} if "od-pieces" in od_folders else None
+        for key, meta in od_items.items():
+            if key in path:
+                return meta
+        return None
+
+    def fake_mkdir_od(parent_id, nom, *, encoded_upn):
+        fid = f"od-{nom.lower()[:6]}"
+        od_folders[fid] = {"name": nom}
+        return {"id": fid, "name": nom, "folder": {"childCount": 0}}, True
+
+    def fake_put_od(parent_id, nom, contenu, *, encoded_upn):
+        meta = {
+            "id": f"item-{len(od_items) + 1}",
+            "name": nom,
+            "size": len(contenu),
+            "file": {"hashes": {"quickXorHash": quickxorhash_b64(contenu)}},
+        }
+        od_items[nom] = meta
+        return meta
+
+    monkeypatch.setattr(graph_courrier, "courrier_get", fake_get)
+    monkeypatch.setattr(graph_courrier, "courrier_ouvrir_flux", fake_stream)
+    monkeypatch.setattr(graph_courrier, "courrier_lire_element_onedrive", fake_read_od)
+    monkeypatch.setattr(graph_courrier, "courrier_creer_dossier_onedrive", fake_mkdir_od)
+    monkeypatch.setattr(
+        graph_courrier, "courrier_deposer_petit_fichier_onedrive", fake_put_od
+    )
+
+    plan = [
+        {
+            "cle": cle,
+            "id": "msg-1",
+            "dossier": "2026-001",
+            "dossier_onedrive": "2026-001 - Dossier A",
+            "creer_dossier_onedrive": False,
+            "eml": {"sous_dossier": "Correspondance\\Courriels"},
+            "pieces": [
+                {"rang": 1, "id": "att-1", "sous_dossier": "Pièces", "nom": "piece.pdf"}
+            ],
+        }
+    ]
+    dry_res = handlers.save_courriels(
+        {"messages": plan, "essai": True, "idempotency_key": "save-dry-001"}
+    )
+    _conforms("save_courriels", dry_res)
+    assert dry_res["essai"] is True and dry_res["idempotent_replay"] is False
+    assert fake.peek_collection("documents") == {}
+    assert fake.peek_collection("courrier_messages") == {}
+    assert fake.peek_collection("folders") == {}
+    assert fake.peek_collection("mcp_idempotency") == {}
+    assert bucket.objects == {}
+
+    live_res = handlers.save_courriels(
+        {"messages": plan, "essai": False, "idempotency_key": "save-live-001"}
+    )
+    _conforms("save_courriels", live_res)
+    assert live_res["essai"] is False and live_res["idempotent_replay"] is False
+    assert live_res["traites"] == 1
+
+    replay_res = handlers.save_courriels(
+        {"messages": plan, "essai": False, "idempotency_key": "save-live-001"}
+    )
+    _conforms("save_courriels", replay_res)
+    assert replay_res["idempotent_replay"] is True
+
+
+def test_move_courriels_conforms(monkeypatch):
+    from config import Config
+    from models import courrier as courrier_model
+    from tests._fake_firestore import install
+    from utils import graph_courrier
+
+    modules = [
+        m
+        for n, m in sorted(sys.modules.items())
+        if (n.startswith("models.") or n in ("dav.sync", "mcp.write_support"))
+        and getattr(m, "db", None) is not None
+    ]
+    fake = install(monkeypatch, *modules)
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "cid")
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tid")
+    monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
+
+    imid_save = "<msg-move-save@cabinet.example>"
+    cle_save = courrier_model.compute_cle(imid_save)
+    imid_laisser = "<msg-move-laisser@cabinet.example>"
+    cle_laisser = courrier_model.compute_cle(imid_laisser)
+
+    fake.seed(
+        f"courrier_messages/{cle_save}",
+        {
+            "cle": cle_save,
+            "graph_id": "imm-save-1",
+            "etat": courrier_model.ETAT_ENREGISTRE,
+            "dossier_id": "a0000000-0000-4000-8000-000000000001",
+            "dossier_numero": "2026-001",
+            "fichiers": [],
+            "legacy_ref": "",
+            "time_entry_id": "",
+            "outlook_folder_id": "",
+            "saved_at": None,
+            "moved_at": None,
+            "expire_at": None,
+        },
+    )
+
+    def fake_get(path, *, params=None, immutable_id=True, prefer=(), follow_next=True):
+        del params, immutable_id, prefer, follow_next
+        if path.endswith("/mailFolders/Inbox"):
+            return {"id": "inbox-1"}
+        if path.endswith("/mailFolders"):
+            return {"value": [{"id": "fld-archive", "displayName": "Archive"}]}
+        if path.endswith("/mailFolders/fld-archive/childFolders"):
+            return {"value": [{"id": "fld-dossiers", "displayName": "Dossiers"}]}
+        if path.endswith("/mailFolders/fld-dossiers/childFolders"):
+            return {
+                "value": [
+                    {"id": "fld-actifs", "displayName": "Actifs"},
+                    {"id": "fld-susp", "displayName": "Suspendu"},
+                    {"id": "fld-sc", "displayName": "Services-conseils"},
+                ]
+            }
+        if path.endswith("/mailFolders/fld-actifs/childFolders"):
+            return {
+                "value": [{"id": "fld-2026-001", "displayName": "2026-001 - Dossier A"}]
+            }
+        if path.endswith("/childFolders"):
+            return {"value": []}
+        raise AssertionError(f"unexpected courrier_get {path}")
+
+    def fake_read_mail(msg_id, *, encoded_upn, select=""):
+        del encoded_upn, select
+        if msg_id == "imm-save-1":
+            return {
+                "id": "imm-save-1",
+                "internetMessageId": imid_save,
+                "parentFolderId": "inbox-1",
+                "categories": [graph_courrier.CATEGORIE_A_CLASSER],
+                "isRead": False,
+            }
+        if msg_id == "imm-laisser-2":
+            return {
+                "id": "imm-laisser-2",
+                "internetMessageId": imid_laisser,
+                "parentFolderId": "inbox-1",
+                "categories": [],
+                "isRead": True,
+            }
+        return None
+
+    monkeypatch.setattr(graph_courrier, "courrier_get", fake_get)
+    monkeypatch.setattr(graph_courrier, "courrier_lire_courriel", fake_read_mail)
+    monkeypatch.setattr(
+        graph_courrier,
+        "courrier_assurer_categories_maitres",
+        lambda *, encoded_upn: True,
+    )
+    monkeypatch.setattr(
+        graph_courrier,
+        "courrier_modifier_categories_courriel",
+        lambda msg_id, categories, *, encoded_upn: {"id": msg_id, "categories": categories},
+    )
+    monkeypatch.setattr(
+        graph_courrier,
+        "courrier_deplacer_courriel",
+        lambda msg_id, dest, *, encoded_upn: {"id": msg_id, "parentFolderId": dest},
+    )
+
+    plan = [
+        {"cle": cle_save, "id": "imm-save-1", "action": "classer", "dossier": "2026-001"},
+        {"cle": cle_laisser, "id": "imm-laisser-2", "action": "laisser"},
+    ]
+
+    dry_res = handlers.move_courriels(
+        {"messages": plan, "essai": True, "idempotency_key": "move-dry-001"}
+    )
+    _conforms("move_courriels", dry_res)
+    assert dry_res["essai"] is True and dry_res["idempotent_replay"] is False
+    assert dry_res["classes"] == 1 and dry_res["laisses"] == 1
+    assert fake.peek_collection("mcp_idempotency") == {}
+
+    live_res = handlers.move_courriels(
+        {"messages": plan, "essai": False, "idempotency_key": "move-live-001"}
+    )
+    _conforms("move_courriels", live_res)
+    assert live_res["essai"] is False and live_res["idempotent_replay"] is False
+    assert live_res["classes"] == 1 and live_res["laisses"] == 1
+
+    replay_res = handlers.move_courriels(
+        {"messages": plan, "essai": False, "idempotency_key": "move-live-001"}
+    )
+    _conforms("move_courriels", replay_res)
+    assert replay_res["idempotent_replay"] is True
+
+
+def test_record_courriels_temps_conforms(monkeypatch):
+    from config import Config
+    from models import courrier as courrier_model
+    from tests._fake_firestore import install
+
+    modules = [
+        m
+        for n, m in sorted(sys.modules.items())
+        if (n == "models" or n.startswith("models.") or n in ("dav.sync", "mcp.write_support"))
+        and getattr(m, "db", None) is not None
+    ]
+    fake = install(monkeypatch, *modules)
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
+
+    did = "a0000000-0000-4000-8000-000000000001"
+    fake.seed(
+        f"dossiers/{did}",
+        {
+            "id": did,
+            "file_number": "2026-001",
+            "title": "Dossier Test",
+            "status": "actif",
+            "hourly_rate": 30000,
+        },
+    )
+    cle1 = courrier_model.compute_cle("<temps-1@cabinet.example>")
+    cle2 = courrier_model.compute_cle("<temps-2@cabinet.example>")
+    for cle, gid in ((cle1, "imm-1"), (cle2, "imm-2")):
+        fake.seed(
+            f"courrier_messages/{cle}",
+            {
+                "cle": cle,
+                "graph_id": gid,
+                "etat": courrier_model.ETAT_ENREGISTRE,
+                "dossier_id": did,
+                "dossier_numero": "2026-001",
+                "fichiers": [],
+                "legacy_ref": "",
+                "time_entry_id": "",
+                "outlook_folder_id": "",
+                "saved_at": None,
+                "moved_at": None,
+                "expire_at": None,
+            },
+        )
+    ref = courrier_model.build_courrier_legacy_ref(
+        "2026-001", "2026-11-20", [cle1, cle2]
+    )
+    entrees = [
+        {
+            "legacy_ref": ref,
+            "cles": [cle1, cle2],
+            "entree": {
+                "dossier_id": did,
+                "date": "2026-11-20",
+                "description": "Prise de connaissance de deux courriels.",
+                "hours": 0.25,
+                "phase": "CTS",
+            },
+        }
+    ]
+
+    dry = handlers.record_courriels_temps(
+        {"entrees": entrees, "essai": True, "idempotency_key": "temps-dry-1"}
+    )
+    _conforms("record_courriels_temps", dry)
+    assert dry["essai"] is True and dry["idempotent_replay"] is False
+    assert dry["creees"] == 1 and dry["courriels_lies"] == 2
+    assert fake.peek_collection("timeentries") == {}
+    assert fake.peek_collection("mcp_idempotency") == {}
+
+    live = handlers.record_courriels_temps(
+        {"entrees": entrees, "essai": False, "idempotency_key": "temps-live-1"}
+    )
+    _conforms("record_courriels_temps", live)
+    assert live["essai"] is False and live["idempotent_replay"] is False
+    assert live["creees"] == 1 and live["courriels_lies"] == 2
+    assert live["entrees"][0]["amount_cents"] == 7500
+
+    replay = handlers.record_courriels_temps(
+        {"entrees": entrees, "essai": False, "idempotency_key": "temps-live-1"}
+    )
+    _conforms("record_courriels_temps", replay)
+    assert replay["idempotent_replay"] is True

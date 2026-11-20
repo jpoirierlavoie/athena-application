@@ -137,14 +137,15 @@ def test_every_field_maps_to_a_real_config_attribute():
 
 
 def test_the_nine_four_line_is_exhaustive_and_disjoint():
-    """Les treize valeurs de la couche A, plus les trois coupe-circuits, et
-    aucun chevauchement — un champ dans les deux listes serait rendu deux
-    fois, une fois modifiable et une fois non."""
+    """Les seize valeurs de la couche A (9 modifiables + 7 fixées au
+    déploiement), plus les quatre coupe-circuits, et aucun chevauchement —
+    un champ dans les deux listes serait rendu deux fois, une fois
+    modifiable et une fois non."""
     editable = set(D.EDITABLE_FIELDS)
     deploy = set(D.DEPLOY_ONLY_FIELDS)
     kill = set(D.KILL_SWITCHES)
     assert len(editable) == 9
-    assert len(deploy) == 4
+    assert len(deploy) == 7
     assert not editable & deploy
     assert not editable & kill
     assert not deploy & kill

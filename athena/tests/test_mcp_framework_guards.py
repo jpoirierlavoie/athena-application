@@ -376,7 +376,13 @@ def test_the_key_s_description_says_what_its_policy_does():
                 if s.get("idempotency") == tools.IDEMPOTENCY_REQUIRED}
     # 8 → 10 (2026-09-30), deliberately: create_time_entries_bulk and
     # create_expenses_bulk demand their key — money, like create_invoice.
-    assert len(required) == 10, sorted(required)
+    # 10 → 11 (2026-11-20, deliberately): save_courriels demands its key
+    # (irreversible external OneDrive writes + permanent document/registry rows).
+    # 11 → 12 (2026-11-20, deliberately): move_courriels demands its key
+    # (Outlook moves/categories + permanent classification state).
+    # 12 → 13 (2026-11-20, deliberately): record_courriels_temps demands its
+    # key (billable time entries + permanent Courrier registry links).
+    assert len(required) == 13, sorted(required)
     for name, spec in tools.TOOLS.items():
         prop = spec["input_schema"]["properties"].get("idempotency_key")
         if prop is None:

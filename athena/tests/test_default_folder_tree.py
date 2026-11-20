@@ -91,7 +91,8 @@ EXPECTED_PATHS = {
     "Procédures / Engagements", "Procédures / Transcriptions",
     "Procédures / Procès-verbaux", "Procédures / Jugements",
     "Correspondance", "Correspondance / Courriels",
-    "Interne", "Interne / Projets", "Autres", "Autres / Reçus du portail",
+    "Interne", "Interne / Projets",
+    "Autres", "Autres / Reçus du portail", "Autres / Documents du client",
 }
 
 
@@ -99,7 +100,7 @@ EXPECTED_PATHS = {
 
 
 def test_the_registry_is_the_tree_the_lawyer_asked_for():
-    assert len(folder.DEFAULT_TREE) == 18
+    assert len(folder.DEFAULT_TREE) == 19
     assert folder.VALID_SYSTEM_ROLES == (
         "mandat", "factures", "debourses", "interne", "projets", "autres", "portail",
     )
@@ -122,7 +123,7 @@ def test_a_new_dossier_gets_the_eighteen_folders_in_one_commit(store, events):
     report, errors = folder.ensure_default_tree("d1")
 
     assert errors == []
-    assert len(store.commits) == 1 and len(store.commits[0].ops) == 18
+    assert len(store.commits) == 1 and len(store.commits[0].ops) == 19
     tree = _tree(store)
     assert set(tree) == EXPECTED_PATHS
     for node in folder.DEFAULT_TREE:
@@ -130,9 +131,9 @@ def test_a_new_dossier_gets_the_eighteen_folders_in_one_commit(store, events):
         assert stored["name"] == node.name
         assert stored["system_role"] == node.role
         assert stored["etag"] and stored["created_via"] == "script"
-    assert report.counts()["created"] == 18
+    assert report.counts()["created"] == 19
     assert events == [("default_folder_tree_created", {
-        "created": 18, "adopted": 0, "reused": 0, "relocated": 0,
+        "created": 19, "adopted": 0, "reused": 0, "relocated": 0,
         "blocked": 0, "present": 0,
     })]
 
@@ -147,7 +148,7 @@ def test_a_second_run_writes_nothing(store, events):
 
     assert errors == [] and store.commits == []
     assert {k: v["etag"] for k, v in _folders(store).items()} == etags
-    assert report.counts()["present"] == 18 and not report.pending
+    assert report.counts()["present"] == 19 and not report.pending
     assert events == []
 
 
@@ -158,7 +159,7 @@ def test_every_write_is_idempotent_for_the_connector(store):
     with provenance.writing_via("mcp", tool="create_dossier"):
         folder.ensure_default_tree("d1")
         assert provenance.committed_writes() == ()
-        assert len(provenance.idempotent_writes()) == 18
+        assert len(provenance.idempotent_writes()) == 19
 
 
 def test_the_tree_refuses_an_unknown_dossier_and_an_unreadable_one(
@@ -184,7 +185,7 @@ def test_the_dry_run_never_writes(store):
     assert errors == [] and store.commits == []
     assert store.reads_outside_transactions() == store.reads
     assert report.pending and "projets" in report.relocated
-    assert report.counts()["created"] == 17
+    assert report.counts()["created"] == 18
 
 
 def test_a_document_of_another_dossier_at_a_node_id_is_never_overwritten(store):
@@ -338,7 +339,7 @@ def test_a_relocation_onto_a_homonym_is_blocked_and_the_rest_is_written(store, f
     assert store.peek("folders/legacy")["system_role"] == "projets"
     assert not store.peek("folders/fait-main").get("system_role")
     assert store.peek("folders/int")["system_role"] == "interne"
-    assert len(_tree(store)) == 19                  # 17 new/adopted + 2 kept
+    assert len(_tree(store)) == 20                  # 18 new/adopted + 2 kept
 
 
 def test_a_relocation_that_would_exceed_the_depth_is_blocked(store):
@@ -452,7 +453,7 @@ def test_the_tree_of_one_dossier_never_touches_another(store):
     assert set(_tree(store, "d1")) == set(_tree(store, "d2")) == EXPECTED_PATHS
     ids_d1 = {f["id"] for f in _tree(store, "d1").values()}
     ids_d2 = {f["id"] for f in _tree(store, "d2").values()}
-    assert len(ids_d1) == len(ids_d2) == 18 and not ids_d1 & ids_d2
+    assert len(ids_d1) == len(ids_d2) == 19 and not ids_d1 & ids_d2
 
 
 def test_the_plan_is_pure_over_the_folders_it_is_given(store):
@@ -503,3 +504,15 @@ def test_a_commit_that_landed_with_its_answer_lost_is_a_success(store, monkeypat
     report, errors = folder.ensure_default_tree("d1")
     assert fired and errors == [] and report is not None
     assert set(_tree(store)) == EXPECTED_PATHS
+
+
+def test_ensure_tree_folder_creates_ordinary_leaf_and_parent(store):
+    got, errors = folder.ensure_tree_folder("d1", "documents_client")
+    assert errors == [] and got is not None
+    assert got["name"] == "Documents du client"
+    assert got["parent_folder_id"] == SID("d1", "autres")
+
+    courriels, errs2 = folder.ensure_tree_folder("d1", "courriels")
+    assert errs2 == [] and courriels is not None
+    assert courriels["name"] == "Courriels"
+    assert courriels["parent_folder_id"] == NID("d1", "correspondance")

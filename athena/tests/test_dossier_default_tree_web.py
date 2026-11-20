@@ -185,7 +185,7 @@ def test_creating_a_dossier_through_the_form_gives_it_its_tree(client, db):
     did = location.rsplit("/", 1)[-1]
     assert "?" not in location
     folders = _folders_of(db, did)
-    assert len(folders) == 18
+    assert len(folders) == 19
     assert {f["name"] for f in folders.values()
             if f.get("parent_folder_id") is None} == {
         "Mandat", "Procédures", "Correspondance", "Interne", "Autres"}
@@ -268,7 +268,7 @@ def test_deleting_an_empty_dossier_journals_one_row_and_goes_to_the_list(
         client, db, did, events):
     """Its eighteen folders leave with it — ONE audit row, never nineteen
     (models/audit_event: one row per atomic deletion)."""
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
     resp = client.post(f"/dossiers/{did}/delete")
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/dossiers/")
@@ -279,7 +279,7 @@ def test_deleting_an_empty_dossier_journals_one_row_and_goes_to_the_list(
     assert rows[0]["entity_type"] == "dossier"
     assert rows[0]["entity_id"] == did
     assert rows[0]["snapshot_min"] == {"title": "2026-001", "status": "actif"}
-    assert ("deleted", did, {"folders_deleted": 18}) in events
+    assert ("deleted", did, {"folders_deleted": 19}) in events
 
 
 def test_a_refused_delete_lands_back_on_the_dossier_with_its_reason(
@@ -290,7 +290,7 @@ def test_a_refused_delete_lands_back_on_the_dossier_with_its_reason(
     assert resp.headers["Location"].endswith(
         f"/dossiers/{did}?erreur=suppression_contenu")
     assert db.peek(f"dossiers/{did}") is not None
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
     assert _audit_rows(db) == [] and events == []
     page = client.get(resp.headers["Location"]).get_data(as_text=True)
     assert "Suppression refusée : ce dossier contient encore des éléments" in page
@@ -402,7 +402,7 @@ def test_a_delete_that_landed_unseen_by_the_model_is_a_success(
     assert len(rows) == 1
     assert rows[0]["entity_type"] == "dossier" and rows[0]["entity_id"] == did
     assert rows[0]["snapshot_min"] == {"title": "2026-001", "status": "actif"}
-    assert ("deleted", did, {"folders_deleted": 18}) in events
+    assert ("deleted", did, {"folders_deleted": 19}) in events
     assert dav_teardown == [("clear", f"dossier:{did}"),
                             ("state", f"dossier:{did}")]
 
@@ -421,7 +421,7 @@ def test_a_failed_delete_the_route_rechecks_stays_suppression_echec(
     assert resp.headers["Location"].endswith(
         f"/dossiers/{did}?erreur=suppression_echec")
     assert db.peek(f"dossiers/{did}") is not None
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
     assert _audit_rows(db) == [] and events == [] and dav_teardown == []
 
 
@@ -536,7 +536,7 @@ def test_a_tree_commit_that_landed_unseen_is_complete_and_says_nothing_false(
     resp = client.post(f"/dossiers/{did}/arborescence")
     assert not state["armed"]
     assert resp.headers["Location"].endswith("message=arborescence_complete")
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
     page = client.get(resp.headers["Location"]).get_data(as_text=True)
     assert "rien n&#39;a été modifié" not in page
     assert "rien n'a été modifié" not in page
@@ -570,7 +570,7 @@ def test_the_button_creates_the_tree_then_a_second_click_writes_nothing(
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith(
         f"/dossiers/{did}?tab=documents&message=arborescence")
-    assert len(_folders_of(db, did)) == 18
+    assert len(_folders_of(db, did)) == 19
     page = client.get(resp.headers["Location"]).get_data(as_text=True)
     assert "L&#39;arborescence par défaut est en place" in page \
         or "L'arborescence par défaut est en place" in page
