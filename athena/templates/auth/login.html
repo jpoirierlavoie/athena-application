@@ -304,54 +304,58 @@
           this.error = '';
           this.loading = true;
           try {
-            const cred = await auth.signInWithEmailAndPassword(this.email, this.password);
+            let cred;
+            try {
+              cred = await auth.signInWithEmailAndPassword(this.email, this.password);
+            } catch (err) {
+              if (err.code === 'auth/multi-factor-auth-required') {
+                // MFA is enrolled — need second factor
+                this.mfaResolver = err.resolver;
+                const hint = this.mfaResolver.hints[0];
+                const lastDigits = hint.phoneNumber ? hint.phoneNumber.slice(-2) : '??';
+                this.mfaMessage = 'Un code de vérification a été envoyé au numéro se terminant par ••••' + lastDigits + '.';
+
+                this.resetRecaptcha();
+                try {
+                  const phoneInfoOptions = {
+                    multiFactorHint: hint,
+                    session: this.mfaResolver.session
+                  };
+                  const phoneAuthProvider = new firebase.auth.PhoneAuthProvider();
+                  this.mfaVerificationId = await phoneAuthProvider.verifyPhoneNumber(
+                    phoneInfoOptions,
+                    this.recaptchaVerifier
+                  );
+                  this.step = 'mfa';
+                  this.startResendCooldown();
+                  this.$nextTick(() => {
+                    document.getElementById('mfa-digit-0')?.focus();
+                  });
+                } catch (smsErr) {
+                  if (smsErr.code === 'auth/too-many-requests' || smsErr.code === 'auth/quota-exceeded') {
+                    this.error = 'Trop de demandes de code. Patientez quelques minutes avant de réessayer.';
+                    console.error('SMS send error:', smsErr);
+                    return;
+                  }
+                  this.error = 'Impossible d\u2019envoyer le code SMS. Réessayez.';
+                  console.error('SMS send error:', smsErr);
+                }
+              } else if (
+                err.code === 'auth/invalid-credential' ||
+                err.code === 'auth/wrong-password' ||
+                err.code === 'auth/user-not-found'
+              ) {
+                this.error = 'Courriel ou mot de passe invalide.';
+              } else if (err.code === 'auth/too-many-requests') {
+                this.error = 'Trop de tentatives. Réessayez plus tard.';
+              } else {
+                this.error = 'Erreur de connexion. Réessayez.';
+                console.error('Login error:', err);
+              }
+              return;
+            }
             // MFA not enrolled or not required — proceed to backend
             await this.postIdToken(cred.user);
-          } catch (err) {
-            if (err.code === 'auth/multi-factor-auth-required') {
-              // MFA is enrolled — need second factor
-              this.mfaResolver = err.resolver;
-              const hint = this.mfaResolver.hints[0];
-              const lastDigits = hint.phoneNumber ? hint.phoneNumber.slice(-2) : '??';
-              this.mfaMessage = 'Un code de vérification a été envoyé au numéro se terminant par ••••' + lastDigits + '.';
-
-              this.resetRecaptcha();
-              try {
-                const phoneInfoOptions = {
-                  multiFactorHint: hint,
-                  session: this.mfaResolver.session
-                };
-                const phoneAuthProvider = new firebase.auth.PhoneAuthProvider();
-                this.mfaVerificationId = await phoneAuthProvider.verifyPhoneNumber(
-                  phoneInfoOptions,
-                  this.recaptchaVerifier
-                );
-                this.step = 'mfa';
-                this.startResendCooldown();
-                this.$nextTick(() => {
-                  document.getElementById('mfa-digit-0')?.focus();
-                });
-              } catch (smsErr) {
-                if (smsErr.code === 'auth/too-many-requests' || smsErr.code === 'auth/quota-exceeded') {
-                  this.error = 'Trop de demandes de code. Patientez quelques minutes avant de réessayer.';
-                  console.error('SMS send error:', smsErr);
-                  return;
-                }
-                this.error = 'Impossible d\u2019envoyer le code SMS. Réessayez.';
-                console.error('SMS send error:', smsErr);
-              }
-            } else if (
-              err.code === 'auth/invalid-credential' ||
-              err.code === 'auth/wrong-password' ||
-              err.code === 'auth/user-not-found'
-            ) {
-              this.error = 'Courriel ou mot de passe invalide.';
-            } else if (err.code === 'auth/too-many-requests') {
-              this.error = 'Trop de tentatives. Réessayez plus tard.';
-            } else {
-              this.error = 'Erreur de connexion. Réessayez.';
-              console.error('Login error:', err);
-            }
           } finally {
             this.loading = false;
           }
@@ -365,29 +369,33 @@
           this.error = '';
           this.loading = true;
           try {
-            const cred = firebase.auth.PhoneAuthProvider.credential(
-              this.mfaVerificationId, code
-            );
-            const assertion = firebase.auth.PhoneMultiFactorGenerator.assertion(cred);
-            const userCredential = await this.mfaResolver.resolveSignIn(assertion);
-            await this.postIdToken(userCredential.user);
-          } catch (err) {
-            if (err.code === 'auth/invalid-verification-code') {
-              // Wrong code — the SMS is still valid, so the user can simply
-              // retype it (no new code needed).
-              this.error = 'Code invalide. Vérifiez le code et réessayez.';
-            } else if (err.code === 'auth/code-expired' || err.code === 'auth/session-expired') {
-              // The code/session timed out — a fresh SMS is required, so lift
-              // the resend cooldown immediately.
-              this.error = 'Code expiré. Demandez un nouveau code.';
-              this.enableResendNow();
-            } else if (err.code === 'auth/too-many-requests') {
-              this.error = 'Trop de tentatives. Patientez quelques minutes avant de réessayer.';
-            } else {
-              this.error = 'Erreur de vérification. Réessayez.';
-              console.error('MFA verify error:', err);
+            let userCredential;
+            try {
+              const cred = firebase.auth.PhoneAuthProvider.credential(
+                this.mfaVerificationId, code
+              );
+              const assertion = firebase.auth.PhoneMultiFactorGenerator.assertion(cred);
+              userCredential = await this.mfaResolver.resolveSignIn(assertion);
+            } catch (err) {
+              if (err.code === 'auth/invalid-verification-code') {
+                // Wrong code — the SMS is still valid, so the user can simply
+                // retype it (no new code needed).
+                this.error = 'Code invalide. Vérifiez le code et réessayez.';
+              } else if (err.code === 'auth/code-expired' || err.code === 'auth/session-expired') {
+                // The code/session timed out — a fresh SMS is required, so lift
+                // the resend cooldown immediately.
+                this.error = 'Code expiré. Demandez un nouveau code.';
+                this.enableResendNow();
+              } else if (err.code === 'auth/too-many-requests') {
+                this.error = 'Trop de tentatives. Patientez quelques minutes avant de réessayer.';
+              } else {
+                this.error = 'Erreur de vérification. Réessayez.';
+                console.error('MFA verify error:', err);
+              }
+              this.clearDigits();
+              return;
             }
-            this.clearDigits();
+            await this.postIdToken(userCredential.user);
           } finally {
             this.loading = false;
           }
@@ -446,33 +454,63 @@
         },
 
         async postIdToken(user) {
-          const idToken = await user.getIdToken();
-          const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-          const headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-CSRFToken': csrfToken
-          };
-
-          // Attach App Check token if available
           try {
-            const appCheckResult = await firebase.appCheck().getToken(false);
-            if (appCheckResult && appCheckResult.token) {
-              headers['X-Firebase-AppCheck'] = appCheckResult.token;
+            const idToken = await user.getIdToken();
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            const csrfToken = meta ? meta.content : '';
+            const headers = {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRFToken': csrfToken
+            };
+
+            // Attach App Check token if available
+            try {
+              const appCheckResult = await firebase.appCheck().getToken(false);
+              if (appCheckResult && appCheckResult.token) {
+                headers['X-Firebase-AppCheck'] = appCheckResult.token;
+              }
+            } catch (e) { /* App Check token optional on login */ }
+
+            const body = new URLSearchParams({ id_token: idToken });
+            const res = await fetch('/auth/verify-token', {
+              method: 'POST',
+              headers,
+              body
+            });
+
+            let data = null;
+            try {
+              data = await res.json();
+            } catch (e) {
+              data = null;
             }
-          } catch (e) { /* App Check token optional on login */ }
 
-          const body = new URLSearchParams({ id_token: idToken });
-          const res = await fetch('/auth/verify-token', {
-            method: 'POST',
-            headers,
-            body
-          });
+            if (data && data.ok) {
+              window.location.href = data.redirect;
+              return;
+            }
 
-          const data = await res.json();
-          if (data.ok) {
-            window.location.href = data.redirect;
-          } else {
-            this.error = data.error || 'Erreur inconnue.';
+            if (res.status === 400 && (!data || data.csrf_expired)) {
+              this.error = (data && data.error) || 'La page de connexion a expiré. Actualisation…';
+              window.location.reload();
+              return;
+            }
+
+            if (this.step === 'mfa') {
+              this.cancelMfa();
+            }
+
+            if (res.status === 429) {
+              this.error = 'Trop de tentatives. Patientez une minute avant de réessayer.';
+            } else {
+              this.error = (data && data.error) || 'Impossible d\u2019établir la session. Rechargez la page et réessayez.';
+            }
+          } catch (err) {
+            console.error('Session establishment error:', err);
+            if (this.step === 'mfa') {
+              this.cancelMfa();
+            }
+            this.error = 'Impossible d\u2019établir la session. Vérifiez votre connexion et réessayez.';
           }
         }
       };

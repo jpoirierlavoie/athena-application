@@ -121,6 +121,30 @@ def revoke_current_session() -> None:
             pass
 
 
+_AUTH_SESSION_KEYS = (
+    "user_id",
+    "email",
+    "sid",
+    "iat_ns",
+    "login_time",
+    "expires_at",
+)
+
+
+def clear_inactive_auth_session() -> None:
+    """Clear stale authentication fields while preserving pre-login CSRF state.
+
+    When an authenticated session expires or is revoked, ``session.clear()``
+    wipes all session state. When no authentication keys are present (an
+    unauthenticated browser holding only ``session["csrf_token"]``), leaving
+    the session untouched prevents a second tab hitting ``@login_required``
+    or ``/auth/login`` from invalidating an already-open login tab's CSRF
+    token.
+    """
+    if any(k in session for k in _AUTH_SESSION_KEYS):
+        session.clear()
+
+
 def login_required(f: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator that ensures the request has a valid, non-expired session.
 
@@ -137,7 +161,7 @@ def login_required(f: Callable[..., Any]) -> Callable[..., Any]:
         return_to = request.full_path if request.query_string else request.path
 
         if not is_session_active():
-            session.clear()
+            clear_inactive_auth_session()
             return redirect(url_for("auth.login", next=return_to))
 
         return f(*args, **kwargs)

@@ -253,3 +253,219 @@ def test_is_appengine_internal_request_scoped_to_internal_paths():
     with app.test_request_context("/_ah/warmup", headers={"X-AppEngine-QueueName": "default"}):
         assert is_appengine_internal_request() is True
 
+
+def _login_app_with_csrf() -> Flask:
+    from flask import Blueprint
+
+    from routes.auth_routes import auth_bp
+    from security import init_security
+    from utils.icons import ms as _ms
+
+    athena_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    app = Flask(__name__, template_folder=os.path.join(athena_dir, "templates"))
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["TESTING"] = True
+    app.config["AUTHORIZED_USER_EMAIL"] = "test@example.com"
+    app.config["REQUIRE_MFA"] = False
+    app.config["RATELIMIT_ENABLED"] = False
+    app.config["WTF_CSRF_ENABLED"] = True
+    app.config["RECAPTCHA_ENTERPRISE_SITE_KEY"] = ""
+    app.config["CF_ORIGIN_SECRET"] = ""
+    init_security(app)
+    app.jinja_env.globals["ms"] = _ms
+    app.jinja_env.globals["firebase_api_key"] = "clef-test"
+    app.jinja_env.globals["firebase_project_id"] = "test-project"
+    app.jinja_env.globals["firebase_app_id"] = "1:2:web:3"
+
+    dash_bp = Blueprint("dashboard", __name__)
+
+    @dash_bp.route("/")
+    @auth_module.login_required
+    def index():
+        return "dashboard"
+
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(dash_bp)
+    return app
+
+
+def _extract_csrf_meta(html: str) -> str:
+    import re
+
+    m = re.search(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', html)
+    assert m is not None, "csrf-token meta missing from login page"
+    return m.group(1)
+
+
+def _extract_js_function(html: str, signature: str) -> str:
+    """Return the brace-delimited body of *signature* with line comments stripped."""
+    rest = html[html.index(signature):]
+    rest = "\n".join(line.split("//")[0] for line in rest.split("\n"))
+    start = rest.index("{")
+    depth = 0
+    for idx in range(start, len(rest)):
+        if rest[idx] == "{":
+            depth += 1
+        elif rest[idx] == "}":
+            depth -= 1
+            if depth == 0:
+                return rest[start:idx + 1]
+    raise AssertionError(f"Unclosed brace after {signature}")
+
+
+def test_second_tab_login_redirect_preserves_first_tab_csrf_token():
+    app = _login_app_with_csrf()
+    client = app.test_client()
+
+    # Tab 1 hits protected index -> redirected to /auth/login, receives CSRF token.
+    r1 = client.get("/")
+    assert r1.status_code == 302
+    assert "/auth/login" in r1.headers["Location"]
+    page1 = client.get("/auth/login?next=/")
+    assert page1.status_code == 200
+    token_tab1 = _extract_csrf_meta(page1.get_data(as_text=True))
+
+    # Tab 2 hits protected index -> redirected to /auth/login while still unauthenticated.
+    r2 = client.get("/")
+    assert r2.status_code == 302
+    assert "/auth/login" in r2.headers["Location"]
+    page2 = client.get("/auth/login?next=/")
+    assert page2.status_code == 200
+    _extract_csrf_meta(page2.get_data(as_text=True))
+
+    # Tab 1 submits its original CSRF token and must still succeed.
+    with mock.patch.object(
+        auth_module.firebase_auth, "verify_id_token", return_value=_decoded()
+    ):
+        resp = client.post(
+            "/auth/verify-token",
+            headers={"X-CSRFToken": token_tab1},
+            data={"id_token": "valid-token"},
+        )
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "redirect": "/"}
+
+
+def test_expired_authenticated_session_still_clears_auth_keys_on_redirect():
+    app = _login_app_with_csrf()
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u1"
+        sess["sid"] = "old-sid"
+        sess["expires_at"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    resp = client.get("/")
+    assert resp.status_code == 302
+    assert "/auth/login" in resp.headers["Location"]
+    with client.session_transaction() as sess:
+        assert "user_id" not in sess
+        assert "sid" not in sess
+        assert "expires_at" not in sess
+
+
+def test_real_app_verify_token_csrf_failure_returns_json_and_logs():
+    import textwrap
+
+    from tests._real_app_probe import run_probe
+
+    probe = textwrap.dedent("""
+        import json, logging
+        import main
+
+        captured = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                captured.append({
+                    "level": record.levelname,
+                    "fields": dict(getattr(record, "json_fields", {}) or {}),
+                })
+
+        logger = logging.getLogger("pallas.security")
+        logger.addHandler(_Capture(level=logging.DEBUG))
+        logger.setLevel(logging.DEBUG)
+
+        client = main.app.test_client()
+        captured.clear()
+        vt = client.post("/auth/verify-token", data={"id_token": "x"})
+        vt_logs = list(captured)
+
+        captured.clear()
+        lo = client.post("/auth/logout")
+        lo_logs = list(captured)
+
+        out = {
+            "verify_token": {
+                "status": vt.status_code,
+                "is_json": vt.is_json,
+                "json": vt.get_json(silent=True),
+                "logs": vt_logs,
+            },
+            "logout": {
+                "status": lo.status_code,
+                "is_json": lo.is_json,
+                "content_type": lo.content_type,
+                "logs": lo_logs,
+            },
+        }
+        print("@@CSRFJSON@@" + json.dumps(out))
+    """)
+    env = {**os.environ}
+    for name in ("ENV", "CF_ORIGIN_SECRET", "RECAPTCHA_ENTERPRISE_SITE_KEY"):
+        env.pop(name, None)
+    env.update({
+        "SECRET_KEY": "test-secret",
+        "FIREBASE_PROJECT_ID": "test-project",
+        "FIREBASE_STORAGE_BUCKET": "test-bucket",
+        "AUTHORIZED_USER_EMAIL": "test@example.com",
+    })
+    res = run_probe(probe, "@@CSRFJSON@@", env=env, timeout=180)
+
+    vt = res["verify_token"]
+    assert vt["status"] == 400
+    assert vt["is_json"] is True
+    assert vt["json"] == {
+        "ok": False,
+        "csrf_expired": True,
+        "error": "La page de connexion a expiré. Actualisation…",
+    }
+    assert len(vt["logs"]) == 1
+    assert vt["logs"][0]["level"] == "WARNING"
+    assert vt["logs"][0]["fields"] == {
+        "event": "csrf_failure",
+        "path": "/auth/verify-token",
+    }
+
+    lo = res["logout"]
+    assert lo["status"] == 400
+    assert lo["is_json"] is False
+    assert lo["content_type"].startswith("text/html")
+    assert len(lo["logs"]) == 1
+    assert lo["logs"][0]["level"] == "WARNING"
+    assert lo["logs"][0]["fields"] == {
+        "event": "csrf_failure",
+        "path": "/auth/logout",
+    }
+
+
+def test_login_template_isolates_post_id_token_from_mfa_catch():
+    app = _login_app_with_csrf()
+    resp = app.test_client().get("/auth/login")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    verify_body = _extract_js_function(html, "async verifyMfaCode()")
+    assert verify_body.index("this.postIdToken") > verify_body.index(
+        "Erreur de vérification. Réessayez."
+    )
+
+    submit_body = _extract_js_function(html, "async submit()")
+    assert submit_body.index("this.postIdToken") > submit_body.index(
+        "Erreur de connexion. Réessayez."
+    )
+
+    post_body = _extract_js_function(html, "async postIdToken(user)")
+    assert "csrf_expired" in post_body
+    assert "window.location.reload()" in post_body
+
+

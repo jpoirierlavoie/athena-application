@@ -13,6 +13,7 @@ from flask import (
 )
 
 from auth import (
+    clear_inactive_auth_session,
     is_session_active,
     login_required,
     revoke_current_session,
@@ -28,8 +29,7 @@ def login() -> str:
     """Render the login page (or redirect if already authenticated)."""
     if is_session_active():
         return redirect(url_for("dashboard.index"))
-    if session.get("user_id"):
-        session.clear()
+    clear_inactive_auth_session()
 
     return render_template("auth/login.html")
 

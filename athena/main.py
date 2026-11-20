@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.WARNING)
 
 import firebase_admin
 from firebase_admin import credentials
-from flask import Flask, abort, render_template as _render_template, request, session
+from flask import Flask, abort, jsonify, render_template as _render_template, request, session
 
 from config import Config
 from security import init_security
@@ -380,6 +380,12 @@ def create_app() -> Flask:
         # ERROR-level unhandled exception.
         from utils.logging_setup import log_security_event
         log_security_event("csrf_failure", "warning", path=request.path)
+        if request.path == "/auth/verify-token":
+            return jsonify({
+                "ok": False,
+                "csrf_expired": True,
+                "error": "La page de connexion a expiré. Actualisation…",
+            }), 400
         return _render_template("errors/404.html"), 400
 
     @app.errorhandler(Exception)
