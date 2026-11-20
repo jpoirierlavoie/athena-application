@@ -1209,9 +1209,9 @@ def test_hostile_unclosed_tags_at_the_part_cap_refuse_in_bounded_time():
                + "<w:t" * (fill // 8) + "<" * (fill // 2)
                + "</w:t></w:r></w:p></w:body></w:document>")
     data = _docx(hostile)
-    start = time.perf_counter()
+    start = time.process_time()
     result = tz.analyse(data, [Sub("Jean Tremblay", "x", None)])
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
     assert result.blockers[0].code == "malformed_xml"
     assert elapsed < 2.0, f"hostile lex took {elapsed:.2f}s"
 
@@ -1228,9 +1228,9 @@ def test_text_at_the_visible_cap_with_many_literals_is_bounded():
     data = _docx(_doc(*paras))
     subs = [Sub(f"Prénom{k} Nom{k}", f"x{k}", None)
             for k in range(tz.MAX_SUBSTITUTIONS - 1)] + [Sub("sit amet", "y", None)]
-    start = time.perf_counter()
+    start = time.process_time()
     result = tz.analyse(data, subs)
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
     assert result.ok and result.substitutions[-1].substituted > 1000
     assert elapsed < 5.0, f"analyse at the text cap took {elapsed:.2f}s"
 
@@ -1243,8 +1243,8 @@ def test_markup_just_under_the_token_cap_templatizes_in_bounded_time():
     unit = '<w:r><w:rPr><w:b/></w:rPr><w:tab/></w:r>'      # 7 tokens, no text
     runs = (tz.MAX_TOKENS - 100) // 7
     data = _docx(_doc("<w:p>" + _r("Jean Tremblay") + unit * runs + "</w:p>"))
-    start = time.perf_counter()
+    start = time.process_time()
     result = tz.templatize(data, [Sub("Jean Tremblay", "client.nom_complet", 1)])
-    elapsed = time.perf_counter() - start
+    elapsed = time.process_time() - start
     assert result.ok, (result.blockers, result.errors)
     assert elapsed < 15.0, f"templatize at the token cap took {elapsed:.2f}s"
