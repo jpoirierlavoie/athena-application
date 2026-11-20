@@ -107,7 +107,12 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {jeton_application()}"}
 
 
-def graph_get(path: str, params: Optional[dict[str, Any]] = None) -> dict:
+def graph_get(
+    path: str,
+    params: Optional[dict[str, Any]] = None,
+    *,
+    follow_next: bool = True,
+) -> dict:
     """GET a Graph resource.
 
     Collection responses (carrying ``value``) are merged across
@@ -137,7 +142,7 @@ def graph_get(path: str, params: Optional[dict[str, Any]] = None) -> dict:
             merged = data
         else:
             merged["value"].extend(data["value"])
-        url = data.get("@odata.nextLink", "")
+        url = (data.get("@odata.nextLink") or "") if follow_next else ""
     assert merged is not None
     merged.pop("@odata.nextLink", None)
     return merged

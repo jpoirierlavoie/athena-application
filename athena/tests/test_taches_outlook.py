@@ -441,3 +441,25 @@ def test_la_fenetre_est_partagee(monkeypatch):
     monkeypatch.setattr(to.graph_miroir, "lister_miroirs", _outlook)
     to._synchroniser(_integ())
     assert fenetres["athena"] == fenetres["outlook"]
+
+
+def test_ignore_reunion_avec_graph_event_id(monkeypatch):
+    """Une audience Teams ou portail qui possède déjà son propre événement
+    Graph (``graph_event_id`` non vide) ne doit jamais être redoublée par
+    le miroir Outlook."""
+    athena_teams = _audience(
+        hid="h-teams", source="athena_teams", graph_event_id="EVT-T-1"
+    )
+    portail_rdv = _audience(
+        hid="h-portail", source="portail", graph_event_id="EVT-P-1"
+    )
+    assert to._retenir(athena_teams) is False
+    assert to._retenir(portail_rdv) is False
+    assert to._retenir(_audience(hid="h-sans-id", graph_event_id="  ")) is True
+
+    counters, s = _run(monkeypatch, [athena_teams, portail_rdv], [])
+    assert not s.crees
+    assert not s.corriges
+    assert not s.supprimes
+    assert counters["ignores"] == 2
+

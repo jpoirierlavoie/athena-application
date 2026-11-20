@@ -4,6 +4,7 @@
 {% block content %}
 <script nonce="{{ csp_nonce }}">
   const TITLE_SUGGESTIONS = {{ hearing_title_suggestions | tojson }};
+  const TEAMS_AGENDAS = {{ teams_default_agendas | tojson }};
   // First type of each forum — switching forum resets the type to it.
   const FORUM_FIRST_TYPE = {
     judiciaire: {{ valid_hearing_types_judiciaire[0] | tojson }},
@@ -23,7 +24,9 @@
        finMode: 'count',
        finCount: 12,
        finDate: '',
+       genererTeams: {{ 'true' if generer_teams else 'false' }},
        titleSuggestions: TITLE_SUGGESTIONS,
+       teamsAgendas: TEAMS_AGENDAS,
        setForum(f) {
          if (this.forum === f) return;
          this.forum = f;
@@ -34,6 +37,10 @@
          let el = this.$refs.titleInput;
          if (!el.value || el.value === this.titleSuggestions[this.oldType]) {
            el.value = this.titleSuggestions[this.hearingType] || '';
+         }
+         let agendaEl = this.$refs.teamsAgendaInput;
+         if (agendaEl && (!agendaEl.value || agendaEl.value === this.teamsAgendas[this.oldType])) {
+           agendaEl.value = this.teamsAgendas[this.hearingType] || '';
          }
          this.oldType = this.hearingType;
        },
@@ -298,20 +305,56 @@
        kept even when the modality changes (round-trip); the server only emits
        the CalDAV CONFERENCE property when modalité IS visioconférence. #}
     <div x-show="modalite === 'visioconférence'"
-         {% if not hearing or hearing.modalite != 'visioconférence' %}style="display: none"{% endif %}>
-      <label for="conference_uri" class="block text-sm font-medium text-gray-700 mb-1">Hyperlien de visioconférence</label>
-      {# type="text" (not "url") on purpose: the field is hidden — not
-         disabled — when the modality isn't visioconférence, so its value
-         survives for the round-trip. A hidden but enabled type="url" with an
-         invalid value would fail HTML constraint validation on submit, and the
-         browser cannot focus a display:none field to show the bubble, so it
-         silently blocks the POST (no server error ever shown). inputmode="url"
-         keeps the mobile URL keyboard; the http/https whitelist is enforced
-         server-side by is_safe_conference_uri on every write path. #}
-      <input type="text" inputmode="url" id="conference_uri" name="conference_uri"
-             value="{{ hearing.conference_uri if hearing and hearing.conference_uri else '' }}"
-             placeholder="https://…"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+         {% if not hearing or hearing.modalite != 'visioconférence' %}style="display: none"{% endif %}
+         class="space-y-4">
+      {% if not hearing or not hearing.id %}
+      <div x-show="forum === 'extrajudiciaire' && !allDay && !frequence" style="display: none"
+           class="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+        {% if teams_reunions_actif %}
+        <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-900">
+          <input type="checkbox" id="generer_teams" name="generer_teams"
+                 x-model="genererTeams"
+                 :disabled="forum !== 'extrajudiciaire' || modalite !== 'visioconférence' || allDay || Boolean(frequence)"
+                 class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+          Générer une réunion Microsoft Teams (ordre du jour minuté et transcription)
+        </label>
+        <div x-show="genererTeams" style="display: none" class="space-y-3 pt-2 border-t border-gray-200">
+          <div>
+            <label for="teams_attendee_emails" class="block text-sm font-medium text-gray-700 mb-1">Courriels des participants à inviter</label>
+            <input type="text" id="teams_attendee_emails" name="teams_attendee_emails"
+                   value="{{ teams_attendee_emails }}"
+                   placeholder="client@exemple.ca (optionnel, séparés par des virgules)"
+                   class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          </div>
+          <div>
+            <label for="teams_agenda" class="block text-sm font-medium text-gray-700 mb-1">Ordre du jour minuté (lu par Teams / Facilitateur)</label>
+            <textarea id="teams_agenda" name="teams_agenda" x-ref="teamsAgendaInput" rows="4"
+                      class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ teams_agenda }}</textarea>
+          </div>
+        </div>
+        {% else %}
+        <p class="text-xs text-gray-500">
+          La génération automatique de réunions Microsoft Teams est actuellement désactivée (<code>TEAMS_REUNIONS_ACTIF</code>).
+        </p>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <div x-show="!(genererTeams && forum === 'extrajudiciaire' && !allDay && !frequence)">
+        <label for="conference_uri" class="block text-sm font-medium text-gray-700 mb-1">Hyperlien de visioconférence</label>
+        {# type="text" (not "url") on purpose: the field is hidden — not
+           disabled — when the modality isn't visioconférence, so its value
+           survives for the round-trip. A hidden but enabled type="url" with an
+           invalid value would fail HTML constraint validation on submit, and the
+           browser cannot focus a display:none field to show the bubble, so it
+           silently blocks the POST (no server error ever shown). inputmode="url"
+           keeps the mobile URL keyboard; the http/https whitelist is enforced
+           server-side by is_safe_conference_uri on every write path. #}
+        <input type="text" inputmode="url" id="conference_uri" name="conference_uri"
+               value="{{ hearing.conference_uri if hearing and hearing.conference_uri else '' }}"
+               placeholder="https://…"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
     </div>
 
     {# Court + Judge row #}

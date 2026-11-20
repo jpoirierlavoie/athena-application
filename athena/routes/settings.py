@@ -50,13 +50,18 @@ from models.integrations import (
     unmapped_keywords,
     update_integrations,
 )
+from models.rendez_vous_reglages import (
+    changed_field_names as rendez_vous_changed,
+    get_rendez_vous_reglages_state,
+    update_rendez_vous_reglages,
+)
 from models.settings import (
     changed_field_names,
     get_cabinet,
     update_cabinet,
 )
 from security import limiter, sanitize
-from utils import config_checks
+from utils import config_checks, graph_teams
 from utils.deployment_inventory import gcloud_recipe, secret_by_id
 from utils.integrations_defaults import (
     DEPLOY_ONLY_FIELDS,
@@ -68,8 +73,21 @@ from utils.integrations_defaults import (
     parse_keywords,
     parse_type_map,
 )
+from utils.rendez_vous_defaults import (
+    DURATION_MAX,
+    DURATION_MIN,
+    MAX_MEETING_TYPES,
+    NUMERIC_BOUNDS as RDV_NUMERIC_BOUNDS,
+    NUMERIC_FIELDS as RDV_NUMERIC_FIELDS,
+    WEEKDAYS as RDV_WEEKDAYS,
+    WEEKDAY_LABELS as RDV_WEEKDAY_LABELS,
+)
 from utils.cabinet import display_phone
-from utils.logging_setup import log_auth_event, log_settings_event
+from utils.logging_setup import (
+    log_auth_event,
+    log_bookings_event,
+    log_settings_event,
+)
 from utils.theme import (
     DESCRIPTIONS as THEME_DESCRIPTIONS,
     LABELS as THEME_LABELS,
@@ -349,6 +367,161 @@ def integrations_update():
         fields_changed=integrations_changed(before, doc or {}),
     )
     return redirect(url_for("settings.integrations", ok="1"))
+
+
+def _rdv_slots_from_record(rec: dict) -> list[dict]:
+    from models.hearing import VALID_HEARING_TYPES_EXTRAJUDICIAIRE
+
+    default_ht = VALID_HEARING_TYPES_EXTRAJUDICIAIRE[0]
+    slots = [dict(t) for t in (rec.get("types_rdv") or [])][:MAX_MEETING_TYPES]
+    while len(slots) < MAX_MEETING_TYPES:
+        slots.append({
+            "cle": "",
+            "libelle": "",
+            "hearing_type": default_ht,
+            "duree_minutes": "",
+            "public": False,
+            "ordre_du_jour": "",
+        })
+    return slots
+
+
+def _rendez_vous_context(rec: dict, provenance: str, **over) -> dict:
+    from models.hearing import (
+        HEARING_TYPE_LABELS,
+        VALID_HEARING_TYPES_EXTRAJUDICIAIRE,
+    )
+
+    ps_commands = "\n".join(
+        graph_teams.powershell_setup_commands(
+            Config.GRAPH_CLIENT_ID, Config.BOOKINGS_JURISTE_UPN
+        )
+    )
+    ctx = {
+        "onglet": "rendez_vous",
+        "form": {
+            **{k: rec.get(k, "") for k in RDV_NUMERIC_FIELDS},
+            "plages": rec.get("plages") or {},
+            "slots": _rdv_slots_from_record(rec),
+        },
+        "errors": [],
+        "enregistre": False,
+        "provenance": provenance,
+        "lisible": provenance != "unreadable",
+        "weekdays": RDV_WEEKDAYS,
+        "weekday_labels": RDV_WEEKDAY_LABELS,
+        "numeric_bounds": RDV_NUMERIC_BOUNDS,
+        "duration_min": DURATION_MIN,
+        "duration_max": DURATION_MAX,
+        "types_extrajudiciaires": VALID_HEARING_TYPES_EXTRAJUDICIAIRE,
+        "hearing_type_labels": HEARING_TYPE_LABELS,
+        "teams_actif": bool(Config.TEAMS_REUNIONS_ACTIF),
+        "teams_configure": Config.teams_configured(),
+        "powershell_commands": ps_commands,
+        "diagnostic": None,
+    }
+    ctx.update(over)
+    return ctx
+
+
+@settings_bp.route("/rendez-vous")
+@login_required
+def rendez_vous() -> str:
+    """« Paramètres → Rendez-vous » — plages, types, ordres du jour & sonde Teams."""
+    rec, provenance = get_rendez_vous_reglages_state()
+    return render_template(
+        "settings/rendez_vous.html",
+        **_rendez_vous_context(
+            rec, provenance, enregistre=request.args.get("ok") == "1"
+        ),
+    )
+
+
+@settings_bp.route("/rendez-vous/enregistrer", methods=["POST"])
+@login_required
+def rendez_vous_update():
+    f = request.form
+    raw_plages: dict = {}
+    for day in RDV_WEEKDAYS:
+        raw_plages[day] = {
+            "actif": f.get(f"plage_{day}_actif") == "on",
+            "matin_debut": (f.get(f"plage_{day}_matin_debut") or "").strip(),
+            "matin_fin": (f.get(f"plage_{day}_matin_fin") or "").strip(),
+            "apres_midi_debut": (f.get(f"plage_{day}_apres_midi_debut") or "").strip(),
+            "apres_midi_fin": (f.get(f"plage_{day}_apres_midi_fin") or "").strip(),
+        }
+
+    submitted_slots: list[dict] = []
+    types_rdv: list[dict] = []
+    for idx in range(MAX_MEETING_TYPES):
+        cle = (f.get(f"type_{idx}_cle") or "").strip()
+        libelle = (f.get(f"type_{idx}_libelle") or "").strip()
+        htype = (f.get(f"type_{idx}_hearing_type") or "").strip()
+        duree = (f.get(f"type_{idx}_duree_minutes") or "").strip()
+        public = f.get(f"type_{idx}_public") == "on"
+        agenda = (f.get(f"type_{idx}_ordre_du_jour") or "")
+        slot_view = {
+            "cle": cle,
+            "libelle": libelle,
+            "hearing_type": htype,
+            "duree_minutes": duree,
+            "public": public,
+            "ordre_du_jour": agenda,
+        }
+        submitted_slots.append(slot_view)
+        if not cle and not libelle:
+            continue
+        types_rdv.append(dict(slot_view))
+
+    data: dict = {
+        **{key: (f.get(key) or "").strip() for key in RDV_NUMERIC_FIELDS},
+        "plages": raw_plages,
+        "types_rdv": types_rdv,
+    }
+
+    before, provenance = get_rendez_vous_reglages_state()
+    doc, errors = update_rendez_vous_reglages(data)
+    if errors:
+        log_settings_event("rendez_vous_reglages_refused", error_count=len(errors))
+        soumis_form = {
+            **{key: f.get(key, "") for key in RDV_NUMERIC_FIELDS},
+            "plages": raw_plages,
+            "slots": submitted_slots,
+        }
+        ctx = _rendez_vous_context(before, provenance, errors=errors)
+        ctx["form"] = soumis_form
+        return render_template("settings/rendez_vous.html", **ctx)
+
+    log_settings_event(
+        "rendez_vous_reglages_updated",
+        fields_changed=rendez_vous_changed(before, doc or {}),
+    )
+    return redirect(url_for("settings.rendez_vous", ok="1"))
+
+
+@settings_bp.route("/rendez-vous/tester", methods=["POST"])
+@login_required
+def rendez_vous_tester() -> str:
+    """Run the read-only Graph Teams, transcript, Copilot, and OneDrive probe."""
+    diag = graph_teams.verifier_connexion_teams()
+    ok = bool(diag.get("jeton_valide") and not diag.get("erreurs"))
+    log_bookings_event(
+        "teams_connexion_verifiee",
+        outcome="success" if ok else "failure",
+        configure=bool(diag.get("configure")),
+        jeton_valide=bool(diag.get("jeton_valide")),
+        utilisateur_accessible=bool(diag.get("utilisateur_accessible")),
+        online_meetings_accessible=bool(diag.get("online_meetings_accessible")),
+        politique_teams_requise=bool(diag.get("politique_teams_requise")),
+        transcriptions_accessibles=bool(diag.get("transcriptions_accessibles")),
+        onedrive_accessible=bool(diag.get("onedrive_accessible")),
+        roles_manquants_count=len(diag.get("roles_manquants") or []),
+    )
+    rec, provenance = get_rendez_vous_reglages_state()
+    return render_template(
+        "settings/rendez_vous.html",
+        **_rendez_vous_context(rec, provenance, diagnostic=diag),
+    )
 
 
 @settings_bp.route("/securite")

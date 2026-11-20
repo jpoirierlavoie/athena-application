@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}Rendez-vous — Pallas Athena{% endblock %}
+
+{% block content %}
+{# POST + redirection, jamais htmx : `/parametres` n'est sous aucun préfixe
+   exempté d'App Check, et un fragment d'erreur en 4xx ne paraîtrait jamais
+   (htmx n'échange que les 2xx). Aucun attribut hx-*, aucun script, aucun |safe. #}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <h1 class="text-lg font-semibold text-gray-900 mb-6">Paramètres</h1>
+
+  {% include "settings/_onglets.html" %}
+
+  {% if enregistre %}
+  <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-green-700">Réglages de rendez-vous et Teams enregistrés.</p>
+  </div>
+  {% endif %}
+
+  {% if errors %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if not lisible %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-amber-800">
+      Les valeurs affichées viennent des <strong>valeurs par défaut</strong> : le
+      magasin de réglages est illisible. L'enregistrement est désactivé pour ne
+      pas écraser vos valeurs. Réessayez dans un moment.
+    </p>
+  </div>
+  {% elif provenance == 'absent' %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+    <p class="text-sm text-gray-500">
+      Aucun réglage de rendez-vous n'a encore été enregistré : les valeurs
+      ci-dessous sont les valeurs par défaut. Enregistrer une fois les
+      matérialise.
+    </p>
+  </div>
+  {% endif %}
+
+  {# ── Diagnostic Microsoft Teams, Transcription, Copilot & OneDrive ── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
+      <h2 class="text-sm font-semibold text-gray-900">Microsoft Teams, transcription et OneDrive</h2>
+      <span class="text-xs font-medium {% if teams_actif %}text-green-700{% else %}text-amber-700{% endif %}">
+        TEAMS_REUNIONS_ACTIF — {% if teams_actif %}actif{% else %}arrêté{% endif %}
+      </span>
+    </div>
+    <p class="text-xs text-gray-500 mb-4">
+      Vérifie en lecture seule les permissions Entra, l'accès aux réunions Teams
+      et aux transcriptions Graph (politique PowerShell) ainsi que la liaison
+      OneDrive du module Courrier.
+    </p>
+
+    <form method="post" action="{{ url_for('settings.rendez_vous_tester') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit"
+              class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Tester la connexion Microsoft Teams
+      </button>
+    </form>
+
+    {% if diagnostic %}
+    <div class="mt-4 pt-4 border-t border-gray-200 space-y-2 text-sm">
+      <p class="{% if diagnostic.configure %}text-green-700{% else %}text-red-700{% endif %}">
+        Configuration Graph / boîte juriste : {{ 'ok' if diagnostic.configure else 'incomplète' }}
+      </p>
+      <p class="{% if diagnostic.jeton_valide %}text-green-700{% else %}text-red-700{% endif %}">
+        Jeton Entra : {{ 'valide' if diagnostic.jeton_valide else 'refusé' }}
+      </p>
+      <p class="{% if not diagnostic.roles_manquants %}text-green-700{% else %}text-amber-800{% endif %}">
+        Permissions d'application Entra :
+        {% if not diagnostic.roles_manquants %}
+          toutes présentes
+        {% else %}
+          manquantes ({{ diagnostic.roles_manquants|join(', ') }})
+        {% endif %}
+      </p>
+      <p class="{% if diagnostic.utilisateur_accessible %}text-green-700{% else %}text-red-700{% endif %}">
+        Utilisateur Graph : {{ 'accessible' if diagnostic.utilisateur_accessible else 'inaccessible' }}
+      </p>
+      <p class="{% if diagnostic.online_meetings_accessible %}text-green-700{% else %}text-red-700{% endif %}">
+        API onlineMeetings (Teams) : {{ 'accessible' if diagnostic.online_meetings_accessible else 'refusée' }}
+      </p>
+      <p class="{% if diagnostic.transcriptions_accessibles %}text-green-700{% else %}text-red-700{% endif %}">
+        API transcriptions Graph : {{ 'accessible' if diagnostic.transcriptions_accessibles else 'refusée' }}
+      </p>
+      <p class="{% if diagnostic.onedrive_accessible %}text-green-700{% else %}text-amber-800{% endif %}">
+        OneDrive (module Courrier) : {{ 'accessible' if diagnostic.onedrive_accessible else 'indisponible' }}
+      </p>
+      {% if diagnostic.erreurs %}
+      <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-2">
+        <ul class="text-xs text-amber-800 space-y-1">
+          {% for err in diagnostic.erreurs %}
+          <li>{{ err }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <details class="mt-4">
+      <summary class="text-xs text-indigo-600 hover:text-indigo-800 cursor-pointer">
+        Commandes PowerShell d'autorisation Microsoft Teams (une seule fois)
+      </summary>
+      <div class="mt-3 space-y-2">
+        <p class="text-xs text-gray-500">
+          À exécuter une fois par un administrateur Microsoft 365 (propagation :
+          30 minutes à 2 heures avant que la sonde ci-dessus passe au vert).
+        </p>
+        <textarea readonly rows="4"
+                  class="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs font-mono text-gray-700">{{ powershell_commands }}</textarea>
+      </div>
+    </details>
+  </div>
+
+  {# ── Formulaire principal des réglages ─────────────────────────────── #}
+  <form method="post" action="{{ url_for('settings.rendez_vous_update') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# Règles numériques #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Règles de planification</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {% for key, label in [
+          ('battement_minutes', 'Battement entre rendez-vous (min)'),
+          ('delai_minimum_heures', 'Délai minimal avant un RDV (heures)'),
+          ('horizon_jours', 'Horizon de disponibilité (jours)'),
+          ('preavis_modification_heures', 'Préavis annulation / report (heures)')
+        ] %}
+        <div>
+          <label for="{{ key }}" class="block text-sm text-gray-700 mb-1">{{ label }}</label>
+          <input type="number" id="{{ key }}" name="{{ key }}"
+                 value="{{ form[key] }}"
+                 min="{{ numeric_bounds[key][0] }}" max="{{ numeric_bounds[key][1] }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# Plages hebdomadaires #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Plages horaires (lundi au vendredi)</h2>
+      <div class="space-y-4">
+        {% for day in weekdays %}
+        {% set w = form.plages.get(day, {}) %}
+        <div class="border border-gray-200 rounded-xl p-4">
+          <div class="mb-3">
+            <label class="inline-flex items-center gap-2 text-sm font-medium text-gray-900">
+              <input type="checkbox" name="plage_{{ day }}_actif" {% if w.get('actif') %}checked{% endif %}>
+              {{ weekday_labels[day] }}
+            </label>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Matin — début</label>
+                <input type="time" name="plage_{{ day }}_matin_debut"
+                       value="{{ w.get('matin_debut', '') }}"
+                       class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Matin — fin</label>
+                <input type="time" name="plage_{{ day }}_matin_fin"
+                       value="{{ w.get('matin_fin', '') }}"
+                       class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Après-midi — début</label>
+                <input type="time" name="plage_{{ day }}_apres_midi_debut"
+                       value="{{ w.get('apres_midi_debut', '') }}"
+                       class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Après-midi — fin</label>
+                <input type="time" name="plage_{{ day }}_apres_midi_fin"
+                       value="{{ w.get('apres_midi_fin', '') }}"
+                       class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# Types de rendez-vous Teams et ordres du jour minutés #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Types de rendez-vous Teams et ordres du jour</h2>
+      <p class="text-xs text-gray-500 mb-4">
+        Tous les rendez-vous du portail sont tenus en visioconférence Microsoft
+        Teams. Laissez la clé et le libellé vides sur un emplacement inutilisé.
+      </p>
+
+      <div class="space-y-4">
+        {% for slot in form.slots %}
+        {% set i = loop.index0 %}
+        <div class="border border-gray-200 rounded-xl p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wide">Type #{{ loop.index }}</span>
+            <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" name="type_{{ i }}_public" {% if slot.public %}checked{% endif %}>
+              Visible sur la page publique
+            </label>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm text-gray-700 mb-1">Clé interne</label>
+              <input type="text" name="type_{{ i }}_cle"
+                     value="{{ slot.cle }}"
+                     placeholder="consultation"
+                     class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 mb-1">Libellé affiché</label>
+              <input type="text" name="type_{{ i }}_libelle"
+                     value="{{ slot.libelle }}"
+                     placeholder="Consultation initiale"
+                     class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 mb-1">Type d'événement Athéna</label>
+              <select name="type_{{ i }}_hearing_type"
+                      class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                {% for ht in types_extrajudiciaires %}
+                <option value="{{ ht }}" {% if slot.hearing_type == ht %}selected{% endif %}>
+                  {{ hearing_type_labels.get(ht, ht) }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm text-gray-700 mb-1">Durée (minutes)</label>
+              <input type="number" name="type_{{ i }}_duree_minutes"
+                     value="{{ slot.duree_minutes }}"
+                     min="{{ duration_min }}" max="{{ duration_max }}"
+                     placeholder="30"
+                     class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-700 mb-1">Ordre du jour minuté par défaut (Teams / Facilitateur)</label>
+            <textarea name="type_{{ i }}_ordre_du_jour" rows="3"
+                      placeholder="1. Ouverture (5 min)&#10;2. Discussion (20 min)&#10;3. Prochaines étapes (5 min)"
+                      class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none">{{ slot.ordre_du_jour }}</textarea>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="flex justify-end mt-5">
+        <button type="submit" {% if not lisible %}disabled{% endif %}
+                class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Enregistrer
+        </button>
+      </div>
+    </div>
+  </form>
+
+</div>
+{% endblock %}

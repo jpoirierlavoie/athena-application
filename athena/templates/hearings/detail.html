@@ -197,6 +197,19 @@
     </div>
   </div>
 
+  {# ── Ordre du jour minuté (Teams) ──────────────────────────── #}
+  {% if hearing.teams_agenda or hearing.attendee_emails %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Ordre du jour minuté (Teams)</h2>
+    {% if hearing.attendee_emails %}
+    <p class="text-xs text-gray-500 mb-2">Participants invités : {{ hearing.attendee_emails|join(', ') }}</p>
+    {% endif %}
+    {% if hearing.teams_agenda %}
+    <p class="text-sm text-gray-700 whitespace-pre-line">{{ hearing.teams_agenda }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {# ── Notes ─────────────────────────────────────────────────── #}
   {% if hearing.notes %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">

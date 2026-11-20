@@ -236,6 +236,18 @@ class Config:
         """True when Bookings sync can run (Graph creds + a mailbox to poll)."""
         return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
 
+    # Microsoft Teams meetings (Lot 1 of portal booking upgrade): Graph
+    # online-meeting creation + timed agenda + transcription / Copilot insights.
+    # Permissions and Teams Admin Center policies applied 2026-11-20.
+    TEAMS_REUNIONS_ACTIF: bool = (
+        os.environ.get("TEAMS_REUNIONS_ACTIF", "false").lower() == "true"
+    )
+
+    @classmethod
+    def teams_configured(cls) -> bool:
+        """True when Graph Teams creation/diagnostics can run for the lawyer's UPN."""
+        return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
+
     # Miroir Outlook (2026-07-29). Pushes confirmed Athéna hearings into the
     # juriste's DEFAULT Outlook calendar during office hours (they then count toward
     # Exchange free/busy, so « Bookings with me » stops offering slots over a

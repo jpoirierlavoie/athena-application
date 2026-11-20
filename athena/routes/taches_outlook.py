@@ -62,12 +62,12 @@ _PLAFOND_MUTATIONS = 80
 
 
 def _retenir(h: dict) -> bool:
-    """Une audience méritant un miroir : confirmée, ni import Bookings, ni
-    annulée.
+    """Une audience méritant un miroir : confirmée, non adossée à un
+    événement Graph existant (Bookings, athéna Teams, portail), ni annulée.
 
-    ``source == "bookings"`` est exclu parce que l'événement EXISTE déjà dans
-    Outlook — c'est Bookings qui l'y a créé ; le miroiter doublerait chaque
-    rendez-vous client. ``confirmation == ""`` ré-applique explicitement le
+    ``source == "bookings"`` et toute audience portant déjà un
+    ``graph_event_id`` existent déjà dans Outlook ; les miroiter doublerait
+    chaque rendez-vous. ``confirmation == ""`` ré-applique explicitement le
     contrat de visibilité (le fetch passe include_unconfirmed=True pour
     garder le signal de troncature honnête).
     """
@@ -76,6 +76,7 @@ def _retenir(h: dict) -> bool:
         and isinstance(h.get("start_datetime"), datetime)
         and (h.get("confirmation") or "") == ""
         and h.get("source") != "bookings"
+        and not (h.get("graph_event_id") or "").strip()
         and h.get("status") != "annulée"
     )
 
