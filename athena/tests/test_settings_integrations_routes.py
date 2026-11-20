@@ -280,8 +280,9 @@ def test_the_pure_modules_still_import_no_models():
     doivent rester importables sans client Firestore. Épinglé sur l'AST."""
     import ast
     for rel in ("utils/graph.py", "utils/graph_calendrier.py",
-                "utils/graph_miroir.py", "utils/courriel.py",
-                "utils/integrations_defaults.py"):
+                "utils/graph_miroir.py", "utils/graph_teams.py",
+                "utils/courriel.py", "utils/integrations_defaults.py",
+                "utils/rendez_vous_defaults.py"):
         tree = ast.parse(io.open(_ROOT / rel, encoding="utf-8").read())
         for node in ast.walk(tree):
             mod = None

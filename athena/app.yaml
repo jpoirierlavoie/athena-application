@@ -128,6 +128,10 @@ env_variables:
   # par propriété étendue + catégorie « Pallas Athéna » (utils/graph_miroir).
   # "false" gèle les miroirs en place (aucun nettoyage automatique).
   MIROIR_OUTLOOK_ACTIF: "true"
+  # Microsoft Teams meetings (Lot 1) — création de réunions Teams avec ordre du
+  # jour minuté et transcription. Permissions Entra et politiques Teams
+  # appliquées le 2026-11-20 ; activer/désactiver au besoin via ce coupe-circuit.
+  TEAMS_REUNIONS_ACTIF: "true"
   # Factures échues (2026-11-11) — chaque jour à 9 h, heure de Montréal
   # (cron.yaml), le balayage routes/taches_factures marque « en retard »
   # chaque facture envoyée dont l'échéance, reportée au jour ouvrable suivant

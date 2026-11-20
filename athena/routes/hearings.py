@@ -1,5 +1,6 @@
 """Hearing / calendar routes — list, detail, create, edit, delete."""
 
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from tz import mtl_to_utc, to_mtl
@@ -14,16 +15,21 @@ from flask import (
 )
 
 from auth import login_required
+from config import Config
 from dav.sync import bump_ctag, collection_for, record_tombstone, relocate_resource
 from models.audit_event import record_deletion
 from security import safe_internal_redirect, sanitize
-from utils import recurrence
+from utils import graph_teams, recurrence
 from utils.deadlines import today_mtl
+from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import (
+    log_bookings_event,
     log_hearing_series_event,
     log_unexpected,
     sanitize_log_value,
 )
+from utils.rendez_vous_defaults import default_agenda_for_hearing_type
+from utils.validators import normalize_email
 from models.hearing import (
     FORUM_LABELS,
     HEARING_NOT_FOUND,
@@ -58,12 +64,15 @@ from models.hearing import (
     on_or_after_day,
     unlink_hearing,
     update_hearing,
+    validate_hearing_data,
 )
 from models.concurrency import READ_UNAVAILABLE_ERROR
 from models.dossier import (
     get_dossier,
     VALID_COURTS,
 )
+from models.partie import get_partie
+from models.rendez_vous_reglages import get_rendez_vous_reglages
 from routes import edit_conflict
 from routes._helpers import (
     dossier_search_fragment,
@@ -154,6 +163,11 @@ def _form_dates(hearing: dict | None) -> dict:
 
 def _template_context() -> dict:
     """Return shared template context for hearing views."""
+    reglages = get_rendez_vous_reglages()
+    teams_default_agendas = {
+        t: default_agenda_for_hearing_type(reglages, t)
+        for t in VALID_HEARING_TYPES_EXTRAJUDICIAIRE
+    }
     return {
         "form_dates": _form_dates,
         "hearing_type_labels": HEARING_TYPE_LABELS,
@@ -180,6 +194,13 @@ def _template_context() -> dict:
         "serie_id": "",
         "serie_rule": None,
         "serie_label": "",
+        "teams_reunions_actif": bool(
+            Config.TEAMS_REUNIONS_ACTIF and Config.teams_configured()
+        ),
+        "teams_default_agendas": teams_default_agendas,
+        "generer_teams": False,
+        "teams_attendee_emails": "",
+        "teams_agenda": teams_default_agendas.get("consultation", ""),
         "message": "",
         "erreur": "",
     }
@@ -551,6 +572,21 @@ def hearing_list() -> str:
 # ── Create ────────────────────────────────────────────────────────────────
 
 
+def _collect_client_emails(dossier: dict) -> str:
+    """Best-effort comma-separated client emails for Teams invite prefill."""
+    emails: list[str] = []
+    seen: set[str] = set()
+    for pid in dossier.get("client_ids") or []:
+        partie = get_partie(pid)
+        if not partie:
+            continue
+        addr = normalize_email(partie.get("email") or "")
+        if addr and addr not in seen:
+            seen.add(addr)
+            emails.append(addr)
+    return ", ".join(emails)
+
+
 @hearings_bp.route("/new")
 @login_required
 def hearing_new() -> str:
@@ -558,6 +594,7 @@ def hearing_new() -> str:
     ctx = _template_context()
     dossier_id = request.args.get("dossier_id", "")
     prefilled = None
+    teams_attendee_emails = ""
     if dossier_id:
         dossier = get_dossier(dossier_id)
         if dossier:
@@ -567,8 +604,11 @@ def hearing_new() -> str:
                 "dossier_title": dossier.get("title", ""),
                 "court": dossier.get("court", ""),
             }
+            teams_attendee_emails = _collect_client_emails(dossier)
     ctx.update(
         hearing=prefilled, errors=[],
+        teams_attendee_emails=teams_attendee_emails,
+        teams_agenda=ctx["teams_default_agendas"].get("consultation", ""),
         return_to=safe_internal_redirect(request.args.get("return_to"), ""),
     )
     return render_template("hearings/form.html", **ctx)
@@ -582,6 +622,14 @@ def hearing_create() -> str:
     data, link_errors = _enrich_dossier_info(data)
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
     frequence, count, until = _recurrence_from_form()
+    generer_teams = request.form.get("generer_teams") == "on"
+    raw_emails = request.form.get("teams_attendee_emails", "")
+    raw_agenda = (
+        request.form.get("teams_agenda", "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .strip()
+    )
 
     def _reject(errors: list[str]) -> str:
         ctx = _template_context()
@@ -589,12 +637,136 @@ def hearing_create() -> str:
             "dossier_file_number", request.form.get("dossier_display", "")
         )
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(hearing=data, errors=errors, return_to=return_to)
+        ctx.update(
+            hearing=data,
+            errors=errors,
+            return_to=return_to,
+            generer_teams=generer_teams,
+            teams_attendee_emails=raw_emails,
+            teams_agenda=raw_agenda,
+        )
         return render_template("hearings/form.html", **ctx)
 
     if link_errors:
         # Re-rendered at 200 like every refusal here: htmx swaps only 2xx.
         return _reject(link_errors)
+
+    if generer_teams:
+        if not (Config.TEAMS_REUNIONS_ACTIF and Config.teams_configured()):
+            return _reject([
+                "La génération automatique de réunions Microsoft Teams est désactivée ou incomplète."
+            ])
+        if forum_of(data.get("hearing_type", "")) != "extrajudiciaire":
+            return _reject([
+                "La génération automatique de réunions Teams est réservée aux événements extrajudiciaires."
+            ])
+        if data.get("modalite") != "visioconférence":
+            return _reject([
+                "La modalité doit être « Visioconférence » pour générer une réunion Teams."
+            ])
+        if data.get("all_day") or frequence:
+            return _reject([
+                "La génération automatique de réunions Teams ne s'applique pas aux journées entières ni aux séries."
+            ])
+        if data.get("status") == "annulée":
+            return _reject([
+                "Impossible de générer une réunion Teams pour un événement déjà marqué « annulée »."
+            ])
+
+        parsed_emails: list[str] = []
+        seen_emails: set[str] = set()
+        for tok in raw_emails.split(","):
+            part = tok.strip()
+            if not part:
+                continue
+            norm = normalize_email(part)
+            if not norm:
+                return _reject([
+                    f"Adresse courriel d'invité invalide : « {sanitize(part, max_length=80)} »."
+                ])
+            if norm not in seen_emails:
+                seen_emails.add(norm)
+                parsed_emails.append(norm)
+
+        if not raw_agenda:
+            raw_agenda = default_agenda_for_hearing_type(
+                get_rendez_vous_reglages(), data.get("hearing_type", "")
+            )
+        if (
+            len(raw_agenda) > 2000
+            or "<" in raw_agenda
+            or ">" in raw_agenda
+            or sanitize(raw_agenda, max_length=2000) != raw_agenda
+        ):
+            return _reject([
+                "L'ordre du jour minuté contient des chevrons (< ou >) ou dépasse 2 000 caractères."
+            ])
+
+        effective_end = (
+            data["end_datetime"]
+            or (
+                data["start_datetime"] + timedelta(hours=1)
+                if data.get("start_datetime")
+                else None
+            )
+        )
+        val_errors = validate_hearing_data({**data, "end_datetime": effective_end})
+        if val_errors:
+            return _reject(val_errors)
+
+        try:
+            teams_res = graph_teams.creer_reunion_teams(
+                sujet=data["title"],
+                debut_utc=data["start_datetime"],
+                fin_utc=effective_end,
+                ordre_du_jour=raw_agenda,
+                courriels_invites=tuple(parsed_emails),
+                transaction_id=f"pallas-teams-{uuid.uuid4()}",
+            )
+        except (GraphError, GraphNotConfigured):
+            log_bookings_event(
+                "teams_reunion_erreur_graph", "failure", reason="create_failed"
+            )
+            return _reject([
+                "Impossible de créer la réunion Microsoft Teams auprès de Microsoft Graph "
+                "(vérifiez Paramètres → Rendez-vous). Aucun événement n'a été créé."
+            ])
+
+        data["end_datetime"] = effective_end
+        data["conference_uri"] = teams_res["join_url"]
+        data["source"] = "athena_teams"
+        data["graph_event_id"] = teams_res["graph_event_id"]
+        data["graph_ical_uid"] = teams_res["graph_ical_uid"]
+        data["online_meeting_id"] = teams_res["online_meeting_id"]
+        data["teams_agenda"] = raw_agenda
+        data["attendee_emails"] = parsed_emails
+        data["transcript_status"] = (
+            "en_attente" if teams_res["online_meeting_id"] else ""
+        )
+
+        hearing, errors = create_hearing(data)
+        if errors:
+            return _reject(errors)
+
+        bump_ctag(collection_for(hearing.get("dossier_id")))
+        log_bookings_event(
+            "teams_reunion_creee",
+            hearing_id=hearing["id"],
+            options_appliquees=bool(teams_res["options_appliquees"]),
+            invites_count=len(parsed_emails),
+        )
+        if not teams_res["options_appliquees"]:
+            return redirect_after_post(url_for(
+                "hearings.hearing_detail",
+                hearing_id=hearing["id"],
+                return_to=return_to or None,
+                message=(
+                    "Réunion Teams créée au calendrier, mais les options de "
+                    "transcription et de salle d'attente n'ont pas pu être appliquées "
+                    "(vérifiez la politique Teams dans Paramètres → Rendez-vous)."
+                ),
+            ))
+        return redirect_after_post(return_to or url_for("hearings.hearing_list"))
 
     if frequence:
         occurrences, errors = create_hearing_series(
@@ -741,6 +913,74 @@ def hearing_update(hearing_id: str) -> str:
         old_dossier_id=old_dossier_id,
         new_dossier_id=hearing.get("dossier_id"),
     )
+
+    if (
+        existing_hearing
+        and existing_hearing.get("source") == "athena_teams"
+        and existing_hearing.get("graph_event_id")
+        and Config.TEAMS_REUNIONS_ACTIF
+        and Config.teams_configured()
+    ):
+        graph_event_id = existing_hearing["graph_event_id"]
+        old_status = existing_hearing.get("status")
+        new_status = hearing.get("status")
+        if new_status == "annulée" and old_status != "annulée":
+            try:
+                graph_teams.annuler_reunion_teams(graph_event_id)
+                log_bookings_event(
+                    "teams_reunion_annulee", hearing_id=hearing_id
+                )
+            except (GraphError, GraphNotConfigured):
+                log_bookings_event(
+                    "teams_reunion_erreur_graph",
+                    "failure",
+                    hearing_id=hearing_id,
+                    reason="cancel_failed",
+                )
+                return redirect_after_post(url_for(
+                    "hearings.hearing_detail",
+                    hearing_id=hearing_id,
+                    return_to=return_to or None,
+                    erreur=(
+                        "Statut enregistré dans Athéna, mais la réunion Outlook "
+                        "n'a pas pu être annulée — annulez-la manuellement."
+                    ),
+                ))
+        elif (
+            new_status != "annulée"
+            and not hearing.get("all_day")
+            and (
+                hearing.get("title") != existing_hearing.get("title")
+                or hearing.get("start_datetime") != existing_hearing.get("start_datetime")
+                or hearing.get("end_datetime") != existing_hearing.get("end_datetime")
+            )
+        ):
+            try:
+                graph_teams.modifier_reunion_teams(
+                    graph_event_id,
+                    sujet=hearing["title"],
+                    debut_utc=hearing["start_datetime"],
+                    fin_utc=hearing["end_datetime"],
+                )
+                log_bookings_event(
+                    "teams_reunion_modifiee", hearing_id=hearing_id
+                )
+            except (GraphError, GraphNotConfigured):
+                log_bookings_event(
+                    "teams_reunion_erreur_graph",
+                    "failure",
+                    hearing_id=hearing_id,
+                    reason="update_failed",
+                )
+                return redirect_after_post(url_for(
+                    "hearings.hearing_detail",
+                    hearing_id=hearing_id,
+                    return_to=return_to or None,
+                    erreur=(
+                        "Modifications enregistrées dans Athéna, mais la réunion "
+                        "Outlook n'a pas pu être mise à jour — vérifiez-la dans Outlook."
+                    ),
+                ))
 
     return redirect_after_post(
         return_to or url_for("hearings.hearing_detail", hearing_id=hearing_id))
@@ -908,6 +1148,27 @@ def hearing_delete(hearing_id: str) -> str:
             title=(existing_hearing or {}).get("title", ""),
             status=(existing_hearing or {}).get("status", ""),
         )
+        if (
+            existing_hearing.get("source") == "athena_teams"
+            and existing_hearing.get("graph_event_id")
+            and existing_hearing.get("status") != "annulée"
+            and Config.TEAMS_REUNIONS_ACTIF
+            and Config.teams_configured()
+        ):
+            try:
+                graph_teams.supprimer_reunion_teams(
+                    existing_hearing["graph_event_id"]
+                )
+                log_bookings_event(
+                    "teams_reunion_annulee", hearing_id=hearing_id
+                )
+            except (GraphError, GraphNotConfigured):
+                log_bookings_event(
+                    "teams_reunion_erreur_graph",
+                    "failure",
+                    hearing_id=hearing_id,
+                    reason="delete_failed",
+                )
 
     if not success and error != HEARING_NOT_FOUND:
         return _back_to_hearing(hearing_id, return_to, erreur=error)

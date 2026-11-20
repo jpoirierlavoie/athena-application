@@ -137,7 +137,7 @@ def test_every_field_maps_to_a_real_config_attribute():
 
 
 def test_the_nine_four_line_is_exhaustive_and_disjoint():
-    """Les treize valeurs de la couche A, plus les deux coupe-circuits, et
+    """Les treize valeurs de la couche A, plus les trois coupe-circuits, et
     aucun chevauchement — un champ dans les deux listes serait rendu deux
     fois, une fois modifiable et une fois non."""
     editable = set(D.EDITABLE_FIELDS)

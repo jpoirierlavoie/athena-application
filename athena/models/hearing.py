@@ -210,6 +210,11 @@ def _migrate_hearing(doc: dict) -> dict:
     doc.setdefault("client_nom", "")
     doc.setdefault("bookings_divergence", None)
     doc.setdefault("partie_id", "")
+    # Teams meetings & post-meeting capture (Lot 1+) — additive defaults.
+    doc.setdefault("online_meeting_id", "")
+    doc.setdefault("teams_agenda", "")
+    doc.setdefault("transcript_status", "")
+    doc.setdefault("attendee_emails", [])
     # Séries récurrentes. Additifs, sans migration : un document hérité lit
     # serie_id == "" — « autonome » — ce qui est vrai.
     doc.setdefault("serie_id", "")
@@ -287,6 +292,10 @@ def _default_doc() -> dict:
         "client_nom": "",
         "bookings_divergence": None,
         "partie_id": "",
+        "online_meeting_id": "",
+        "teams_agenda": "",
+        "transcript_status": "",
+        "attendee_emails": [],
         # ── Séries récurrentes ────────────────────────────────────────────
         # serie_id : UUIDv4 partagé par toutes les occurrences d'une chaîne.
         # "" = occurrence autonome. Toutes les occurrences sont ÉGALES — pas
@@ -315,14 +324,28 @@ def _default_doc() -> dict:
 
 
 def _sanitize_data(data: dict) -> dict:
-    """Sanitize all string values in *data*."""
+    """Sanitize all string values and attendee email lists in *data*."""
     out: dict = {}
     for key, val in data.items():
         if isinstance(val, str):
             out[key] = sanitize(val, max_length=2000)
+        elif key == "attendee_emails" and isinstance(val, (list, tuple)):
+            out[key] = [
+                sanitize(str(addr), max_length=254)
+                for addr in val
+                if str(addr).strip()
+            ]
         else:
             out[key] = val
     return out
+
+
+def validate_hearing_data(data: dict) -> list[str]:
+    """Validate candidate create-hearing fields against the model rules."""
+    merged = {**_default_doc(), **_sanitize_data(data)}
+    if merged.get("start_datetime") and not merged.get("end_datetime"):
+        merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
+    return _validate(merged)
 
 
 def _validate(data: dict) -> list[str]:
@@ -917,6 +940,7 @@ UPDATE_FIELDS = frozenset({
 SERVER_FIELDS = frozenset({
     "source", "confirmation",
     "graph_event_id", "graph_ical_uid", "graph_last_modified",
+    "online_meeting_id", "teams_agenda", "transcript_status", "attendee_emails",
     "client_email", "client_nom", "bookings_divergence", "partie_id",
     "serie_id", "serie_rule",
 })

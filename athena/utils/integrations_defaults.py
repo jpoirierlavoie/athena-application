@@ -78,6 +78,7 @@ DEPLOY_ONLY_FIELDS: tuple[str, ...] = (
 KILL_SWITCHES: tuple[str, ...] = (
     "bookings_sync_active",
     "miroir_outlook_actif",
+    "teams_reunions_actif",
 )
 
 # ── Defaults (the current code defaults, in one place) ────────────────────

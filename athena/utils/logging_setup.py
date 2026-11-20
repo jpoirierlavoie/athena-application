@@ -776,6 +776,11 @@ SettingsEvent = Literal[
     # qu'on veut en diagnostiquant « plus rien n'entre ».
     "integrations_updated",
     "integrations_refused",
+    # Les réglages de rendez-vous et réunions Teams (settings/rendez_vous).
+    # Mêmes règles : noms de champs modifiés seulement, jamais les libellés
+    # ou ordres du jour.
+    "rendez_vous_reglages_updated",
+    "rendez_vous_reglages_refused",
 ]
 TemplateEvent = Literal[
     "template_uploaded",
@@ -945,6 +950,13 @@ BookingsEvent = Literal[
     # un sujet d'événement embarque le nom d'un client, JAMAIS journalisé).
     "miroir_outlook_execute",
     "miroir_outlook_erreur_graph",
+    # Réunions Microsoft Teams (Lot 1) : identifiants opaques, drapeaux,
+    # codes HTTP et compteurs seulement — jamais un sujet ou un nom.
+    "teams_reunion_creee",
+    "teams_reunion_modifiee",
+    "teams_reunion_annulee",
+    "teams_reunion_erreur_graph",
+    "teams_connexion_verifiee",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
 
@@ -1151,9 +1163,9 @@ def log_settings_event(
     fields_changed: Optional[list] = None,
     **extra: Any,
 ) -> None:
-    """Emit a firm-profile event.
+    """Emit a firm-profile / settings event.
 
-    ``cabinet_refused`` emits at WARNING, everything else at INFO. Pass
+    ``*_refused`` emits at WARNING, everything else at INFO. Pass
     ``fields_changed`` as a list of field NAMES
     (``models.settings.changed_field_names``) — never their values.
     """
@@ -1161,7 +1173,7 @@ def log_settings_event(
     if fields_changed is not None:
         fields["fields_changed"] = list(fields_changed)
         fields["fields_changed_count"] = len(fields_changed)
-    level = logging.WARNING if event == "cabinet_refused" else logging.INFO
+    level = logging.WARNING if event.endswith("_refused") else logging.INFO
     _emit(_PALLAS_SETTINGS, level, event, fields)
 
 

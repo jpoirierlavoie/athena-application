@@ -216,6 +216,8 @@ INFO, except `cabinet_refused` and `integrations_refused` (WARNING). The firm pr
 | `cabinet_refused` | WARNING; `error_count`. Validation refused the save (missing `nom`, invalid phone/courriel/postal code) — never the submitted value |
 | `integrations_updated` | `fields_changed` (sorted field NAMES) + `fields_changed_count`, over `settings/integrations`. Same rule, plus one reason of its own: a mis-set subject keyword stops the Bookings sync **silently**, and worse, an EMPTY keyword set makes the absence loop flag already-imported reservations `annulée_client`. « When did these fields last move? » is therefore the first question when diagnosing « nothing comes in any more » |
 | `integrations_refused` | WARNING; `error_count`. The store refused — an empty keyword set, a judicial `hearing_type` in the keyword→type map, a day count outside its bounds. Never the submitted value |
+| `rendez_vous_reglages_updated` | `fields_changed` (sorted field NAMES) + `fields_changed_count`, over `settings/rendez_vous` (scheduling rules, weekly windows, meeting types & default timed agendas). Field names only, never labels or agenda prose |
+| `rendez_vous_reglages_refused` | WARNING; `error_count`. The store refused invalid bounds, malformed windows, duplicate/invalid meeting-type keys, or disallowed characters (`<` / `>`). Never the submitted value |
 
 ### `log_template_event(event, *, template_id=None, dossier_id=None, **extra)` — logger `pallas.templates`
 
@@ -377,6 +379,11 @@ Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confir
 | `reception_rdv_divergence_traitee` | success | A `bookings_divergence` alert was applied/ignored/cancelled; `hearing_id`, `action` |
 | `miroir_outlook_execute` | success | Outlook-mirror cron sweep done; counters `vus`, `miroirs`, `crees`, `corriges`, `supprimes`, `ignores`, `erreurs` (per-event Graph failures — the sweep continues), `restants` (mutations deferred past the per-sweep cap `_PLAFOND_MUTATIONS` — the next run resumes; a `restants` that never drops to 0 across runs means the backlog is not converging) |
 | `miroir_outlook_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (fail-open, no-op); `failure` + `reason="graph_error"` (Graph outage, cycle missed) or `reason="fenetre_pleine"` (the 1500-hearing fetch window is full: the desired set is truncated, so the DELETE phase is disarmed until `_LIMITE_FENETRE` is raised — loud, never silent) or `reason="lecture_firestore"` (the Athéna read FAILED: an empty list is indistinguishable from "nothing matched", and a caller that conflated them would treat every mirror as an orphan, so the sweep abstains entirely) |
+| `teams_reunion_creee` | success | Graph Teams meeting created for a hearing (`source="athena_teams"`); `hearing_id`, `options_appliquees: bool`, `invites_count` (count only, never attendee emails or meeting subject) |
+| `teams_reunion_modifiee` | success | Graph Teams event patched after an Athena title/slot edit; `hearing_id` |
+| `teams_reunion_annulee` | success | Graph Teams event cancelled after an Athena status transition to `annulée` (or deletion); `hearing_id` |
+| `teams_reunion_erreur_graph` | **failure** | Graph Teams API call failed during create, update, cancel, or delete; optional `hearing_id`, `reason` (`create_failed`, `update_failed`, `cancel_failed`, `delete_failed`), optional `status_code`. IDs and codes only — never subject or client info |
+| `teams_connexion_verifiee` | success / **failure** | Diagnostic probe from « Paramètres → Rendez-vous » (`POST /parametres/rendez-vous/tester`); booleans `configure`, `jeton_valide`, `utilisateur_accessible`, `online_meetings_accessible`, `politique_teams_requise`, `transcriptions_accessibles`, `onedrive_accessible`, plus `roles_manquants_count` |
 
 ### `log_hearing_series_event(event, serie_id, **extra)` — logger `pallas.hearing`
 

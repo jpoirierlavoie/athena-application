@@ -209,6 +209,7 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `MIROIR_OUTLOOK_ACTIF` | ○ | `true` | Kill switch for the Athéna → Outlook mirror. `false` freezes existing mirrors in place; it does not clean them up |
 | `MIROIR_OUTLOOK_LOOKAHEAD_DAYS` | ○ | `365` | The mirror's forward window — **shared** by the Athéna read and the Outlook read, which is what keeps a mirror from becoming an invisible orphan |
 | `MIROIR_OUTLOOK_LOOKBACK_DAYS` | ○ | `30` | Its backward window |
+| `TEAMS_REUNIONS_ACTIF` | ○ | `false` | Kill switch for Graph Teams meeting creation and post-meeting transcript/Copilot retrieval (`app.yaml` ships `"true"` after Entra & Teams Admin policies were applied; toggle to `"false"` to stop Teams creation) |
 | `FEATURE_INTAKE` | ○ | `false` | Offers the portal's intake (dossier-opening) form when confirming a Bookings rendez-vous whose email matches no contact |
 
 ⚠ **Two Bookings settings have no environment variable at all.**
@@ -1298,6 +1299,33 @@ resource below by its id — `sa-portail`, `firestore-portail`,
     (`gcloud tasks queues pause portail --location=northamerica-northeast1 --project=$PROJECT`),
     submit again — the client still gets the confirmation — then `resume` it
     and watch the lot reach Réception.
+
+#### Microsoft Teams meetings, transcripts & Copilot AI insights (one-time M365 setup)
+
+Before setting `TEAMS_REUNIONS_ACTIF: "true"` in `athena/app.yaml`, complete
+these two one-time Microsoft 365 steps on the main Entra app registration
+(`GRAPH_CLIENT_ID`):
+
+1. **Entra ID application permissions (with Admin Consent):** in addition to
+   `Calendars.ReadWrite` and `Mail.Send`, grant:
+   - `OnlineMeetings.ReadWrite.All`
+   - `OnlineMeetingTranscript.Read.All`
+   - `OnlineMeetingAiInsight.Read.All` (requires a Microsoft 365 Copilot license on `BOOKINGS_JURISTE_UPN`)
+2. **Microsoft Teams Admin PowerShell (`Connect-MicrosoftTeams`):** allow
+   app-only Graph access to transcripts and grant the application access policy
+   to `BOOKINGS_JURISTE_UPN`:
+
+   ```powershell
+   Connect-MicrosoftTeams
+   Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true
+   New-CsApplicationAccessPolicy -Identity "PallasAthenaTeamsAccess" -AppIds "<GRAPH_CLIENT_ID>" -Description "Pallas Athena Teams meetings, transcripts and Copilot insights"
+   Grant-CsApplicationAccessPolicy -PolicyName "PallasAthenaTeamsAccess" -Identity "<BOOKINGS_JURISTE_UPN>"
+   ```
+
+   ⚠ Microsoft policy propagation can take **30 minutes to 2 hours**. Use the
+   « Tester la connexion Microsoft Teams » button in **Paramètres → Rendez-vous**
+   to verify token roles, `onlineMeetings` access, transcript policy, and OneDrive
+   reachability before enabling `TEAMS_REUNIONS_ACTIF: "true"`.
 
 ### 6.10 Alertes de sécurité (Cloud Monitoring)
 
