@@ -1,5 +1,6 @@
 """Génération et synchronisation Teams des audiences extrajudiciaires (lot 1)."""
 
+import importlib
 import logging
 import os
 import sys
@@ -7,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
-from markupsafe import escape
 
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ATHENA)
@@ -20,27 +20,29 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from flask import Flask  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.sync as dav_sync
-    import models.dossier as dossier_model
-    import models.hearing as hearing_model
-    import models.partie as partie_model
-    import models.rendez_vous_reglages as rv_model
     import routes.hearings as rh
 
 from config import Config  # noqa: E402
 from routes._helpers import theme_context  # noqa: E402
 from tests._fake_firestore import install  # noqa: E402
 from tz import mtl_to_utc, to_mtl  # noqa: E402
-from utils.graph import GraphError, GraphNotConfigured  # noqa: E402
+from utils.graph import GraphError  # noqa: E402
 from utils.html_attr import jsattr  # noqa: E402
 from utils.icons import ms  # noqa: E402
-from utils.rendez_vous_defaults import default_reglages  # noqa: E402
 
 UTC = timezone.utc
 
 
 @pytest.fixture()
 def real_store(monkeypatch):
+    for modname in (
+        "dav.sync",
+        "models.dossier",
+        "models.hearing",
+        "models.partie",
+        "models.rendez_vous_reglages",
+    ):
+        importlib.import_module(modname)
     modules = [
         m
         for name, m in sorted(sys.modules.items())

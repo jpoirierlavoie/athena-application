@@ -6,7 +6,6 @@ import os
 import sys
 import types
 from datetime import datetime, timedelta, timezone
-from unittest import mock
 
 import pytest
 

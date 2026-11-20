@@ -21,7 +21,6 @@ from utils.rendez_vous_defaults import (  # noqa: E402
     DEFAULT_MEETING_TYPES,
     DEFAULT_WINDOWS,
     FALLBACK_TIMED_AGENDA,
-    WEEKDAYS,
     default_agenda_for_hearing_type,
     default_reglages,
     is_valid_type_key,

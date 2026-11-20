@@ -14,7 +14,6 @@ index required.
 from __future__ import annotations
 
 import copy
-import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -40,8 +39,6 @@ from utils.rendez_vous_defaults import (
     parse_strict_int,
 )
 
-logger = logging.getLogger(__name__)
-
 COLLECTION = "settings"
 DOC_ID = "rendez_vous"
 
@@ -53,14 +50,6 @@ _NUMERIC_LABELS: dict[str, str] = {
     "horizon_jours": "Horizon de prise de rendez-vous (jours)",
     "preavis_modification_heures": "Préavis minimal d'annulation ou de report (heures)",
 }
-
-_WINDOW_KEYS: tuple[str, ...] = (
-    "actif",
-    "matin_debut",
-    "matin_fin",
-    "apres_midi_debut",
-    "apres_midi_fin",
-)
 
 
 def _read_state() -> tuple[Optional[dict], str]:

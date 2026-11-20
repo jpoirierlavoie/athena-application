@@ -12,7 +12,7 @@ import base64
 import html
 import json
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 from config import Config
