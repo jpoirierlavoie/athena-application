@@ -15,12 +15,12 @@ here is invented.
 
 import ast
 import os
-import xml.etree.ElementTree as ET
 import pathlib
 import sys
 from datetime import datetime, timezone
 from unittest import mock
 
+from defusedxml import ElementTree as ET
 import pytest
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent

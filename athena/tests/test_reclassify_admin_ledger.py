@@ -715,7 +715,7 @@ def test_a_reconciliation_prepassed_before_the_batch_fails_as_modified(
 
     def pre_pass_then_batch(account_id, as_of):
         context = real_context(account_id, as_of)
-        applied["code"], applied["out"], _report = cli.apply(csv_path, fingerprint)
+        applied["code"], applied["out"], _ = cli.apply(csv_path, fingerprint)
         return context
 
     monkeypatch.setattr(al, "reconciliation_as_of_context", pre_pass_then_batch)

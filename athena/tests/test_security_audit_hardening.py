@@ -29,24 +29,20 @@ os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
 os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
-import pytest
 from flask import Flask
 
 import client.security as portail_security
 from client import _client_ip as portail_client_ip
 from dav.dav_auth import _client_ip as dav_client_ip
-from models.dossier import (
-    create_dossier,
-    get_dossier,
-    get_dossier_strict,
-    update_dossier,
-)
-from models.expense import get_expense, get_expense_strict
-from models.hearing import get_hearing, get_hearing_strict
-from models.note import get_note, get_note_strict, update_note
-from models.partie import get_partie, get_partie_strict, update_partie
-from models.task import get_task, get_task_strict, update_task
-from models.time_entry import get_time_entry, get_time_entry_strict
+from models import admin_ledger, trust
+import models.dossier as dossier_model
+import models.expense as expense_model
+import models.hearing as hearing_model
+import models.invoice as invoice_model
+import models.note as note_model
+import models.partie as partie_model
+import models.task as task_model
+import models.time_entry as time_entry_model
 import security
 from utils.logging_setup import RedactionFilter, SENSITIVE_KEYS
 from utils.tracing_setup import _SanitizingSpanExporter
@@ -162,10 +158,6 @@ def test_sensitive_keys_inventory_and_redaction():
 
 def test_dashboard_exception_sanitization(monkeypatch):
     import routes.dashboard as dash
-    import models.dossier as md
-    import models.time_entry as mte
-    import models.invoice as mi
-    from models import trust
 
     logged_warnings = []
 
@@ -174,9 +166,9 @@ def test_dashboard_exception_sanitization(monkeypatch):
             logged_warnings.append(msg % args)
 
     monkeypatch.setattr(dash, "logger", MockLogger())
-    monkeypatch.setattr(md, "count_open", lambda: (_ for _ in ()).throw(ValueError("Secret Dossier Data")))
-    monkeypatch.setattr(mte, "get_unbilled_totals", lambda: (_ for _ in ()).throw(RuntimeError("Secret Billing Data")))
-    monkeypatch.setattr(mi, "get_outstanding_totals_strict", lambda: (_ for _ in ()).throw(TypeError("Secret Invoice Data")))
+    monkeypatch.setattr(dossier_model, "count_open", lambda: (_ for _ in ()).throw(ValueError("Secret Dossier Data")))
+    monkeypatch.setattr(time_entry_model, "get_unbilled_totals", lambda: (_ for _ in ()).throw(RuntimeError("Secret Billing Data")))
+    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict", lambda: (_ for _ in ()).throw(TypeError("Secret Invoice Data")))
     monkeypatch.setattr(trust, "get_firm_trust_snapshot", lambda: (_ for _ in ()).throw(KeyError("Secret Trust Data")))
 
     dash._get_quick_stats()
@@ -216,11 +208,10 @@ def test_portal_500_handler_logs_unexpected(monkeypatch):
 
 
 def test_dossier_protected_on_update(monkeypatch):
-    import models.dossier as md
     from tests._fake_firestore import install
 
-    fake = install(monkeypatch, md)
-    doc, errors = md.create_dossier({
+    install(monkeypatch, dossier_model)
+    doc, errors = dossier_model.create_dossier({
         "title": "Affaire Hardening",
         "file_number": "2026-999",
         "clients": [{"id": "c1", "name": "Client Test"}],
@@ -238,7 +229,7 @@ def test_dossier_protected_on_update(monkeypatch):
     assert doc["vjournal_uid"] != "injected-uid"
 
     # Attempt to inject trust_balance into update_dossier with expected_etag
-    updated, errs = md.update_dossier(
+    updated, errs = dossier_model.update_dossier(
         doc["id"],
         {"trust_balance": 9999999, "vjournal_uid": "hacked-uid"},
         expected_etag=doc["etag"],
@@ -250,27 +241,25 @@ def test_dossier_protected_on_update(monkeypatch):
 
 
 def test_task_protected_on_update(monkeypatch):
-    import models.task as mt
     from tests._fake_firestore import install
 
-    fake = install(monkeypatch, mt)
-    task, errors = mt.create_task({"title": "Tâche Test", "category": "recherche"})
+    install(monkeypatch, task_model)
+    task, errors = task_model.create_task({"title": "Tâche Test", "category": "recherche"})
     assert errors == []
     assert task is not None
 
     orig_uid = task["vtodo_uid"]
-    updated, errs = mt.update_task(task["id"], {"vtodo_uid": "overwritten-uid", "created_at": "hacked"})
+    updated, errs = task_model.update_task(task["id"], {"vtodo_uid": "overwritten-uid", "created_at": "hacked"})
     assert errs == []
     assert updated is not None
     assert updated["vtodo_uid"] == orig_uid
 
 
 def test_note_protected_on_update(monkeypatch):
-    import models.note as mn
     from models import revision as revision_model
     from tests._fake_firestore import install
 
-    fake = install(monkeypatch, mn, revision_model)
+    fake = install(monkeypatch, note_model, revision_model)
     fake.seed("notes/n1", {
         "id": "n1",
         "title": "Note Test",
@@ -281,7 +270,7 @@ def test_note_protected_on_update(monkeypatch):
         "etag": "e0",
     })
 
-    updated, errs = mn.update_note(
+    updated, errs = note_model.update_note(
         "n1",
         {"title": "Note Test Modifiée", "vjournal_uid": "overwritten-uid", "created_at": "hacked"},
         expected_etag="e0",
@@ -292,11 +281,10 @@ def test_note_protected_on_update(monkeypatch):
 
 
 def test_partie_protected_on_update(monkeypatch):
-    import models.partie as mp
     from tests._fake_firestore import install
 
-    fake = install(monkeypatch, mp)
-    seed_data = mp._default_doc()
+    fake = install(monkeypatch, partie_model)
+    seed_data = partie_model._default_doc()
     seed_data.update({
         "id": "p1",
         "type": "organization",
@@ -308,7 +296,7 @@ def test_partie_protected_on_update(monkeypatch):
     })
     fake.seed("parties/p1", seed_data)
 
-    updated, errs = mp.update_partie(
+    updated, errs = partie_model.update_partie(
         "p1",
         {"organization_name": "Entreprise Inc. Renommée", "vcard_uid": "overwritten-uid", "legacy_ref": "bad"},
         expected_etag="e0",
@@ -319,38 +307,36 @@ def test_partie_protected_on_update(monkeypatch):
 
 
 def test_is_addressable_id_readers_fail_closed():
-    from models import admin_ledger, trust
     from models.budget import get_budget
     from models.doc_template import _read_template_strict, get_template
     from models.folder import get_folder
-    from models.invoice import get_invoice, get_invoice_strict
 
     invalid_ids = ["", ".", "..", "invalid/slash", "../traversal", "__reserved__"]
     for bad_id in invalid_ids:
         # Dossier
-        assert get_dossier(bad_id) is None
-        assert get_dossier_strict(bad_id) is None
+        assert dossier_model.get_dossier(bad_id) is None
+        assert dossier_model.get_dossier_strict(bad_id) is None
         # Partie
-        assert get_partie(bad_id) is None
-        assert get_partie_strict(bad_id) is None
+        assert partie_model.get_partie(bad_id) is None
+        assert partie_model.get_partie_strict(bad_id) is None
         # Hearing
-        assert get_hearing(bad_id) is None
-        assert get_hearing_strict(bad_id) is None
+        assert hearing_model.get_hearing(bad_id) is None
+        assert hearing_model.get_hearing_strict(bad_id) is None
         # Task
-        assert get_task(bad_id) is None
-        assert get_task_strict(bad_id) is None
+        assert task_model.get_task(bad_id) is None
+        assert task_model.get_task_strict(bad_id) is None
         # Note
-        assert get_note(bad_id) is None
-        assert get_note_strict(bad_id) is None
+        assert note_model.get_note(bad_id) is None
+        assert note_model.get_note_strict(bad_id) is None
         # Time entry
-        assert get_time_entry(bad_id) is None
-        assert get_time_entry_strict(bad_id) is None
+        assert time_entry_model.get_time_entry(bad_id) is None
+        assert time_entry_model.get_time_entry_strict(bad_id) is None
         # Expense
-        assert get_expense(bad_id) is None
-        assert get_expense_strict(bad_id) is None
+        assert expense_model.get_expense(bad_id) is None
+        assert expense_model.get_expense_strict(bad_id) is None
         # Invoice
-        assert get_invoice(bad_id) is None
-        assert get_invoice_strict(bad_id) is None
+        assert invoice_model.get_invoice(bad_id) is None
+        assert invoice_model.get_invoice_strict(bad_id) is None
         # Trust & admin ledgers
         assert trust.get_transaction(bad_id) is None
         assert trust.get_transaction_strict(bad_id) is None

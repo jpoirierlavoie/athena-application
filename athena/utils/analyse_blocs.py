@@ -148,7 +148,8 @@ class BlocStructureError(ValueError):
         self.code = code
         self.letters = tuple(letters)
         template = _MESSAGES.get(code, _MESSAGES["structure_modifiee"])
-        super().__init__(template.format(letters=", ".join(self.letters) or "—"))
+        self.message = template.format(letters=", ".join(self.letters) or "—")
+        super().__init__(self.message)
 
 
 # ── Lines ────────────────────────────────────────────────────────────────

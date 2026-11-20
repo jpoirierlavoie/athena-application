@@ -238,6 +238,10 @@ _UNREADABLE_MESSAGE = (
 class LeakScanError(ValueError):
     """The scan could not run to completion. French message, never content."""
 
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
 
 @dataclass(frozen=True)
 class Residue:
@@ -378,7 +382,7 @@ def _declared_xml_parts(zf: zipfile.ZipFile) -> tuple[frozenset, frozenset]:
     try:
         data = _read_entry_bounded(zf, _CONTENT_TYPES, MAX_SINGLE_XML_BYTES)
     except DocxFillError as exc:
-        raise LeakScanError(str(exc)) from None
+        raise LeakScanError(exc.message) from None
     except (zipfile.BadZipFile, RuntimeError, NotImplementedError,
             EOFError, OSError, ValueError):
         raise LeakScanError(_UNREADABLE_MESSAGE) from None
@@ -457,7 +461,7 @@ def _haystacks(docx_bytes: bytes) -> tuple[list[tuple[str, str]], int]:
                 data = _read_entry_bounded(
                     zf, name, min(MAX_SINGLE_XML_BYTES, remaining))
             except DocxFillError as exc:
-                raise LeakScanError(str(exc)) from None
+                raise LeakScanError(exc.message) from None
             except (zipfile.BadZipFile, RuntimeError, NotImplementedError,
                     EOFError, OSError, ValueError):
                 raise LeakScanError(_UNREADABLE_MESSAGE) from None
@@ -673,7 +677,7 @@ def scrub_core_properties(docx_bytes: bytes) -> ScrubbedDocx:
         try:
             core = _read_entry_bounded(zf, _CORE_PART, MAX_SINGLE_XML_BYTES)
         except DocxFillError as exc:
-            raise LeakScanError(str(exc)) from None
+            raise LeakScanError(exc.message) from None
         xml = _decode(core)
         prefixes = _prefixes(xml)
         emptied: list[str] = []
@@ -693,7 +697,7 @@ def scrub_core_properties(docx_bytes: bytes) -> ScrubbedDocx:
                 try:
                     data = _read_entry_bounded(zf, info.filename, remaining)
                 except DocxFillError as exc:
-                    raise LeakScanError(str(exc)) from None
+                    raise LeakScanError(exc.message) from None
                 remaining -= len(data)
                 if info.filename == _CORE_PART:
                     data = new_core

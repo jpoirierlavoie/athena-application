@@ -17,6 +17,16 @@ have none): it is never serialized, like the compliance checks.
 
 from __future__ import annotations
 
+__all__ = [
+    "OCCUPATION_LABELS",
+    "OCCUPATIONS",
+    "ORGANIZATION_LABELS",
+    "ORGANIZATION_LABEL_DEFAULT",
+    "WITHOUT_EMPLOYER",
+    "occupation_label",
+    "organization_label",
+]
+
 # key → French label, in the order the forms offer them.
 OCCUPATION_LABELS: dict[str, str] = {
     "salarie": "Salarié(e)",

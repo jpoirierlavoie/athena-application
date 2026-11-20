@@ -974,6 +974,33 @@ def test_a_refusal_defaults_to_the_generic_reason_and_keeps_its_message():
                   "idempotency_conflict")
 
 
+def test_tool_argument_error_client_message_ignores_str_override(monkeypatch):
+    """The endpoint reads `client_message`, never `str(exc)` (CodeQL
+    py/stack-trace-exposure), so a subclass whose `__str__` leaks a
+    traceback cannot reach `_tools_call`'s response."""
+    from mcp import endpoint
+
+    class _Rendered(ToolArgumentError):
+        def __str__(self) -> str:
+            return "Traceback (most recent call last): SECRET"
+
+    err = _Rendered("Paramètre invalide.")
+    assert err.client_message == "Paramètre invalide."
+
+    def _raise_rendered(_args):
+        raise _Rendered("Paramètre invalide.")
+
+    monkeypatch.setattr(endpoint, "granted_scopes", lambda: {"athena:read"})
+    monkeypatch.setattr(mcp.handlers, "list_dossiers", _raise_rendered)
+    result = endpoint._tools_call(
+        {"name": "list_dossiers", "arguments": {}}, "2025-03-26"
+    )
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert text == "Paramètre invalide."
+    assert "SECRET" not in text and "Traceback" not in text
+
+
 def test_a_key_conflict_is_refused_under_its_own_reason(fake):
     ws.run_write("create_note", _args("A"), _note)
     with pytest.raises(ToolArgumentError) as excinfo:

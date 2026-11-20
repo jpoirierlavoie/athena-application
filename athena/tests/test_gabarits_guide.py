@@ -47,7 +47,7 @@ def web(monkeypatch):
     modules = [m for n, m in sorted(sys.modules.items())
                if n.startswith("models.") and getattr(m, "db", None) is not None]
     install(monkeypatch, *modules)
-    monkeypatch.setattr(tpl.storage, "bucket", lambda: FakeBucket())
+    monkeypatch.setattr(tpl.storage, "bucket", FakeBucket)
     app = Flask(__name__, template_folder=str(_ATHENA / "templates"),
                 static_folder=str(_ATHENA / "static"))
     app.secret_key = "t"

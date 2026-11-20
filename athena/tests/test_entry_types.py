@@ -31,8 +31,6 @@ import pathlib
 import sys
 from unittest import mock
 
-import pytest
-
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ATHENA))
 

@@ -1008,10 +1008,10 @@ def test_the_new_markup_uses_only_compiled_classes(client, fake, monkeypatch):
     and adding one is a seven-file fan-out (CLAUDE.md item 6)."""
     _seed_avoir()
     ids = {kind: _create(kind, counterparty=f"Pastille {kind}")["id"] for kind in NATURES}
-    journal = _get(client, "/administration/?account_id=ops1")
+    _get(client, "/administration/?account_id=ops1")
     account = _get(client, "/administration/comptes/ops1")
     form = _get(client, "/administration/nouvelle")
-    detail = _get(client, f"/administration/{ids['prélèvement']}")
+    _get(client, f"/administration/{ids['prélèvement']}")
     snippets = [
         _block(account, "Avoir de l'avocat", "Solde net"),
         _block(form, 'name="sens_virement"', "« Paiement de carte »"),

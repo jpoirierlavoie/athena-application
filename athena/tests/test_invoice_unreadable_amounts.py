@@ -50,7 +50,8 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    from models import admin_ledger, expense, time_entry, trust  # noqa: F401
+    from models import admin_ledger, expense, time_entry, trust
+    _PRELOADED_MODELS = (admin_ledger, expense, time_entry, trust)
     from models import invoice as invoice_model
     import mcp.bearer as bearer
     import mcp.handlers as handlers
@@ -115,10 +116,11 @@ def _invoice(status: str = "envoyée", **over) -> dict:
 
 
 def _fake_modules() -> list:
-    return [m for n, m in sorted(sys.modules.items())
-            if (n.startswith("models.") or n in ("dav.sync",
-                                                 "mcp.write_support"))
-            and getattr(m, "db", None) is not None]
+    discovered = [m for n, m in sorted(sys.modules.items())
+                  if (n.startswith("models.") or n in ("dav.sync",
+                                                       "mcp.write_support"))
+                  and getattr(m, "db", None) is not None]
+    return list(dict.fromkeys([*_PRELOADED_MODELS, *discovered]))
 
 
 @pytest.fixture

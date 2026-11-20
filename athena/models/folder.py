@@ -60,7 +60,6 @@ from google.cloud.exceptions import NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
-from models.document import GENERATED_FOLDER_NAME, PORTAL_FOLDER_NAME
 from models.record_ids import is_addressable_id
 from security import sanitize
 from utils.logging_setup import log_dossier_event, log_unexpected, sanitize_log_value
@@ -124,8 +123,16 @@ SYSTEM_ROLE_PROJETS = "projets"
 SYSTEM_ROLE_AUTRES = "autres"
 SYSTEM_ROLE_PORTAIL = "portail"
 
+# All generated documents (gabarits + notes d'honoraires) land in this
+# per-dossier folder (Phase H.2).
+GENERATED_FOLDER_NAME = "Projets"
+
+# Documents versés depuis la quarantaine du portail client (spec L1 §9.2)
+# land in this per-dossier folder (routes/reception.py).
+PORTAL_FOLDER_NAME = "Reçus du portail"
+
 # Parent first. The display names of « Projets » and « Reçus du portail »
-# stay the ones the application has always used (models/document.py).
+# stay the ones the application has always used.
 DEFAULT_TREE: tuple[DefaultFolder, ...] = (
     DefaultFolder("mandat", "Mandat", None, SYSTEM_ROLE_MANDAT),
     DefaultFolder("verifications", "Vérifications", "mandat"),

@@ -271,6 +271,10 @@ class TemplateValidation:
 class DocxFillError(ValueError):
     """Structural problem with the template archive (caps, members…)."""
 
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
 
 # ── Internal helpers ────────────────────────────────────────────────────
 
@@ -707,7 +711,7 @@ def validate_template(docx_bytes: bytes) -> TemplateValidation:
             try:
                 xml_bytes = _read_entry_bounded(zf, target, MAX_SINGLE_XML_BYTES)
             except DocxFillError as exc:
-                result.errors.append(str(exc))
+                result.errors.append(exc.message)
                 return result
             xml = _normalize_runs(xml_bytes.decode("utf-8", errors="replace"))
             stripped = _XML_TAG_RE.sub("", xml)

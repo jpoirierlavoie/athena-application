@@ -409,6 +409,7 @@ class TicketStoreUnavailable(Exception):
     """The ticket store could not be read or written. French message."""
 
     def __init__(self, message: str = _STORE_MESSAGE) -> None:
+        self.message = message
         super().__init__(message)
 
 

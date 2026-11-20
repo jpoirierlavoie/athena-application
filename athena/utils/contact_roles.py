@@ -32,6 +32,21 @@ from __future__ import annotations
 
 import unicodedata
 
+__all__ = [
+    "ROLE_LABELS",
+    "ROLES",
+    "PROFESSIONAL_ROLES",
+    "SUPPLIER_ROLES",
+    "PAYEE_ROLES",
+    "WORK_PREFERRED_ROLES",
+    "PHONE_EXCLUDED_ROLES",
+    "VCARD_LEGACY_LABELS",
+    "UNKNOWN_VCARD_ROLE",
+    "role_label",
+    "role_for_vcard_label",
+    "in_address_book",
+]
+
 # key → French label, in the order the forms offer them.
 ROLE_LABELS: dict[str, str] = {
     "client": "Client",

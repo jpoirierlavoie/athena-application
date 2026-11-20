@@ -293,7 +293,7 @@ def test_the_instructions_stay_within_their_budget():
     from mcp import disclosure
 
     text = _instructions()
-    assert text == disclosure.build_instructions()
+    assert text == disclosure.build_instructions(tools.TOOLS)
     size = len(text.encode("utf-8"))
     assert size <= INSTRUCTIONS_CAP, (
         f"INSTRUCTIONS weighs {size} bytes, over its {INSTRUCTIONS_CAP}-byte "

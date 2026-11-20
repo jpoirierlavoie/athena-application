@@ -38,7 +38,7 @@ from utils.tracing_setup import span
 # the counts went stale twice and the undo path stated a falsehood (« frees
 # the number »). ONE text for every token since 2026-10-05: the per-token
 # accounting variant left with the athena:comptabilite scope.
-INSTRUCTIONS = disclosure.build_instructions()
+INSTRUCTIONS = disclosure.build_instructions(tools.TOOLS)
 
 
 SERVER_INFO = {
@@ -362,7 +362,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
                 # any other raises, inside the span: « internal error ».
                 payload, image = tools.split_image(name, payload)
             except ToolArgumentError as exc:
-                argument_error = str(exc)
+                argument_error = exc.client_message
                 argument_reason = exc.reason
                 payload = None
             except CommittedWriteError as exc:

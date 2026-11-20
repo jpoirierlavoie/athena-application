@@ -1278,7 +1278,7 @@ def _read_parts(zf: zipfile.ZipFile, budget: _Budget
             data = _read_entry_bounded(
                 zf, name, min(MAX_SINGLE_XML_BYTES, remaining))
         except DocxFillError as exc:
-            return [], {}, [_blocker("unreadable", [name], str(exc))]
+            return [], {}, [_blocker("unreadable", [name], exc.message)]
         except (zipfile.BadZipFile, RuntimeError, NotImplementedError,
                 EOFError, OSError, ValueError):
             return [], {}, [_blocker("unreadable", [name])]

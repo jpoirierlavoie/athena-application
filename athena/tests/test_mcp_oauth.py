@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 import re
@@ -26,7 +27,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp as mcp_pkg
     import mcp.bearer as bearer
     import mcp.store as store
-    import mcp.tools as tools
     import mcp.disclosure as disclosure
 
 UTC = timezone.utc
@@ -630,16 +630,38 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
+class _VisibleTextExtractor(HTMLParser):
+    """Extract visible text from HTML, skipping script and style elements."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._skip = 0
+        self.chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in ("script", "style"):
+            self._skip += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style") and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self.chunks.append(data)
+
+
 def _visible_words(body: str) -> int:
     """The words a reader sees on the consent card: from its title to the
     end of ITS form (the page's frame has forms of its own before it),
     scripts, tags and entities out."""
     start = body.index("<h1")
     card = body[start:body.index("</form>", start)]
-    card = re.sub(r"<script\b.*?</script>", " ", card, flags=re.S)
-    card = re.sub(r"<[^>]+>", " ", card)
-    card = re.sub(r"&[a-z]+;", " ", card)
-    return len([w for w in card.split() if any(c.isalnum() for c in w)])
+    parser = _VisibleTextExtractor()
+    parser.feed(card)
+    parser.close()
+    text = " ".join(parser.chunks)
+    return len([w for w in text.split() if any(c.isalnum() for c in w)])
 
 
 def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake):

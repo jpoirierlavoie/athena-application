@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 
 SECTOR, MINI, CUTOFF = 512, 64, 4096
 ENDOFCHAIN, FREESECT, FATSECT, NOSTREAM = 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0xFFFFFFFF
-_ENTRIES_PER_SECTOR = SECTOR // 128
 
 
 def _chunks(data: bytes, size: int) -> list[bytes]:

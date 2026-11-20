@@ -46,7 +46,6 @@ from models.document import (
     CATEGORY_CHOICES,
     DISPLAY_NAME_MAX,
     MAX_FILE_SIZE,
-    PORTAL_FOLDER_NAME,
     build_attachment_disposition,
     ingest_blob_as_document,
     is_addressable_id,
@@ -56,6 +55,7 @@ from routes.documents import DOSSIER_READ_FAILED
 from routes.taches_portail import sha512_flux
 from models.dossier import get_dossier, get_dossier_strict, list_dossiers
 from models.folder import (
+    PORTAL_FOLDER_NAME,
     SYSTEM_FOLDER_NAMES,
     SYSTEM_ROLE_AUTRES,
     SYSTEM_ROLE_PORTAIL,

@@ -877,15 +877,15 @@ def _body(shape: str) -> list[str]:
     head = "Facture | échéance | reportée au | jours de retard | solde | importée"
     late = [head, f"N0 | 2031-02-03 | 2031-02-03 | 30 | {one} | non", "",
             f"1 facture(s) en retard ce jour-là, {one} de solde en tout.",
-            "Le prochain balayage en marquerait 1 (au plus 100 par balayage, "
-            "les plus anciennes d'abord)."]
+            ("Le prochain balayage en marquerait 1 (au plus 100 par balayage, "
+             "les plus anciennes d'abord).")]
     return {
-        "none": ["Aucune facture envoyée ne serait en retard ce jour-là : le "
-                 "prochain balayage n'en marquerait aucune."],
+        "none": [("Aucune facture envoyée ne serait en retard ce jour-là : le "
+                  "prochain balayage n'en marquerait aucune.")],
         "unjudged-only": [
-            "Le retard de 1 facture(s) n'a pu être jugé (ci-dessous) ; aucune "
-            "autre ne serait en retard ce jour-là : le prochain balayage n'en "
-            "marquerait aucune.", "", _unjudged_line("bad-1")],
+            ("Le retard de 1 facture(s) n'a pu être jugé (ci-dessous) ; aucune "
+             "autre ne serait en retard ce jour-là : le prochain balayage n'en "
+             "marquerait aucune."), "", _unjudged_line("bad-1")],
         "late": late,
         "late-and-unjudged": [*late, "", _unjudged_line("bad-1")],
         "over-the-cap": [
@@ -896,11 +896,11 @@ def _body(shape: str) -> list[str]:
             "",
             f"101 facture(s) en retard ce jour-là, {format_cents_fr(10100)} "
             "de solde en tout.",
-            "Dont 1 payable(s) jusqu'au 2031-03-04 inclusivement, en retard à "
-            "compter du 2031-03-05 seulement.",
-            "Le prochain balayage en marquerait 100 (au plus 100 par balayage, "
-            "les plus anciennes d'abord) ; 1 attendrait les balayages "
-            "suivants."],
+            ("Dont 1 payable(s) jusqu'au 2031-03-04 inclusivement, en retard à "
+             "compter du 2031-03-05 seulement."),
+            ("Le prochain balayage en marquerait 100 (au plus 100 par balayage, "
+             "les plus anciennes d'abord) ; 1 attendrait les balayages "
+             "suivants.")],
     }[shape]
 
 

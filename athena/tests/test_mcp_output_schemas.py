@@ -31,7 +31,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import mcp.write_support as write_support
     import mcp.output_schemas as output_schemas
-    from mcp.output_schemas import OUTPUT_SCHEMAS
+    OUTPUT_SCHEMAS = output_schemas.OUTPUT_SCHEMAS
     import models.concurrency as concurrency
 
 

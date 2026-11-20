@@ -64,9 +64,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, NamedTuple, Optional
 
-import google.auth
 from google.api_core.exceptions import PreconditionFailed
-from google.auth.transport import requests as auth_requests
 from firebase_admin import storage
 from google.cloud import firestore
 from google.cloud.exceptions import NotFound

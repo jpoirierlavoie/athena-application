@@ -42,15 +42,15 @@ a named behavioural test that must exist. A later lot that falsifies a never DEL
 the texts, the sweep and the consent follow — and appends its family.
 
 Pure on purpose: it imports the scope constants and :mod:`markupsafe`,
-nothing else — no model, no service, no ``mcp.tools`` at import time (which
-derives ``WRITE_TOOLS`` from it). :func:`build_instructions` reads the tool
-registry lazily, when the endpoint module is loaded.
+nothing else — no model, no service, no ``mcp.tools`` at all (which
+derives ``WRITE_TOOLS`` from it). Callers pass the tool registry into
+:func:`build_instructions` directly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 from markupsafe import Markup
 
@@ -1064,24 +1064,17 @@ def instructions_head_en() -> str:
     return f"{safety_core_en()} {conventions_en()}"
 
 
+PHASE_BULK_MAX = 50
+ENTRY_BULK_MAX = 50
+
+
 def build_instructions(
-    registry: Optional[dict] = None,
-    phase_bulk_max: Optional[int] = None,
+    registry: dict,
+    phase_bulk_max: int = PHASE_BULK_MAX,
     *,
-    entry_bulk_max: Optional[int] = None,
+    entry_bulk_max: int = ENTRY_BULK_MAX,
 ) -> str:
     """The ``initialize`` instructions, assembled from the registry."""
-    if registry is None or phase_bulk_max is None or entry_bulk_max is None:
-        from mcp import tools as _tools
-
-        registry = _tools.TOOLS if registry is None else registry
-        phase_bulk_max = (
-            _tools.PHASE_BULK_MAX if phase_bulk_max is None else phase_bulk_max
-        )
-        entry_bulk_max = (
-            _tools.ENTRY_BULK_MAX if entry_bulk_max is None else entry_bulk_max
-        )
-
     writes = write_tools()
     families = [f for f in FAMILIES if f.tools]
     reads = len([n for n in registry if n not in writes])

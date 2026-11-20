@@ -286,8 +286,6 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
     manquante, dont la transaction porte le paiement. Dans un ordre comme
     dans l'autre, le second trouve le travail du premier deja fait et ne le
     defait pas."""
-    import pathlib
-
     racine = pathlib.Path(__file__).resolve().parent.parent
     appelants = set()
     for chemin in list((racine / "routes").glob("*.py")) + \

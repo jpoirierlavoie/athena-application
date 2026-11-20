@@ -49,6 +49,10 @@ __all__ = ["NameCheck", "NameCheckUnavailable", "check_rename"]
 class NameCheckUnavailable(Exception):
     """The check could not read everything it needs. French message."""
 
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
 
 @dataclass(frozen=True)
 class NameCheck:
@@ -108,7 +112,7 @@ def check_rename(
             identifiers += identifiers_service.dossier_identifiers(
                 dossier, firm=firm)
         except identifiers_service.IdentifiersUnavailable as exc:
-            raise NameCheckUnavailable(str(exc)) from exc
+            raise NameCheckUnavailable(exc.message) from exc
         checked.append(dossier_id)
     if not checked:
         return NameCheck(performed=False, missing_dossier_ids=tuple(missing))
@@ -116,7 +120,7 @@ def check_rename(
     try:
         found = text_residues(name, identifiers, accept=accept)
     except LeakScanError as exc:
-        raise NameCheckUnavailable(str(exc)) from exc
+        raise NameCheckUnavailable(exc.message) from exc
     found_keys = {fold_key(s) for s in found.residues + found.accepted}
     unused = tuple(a for a in accept if fold_key(a) not in found_keys)
     return NameCheck(

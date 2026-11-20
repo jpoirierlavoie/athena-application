@@ -62,7 +62,7 @@ def _tabs(html: str) -> list:
 
 
 def _render(onglet: str) -> str:
-    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)))
+    env = Environment(loader=FileSystemLoader(str(_TEMPLATES)), autoescape=True)
     return env.get_template(INCLUDE).render(onglet=onglet)
 
 
@@ -120,7 +120,7 @@ def web(monkeypatch):
     modules = [m for n, m in sorted(sys.modules.items())
                if n.startswith("models.") and getattr(m, "db", None) is not None]
     install(monkeypatch, *modules)
-    monkeypatch.setattr(tpl.storage, "bucket", lambda: FakeBucket())
+    monkeypatch.setattr(tpl.storage, "bucket", FakeBucket)
     app = Flask(__name__, template_folder=str(_TEMPLATES),
                 static_folder=str(_ATHENA / "static"))
     app.secret_key = "t"
