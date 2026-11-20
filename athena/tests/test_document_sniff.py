@@ -111,8 +111,10 @@ def test_sniff_eml_fail_closed(data):
 
 
 def test_sniff_eml_exige_l_extension():
-    # La forme d'en-tête seule ne suffit jamais : l'extension .eml est requise.
-    assert _sniff(b"From: a@b.example\n", ".txt") is None
+    # La forme d'en-tête seule ne suffit jamais pour .eml : l'extension .eml
+    # est requise (un .txt ne sniffe jamais message/rfc822, et .bin est None).
+    assert _sniff(b"From: a@b.example\n", ".txt") == "text/plain"
+    assert _sniff(b"From: a@b.example\n", ".bin") is None
     assert _sniff(b"From: a@b.example\n", ".pdf") is None
 
 
@@ -135,11 +137,12 @@ def test_sniff_repositionne_le_flux():
 
 def test_validate_file_nouvelles_extensions():
     for nom in ("pieces.zip", "courriel.eml", "message.msg",
-                "classeur.xls", "classeur.xlsx"):
+                "classeur.xls", "classeur.xlsx", "notes.txt", "tableau.csv"):
         assert doc._validate_file(nom, 100) == []
     for nom in ("archive.7z", "archive.rar", "diapos.pptx"):
         erreurs = doc._validate_file(nom, 100)
         assert erreurs and "Excel (XLS/XLSX)" in erreurs[0]
+        assert "TXT/CSV" in erreurs[0]
 
 
 # ── upload_document bout-en-bout (stockage + Firestore mockés) ───────────
@@ -310,3 +313,52 @@ def test_ingest_blob_pdf_sans_disposition(monkeypatch):
     assert erreurs == []
     assert dest.content_type == "application/pdf"
     assert dest.content_disposition != "attachment"
+
+
+@pytest.mark.parametrize("ext,expected_mime,data", [
+    (".txt", "text/plain", "Notes d'audience Québec\r\n".encode("utf-8")),
+    (".txt", "text/plain", b"\xef\xbb\xbfAvec BOM\n"),
+    (".csv", "text/csv", "col1;col2\nÉté;12,50\n".encode("cp1252")),
+    (".txt", "text/plain", ("a" * 511 + "é").encode("utf-8")[:512]),
+])
+def test_sniff_txt_et_csv_acceptes(ext, expected_mime, data):
+    assert _sniff(data, ext) == expected_mime
+
+
+@pytest.mark.parametrize("data", [
+    b"",
+    b"\xef\xbb\xbf",
+    b"abc\x00def",
+    b"abc\x07bip",
+    b"abc\x7fdel",
+    b"%PDF-1.7 faux txt",
+    _PK + b"zip",
+    b"\xff\x81\xfe\xfd",
+])
+def test_sniff_txt_et_csv_refusent_binaire_et_magie(data):
+    assert _sniff(data, ".txt") not in ("text/plain", "text/csv")
+    assert _sniff(data, ".csv") not in ("text/plain", "text/csv")
+
+
+def test_upload_et_ingest_txt_csv_attachment_only(monkeypatch):
+    blob = _mock_storage(monkeypatch)
+    contenu = "col1,col2\nvaleur,12\n".encode("utf-8")
+    document, erreurs = doc.upload_document(
+        "d1", "2026-001", io.BytesIO(contenu), "rapport.csv",
+        len(contenu), {"category": "pièce"}, "u1",
+    )
+    assert erreurs == []
+    assert document["file_type"] == "text/csv"
+    assert blob.content_disposition == "attachment"
+    assert doc.get_file_icon("text/csv") == "sheet"
+    assert doc.get_file_icon("text/plain") == "file"
+
+    dest = _mock_dest(monkeypatch)
+    source = _source_blob("Résumé simple.\r\n".encode("utf-8"))
+    ingested, errs2 = doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "notes.txt", {"category": "autre"}, "u1",
+    )
+    assert errs2 == []
+    assert ingested["file_type"] == "text/plain"
+    assert dest.content_type == "text/plain"
+    assert dest.content_disposition == "attachment"

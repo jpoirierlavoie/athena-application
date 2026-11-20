@@ -152,6 +152,7 @@ DEFAULT_TREE: tuple[DefaultFolder, ...] = (
     DefaultFolder("projets", GENERATED_FOLDER_NAME, "interne", SYSTEM_ROLE_PROJETS),
     DefaultFolder("autres", "Autres", None, SYSTEM_ROLE_AUTRES),
     DefaultFolder("portail", PORTAL_FOLDER_NAME, "autres", SYSTEM_ROLE_PORTAIL),
+    DefaultFolder("documents_client", "Documents du client", "autres"),
 )
 _NODES: dict[str, DefaultFolder] = {n.key: n for n in DEFAULT_TREE}
 
@@ -1097,6 +1098,28 @@ def ensure_system_folder(
     folder = report.resolved.get(role)
     if folder is None:
         return None, [SYSTEM_FOLDER_BLOCKED.format(name=SYSTEM_FOLDER_NAMES[role])]
+    return folder, []
+
+
+def ensure_tree_folder(
+    dossier_id: str,
+    key: str,
+) -> tuple[Optional[dict], list[str]]:
+    """Ensure default-tree node *key* (and its ancestors) exists on *dossier_id*."""
+    if key not in _NODES:
+        raise ValueError(f"unknown default folder: {key!r}")
+    report, errors = _ensure(dossier_id, target=key, relocate=False)
+    if report is None:
+        return None, errors
+    folder = report.resolved.get(key)
+    if folder is None:
+        node = _NODES[key]
+        if node.role:
+            return None, [SYSTEM_FOLDER_BLOCKED.format(name=node.name)]
+        return None, [
+            f"Le dossier de classement « {node.name} » n'a pas pu être préparé "
+            f"à son emplacement. Rien n'a été écrit."
+        ]
     return folder, []
 
 

@@ -164,11 +164,12 @@ def test_d22_one_release_is_one_ordered_runbook_before_the_lot_sections():
     all_shipped_then = set(tools.TOOLS) | _RETIRED_IN_V2
     all_writes_then = tools.WRITE_TOOLS | _RETIRED_IN_V2
     assert after_d22 <= all_writes_then
+    assert _WRITES_AFTER_BULK <= all_writes_then
     visible = (all_shipped_then - _ACCOUNTING_SCOPE_UNTIL_2026_10_05 - after_d22
-               - _READS_AFTER_BULK)
+               - _READS_AFTER_BULK - _WRITES_AFTER_BULK)
     assert len(visible) == 80 and len(visible & all_writes_then) == 49
-    assert len(all_shipped_then - after_d22 - _READS_AFTER_BULK) == 86
-    assert len(all_writes_then - after_d22) == 54
+    assert len(all_shipped_then - after_d22 - _READS_AFTER_BULK - _WRITES_AFTER_BULK) == 86
+    assert len(all_writes_then - after_d22 - _WRITES_AFTER_BULK) == 54
 
 
 # Tools retired in v2.0.0 after the D22/Bulk releases (historical counts above kept exact).
@@ -181,11 +182,21 @@ _RETIRED_IN_V2 = frozenset({
 # The write tools shipped AFTER the D22 release, each under its own train.
 _AFTER_D22 = frozenset({"create_time_entries_bulk", "create_expenses_bulk"})
 
+# The write tools shipped AFTER the bulk creators' release (2026-11-20: Courrier Phase 3-5).
+_WRITES_AFTER_BULK = frozenset({
+    "save_courriels",
+    "move_courriels",
+    "record_courriels_temps",
+})
+
 # The read tools shipped AFTER the bulk creators' release (2026-11-10: the
 # « Finances » statements, then the pièces justificatives): a past release's
 # runbook keeps the counts it shipped with, so both trains below count the
 # registry without them.
-_READS_AFTER_BULK = frozenset({"get_financial_statements", "get_admin_receipt"})
+_READS_AFTER_BULK = frozenset({
+    "get_financial_statements", "get_admin_receipt", "get_courrier_connexion",
+    "list_courriels",
+})
 
 # The six tools the separate `athena:comptabilite` scope carried from lot 5b
 # until 2026-10-05, when the lawyer removed it: the ACCOUNTING family's five
@@ -212,7 +223,9 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
     all_shipped = set(tools.TOOLS) | _RETIRED_IN_V2
     all_writes = tools.WRITE_TOOLS | _RETIRED_IN_V2
     assert _READS_AFTER_BULK <= all_shipped - all_writes
-    shipped = all_shipped - _READS_AFTER_BULK
+    assert _WRITES_AFTER_BULK <= all_writes
+    shipped = all_shipped - _READS_AFTER_BULK - _WRITES_AFTER_BULK
+    writes_shipped = all_writes - _WRITES_AFTER_BULK
     visible = shipped - _ACCOUNTING_SCOPE_UNTIL_2026_10_05
     reads = len(visible - all_writes)
     writes = len(visible & all_writes)
@@ -225,7 +238,7 @@ def test_the_bulk_creators_release_runs_the_d19_train_with_the_registry_counts()
         "*Re-add the connector and READ the CREATE paragraph",
         f"**{len(visible)}** tools ({reads} read, {writes} write)",
         f"**{len(shipped)}** ({all_reads} read, "
-        f"{len(all_writes)} write)",
+        f"{len(writes_shipped)} write)",
         "*One smoke test, on a TEST dossier only*",
         "`entries[1]`",
         "skill `pallas-athena`",

@@ -4708,6 +4708,137 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "periods": _arr(_statement_period(), "In the order asked for."),
     }),
 
+    "get_courrier_connexion": _obj({
+        "interrupteur_actif": _bool(
+            "True when COURRIER_ACTIF allows Courrier write tools to execute."
+        ),
+        "configure": _bool(
+            "True when all Courrier Graph credentials and target settings are present."
+        ),
+        "compte": _str("Configured mailbox/OneDrive UPN; '' when unset."),
+        "racine_onedrive": _str(
+            "Configured OneDrive root folder name (e.g. '4 - Dossiers')."
+        ),
+        "region": _str(
+            "Execution region ('northamerica-northeast1' on App Engine, 'local' in dev)."
+        ),
+        "mode_auth": {"type": "string", "enum": ["application"]},
+        "jeton_valide": _bool(),
+        "expiration": _nstr(
+            "ISO-8601 America/Montreal token expiry; null when no valid token."
+        ),
+        "reconsentement_requis": _bool(
+            "True on HTTP 400/401/403 token or permission failure requiring Entra "
+            "admin consent, secret rotation, or RBAC grant."
+        ),
+        "portees": _arr(_str(), "Granted Entra application roles on the token."),
+        "envoi_absent": _bool("True when Mail.Send is absent from the token."),
+        "boite_accessible": _bool("True when Inbox probe succeeded."),
+        "onedrive_accessible": _bool(
+            "True when OneDrive root folder probe succeeded."
+        ),
+        "erreur": _nstr(
+            "French status-only diagnostic when unconfigured or a probe failed; "
+            "null when healthy."
+        ),
+    }),
+
+    "list_courriels": _obj({
+        "messages": _arr(_obj({
+            "cle": _str("16-hex SHA-256 key of internetMessageId."),
+            "id": _str("Immutable Outlook message id."),
+            "recu": _str("YYYY-MM-DD HH:mm in America/Montreal; '' when missing."),
+            "expediteur": _obj({"nom": _str(), "adresse": _str()}),
+            "a": _arr(_str()),
+            "cc": _arr(_str()),
+            "objet": _str(),
+            "lu": _bool(),
+            "drapeau": _str(),
+            "categories": _arr(_str()),
+            "lien": _str("Outlook webLink; '' when absent."),
+            "texte": _str("uniqueBody normalized text, <= 1 500 characters."),
+            "pieces": _arr(_obj({
+                "rang": _int(),
+                "id": _str(),
+                "nom": _str(),
+                "type": _str(),
+                "taille": _int(),
+                "ignore": {
+                    "type": ["string", "null"],
+                    "enum": [
+                        "incorporee",
+                        "lien_infonuagique",
+                        "calendrier_contact",
+                        "image_signature",
+                        None,
+                    ],
+                },
+                "apercu": _str(),
+                "apercu_omis": {
+                    "type": ["string", "null"],
+                    "enum": [
+                        "ignoree",
+                        "format_non_texte",
+                        "taille_depassee",
+                        "chiffre",
+                        "aucun_texte",
+                        "illisible",
+                        None,
+                    ],
+                },
+            })),
+            "fil": {
+                "type": "object",
+                "description": (
+                    "Other messages in the conversation counted by location "
+                    "(AAAA-NNN, statut:<name>, boite, autre)."
+                ),
+            },
+            "etat": {
+                "type": "string",
+                "enum": ["inventorie", "enregistre", "classe"],
+            },
+            "legacy_ref": _str("Linked time-entry reference (recep:...), or ''."),
+        })),
+        "nombre_retourne": _int(),
+        "boite_total": _int(),
+        "premier": _int(),
+        "prochain": _int(),
+        "suite": _bool(),
+        "budget_atteint": _bool(),
+        "outlook": _nullable(
+            _obj({
+                "archive_id": _str(),
+                "dossiers_id": _str(),
+                "statuts": _obj({
+                    statut: _obj({
+                        "id": _str(),
+                        "dossiers": _arr(_obj({
+                            "numero": _str(),
+                            "nom": _str(),
+                            "id": _str(),
+                        })),
+                    })
+                    for statut in ("Actifs", "Suspendu", "Services-conseils")
+                }),
+            }),
+            "Outlook folder tree under Archive > Dossiers on premier=0; else null.",
+        ),
+        "onedrive": _nullable(
+            _obj({
+                "racine_id": _str(),
+                "dossiers": _arr(_obj({
+                    "numero": _str(),
+                    "nom": _str(),
+                    "id": _str(),
+                })),
+                "doublons": _arr(_str()),
+            }),
+            "OneDrive dossier folders on premier=0; else null.",
+        ),
+        "avertissements": _arr(_str()),
+    }),
+
     "record_trust_entry": _obj({
         "recorded": {"type": "boolean", "enum": [True]},
         "entity_type": {"type": "string",
@@ -4794,4 +4925,90 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             _reverse_branch("admin", _admin_register_row(), {}),
         ],
     },
+
+    "save_courriels": _obj({
+        "essai": _bool(),
+        "traites": _int(),
+        "echecs": _int(),
+        "differes": _int(),
+        "messages": _arr(_obj({
+            "cle": _str(),
+            "statut": {"type": "string", "enum": ["ok", "echec", "differe"]},
+            "dossier": _nstr("Dossier AAAA-NNN."),
+            "dossier_onedrive_cree": _bool(),
+            "fichiers": _arr(_obj({
+                "slot": _str(),
+                "sha256": _str(),
+                "quickxorhash": _str(),
+                "taille": _int(),
+                "statut_onedrive": {
+                    "type": "string",
+                    "enum": [
+                        "cree", "deja_present", "renomme",
+                        "prevu_cree", "prevu_deja_present", "prevu_renomme",
+                    ],
+                },
+                "renomme_index": {"type": ["integer", "null"]},
+                "onedrive_item_id": _nstr("Opaque OneDrive item id."),
+                "statut_athena": {
+                    "type": "string",
+                    "enum": [
+                        "cree", "deja_present", "non_pris_en_charge",
+                        "prevu_cree", "prevu_deja_present",
+                        "prevu_non_pris_en_charge",
+                    ],
+                },
+                "document_id": _nstr("Athena document UUIDv4 when ingested."),
+            })),
+            "erreur": _nstr("Fixed French error when failed or deferred."),
+        })),
+        **_write_protocol_keys(),
+    }),
+
+    "move_courriels": _obj({
+        "essai": _bool(),
+        "classes": _int(),
+        "laisses": _int(),
+        "introuvables": _int(),
+        "echecs": _int(),
+        "differes": _int(),
+        "messages": _arr(_obj({
+            "cle": _str(),
+            "action": _str("Action demandée (`classer` ou `laisser`)."),
+            "statut": {
+                "type": "string",
+                "enum": ["ok", "introuvable", "echec", "differe"],
+            },
+            "dossier": _nstr("Dossier AAAA-NNN."),
+            "statut_outlook_cible": _nstr("Statut cible sous Archive > Dossiers."),
+            "outlook_folder_id": _nstr("Opaque Outlook folder id."),
+            "dossier_outlook_cree": _bool(),
+            "id_immuable_verifie": _bool(),
+            "erreur": _nstr("Fixed French error when failed or deferred."),
+        })),
+        "avertissements": _arr(_str()),
+        **_write_protocol_keys(),
+    }),
+
+    "record_courriels_temps": _obj({
+        "essai": _bool(),
+        "creees": _int(),
+        "courriels_lies": _int(),
+        "entrees": _arr(_obj({
+            "legacy_ref": _str("Anchor recep:{dossier}:{date}:{cle}."),
+            "dossier_id": _str(),
+            "dossier": _str("Dossier AAAA-NNN."),
+            "date": _str("YYYY-MM-DD."),
+            "hours": _num(),
+            **_money("rate"),
+            **_money("amount"),
+            "billable": _bool(),
+            "phase": _str(),
+            "sous_phase": _str(),
+            "cles": _arr(_str(), "Linked 16-hex email keys."),
+            "time_entry_id": _nstr("Created time entry UUIDv4 (null on essai)."),
+            "etag": _nstr("Stored etag (null on essai)."),
+        }, optional=("etag",))),
+        **_write_protocol_keys(),
+    }),
 }

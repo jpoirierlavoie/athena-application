@@ -590,6 +590,10 @@ NO_WEB_FORM: dict[str, str] = {
         "the connector's upload-ticket record: no web page shows or edits "
         "it, and every transition is a holder-checked transaction"
     ),
+    "courrier": (
+        "the Courrier MCP intake registry (courrier_messages): no web page "
+        "shows or edits it, and every state transition is transactional"
+    ),
 }
 
 # {models module: (the route that saves it, the service/model call it hands

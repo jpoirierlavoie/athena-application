@@ -141,6 +141,13 @@ env_variables:
   # (DEPLOYMENT.md §15). "false" : le cron répond {"actif": false}, sans rien
   # lire ni écrire.
   FACTURES_RETARD_ACTIF: "true"
+  # Courrier module (Outlook + OneDrive intake). Dedicated Entra app
+  # registration (Application mode, zero Mail.Send) + Exchange Online RBAC
+  # (AthenaCourrierScope); Phase 6 live § 11 acceptance tests passed 2026-11-20.
+  COURRIER_ACTIF: "true"
+  COURRIER_GRAPH_CLIENT_ID: "32925bdd-6028-4f4a-8a91-5f951bd205d7"
+  COURRIER_UPN: "jason@poirierlavoie.ca"
+  COURRIER_ONEDRIVE_ROOT: "4 - Dossiers"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
@@ -154,7 +161,7 @@ env_variables:
   # reads the `_secret(...)` calls in config.py and fails if this list
   # disagrees, in either direction.
   # SECRET-MANAGER-BACKED: SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH,
-  #   CF_ORIGIN_SECRET, GRAPH_CLIENT_SECRET
+  #   CF_ORIGIN_SECRET, GRAPH_CLIENT_SECRET, COURRIER_GRAPH_CLIENT_SECRET
   # It named FOUR until 2026-09-12, and the one it left out was the edge
   # origin check's — the value whose absence disables that whole layer in
   # perfect silence (`security.py`: `if not secret: return None`, no log, no

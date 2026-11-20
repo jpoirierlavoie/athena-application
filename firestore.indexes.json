@@ -374,6 +374,12 @@
       "fieldPath": "expire_at",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "courrier_messages",
+      "fieldPath": "expire_at",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

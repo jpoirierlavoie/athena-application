@@ -554,6 +554,24 @@ def test_log_dossier_event(caplog):
     assert rec.json_fields["file_number"] == "2025-001"
 
 
+def test_log_courrier_event_severity_and_secret_redaction(caplog):
+    from utils.logging_setup import log_courrier_event
+
+    with caplog.at_level(logging.DEBUG, logger="pallas.courrier"):
+        log_courrier_event("courrier_connexion", "success", boite_accessible=True)
+        log_courrier_event("courrier_temps", "refused", essai=False, reason="switch_off")
+        log_courrier_event("courrier_enregistrement", "failure", essai=False, echecs=1)
+
+    recs = [r for r in caplog.records if r.name == "pallas.courrier"]
+    assert [r.levelno for r in recs[-3:]] == [logging.INFO, logging.WARNING, logging.ERROR]
+    assert recs[-2].json_fields["reason"] == "switch_off"
+    assert recs[-2].json_fields["essai"] is False
+
+    redacted = _make_record(json_fields={"courrier_graph_client_secret": "top-secret"})
+    RedactionFilter().filter(redacted)
+    assert redacted.json_fields["courrier_graph_client_secret"] == "<redacted>"
+
+
 def test_log_dav_operation_omits_none_fields(caplog):
     with caplog.at_level(logging.DEBUG, logger="pallas.dav"):
         log_dav_operation(
@@ -909,7 +927,9 @@ def _observability_md() -> str:
      "PartieEvent",
      # 2026-09-30: the administration family (the receipt copy filed into
      # the dossier joined it; the others were documented already).
-     "AdminLedgerEvent"],
+     "AdminLedgerEvent",
+     # 2026-11-20: Courrier intake events (zero-PII telemetry).
+     "CourrierEvent"],
 )
 def test_every_event_name_is_documented(nom_du_type):
     """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding

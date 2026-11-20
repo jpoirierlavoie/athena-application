@@ -370,7 +370,13 @@ def test_registry_shape():
     # creators create_time_entries_bulk / create_expenses_bulk. 88 -> 89
     # (2026-11-10, deliberately): the read get_financial_statements. 89 ->
     # 90 (2026-11-10, deliberately): the read get_admin_receipt.
-    assert len(tools.TOOLS) == 86  # 34 lectures + 52 ecritures
+    # 86 -> 87 (2026-11-20, deliberately): Courrier Phase 1 read
+    # get_courrier_connexion. 87 -> 88 (2026-11-20, deliberately): Courrier
+    # Phase 2 read list_courriels. 88 -> 89 (2026-11-20, deliberately):
+    # Courrier Phase 3 write save_courriels. 89 -> 90 (2026-11-20,
+    # deliberately): Courrier Phase 4 write move_courriels. 90 -> 91
+    # (2026-11-20, deliberately): Courrier Phase 5 write record_courriels_temps.
+    assert len(tools.TOOLS) == 91  # 36 lectures + 55 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -515,6 +521,12 @@ def test_write_tools_set_is_pinned():
         # modifiable, compenser a la date du releve, contre-passer.
         "record_trust_entry", "record_admin_entry", "update_admin_entry",
         "clear_register_entries", "reverse_register_entry",
+        # Courrier Phase 3 — enregistrement des courriels et pièces jointes.
+        "save_courriels",
+        # Courrier Phase 4 — classement et étiquetage Outlook.
+        "move_courriels",
+        # Courrier Phase 5 — création atomique d'entrées de temps + lien registre.
+        "record_courriels_temps",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -570,6 +582,8 @@ def test_edit_tools_set_is_pinned():
         # releases funds for a disbursement, a reversal is permanent.
         "record_trust_entry", "record_admin_entry", "update_admin_entry",
         "clear_register_entries", "reverse_register_entry",
+        # Courrier Phase 4 — déplacement et étiquetage Outlook sous Archive > Dossiers.
+        "move_courriels",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 

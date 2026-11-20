@@ -38,9 +38,9 @@ Out of scope:
 Pallas Athena runs as two isolated Google App Engine Standard services (`default` and `portail`) in a single production project (`athena-pallas`). Secrets live in two places:
 
 **Production (Google Cloud Secret Manager):**
-- All **six** sensitive values (`flask-secret-key`, `portail-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret` — inventoried in [`utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)) are stored in [Google Cloud Secret Manager](https://cloud.google.com/secret-manager) and prefetched in parallel at worker startup (`config.py` for `default`, `client/config.py` for `portail`).
+- All **seven** sensitive values (`flask-secret-key`, `portail-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret`, `courrier-graph-client-secret` — inventoried in [`utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)) are stored in [Google Cloud Secret Manager](https://cloud.google.com/secret-manager) and prefetched in parallel at worker startup (`config.py` for `default`, `client/config.py` for `portail`).
 - **Service-account separation is a hard security boundary:**
-  - The `default` service runs as `athena-pallas@appspot.gserviceaccount.com` and holds `roles/secretmanager.secretAccessor` only on the **five** secrets resolved by `config.py` (`flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret`), plus `roles/secretmanager.secretVersionAdder` only on the four writable secrets (`firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret` — never on `flask-secret-key` or `portail-secret-key`). It has no access to `portail-secret-key`.
+  - The `default` service runs as `athena-pallas@appspot.gserviceaccount.com` and holds `roles/secretmanager.secretAccessor` only on the **six** secrets resolved by `config.py` (`flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret`, `courrier-graph-client-secret`), plus `roles/secretmanager.secretVersionAdder` only on the five writable secrets (`firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret`, `courrier-graph-client-secret` — never on `flask-secret-key` or `portail-secret-key`). It has no access to `portail-secret-key`.
   - The `portail` service runs as the least-privilege service account `portail-svc@athena-pallas.iam.gserviceaccount.com` and holds `roles/secretmanager.secretAccessor` only on the **three** secrets resolved by `client/config.py` (`portail-secret-key`, `firebase-api-key`, `cf-origin-secret`). It has no access to `flask-secret-key`, `dav-password-hash`, or `graph-client-secret`.
 - Non-sensitive identifiers (project ID, storage bucket, App ID, reCAPTCHA Enterprise site key, Graph tenant/client IDs) live as plain environment variables in `athena/app.yaml` and `athena/portail.yaml`.
 - The Firebase Admin SDK and Google Cloud client libraries use Application Default Credentials (ADC) — no service-account JSON key file is ever deployed.
@@ -106,13 +106,14 @@ If you have reason to believe a credential has been exposed:
    2. Set the exact same value in the Cloudflare zone-wide Transform Rule (`X-Origin-Auth`).
    3. Redeploy **both** `default` and `portail`.
 6. **`graph-client-secret` (`GRAPH_CLIENT_SECRET` — `default` service):** Create a new client secret in Microsoft Entra ID → App registrations → Certificates & secrets, add the new version via Paramètres → Configuration or [DEPLOYMENT.md](DEPLOYMENT.md) §6.4 (20–256 chars), redeploy `default`, and delete the old secret in Entra.
-7. **MCP OAuth tokens (claude.ai connector):** Revoke active access and refresh tokens immediately without redeploying:
+7. **`courrier-graph-client-secret` (`COURRIER_GRAPH_CLIENT_SECRET` — `default` service):** Create a new client secret on Courrier's dedicated Entra app registration in Microsoft Entra ID → App registrations → Certificates & secrets, add the new version via Paramètres → Configuration or [DEPLOYMENT.md](DEPLOYMENT.md) §6.4 (20–256 chars), redeploy `default`, and delete the old secret in Entra.
+8. **MCP OAuth tokens (claude.ai connector):** Revoke active access and refresh tokens immediately without redeploying:
    ```bash
    cd athena
    python -m scripts.revoke_mcp_tokens --all --yes
    ```
-8. **Firebase Admin SDK local key (if used locally):** Generate a new key in [Firebase Console → Service Accounts](https://console.firebase.google.com/project/_/settings/serviceaccounts/adminsdk) and delete the old one (App Engine uses ADC and has no deployed key file).
-9. **App Check debug token (local dev only):** Revoke in Firebase Console → App Check → Manage debug tokens.
+9. **Firebase Admin SDK local key (if used locally):** Generate a new key in [Firebase Console → Service Accounts](https://console.firebase.google.com/project/_/settings/serviceaccounts/adminsdk) and delete the old one (App Engine uses ADC and has no deployed key file).
+10. **App Check debug token (local dev only):** Revoke in Firebase Console → App Check → Manage debug tokens.
 
 After rotating any Secret Manager secret, redeploy the affected service(s) from `athena/` so running workers load the new version:
 ```bash
@@ -138,7 +139,7 @@ Client data — confidential material subject to professional secrecy — is sto
 | Application & security logs (`pallas-athena`, `pallas.security`) | Cloud Logging — `_Default` bucket | `global` by default (redirectable to Montréal) | PII-redacted at source by `RedactionFilter`; see below |
 | Audit logs (Admin Activity / System Event / Data Access) | Cloud Logging — `_Required` bucket | `global` — **permanent** | Google-imposed; project-admin metadata, not client data |
 | Distributed traces | Cloud Trace | Google-managed (global) | IDs/counts only, PII-sanitized (`tracing_setup.py`); no regional-storage control |
-| Application secrets (6 secrets) | Secret Manager | per each secret's replication policy | Keys/hashes only — no client data |
+| Application secrets (7 secrets) | Secret Manager | per each secret's replication policy | Keys/hashes only — no client data |
 | Edge & VPN telemetry (Access auth & Gateway DNS/L4 logs) | Cloudflare Zero Trust | Global (Cloudflare edge) | Enrolled lawyer devices only (`tls_decrypt` off — DNS domains & L4/SNI metadata only, never HTTPS paths, search queries, or client records; clients on `portail` never transit Gateway) |
 
 **Logging residency.** Cloud Logging keeps logs in *log buckets* whose location is immutable once created; the two auto-created buckets (`_Default`, `_Required`) start in `global`. Application logs can be routed to a Montréal bucket by creating a regional log bucket and repointing the `_Default` sink at it (procedure in [DEPLOYMENT.md](DEPLOYMENT.md) → §6.8). The `_Required` audit-log bucket cannot be relocated and stays `global` by Google's design. Because application logs are PII-redacted before they leave the process ([utils/logging_setup.py](athena/utils/logging_setup.py) `RedactionFilter`), the residency stakes on logging are low relative to Firestore and Storage.

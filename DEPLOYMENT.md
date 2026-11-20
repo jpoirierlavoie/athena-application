@@ -63,7 +63,7 @@ Browser / DavX5 / Claude                     Invited client (public)
                    │
   ┌────────────────┼──────────────┬──────────────┬────────────────┐
 Firestore     Firestore      Firebase Storage  Firebase Auth  Secret Manager
-(default)     « portail »    (documents/       (+ Phone MFA)  (6 secrets)
+(default)     « portail »    (documents/       (+ Phone MFA)  (7 secrets)
               (named DB)      gabarits)
 ```
 
@@ -210,6 +210,11 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `MIROIR_OUTLOOK_LOOKAHEAD_DAYS` | ○ | `365` | The mirror's forward window — **shared** by the Athéna read and the Outlook read, which is what keeps a mirror from becoming an invisible orphan |
 | `MIROIR_OUTLOOK_LOOKBACK_DAYS` | ○ | `30` | Its backward window |
 | `TEAMS_REUNIONS_ACTIF` | ○ | `false` | Kill switch for Graph Teams meeting creation and post-meeting transcript/Copilot retrieval (`app.yaml` ships `"true"` after Entra & Teams Admin policies were applied; toggle to `"false"` to stop Teams creation) |
+| `COURRIER_ACTIF` | ○ | `false` | Kill switch for Courrier write tools (`app.yaml` ships `"false"` until Phase 6 acceptance tests pass) |
+| `COURRIER_GRAPH_CLIENT_ID` | ○ | `""` | Dedicated Entra app registration for Courrier (Application mode, zero `Mail.Send`) |
+| `COURRIER_GRAPH_CLIENT_SECRET` → secret `courrier-graph-client-secret` | ○ | `""` | Client secret for Courrier's Entra app registration (Secret Manager in prod, `required=False`) |
+| `COURRIER_UPN` | ○ | `""` | Target mailbox and OneDrive UPN for Courrier (scoped via Exchange RBAC) |
+| `COURRIER_ONEDRIVE_ROOT` | ○ | `4 - Dossiers` | Top-level OneDrive folder under which Courrier files emails and attachments |
 | `FEATURE_INTAKE` | ○ | `false` | Offers the portal's intake (dossier-opening) form when confirming a Bookings rendez-vous whose email matches no contact |
 
 ⚠ **Two Bookings settings have no environment variable at all.**
@@ -241,10 +246,11 @@ above and must be set **again** there.
 | `PORTAIL_BUCKET` | ○ | `{FIREBASE_PROJECT_ID}-portail-quarantaine` | Derived, so it follows your project id by itself |
 | `TASKS_LOCATION` | ○ | ⚠ `northamerica-northeast1` (Montréal) | **Must equal your App Engine region** (`gcloud app describe`). It is not derived: deploy elsewhere and leave it, and every `signaler()` raises `NOT_FOUND` at finalization — a failure the portal swallows **by design** (the envelope is the durable truth), so the only symptom is lots arriving in Réception late, at the next run of the reconciliation cron (every 15 minutes during office hours, `cron.yaml`) |
 
-### 4.2 The six Secret Manager secrets (production)
+### 4.2 The seven Secret Manager secrets (production)
 
-**Six, not four.** This section said "the four" from the day
-`portail-secret-key` shipped as a fifth and `graph-client-secret` as a sixth —
+**Seven, not four.** This section said "the four" from the day
+`portail-secret-key` shipped as a fifth, `graph-client-secret` as a sixth,
+and `courrier-graph-client-secret` as a seventh —
 which is the predicted behaviour of a hand-kept list, and the reason the table
 below is now GENERATED from
 [`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
@@ -258,12 +264,13 @@ and pinned against it by a test.
 | `dav-password-hash` | optional | computed from a password you choose | exactement 60 chars | l'authentification DAV ne peut pas réussir — DavX5 cesse de synchroniser SANS message d'erreur |
 | `cf-origin-secret` | optional | you mint it | entre 32 et 128 chars | absent, vide ou illisible, le secret DÉSACTIVE le contrôle d'origine — l'accès direct à App Engine n'est plus bloqué, et origin_secret_disabled le signale par l'alerte « Sécurité — une protection est désactivée » ; présent mais différent de la Transform Rule, il fait refuser toute requête venue de Cloudflare (403) |
 | `graph-client-secret` | optional | a console hands it to you | entre 20 et 256 chars | le courriel sortant est désactivé |
+| `courrier-graph-client-secret` | optional | a console hands it to you | entre 20 et 256 chars | le module Courrier est désactivé |
 
 Created in §6.4. `portail-secret-key` is **required for the `portail` service
-to boot** — it is not optional in the way the other five non-`flask` entries
+to boot** — it is not optional in the way the other six non-`flask` entries
 are; the portal simply does not start without it.
 
-The live verdict on all six — does each resolve, is its length right, does it
+The live verdict on all seven — does each resolve, is its length right, does it
 carry stray whitespace or a character that cannot survive an HTTP header — is
 on the **« Paramètres → Configuration »** page, and in
 `python -m scripts.check_config --prod`. Both read the same table and the same
@@ -299,6 +306,7 @@ until 2026-09-12 and the checker already knew of fifteen.
 | Firm email | `athena/app.yaml` |
 | Graph tenant id | `athena/app.yaml` |
 | Graph client id | `athena/app.yaml` |
+| Courrier Graph client id | `athena/app.yaml` |
 | App Engine region | `athena/client/config.py` |
 
 **Also carrying the owner's identity, outside the scan.** The checker looks at
@@ -401,8 +409,8 @@ the check.
 5. **Deploy indexes + rules — BEFORE the first code deploy** (§6.3). Until an
    index finishes building, the query it serves fails and the view silently
    shows an empty list.
-6. Create the six empty secret containers + grant IAM, then write **five** of
-   the six VALUES (§6.4). The origin secret's value is deliberately NOT one of
+6. Create the seven empty secret containers + grant IAM, then write **six** of
+   the seven VALUES (§6.4). The origin secret's value is deliberately NOT one of
    them — it waits for 13. An empty container is harmless: `config._secret`
    resolves an optional secret with no version to `""`, and
    `_enforce_origin_secret` reads that as « disabled »
@@ -474,7 +482,7 @@ itself here or the suite goes red.
 |---|---|---|
 | `appengine.googleapis.com` | Les deux services App Engine y tournent. | app.yaml, portail.yaml |
 | `firestore.googleapis.com` | La base par défaut ET la base NOMMÉE « portail » — ce sont deux bases du même service. | models/, client/services/invitations.py |
-| `secretmanager.googleapis.com` | Les six secrets de §4.2. Sans elle, `config.py` lève à l'import et le service ne démarre pas du tout. | config.py, client/config.py |
+| `secretmanager.googleapis.com` | Les sept secrets de §4.2. Sans elle, `config.py` lève à l'import et le service ne démarre pas du tout. | config.py, client/config.py |
 | `cloudbuild.googleapis.com` | Le déclencheur qui exécute la suite puis déploie. | cloudbuild.yaml |
 | `iam.googleapis.com` | Les liaisons de rôles que §6.4 pose. | les commandes de §6.4 |
 | `iamcredentials.googleapis.com` | L'API `signBlob`. Sans elle l'auto-impersonation échoue et AUCUN URL signé n'est produit — en silence, et en PRODUCTION seulement : en local une clé de compte de service signe sur place, donc ce chemin n'est jamais emprunté avant le déploiement. | models/document.sign_blob_url, models/doc_template |
@@ -627,14 +635,14 @@ than translated. A second, English copy is exactly the thing that would drift.
 > Windows laptop by the local CLI and Cloud Audit attributed it to the
 > practitioner, as it did for 26 of 26 human secret writes over 400 days.
 
-**First, create the six empty containers.** `gcloud secrets create` without
+**First, create the seven empty containers.** `gcloud secrets create` without
 `--data-file` makes the container and no version; the first version is written
 by the per-secret blocks below.
 
 ```bash
 REGION=northamerica-northeast1   # the SAME region as §6.2
 
-for s in flask-secret-key portail-secret-key firebase-api-key dav-password-hash cf-origin-secret graph-client-secret; do
+for s in flask-secret-key portail-secret-key firebase-api-key dav-password-hash cf-origin-secret graph-client-secret courrier-graph-client-secret; do
   gcloud secrets create $s --project=$PROJECT \
     --replication-policy=user-managed --locations=$REGION
 done
@@ -751,7 +759,7 @@ fi
 If this value is wrong or absent: la page de connexion ne peut pas initialiser Firebase.
 
 ```bash
-# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les six secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les sept secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
 IFS= read -rs VALEUR
 
 # 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
@@ -884,7 +892,7 @@ fi
 If this value is wrong or absent: le courriel sortant est désactivé.
 
 ```bash
-# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les six secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les sept secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
 IFS= read -rs VALEUR
 
 # 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
@@ -918,6 +926,45 @@ else
 fi
 ```
 
+#### `courrier-graph-client-secret` — Secret client Microsoft Graph (Courrier)
+
+If this value is wrong or absent: le module Courrier est désactivé.
+
+```bash
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les sept secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
+IFS= read -rs VALEUR
+
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
+printf '[%s]\n' "$VALEUR"
+
+# 3. Mesurer, puis écrire SEULEMENT si la longueur est entre 20 et 256 octets. La mesure est une GARDE, pas un avis : la commande d'écriture vit DANS le `if`, donc coller le bloc entier ne peut pas écrire une valeur que la mesure vient de refuser. `printf` est une primitive du shell, donc la valeur ne devient l'argument d'aucun processus ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; et `versions add`, jamais `secrets create` — le secret existe déjà.
+N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
+if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
+  VERSION=$(printf '%s' "$VALEUR" | gcloud secrets versions add courrier-graph-client-secret \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
+else
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
+fi
+
+# 4. Effacer la variable de la session.
+unset VALEUR
+
+# 5. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si l'écriture avait échoué, `latest` désignerait la version précédente, qui a toutes les chances d'être de bonne longueur puisqu'elle fonctionnait : l'après-vol rassurerait alors sur une écriture qui n'a pas eu lieu.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
+else
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=courrier-graph-client-secret \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
+fi
+```
+
 Each block's last command does the verification itself — it reads the stored
 value back and lets the SHELL compare the byte count, rather than printing a
 number for you to check by eye.
@@ -932,7 +979,7 @@ dump does.
 The count is also the only thing that catches the paste failure an eye cannot:
 `IFS= read -rs` keeps only the **first line** of a multi-line paste, and the
 bracketed echo then displays a truncated value that looks perfectly complete.
-Measured: 63 bytes pasted, 20 stored, brackets clean. All six secrets here are
+Measured: 63 bytes pasted, 20 stored, brackets clean. All seven secrets here are
 single-line by construction, so a multi-line paste means the wrong thing was
 copied.
 
@@ -951,7 +998,7 @@ gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$AE_SA"
 # a missing binding here turns outbound email (invitations, accusés, intake
 # confirmations) off SILENTLY. `portail-secret-key` is deliberately absent: it
 # belongs to the `portail` service account, not to this one.
-for s in flask-secret-key firebase-api-key dav-password-hash cf-origin-secret graph-client-secret; do
+for s in flask-secret-key firebase-api-key dav-password-hash cf-origin-secret graph-client-secret courrier-graph-client-secret; do
   gcloud secrets add-iam-policy-binding $s --member="serviceAccount:$AE_SA" \
     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
 done

@@ -109,10 +109,10 @@ def test_la_simulation_est_le_defaut_et_n_ecrit_rien(store, capsys):
     assert store.peek_collection("folders") == avant
     out = capsys.readouterr().out
     assert "SIMULATION" in out and "rien n'a été écrit" in out
-    # Ce que --apply ferait : 17 dossiers à créer, l'ancien « Projets »
+    # Ce que --apply ferait : 18 dossiers à créer, l'ancien « Projets »
     # adopté (estampillé) et déplacé sous « Interne ».
-    assert "2026-001 : à créer 17 · à adopter 1 · à déplacer 1 · bloqués 0" in out
-    assert "2026-002 : à créer 18 · à adopter 0 · à déplacer 0 · bloqués 0" in out
+    assert "2026-001 : à créer 18 · à adopter 1 · à déplacer 1 · bloqués 0" in out
+    assert "2026-002 : à créer 19 · à adopter 0 · à déplacer 0 · bloqués 0" in out
     # --dry-run explicite : la même chose.
     capsys.readouterr()
     assert script.main(["--dry-run"]) == 0
@@ -143,8 +143,8 @@ def test_l_ecriture_donne_l_arbre_et_deplace_l_ancien_projets(store, capsys):
 
     assert script.main(["--apply"]) == 0
 
-    assert "Interne / Projets" in _paths(store) and len(_folders(store)) == 18
-    assert len(_folders(store, "d2")) == 18
+    assert "Interne / Projets" in _paths(store) and len(_folders(store)) == 19
+    assert len(_folders(store, "d2")) == 19
     # L'ancien « Projets » de la racine est LE dossier système, déplacé sous
     # « Interne » — pas un second « Projets ».
     leg = store.peek("folders/leg")
@@ -157,7 +157,7 @@ def test_l_ecriture_donne_l_arbre_et_deplace_l_ancien_projets(store, capsys):
         assert store.peek(f"documents/{doc_id}") == data
     assert not [p for _kind, p in _ops(store) if p.startswith("documents/")]
     out = capsys.readouterr().out
-    assert "2026-001 : créés 17 · adoptés 1 · déplacés 1 · bloqués 0" in out
+    assert "2026-001 : créés 18 · adoptés 1 · déplacés 1 · bloqués 0" in out
     assert "SIMULATION" not in out
 
 
@@ -183,7 +183,7 @@ def test_dossier_ne_traite_que_ce_dossier(store, capsys):
 
     assert script.main(["--apply", "--dossier", "d2"]) == 0
 
-    assert len(_folders(store, "d2")) == 18
+    assert len(_folders(store, "d2")) == 19
     assert set(_folders(store)) == {"leg"}            # d1 intact
     out = capsys.readouterr().out
     assert "2026-002" in out and "2026-001" not in out
@@ -198,7 +198,7 @@ def test_un_dossier_introuvable_est_une_erreur(store, capsys):
 def test_statuts_restreint_les_dossiers_traites(store, capsys):
     assert script.main(["--apply", "--statuts", "fermé"]) == 0
 
-    assert _folders(store) == {} and len(_folders(store, "d2")) == 18
+    assert _folders(store) == {} and len(_folders(store, "d2")) == 19
     out = capsys.readouterr().out
     assert "2026-002" in out and "2026-001" not in out
 
@@ -206,7 +206,7 @@ def test_statuts_restreint_les_dossiers_traites(store, capsys):
 def test_par_defaut_tous_les_statuts_meme_absent(store, capsys):
     store.seed("dossiers/d3", {"id": "d3", "file_number": "2019-004"})
     assert script.main(["--apply"]) == 0
-    assert len(_folders(store, "d3")) == 18
+    assert len(_folders(store, "d3")) == 19
 
 
 def test_un_statut_inconnu_refuse_sans_rien_lire_ni_ecrire(store, capsys):
@@ -298,7 +298,7 @@ def test_un_dossier_illisible_est_en_echec_et_les_autres_sont_traites(
     assert script.main(["--apply"]) == 1
 
     assert _folders(store) == {}                     # rien écrit sur d1
-    assert len(_folders(store, "d2")) == 18
+    assert len(_folders(store, "d2")) == 19
     out = capsys.readouterr().out
     assert f"[ECHEC] 2026-001 : {folder.READ_ERROR}" in out
     assert "Dossiers traités : 1 · en échec : 1" in out
@@ -337,7 +337,7 @@ def test_un_dossier_ordinaire_repris_par_son_nom_se_lit_a_jour(store, capsys):
     assert script.main(["--apply"]) == 0
     premier = capsys.readouterr().out
     assert _ligne(premier, "2026-001").endswith(
-        "créés 17 · adoptés 0 · déplacés 0 · bloqués 0 — repris : 1")
+        "créés 18 · adoptés 0 · déplacés 0 · bloqués 0 — repris : 1")
     assert "Correspondance / Courriels" in _paths(store)
     assert store.peek("folders/sienne") == avant       # jamais estampillée
     store.reset_logs()
@@ -444,7 +444,7 @@ def test_l_ecriture_dit_chaque_adoption_et_chaque_deplacement_une_fois(
     assert "« Reçus du portail » est rangé sous « Autres »" in lignes
     assert not [l for l in lignes if " sera " in l]
     assert _ligne(out, "2026-001").endswith(
-        "créés 15 · adoptés 3 · déplacés 2 · bloqués 0")
+        "créés 16 · adoptés 3 · déplacés 2 · bloqués 0")
     # Ce qui est dit est ce qui est stocké.
     assert store.peek("folders/sien")["system_role"] == "mandat"
     assert store.peek("folders/recus")["parent_folder_id"] == NID("d1", "autres")

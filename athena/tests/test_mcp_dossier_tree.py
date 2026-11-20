@@ -74,7 +74,7 @@ def test_a_new_dossier_gets_the_whole_default_tree_stamped_mcp(db):
     assert payload["created"] is True
     assert not any("arborescence" in w for w in payload["warnings"])
     stored = _folders(db, did)
-    assert len(stored) == len(folder_model.DEFAULT_TREE) == 18
+    assert len(stored) == len(folder_model.DEFAULT_TREE) == 19
     for node in folder_model.DEFAULT_TREE:
         folder = stored[folder_model.node_folder_id(did, node.key)]
         parent = (folder_model.node_folder_id(did, node.parent)
@@ -101,7 +101,7 @@ def test_a_same_key_retry_replays_and_adds_no_folder(db):
     first = handlers.create_dossier(_args(idempotency_key=KEY))
     did = first["entity"]["id"]
     before = _folders(db, did)
-    assert len(before) == 18
+    assert len(before) == 19
     again = handlers.create_dossier(_args(idempotency_key=KEY))
     assert again["idempotent_replay"] is True
     assert again["entity"]["id"] == did
@@ -112,7 +112,7 @@ def test_a_same_key_retry_replays_and_adds_no_folder(db):
 def test_a_failure_after_the_commit_names_only_the_dossier(db, monkeypatch):
     """The payload builder raising after the dossier AND its tree committed:
     « ENREGISTRÉE — NE PAS RÉESSAYER », for the dossier alone — the tree's
-    eighteen creations are idempotent writes (``note_commit(…,
+    nineteen creations are idempotent writes (``note_commit(…,
     idempotent=True)``), which a retry would find again, never repeat."""
     def _boom(*a, **k):
         raise RuntimeError("payload builder")
@@ -126,7 +126,7 @@ def test_a_failure_after_the_commit_names_only_the_dossier(db, monkeypatch):
     (did,) = dossiers
     assert error.collection == "dossiers" and error.rows == 1
     assert error.entity_id == did and error.dossier_id == did
-    assert len(_folders(db, did)) == 18                   # the tree stands
+    assert len(_folders(db, did)) == 19                   # the tree stands
     (entry,) = db.peek_collection("mcp_idempotency").values()
     assert entry["status"] == "partial"
     assert entry["collection"] == "dossiers" and entry["rows"] == 1
@@ -137,7 +137,7 @@ def test_a_failure_after_the_commit_names_only_the_dossier(db, monkeypatch):
         handlers.create_dossier(_args(idempotency_key=KEY))
     assert replay.value.replay is True
     assert len(db.peek_collection("dossiers")) == 1
-    assert len(_folders(db, did)) == 18
+    assert len(_folders(db, did)) == 19
 
 
 def test_an_unreadable_tree_is_a_warning_on_the_created_dossier(db, monkeypatch):
