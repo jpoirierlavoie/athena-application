@@ -25,8 +25,6 @@ _TEXT_SAMPLE_BYTES = 65536
 _DOCX_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
-_PREVIEWABLE_EXTS = frozenset({".pdf", ".docx", ".txt", ".csv"})
-_PREVIEWABLE_MIMES = frozenset({"application/pdf", _DOCX_MIME, "text/plain", "text/csv"})
 
 MOTIFS_IGNORE: tuple[str, ...] = (
     "incorporee",

@@ -1160,16 +1160,14 @@ def _enregistrer_un_courriel(
     if cleaned_od_name is None:
         raise _SaveMessageError("Nom du dossier OneDrive invalide pour ce numéro de dossier.")
 
-    if eml_spec is None:
-        eml_sous_dossier = _CANONICAL_COURRIELS_SUBFOLDER
-    elif isinstance(eml_spec, dict):
+    if eml_spec is not None:
+        if not isinstance(eml_spec, dict):
+            raise _SaveMessageError("Bloc `eml` invalide.")
         eml_sous_dossier = str(
             eml_spec.get("sous_dossier") or _CANONICAL_COURRIELS_SUBFOLDER
         ).strip()
         if eml_sous_dossier not in (_CANONICAL_COURRIELS_SUBFOLDER, _LEGACY_EMAILS_SUBFOLDER):
             raise _SaveMessageError("Sous-dossier de l'.eml non autorisé.")
-    else:
-        raise _SaveMessageError("Bloc `eml` invalide.")
 
     if raw_pieces is None:
         pieces_plan: list[dict[str, Any]] = []

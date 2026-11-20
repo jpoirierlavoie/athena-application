@@ -159,7 +159,6 @@ from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import budget as budget_model
 from models import concurrency
-from models import courrier as courrier_model
 from models import dav_ids
 from models import doc_template as doc_template_model
 from models import dossier as dossier_model

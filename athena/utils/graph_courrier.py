@@ -85,16 +85,14 @@ class TokenInfo:
 
 
 _token_lock = threading.Lock()
-_cached_info: Optional[TokenInfo] = None
-_token_monotonic_deadline: float = 0.0
+_token_state: dict[str, Any] = {"info": None, "deadline": 0.0}
 
 
 def _reset_token_cache_for_tests() -> None:
     """Clear the worker-local token cache (test isolation)."""
-    global _cached_info, _token_monotonic_deadline
     with _token_lock:
-        _cached_info = None
-        _token_monotonic_deadline = 0.0
+        _token_state["info"] = None
+        _token_state["deadline"] = 0.0
 
 
 def _decode_jwt_claims(token: str) -> dict[str, Any]:
@@ -214,14 +212,13 @@ def _build_headers(
 
 def jeton_courrier() -> TokenInfo:
     """Return a cached Courrier application token (client credentials)."""
-    global _cached_info, _token_monotonic_deadline
-
     if not Config.courrier_configured():
         raise CourrierNotConfigured("Le module Courrier n'est pas configuré.")
 
     with _token_lock:
-        if _cached_info is not None and time.monotonic() < _token_monotonic_deadline:
-            return _cached_info
+        cached = _token_state["info"]
+        if isinstance(cached, TokenInfo) and time.monotonic() < float(_token_state["deadline"]):
+            return cached
 
         response = _request_with_retry(
             "POST",
@@ -293,8 +290,8 @@ def jeton_courrier() -> TokenInfo:
             expires_at_utc=expires_at_utc,
             roles=roles,
         )
-        _cached_info = info
-        _token_monotonic_deadline = time.monotonic() + max(
+        _token_state["info"] = info
+        _token_state["deadline"] = time.monotonic() + max(
             expires_in - _TOKEN_MARGIN_SECONDS, 0.0
         )
         return info
@@ -873,6 +870,7 @@ def detect_execution_region() -> str:
             region = response.text.strip().rsplit("/", 1)[-1]
             return region or "unknown"
     except requests.RequestException:
+        # Metadata server is unreachable outside App Engine Standard; fall through to "unknown".
         pass
     return "unknown"
 

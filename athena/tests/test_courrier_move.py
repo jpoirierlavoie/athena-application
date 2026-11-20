@@ -311,7 +311,6 @@ def test_graph_master_categories_403_degrades_gracefully(env):
 
 
 def test_graph_lire_courriel_raises_on_500_without_pii(env, monkeypatch):
-    _fake, _gm = env
     encoded = quote(Config.COURRIER_UPN, safe="")
     monkeypatch.setattr(
         graph_courrier._session,
