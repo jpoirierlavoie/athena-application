@@ -8,13 +8,10 @@ zero meeting agenda prose ever enter this document.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from models import portail_invitation
-
-logger = logging.getLogger(__name__)
 
 COLLECTION = "disponibilites"
 DOC_ID = "courant"
