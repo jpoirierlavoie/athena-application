@@ -529,6 +529,7 @@ class _StreamingDigestReader(io.RawIOBase):
         self._iter: Iterator[bytes] = iter(chunks)
         self._buf = bytearray()
         self._exhausted = False
+        self._pos = 0
         self.sha256 = hashlib.sha256()
         self.quickxorhash = QuickXorHash()
         self.size = 0
@@ -538,6 +539,9 @@ class _StreamingDigestReader(io.RawIOBase):
 
     def seekable(self) -> bool:
         return False
+
+    def tell(self) -> int:
+        return self._pos
 
     def read(self, size: int = -1) -> bytes:
         if size is None or size < 0:
@@ -552,6 +556,7 @@ class _StreamingDigestReader(io.RawIOBase):
                 if chunk:
                     self._fold(chunk)
                     out.extend(chunk)
+            self._pos += len(out)
             return bytes(out)
 
         if size == 0:
@@ -567,6 +572,7 @@ class _StreamingDigestReader(io.RawIOBase):
                 self._buf.extend(chunk)
         take = bytes(self._buf[:size])
         del self._buf[:size]
+        self._pos += len(take)
         return take
 
     def _fold(self, chunk: bytes) -> None:
@@ -620,6 +626,7 @@ def read_staged_courrier_slice(
         start=start,
         end=end,
         if_generation_match=gen,
+        checksum=None,
     )
 
 
