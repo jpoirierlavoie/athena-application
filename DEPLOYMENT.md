@@ -1371,7 +1371,10 @@ these two one-time Microsoft 365 steps on the main Entra app registration
    Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true
    New-CsApplicationAccessPolicy -Identity "PallasAthenaTeamsAccess" -AppIds "<GRAPH_CLIENT_ID>" -Description "Pallas Athena Teams meetings, transcripts and Copilot insights"
    Grant-CsApplicationAccessPolicy -PolicyName "PallasAthenaTeamsAccess" -Identity "<BOOKINGS_JURISTE_UPN>"
+   Set-CsTeamsMeetingPolicy -Identity Global -Copilot EnabledWithTranscriptDefaultOn -AutomaticallyStartCopilot Enabled
    ```
+
+   Microsoft Graph `onlineMeeting` exposes no `transcribeAutomatically` property (Teams' « Transcription uniquement » dropdown stays internal to the Teams UI). Athena therefore disables cloud recording (`allowRecording: false`, `recordAutomatically: false`), enables `fr-ca` transcription (`allowTranscription: true`, `meetingSpokenLanguageTag: "fr-ca"`), and relies on `CsTeamsMeetingPolicy` (`-Copilot EnabledWithTranscriptDefaultOn -AutomaticallyStartCopilot Enabled`) so Copilot/Facilitator starts automatically with saved transcription without recording video.
 
    ⚠ Microsoft policy propagation can take **30 minutes to 2 hours**. Use the
    « Tester la connexion Microsoft Teams » button in **Paramètres → Rendez-vous**
