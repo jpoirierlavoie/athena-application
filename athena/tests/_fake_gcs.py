@@ -243,7 +243,24 @@ class FakeBlob:
         self.bucket._check_generation(self.name, if_generation_match)
         if rewind:
             file_obj.seek(0)
-        data = file_obj.read() if size is None else file_obj.read(size)
+        if size is None:
+            if file_obj.tell() != 0:
+                raise ValueError("Stream must be at beginning.")
+            chunk_size = getattr(self, "chunk_size", None) or (4 * 1024 * 1024)
+            parts: list[bytes] = []
+            while True:
+                start_byte = file_obj.tell()
+                piece = file_obj.read(chunk_size)
+                end_byte = file_obj.tell() - 1
+                if end_byte - start_byte + 1 != len(piece):
+                    raise ValueError("Stream tell() disagreed with bytes read.")
+                if piece:
+                    parts.append(piece)
+                if len(piece) < chunk_size:
+                    break
+            data = b"".join(parts)
+        else:
+            data = file_obj.read(size)
         obj = self.bucket.put(
             self.name, data, content_type=content_type or self.content_type,
             content_disposition=self.content_disposition)

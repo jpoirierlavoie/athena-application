@@ -10,6 +10,7 @@ from urllib.parse import quote
 from unittest import mock
 
 import pytest
+from google.cloud.storage._media.requests import ResumableUpload
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -847,3 +848,51 @@ def test_security_refusals_and_budget_deferral(env, monkeypatch):
     assert out_budget["messages"][1]["statut"] == "differe"
     assert db.peek(f"courrier_messages/{real_cle}")["etat"] == "enregistre"
     assert db.peek(f"courrier_messages/{cle_2}") is None
+
+
+@pytest.mark.parametrize("total", [1_234, 256 * 1024, 600 * 1024])
+def test_streaming_digest_reader_satisfies_real_gcs_resumable_upload(total):
+    chunk_size = 256 * 1024
+    data = bytes(((i * 31) % 251) for i in range(total))
+    fed_chunks = [data[i : i + 7_000] for i in range(0, len(data), 7_000)]
+    reader = courrier_model._StreamingDigestReader(iter(fed_chunks))
+
+    upload = ResumableUpload(
+        "https://storage.googleapis.com/upload/storage/v1/b/test-bucket/o?uploadType=resumable",
+        chunk_size,
+        checksum=None,
+    )
+    uploaded = bytearray()
+    transport = mock.MagicMock()
+
+    def _side_effect(method, url, data=None, headers=None, **_kwargs):
+        if url.endswith("uploadType=resumable"):
+            return mock.MagicMock(
+                status_code=200,
+                headers={"location": "https://storage.googleapis.com/u/sess-1"},
+            )
+        cr = (headers or {}).get("content-range", "")
+        if data:
+            uploaded.extend(data)
+        if not cr.endswith("/*"):
+            return mock.MagicMock(status_code=200, headers={}, content=b"{}", json=lambda: {})
+        start = int(cr.split(" ", 1)[1].split("-", 1)[0])
+        end = start + len(data) - 1
+        return mock.MagicMock(status_code=308, headers={"range": f"bytes=0-{end}"})
+
+    transport.request.side_effect = _side_effect
+    upload.initiate(
+        transport,
+        reader,
+        {},
+        "application/octet-stream",
+        total_bytes=None,
+        stream_final=False,
+    )
+    while not upload.finished:
+        upload.transmit_next_chunk(transport)
+
+    assert bytes(uploaded) == data
+    assert reader.tell() == reader.size == len(data)
+    assert reader.sha256.hexdigest() == hashlib.sha256(data).hexdigest()
+    assert reader.quickxorhash.b64digest() == quickxorhash_b64(data)
