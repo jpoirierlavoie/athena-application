@@ -59,6 +59,7 @@ class _FakeGraphMail:
 
     def __init__(self, *, master_categories_403: bool = False) -> None:
         self.inbox_id = "fld-inbox"
+        self.sent_id = "fld-sent"
         self.deleted_id = "fld-deleted"
         self.archive_id = "fld-archive"
         self.dossiers_id = "fld-dossiers"
@@ -70,6 +71,7 @@ class _FakeGraphMail:
         # {folder_id: {"id", "displayName", "parent_id"}}
         self.folders: dict[str, dict] = {
             self.inbox_id: {"id": self.inbox_id, "displayName": "Inbox", "parent_id": None},
+            self.sent_id: {"id": self.sent_id, "displayName": "Sent Items", "parent_id": None},
             self.deleted_id: {"id": self.deleted_id, "displayName": "Deleted Items", "parent_id": None},
             self.archive_id: {"id": self.archive_id, "displayName": "Archive", "parent_id": None},
             self.dossiers_id: {"id": self.dossiers_id, "displayName": "Dossiers", "parent_id": self.archive_id},
@@ -195,6 +197,10 @@ def env(monkeypatch):
         if rel == "/mailFolders/Inbox":
             return _FakeResponse(
                 200, {"id": gm.inbox_id, "displayName": "Boîte de réception"}
+            )
+        if rel == "/mailFolders/SentItems":
+            return _FakeResponse(
+                200, {"id": gm.sent_id, "displayName": "Éléments envoyés"}
             )
         if rel == "/mailFolders":
             return _FakeResponse(
@@ -332,18 +338,15 @@ def test_move_courriels_refused_when_switch_off(env, monkeypatch):
     _seed_enregistre(fake, cle, "imm-off")
     monkeypatch.setattr(Config, "COURRIER_ACTIF", False)
 
-    for essai in (False, True):
-        with pytest.raises(PermissionError):
-            courrier_service.deplacer_courriels(
-                [{"cle": cle, "id": "imm-off", "action": "laisser"}],
-                essai=essai,
-            )
-        with pytest.raises(ToolArgumentError, match="COURRIER_ACTIF=false"):
-            handlers.move_courriels({
-                "messages": [{"cle": cle, "id": "imm-off", "action": "laisser"}],
-                "essai": essai,
-                "idempotency_key": f"k-off-{essai}",
-            })
+    with pytest.raises(PermissionError):
+        courrier_service.deplacer_courriels(
+            [{"cle": cle, "id": "imm-off", "action": "laisser"}]
+        )
+    with pytest.raises(ToolArgumentError, match="COURRIER_ACTIF=false"):
+        handlers.move_courriels({
+            "messages": [{"cle": cle, "id": "imm-off", "action": "laisser"}],
+            "idempotency_key": "k-off",
+        })
     assert gm.write_calls == []
 
 
@@ -611,33 +614,44 @@ def test_master_categories_403_adds_warning_and_proceeds(env):
     assert graph_courrier.CATEGORIE_CLASSE in gm.messages["imm-403"]["categories"]
 
 
-def test_essai_true_makes_zero_writes(env):
+def test_move_courriels_supports_sent_items_and_rejects_essai(env):
+    assert "essai" not in tools.TOOLS["move_courriels"]["input_schema"]["properties"]
+    errs = tools.validate_args(
+        tools.TOOLS["move_courriels"]["input_schema"],
+        {
+            "messages": [{"cle": "0" * 16, "id": "m1", "action": "laisser"}],
+            "essai": True,
+            "idempotency_key": "move-no-dry",
+        },
+    )
+    assert errs and any("essai" in e for e in errs)
+
     fake, gm = env
-    cle = gm.add_message(msg_id="imm-dry", internet_message_id="<dry@cabinet.example>")
-    _seed_enregistre(fake, cle, "imm-dry", numero="2026-022")
+    target_fid = gm.add_dossier_folder("Actifs", "2026-001 - Client Actif", fid="fld-2026-001")
+    cle_move = gm.add_message(
+        msg_id="imm-sent-cls",
+        internet_message_id="<sent-cls@cabinet.example>",
+        parent_folder_id=gm.sent_id,
+    )
+    cle_hold = gm.add_message(
+        msg_id="imm-sent-hold",
+        internet_message_id="<sent-hold@cabinet.example>",
+        parent_folder_id=gm.sent_id,
+    )
+    _seed_enregistre(fake, cle_move, "imm-sent-cls", numero="2026-001")
 
     res = handlers.move_courriels({
         "messages": [
-            {
-                "cle": cle,
-                "id": "imm-dry",
-                "action": "classer",
-                "dossier": "2026-022",
-                "outlook_creer": {"statut": "Actifs", "nom": "2026-022 - Simulation"},
-            }
+            {"cle": cle_move, "id": "imm-sent-cls", "action": "classer", "dossier": "2026-001"},
+            {"cle": cle_hold, "id": "imm-sent-hold", "action": "laisser"},
         ],
-        "essai": True,
-        "idempotency_key": "move-dry-key",
+        "idempotency_key": "move-sent-1",
     })
-    assert res["essai"] is True and res["classes"] == 1
-    row = res["messages"][0]
-    assert row["dossier_outlook_cree"] is True
-    assert row["statut_outlook_cible"] == "Actifs"
-    assert row["outlook_folder_id"] is None
-    assert row["id_immuable_verifie"] is False
-    assert gm.write_calls == []
-    assert fake.peek(f"courrier_messages/{cle}")["etat"] == courrier_model.ETAT_ENREGISTRE
-    assert fake.peek_collection("mcp_idempotency") == {}
+    assert res["classes"] == 1 and res["laisses"] == 1 and res["echecs"] == 0
+    assert gm.messages["imm-sent-cls"]["parentFolderId"] == target_fid
+    assert gm.messages["imm-sent-cls"]["categories"] == [graph_courrier.CATEGORIE_CLASSE]
+    assert gm.messages["imm-sent-hold"]["parentFolderId"] == gm.sent_id
+    assert gm.messages["imm-sent-hold"]["categories"] == [graph_courrier.CATEGORIE_A_CLASSER]
 
 
 def test_budget_deferral_and_no_replay_on_partial_and_zero_pii(env):

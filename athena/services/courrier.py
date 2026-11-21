@@ -13,20 +13,18 @@ import hmac
 import re
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from config import Config
-from models import concurrency
 from models import courrier as courrier_model
 from models import document as document_model
 from models import dossier as dossier_model
 from models import folder as folder_model
-from tz import to_mtl
+from tz import mtl_to_utc, to_mtl
 from utils import courrier_apercu, email_text, graph_courrier, storage_identity
 from utils.logging_setup import log_courrier_event
-from utils.quickxorhash import QuickXorHash
 
 DEFAULT_NOMBRE = 5
 MAX_NOMBRE = 25
@@ -37,6 +35,12 @@ BUDGET_SECONDES = 25.0
 MAX_MESSAGES_SAVE = 25
 MAX_MESSAGES_MOVE = 25
 VALID_MOVE_ACTIONS: tuple[str, ...] = ("classer", "laisser")
+VALID_PROVENANCES: tuple[str, ...] = ("recus", "envoyes")
+VALID_FILTRES: tuple[str, ...] = ("tous", "nouveaux", "a_classer")
+_PROVENANCE_FOLDERS: dict[str, str] = {
+    "recus": "Inbox",
+    "envoyes": "SentItems",
+}
 EML_MAX_CHARS = 80
 PIECE_NOM_MAX_CHARS = 100
 _CONFLICT_RETRY_MAX = 50
@@ -65,6 +69,8 @@ OUTLOOK_STATUTS: tuple[str, ...] = (
 # Linear CWE-1333 regexes: explicit ASCII character classes, zero nested quantifiers.
 _DOSSIER_PREFIX_RE = re.compile(r"\A([0-9]{4}-[0-9]{3})(?:\Z|[\s\-–—_])")
 _DOSSIER_STRICT_RE = re.compile(r"\A[0-9]{4}-[0-9]{3}\Z")
+_DEPUIS_DATE_RE = re.compile(r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_COTE_PIECE_RE = re.compile(r"\b([A-Z]{1,3}-[0-9]{1,4})\b")
 _EXT_CLEAN_RE = re.compile(r"\A\.[a-z0-9]{1,16}\Z")
 _SUFFIX_LOOKS_LIKE_EXT_RE = re.compile(r"\A.*\.[a-zA-Z0-9]{1,10}\Z")
 
@@ -85,6 +91,7 @@ _MESSAGE_SELECT = ",".join((
     "internetMessageId",
     "conversationId",
     "receivedDateTime",
+    "sentDateTime",
     "from",
     "toRecipients",
     "ccRecipients",
@@ -109,14 +116,15 @@ __all__ = [
     "OUTLOOK_STATUTS",
     "PIECE_NOM_MAX_CHARS",
     "TEXTE_MAX_CHARS",
+    "VALID_FILTRES",
     "VALID_MOVE_ACTIONS",
+    "VALID_PROVENANCES",
     "VALID_SOUS_DOSSIERS",
     "construire_nom_eml",
     "deplacer_courriels",
     "deposer_docx_interne_onedrive",
     "enregistrer_courriels",
     "extraire_prefixe_dossier",
-    "inscrire_temps_courriels",
     "inventorier_courriels",
     "nettoyer_expediteur_sans_civilite",
     "nettoyer_nom_piece",
@@ -331,6 +339,8 @@ def _lire_pieces(
     encoded_upn: str,
     msg_id: str,
     has_attachments: Any,
+    *,
+    extraire_apercu: bool = True,
 ) -> list[dict[str, Any]]:
     if has_attachments is False:
         return []
@@ -358,6 +368,9 @@ def _lire_pieces(
         if ignore is not None:
             apercu = ""
             apercu_omis: Optional[str] = "ignoree"
+        elif not extraire_apercu:
+            apercu = ""
+            apercu_omis = "non_demande"
         elif not courrier_apercu.peut_extraire_apercu(nom, ctype, odata_type):
             apercu = ""
             apercu_omis = "format_non_texte"
@@ -400,7 +413,8 @@ def _lire_fil_conversation(
     *,
     msg_id: str,
     conversation_id: str,
-    inbox_id: str,
+    source_folder_id: str,
+    source_label: str,
     folder_map: dict[str, str],
 ) -> dict[str, int]:
     if not conversation_id:
@@ -423,8 +437,8 @@ def _lire_fil_conversation(
         if str(sibling.get("id") or "") == msg_id:
             continue
         parent_id = str(sibling.get("parentFolderId") or "")
-        if inbox_id and parent_id == inbox_id:
-            label = "boite"
+        if source_folder_id and parent_id == source_folder_id:
+            label = source_label
         elif parent_id in folder_map:
             label = folder_map[parent_id]
         else:
@@ -433,148 +447,238 @@ def _lire_fil_conversation(
     return counts
 
 
+def _parse_depuis_filter(depuis: Optional[str]) -> Optional[str]:
+    if depuis is None:
+        return None
+    cleaned = str(depuis).strip()
+    if not cleaned:
+        return None
+    if not _DEPUIS_DATE_RE.match(cleaned):
+        raise ValueError("Format de `depuis` invalide (AAAA-MM-JJ attendu).")
+    try:
+        day = date.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError("Date `depuis` hors calendrier.") from exc
+    start_utc = mtl_to_utc(datetime(day.year, day.month, day.day, 0, 0, 0))
+    assert start_utc is not None
+    return f"receivedDateTime ge {start_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+
+
 def inventorier_courriels(
     *,
     premier: int = 0,
     nombre: int = DEFAULT_NOMBRE,
+    provenance: str = "recus",
+    filtre: str = "tous",
+    depuis: Optional[str] = None,
     budget_secondes: float = BUDGET_SECONDES,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """Inventory Inbox oldest-first with previews, threads, and registry state."""
+    """Inventory Inbox or SentItems oldest-first with filtering, previews, and threads."""
     if not Config.courrier_configured():
         raise graph_courrier.CourrierNotConfigured(
             "Le module Courrier n'est pas configuré."
         )
+    if provenance not in VALID_PROVENANCES:
+        raise ValueError("`provenance` doit être `recus` ou `envoyes`.")
+    if filtre not in VALID_FILTRES:
+        raise ValueError("`filtre` doit être `tous`, `nouveaux` ou `a_classer`.")
+    filter_expr = _parse_depuis_filter(depuis)
 
     started = clock()
     encoded_upn = quote(Config.COURRIER_UPN, safe="")
     racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "4 - Dossiers"
+    graph_folder = _PROVENANCE_FOLDERS[provenance]
+    source_label = "boite" if provenance == "recus" else "envoyes"
 
-    inbox_meta = graph_courrier.courrier_get(
-        f"/users/{encoded_upn}/mailFolders/Inbox",
+    folder_meta = graph_courrier.courrier_get(
+        f"/users/{encoded_upn}/mailFolders/{graph_folder}",
         params={"$select": "id,totalItemCount"},
         immutable_id=True,
     )
-    inbox_id = str(inbox_meta.get("id") or "")
-    raw_total = inbox_meta.get("totalItemCount")
-    inbox_total = (
+    source_folder_id = str(folder_meta.get("id") or "")
+    raw_total = folder_meta.get("totalItemCount")
+    folder_total = (
         raw_total
         if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0
         else 0
     )
 
-    page_res = graph_courrier.courrier_get(
-        f"/users/{encoded_upn}/mailFolders/Inbox/messages",
-        params={
-            "$orderby": "receivedDateTime asc",
-            "$skip": premier,
-            "$top": nombre,
-            "$select": _MESSAGE_SELECT,
-        },
-        immutable_id=True,
-        prefer=('outlook.body-content-type="text"',),
-        follow_next=False,
-    )
-    raw_messages = [
-        m for m in (page_res.get("value") or []) if isinstance(m, dict)
-    ]
-
     outlook_payload: Optional[dict[str, Any]] = None
     onedrive_payload: Optional[dict[str, Any]] = None
-    folder_map: dict[str, str] = {}
+    folder_map: Optional[dict[str, str]] = None
     warnings: list[str] = []
 
-    if premier == 0 or raw_messages:
+    if premier == 0:
         outlook_map, folder_map, outlook_warnings = _lire_carte_outlook(encoded_upn)
         warnings.extend(outlook_warnings)
-        if premier == 0:
-            outlook_payload = outlook_map
-    if premier == 0:
+        outlook_payload = outlook_map
         onedrive_payload = _lire_carte_onedrive(encoded_upn, racine_onedrive)
 
-    message_cles: list[str] = []
-    for msg in raw_messages:
-        msg_id = str(msg.get("id") or "").strip()
-        raw_imid = str(msg.get("internetMessageId") or "").strip()
-        message_cles.append(courrier_model.compute_cle(raw_imid or msg_id))
-
-    reg_map = courrier_model.get_courrier_messages_map_strict(message_cles)
+    page_top = nombre if filtre == "tous" else max(nombre, MAX_NOMBRE)
+    a_classer_cf = graph_courrier.CATEGORIE_A_CLASSER.casefold()
+    extract_previews = filtre != "a_classer"
 
     messages: list[dict[str, Any]] = []
+    raw_skip = premier
     budget_atteint = False
-    for idx, (msg, cle) in enumerate(zip(raw_messages, message_cles)):
-        if idx >= 1 and (clock() - started) >= budget_secondes:
+    exhausted = False
+    loop_iter = 0
+
+    while len(messages) < nombre:
+        if loop_iter > 0 and (clock() - started) >= budget_secondes:
             budget_atteint = True
             break
+        loop_iter += 1
 
-        msg_id = str(msg.get("id") or "").strip()
-        raw_categories = msg.get("categories")
-        categories = (
-            [str(c) for c in raw_categories if isinstance(c, str)]
-            if isinstance(raw_categories, list)
-            else []
-        )
-        flag_obj = msg.get("flag")
-        drapeau = (
-            str(flag_obj.get("flagStatus") or "notFlagged")
-            if isinstance(flag_obj, dict)
-            else "notFlagged"
-        )
-        conversation_id = str(msg.get("conversationId") or "").strip()
+        page_params: dict[str, Any] = {
+            "$orderby": "receivedDateTime asc",
+            "$skip": raw_skip,
+            "$top": page_top,
+            "$select": _MESSAGE_SELECT,
+        }
+        if filter_expr is not None:
+            page_params["$filter"] = filter_expr
 
-        pieces = _lire_pieces(encoded_upn, msg_id, msg.get("hasAttachments"))
-        fil = _lire_fil_conversation(
-            encoded_upn,
-            msg_id=msg_id,
-            conversation_id=conversation_id,
-            inbox_id=inbox_id,
-            folder_map=folder_map,
+        page_res = graph_courrier.courrier_get(
+            f"/users/{encoded_upn}/mailFolders/{graph_folder}/messages",
+            params=page_params,
+            immutable_id=True,
+            prefer=('outlook.body-content-type="text"',),
+            follow_next=False,
         )
-        reg_doc = reg_map.get(cle)
-        etat = (
-            reg_doc.get("etat", courrier_model.ETAT_INVENTORIE)
-            if reg_doc is not None
-            else courrier_model.ETAT_INVENTORIE
-        )
-        legacy_ref = (
-            str(reg_doc.get("legacy_ref") or "")
-            if reg_doc is not None
-            else ""
-        )
+        raw_page = [
+            m for m in (page_res.get("value") or []) if isinstance(m, dict)
+        ]
+        if not raw_page:
+            exhausted = True
+            break
 
-        messages.append({
-            "cle": cle,
-            "id": msg_id,
-            "recu": _parse_recu_mtl(msg.get("receivedDateTime")),
-            "expediteur": _extract_expediteur(msg),
-            "a": _extract_addresses(msg.get("toRecipients")),
-            "cc": _extract_addresses(msg.get("ccRecipients")),
-            "objet": str(msg.get("subject") or ""),
-            "lu": bool(msg.get("isRead")),
-            "drapeau": drapeau,
-            "categories": categories,
-            "lien": str(msg.get("webLink") or ""),
-            "texte": _extract_body_text(msg),
-            "pieces": pieces,
-            "fil": fil,
-            "etat": etat,
-            "legacy_ref": legacy_ref,
-        })
+        page_cles: list[str] = []
+        for msg in raw_page:
+            msg_id = str(msg.get("id") or "").strip()
+            raw_imid = str(msg.get("internetMessageId") or "").strip()
+            page_cles.append(courrier_model.compute_cle(raw_imid or msg_id))
+        reg_map = courrier_model.get_courrier_messages_map_strict(page_cles)
 
-    prochain = premier + len(messages)
-    if not raw_messages:
-        boite_total = inbox_total
-        suite = False
-    elif not budget_atteint and len(raw_messages) < nombre:
-        boite_total = prochain
+        stopped_mid_page = False
+        for msg, cle in zip(raw_page, page_cles):
+            if len(messages) >= nombre:
+                stopped_mid_page = True
+                break
+            if len(messages) >= 1 and (clock() - started) >= budget_secondes:
+                budget_atteint = True
+                stopped_mid_page = True
+                break
+
+            raw_skip += 1
+            raw_categories = msg.get("categories")
+            categories = (
+                [str(c) for c in raw_categories if isinstance(c, str)]
+                if isinstance(raw_categories, list)
+                else []
+            )
+            cat_cf = {c.strip().casefold() for c in categories}
+            has_a_classer = a_classer_cf in cat_cf
+
+            reg_doc = reg_map.get(cle)
+            etat = (
+                reg_doc.get("etat", courrier_model.ETAT_INVENTORIE)
+                if reg_doc is not None
+                else courrier_model.ETAT_INVENTORIE
+            )
+
+            if filtre == "nouveaux" and (
+                has_a_classer or etat == courrier_model.ETAT_CLASSE
+            ):
+                continue
+            if filtre == "a_classer" and not has_a_classer:
+                continue
+
+            if folder_map is None:
+                _outlook_map, folder_map, outlook_warnings = _lire_carte_outlook(encoded_upn)
+                warnings.extend(outlook_warnings)
+
+            msg_id = str(msg.get("id") or "").strip()
+            flag_obj = msg.get("flag")
+            drapeau = (
+                str(flag_obj.get("flagStatus") or "notFlagged")
+                if isinstance(flag_obj, dict)
+                else "notFlagged"
+            )
+            conversation_id = str(msg.get("conversationId") or "").strip()
+
+            pieces = _lire_pieces(
+                encoded_upn,
+                msg_id,
+                msg.get("hasAttachments"),
+                extraire_apercu=extract_previews,
+            )
+            fil = _lire_fil_conversation(
+                encoded_upn,
+                msg_id=msg_id,
+                conversation_id=conversation_id,
+                source_folder_id=source_folder_id,
+                source_label=source_label,
+                folder_map=folder_map,
+            )
+            legacy_ref = (
+                str(reg_doc.get("legacy_ref") or "")
+                if reg_doc is not None
+                else ""
+            )
+
+            messages.append({
+                "cle": cle,
+                "id": msg_id,
+                "recu": _parse_recu_mtl(
+                    msg.get("receivedDateTime") or msg.get("sentDateTime")
+                ),
+                "expediteur": _extract_expediteur(msg),
+                "a": _extract_addresses(msg.get("toRecipients")),
+                "cc": _extract_addresses(msg.get("ccRecipients")),
+                "objet": str(msg.get("subject") or ""),
+                "lu": bool(msg.get("isRead")),
+                "drapeau": drapeau,
+                "categories": categories,
+                "lien": str(msg.get("webLink") or ""),
+                "texte": _extract_body_text(msg),
+                "pieces": pieces,
+                "fil": fil,
+                "etat": etat,
+                "legacy_ref": legacy_ref,
+            })
+
+        if budget_atteint:
+            break
+        if len(raw_page) < page_top and not stopped_mid_page:
+            exhausted = True
+            break
+
+    prochain = raw_skip
+    if exhausted:
+        if filter_expr is None:
+            boite_total = max(folder_total, prochain) if raw_skip == premier else prochain
+        else:
+            boite_total = folder_total
         suite = False
     else:
-        boite_total = max(inbox_total, prochain)
-        suite = (prochain < boite_total) or budget_atteint
+        if filter_expr is None:
+            boite_total = max(folder_total, prochain)
+            suite = (prochain < boite_total) or budget_atteint
+        else:
+            boite_total = folder_total
+            suite = True
+
+    filtre_total: Optional[int] = (
+        len(messages) if (premier == 0 and not suite) else None
+    )
 
     log_courrier_event(
         "courrier_inventaire",
         "success",
+        provenance=provenance,
+        filtre=filtre,
         premier=premier,
         nombre_retourne=len(messages),
         boite_total=boite_total,
@@ -582,6 +686,9 @@ def inventorier_courriels(
         budget_atteint=budget_atteint,
     )
     return {
+        "provenance": provenance,
+        "filtre": filtre,
+        "filtre_total": filtre_total,
         "messages": messages,
         "nombre_retourne": len(messages),
         "boite_total": boite_total,
@@ -682,11 +789,33 @@ def construire_nom_eml(
     return f"{stem}{ext}"
 
 
+def _trunquer_stem_piece(stem: str, max_stem: int) -> str:
+    """Truncate stem to ``<= max_stem`` chars, preserving any cut-off exhibit code."""
+    if len(stem) <= max_stem:
+        return stem
+    matches = list(_COTE_PIECE_RE.finditer(stem))
+    cutoff_matches = [m for m in matches if m.end() > max_stem]
+    if cutoff_matches:
+        match = cutoff_matches[-1]
+        cote = match.group(1)
+        tail = f" - {cote}"
+        head_budget = max_stem - len(tail)
+        if head_budget >= 10:
+            before = stem[: match.start()].rstrip(" -_.")
+            short_head = before[:head_budget].rstrip(" -_.,;")
+            if short_head:
+                return f"{short_head}{tail}"
+    return stem[:max_stem].rstrip(" .")
+
+
 def nettoyer_nom_piece(
     nom_demande: str,
     nom_origine_graph: str,
+    *,
+    dossier_num: str = "",
+    recu_dt: Optional[datetime] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Sanitize attachment filename while preserving Graph's real lowercase extension."""
+    """Sanitize attachment filename, auto-prefix ``AAAA-NNN - AAAA-MM-JJ - ``, keep extension."""
     orig_raw = str(nom_origine_graph or "").strip()
     if "." not in orig_raw:
         return None, "La pièce jointe d'origine ne porte aucune extension."
@@ -710,9 +839,15 @@ def nettoyer_nom_piece(
     stem = _sanitize_component_text(stem)
     if not stem or stem.upper() in _WINDOWS_RESERVED_STEMS:
         return None, "Nom de pièce jointe vide ou réservé."
+
+    if dossier_num and recu_dt is not None and extraire_prefixe_dossier(stem) != dossier_num:
+        mtl = to_mtl(recu_dt)
+        if mtl is not None:
+            stem = f"{dossier_num} - {mtl.strftime('%Y-%m-%d')} - {stem}"
+
     max_stem = PIECE_NOM_MAX_CHARS - len(orig_ext)
     if len(stem) > max_stem:
-        stem = stem[:max_stem].rstrip(" .")
+        stem = _trunquer_stem_piece(stem, max_stem)
     if not stem or stem.upper() in _WINDOWS_RESERVED_STEMS:
         return None, "Nom de pièce jointe invalide après troncature."
     return f"{stem}{orig_ext}", None
@@ -841,45 +976,6 @@ def _item_correspond_empreinte(
     return hmac.compare_digest(actual_qxh, expected_qxh)
 
 
-def _verifier_onedrive_essai(
-    encoded_upn: str,
-    od_target_folder_id: Optional[str],
-    nom_propre: str,
-    *,
-    max_chars: int,
-    expected_size: int,
-    expected_qxh: str,
-) -> tuple[str, Optional[int], Optional[str]]:
-    if not od_target_folder_id:
-        return "prevu_cree", None, None
-    encoded_parent = quote(od_target_folder_id, safe="")
-    for idx in range(1, _CONFLICT_RETRY_MAX + 1):
-        candidate = (
-            nom_propre
-            if idx == 1
-            else suffixer_nom_conflit(nom_propre, idx, max_chars)
-        )
-        encoded_name = quote(candidate, safe="")
-        existing = graph_courrier.courrier_lire_element_onedrive(
-            f"/users/{encoded_upn}/drive/items/{encoded_parent}:/{encoded_name}",
-            params={"$select": "id,name,size,file,folder"},
-        )
-        if existing is None:
-            statut = "prevu_cree" if idx == 1 else "prevu_renomme"
-            return statut, (idx if idx > 1 else None), None
-        if isinstance(existing.get("folder"), dict):
-            continue
-        if _item_correspond_empreinte(
-            existing, expected_size=expected_size, expected_qxh=expected_qxh
-        ):
-            return (
-                "prevu_deja_present",
-                (idx if idx > 1 else None),
-                str(existing.get("id") or "") or None,
-            )
-    raise _SaveMessageError("Trop de conflits de nom consécutifs dans OneDrive.")
-
-
 def _televerser_sur_onedrive(
     encoded_upn: str,
     od_target_folder_id: str,
@@ -977,7 +1073,7 @@ def _televerser_sur_onedrive(
 
 def _enregistrer_un_fichier(
     *,
-    user_id: Optional[str],
+    user_id: str,
     encoded_upn: str,
     graph_path: str,
     cle: str,
@@ -989,8 +1085,8 @@ def _enregistrer_un_fichier(
     athena_folder_id: Optional[str],
     presumed_category: str,
     od_target_folder_id: Optional[str],
-    essai: bool,
-) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    od_rel_dir: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     ext = (
         "." + nom_propre.rsplit(".", 1)[1].lower()
         if "." in nom_propre
@@ -1000,58 +1096,6 @@ def _enregistrer_un_fichier(
         dossier_id, cle, slot
     )
     supported_athena = ext in document_model.ALLOWED_EXTENSIONS
-
-    if essai:
-        sha = hashlib.sha256()
-        qxh = QuickXorHash()
-        total = 0
-        with graph_courrier.courrier_ouvrir_flux(
-            graph_path,
-            max_bytes=document_model.MAX_FILE_SIZE,
-            immutable_id=True,
-        ) as chunks:
-            for chunk in chunks:
-                sha.update(chunk)
-                qxh.update(chunk)
-                total += len(chunk)
-        if total <= 0:
-            raise _SaveMessageError("Le fichier reçu de Graph est vide.")
-        sha_hex = sha.hexdigest()
-        qxh_b64 = qxh.b64digest()
-        statut_od, renomme_idx, existing_od_id = _verifier_onedrive_essai(
-            encoded_upn,
-            od_target_folder_id,
-            nom_propre,
-            max_chars=max_chars,
-            expected_size=total,
-            expected_qxh=qxh_b64,
-        )
-        if not supported_athena:
-            statut_athena = "prevu_non_pris_en_charge"
-            doc_id_out: Optional[str] = None
-        else:
-            existing_doc = document_model.get_document_strict(reserved_id)
-            if (
-                existing_doc is not None
-                and existing_doc.get("dossier_id") == dossier_id
-            ):
-                statut_athena = "prevu_deja_present"
-                doc_id_out = reserved_id
-            else:
-                statut_athena = "prevu_cree"
-                doc_id_out = None
-        result_entry = {
-            "slot": slot,
-            "sha256": sha_hex,
-            "quickxorhash": qxh_b64,
-            "taille": total,
-            "statut_onedrive": statut_od,
-            "renomme_index": renomme_idx,
-            "onedrive_item_id": existing_od_id,
-            "statut_athena": statut_athena,
-            "document_id": doc_id_out,
-        }
-        return result_entry, None
 
     uid = storage_identity.require_uid(user_id)
     if not od_target_folder_id:
@@ -1082,7 +1126,7 @@ def _enregistrer_un_fichier(
 
         if not supported_athena:
             statut_athena = "non_pris_en_charge"
-            doc_id_out = None
+            doc_id_out: Optional[str] = None
         else:
             existing_doc = document_model.get_document_strict(reserved_id)
             display_stem = final_name.rsplit(".", 1)[0] if "." in final_name else final_name
@@ -1108,8 +1152,11 @@ def _enregistrer_un_fichier(
             statut_athena = "deja_present" if existing_doc is not None else "cree"
             doc_id_out = str(ingested.get("id") or reserved_id)
 
+        chemin = f"{od_rel_dir}\\{final_name}" if od_rel_dir else final_name
         result_entry = {
             "slot": slot,
+            "nom": final_name,
+            "chemin": chemin,
             "sha256": staged.sha256,
             "quickxorhash": staged.quickxorhash,
             "taille": staged.size,
@@ -1136,12 +1183,11 @@ def _enregistrer_un_fichier(
 def _enregistrer_un_courriel(
     item: dict[str, Any],
     *,
-    user_id: Optional[str],
+    user_id: str,
     encoded_upn: str,
     racine_id: str,
     od_by_numero: dict[str, list[dict[str, str]]],
     od_subfolder_cache: dict[tuple[str, str], Optional[str]],
-    essai: bool,
 ) -> dict[str, Any]:
     cle = str(item.get("cle") or "").strip()
     msg_id = str(item.get("id") or "").strip()
@@ -1200,7 +1246,9 @@ def _enregistrer_un_courriel(
     try:
         msg_meta = graph_courrier.courrier_get(
             f"/users/{encoded_upn}/messages/{encoded_msg_id}",
-            params={"$select": "id,internetMessageId,receivedDateTime,from,hasAttachments"},
+            params={
+                "$select": "id,internetMessageId,receivedDateTime,sentDateTime,from,hasAttachments"
+            },
             immutable_id=True,
         )
     except graph_courrier.CourrierGraphError as exc:
@@ -1216,7 +1264,9 @@ def _enregistrer_un_courriel(
             "La clé ne correspond pas à l'identifiant du message (refus)."
         )
 
-    recu_dt = _parse_utc_datetime(msg_meta.get("receivedDateTime"))
+    recu_dt = _parse_utc_datetime(
+        msg_meta.get("receivedDateTime") or msg_meta.get("sentDateTime")
+    )
     if recu_dt is None:
         raise _SaveMessageError("Horodatage receivedDateTime Graph manquant ou invalide.")
     exp = _extract_expediteur(msg_meta)
@@ -1256,7 +1306,10 @@ def _enregistrer_un_courriel(
             else idx_piece
         )
         clean_att_name, name_err = nettoyer_nom_piece(
-            str(p.get("nom") or ""), str(graph_att.get("name") or "")
+            str(p.get("nom") or ""),
+            str(graph_att.get("name") or ""),
+            dossier_num=dossier_num,
+            recu_dt=recu_dt,
         )
         if name_err or not clean_att_name:
             raise _SaveMessageError(name_err or "Nom de pièce jointe invalide.")
@@ -1285,30 +1338,31 @@ def _enregistrer_un_courriel(
                 f"Le dossier OneDrive existant pour {dossier_num} ne correspond pas au nom du plan."
             )
         od_dossier_id = existing_entry["id"]
+        effective_od_dossier_name = existing_entry["nom"]
     else:
         if not creer_od:
             raise _SaveMessageError(
                 f"Dossier OneDrive absent pour {dossier_num} (creer_dossier_onedrive est faux)."
             )
         dossier_od_cree = True
-        if not essai:
-            created_od, _ = graph_courrier.courrier_creer_dossier_onedrive(
-                racine_id, cleaned_od_name, encoded_upn=encoded_upn
-            )
-            od_dossier_id = str(created_od.get("id") or "")
-            if not od_dossier_id:
-                raise _SaveMessageError("Identifiant du dossier OneDrive créé manquant.")
-            od_by_numero.setdefault(dossier_num, []).append({
-                "numero": dossier_num,
-                "nom": str(created_od.get("name") or cleaned_od_name),
-                "id": od_dossier_id,
-            })
+        created_od, _ = graph_courrier.courrier_creer_dossier_onedrive(
+            racine_id, cleaned_od_name, encoded_upn=encoded_upn
+        )
+        od_dossier_id = str(created_od.get("id") or "")
+        if not od_dossier_id:
+            raise _SaveMessageError("Identifiant du dossier OneDrive créé manquant.")
+        effective_od_dossier_name = str(created_od.get("name") or cleaned_od_name)
+        od_by_numero.setdefault(dossier_num, []).append({
+            "numero": dossier_num,
+            "nom": effective_od_dossier_name,
+            "id": od_dossier_id,
+        })
 
     effective_mail_od_sub = _resoudre_sous_dossier_courriel_onedrive(
         encoded_upn, od_dossier_id, od_subfolder_cache
     )
 
-    # Ensure / check Athena target folders upfront
+    # Ensure Athena target folders upfront
     needed_tree_keys: list[str] = ["courriels"]
     for rp in resolved_pieces:
         ext = "." + rp["nom"].rsplit(".", 1)[1].lower()
@@ -1318,26 +1372,13 @@ def _enregistrer_un_courriel(
                 needed_tree_keys.append(tree_key)
 
     athena_folder_ids: dict[str, str] = {}
-    if essai:
-        plan_report, plan_errors = folder_model.plan_default_tree(dossier_id)
-        if plan_report is None:
+    for key in needed_tree_keys:
+        folder_doc, folder_errors = folder_model.ensure_tree_folder(dossier_id, key)
+        if folder_errors or folder_doc is None:
             raise _SaveMessageError(
-                "; ".join(plan_errors) or "Lecture des dossiers Athéna impossible."
+                "; ".join(folder_errors) or "Préparation du dossier Athéna impossible."
             )
-        blocked_keys = {k for k, _reason in plan_report.blocked}
-        for key in needed_tree_keys:
-            if key in blocked_keys:
-                raise _SaveMessageError(
-                    f"Le dossier de classement Athéna « {key} » est bloqué."
-                )
-    else:
-        for key in needed_tree_keys:
-            folder_doc, folder_errors = folder_model.ensure_tree_folder(dossier_id, key)
-            if folder_errors or folder_doc is None:
-                raise _SaveMessageError(
-                    "; ".join(folder_errors) or "Préparation du dossier Athéna impossible."
-                )
-            athena_folder_ids[key] = str(folder_doc["id"])
+        athena_folder_ids[key] = str(folder_doc["id"])
 
     # Resolve OneDrive subfolder IDs and queue files (.eml first, then pieces)
     file_jobs: list[dict[str, Any]] = [
@@ -1377,15 +1418,18 @@ def _enregistrer_un_courriel(
     fichiers_out: list[dict[str, Any]] = []
     registry_rows: list[dict[str, Any]] = []
     for job in file_jobs:
-        od_target_id: Optional[str] = None
-        if od_dossier_id:
-            od_target_id = _obtenir_sous_dossier_onedrive(
-                encoded_upn,
-                od_dossier_id,
-                job["od_sub"],
-                cache=od_subfolder_cache,
-                creer=not essai,
-            )
+        od_target_id = _obtenir_sous_dossier_onedrive(
+            encoded_upn,
+            od_dossier_id,
+            job["od_sub"],
+            cache=od_subfolder_cache,
+            creer=True,
+        )
+        od_rel_dir = (
+            f"{effective_od_dossier_name}\\{job['od_sub']}"
+            if job["od_sub"]
+            else effective_od_dossier_name
+        )
         f_out, reg_row = _enregistrer_un_fichier(
             user_id=user_id,
             encoded_upn=encoded_upn,
@@ -1399,24 +1443,22 @@ def _enregistrer_un_courriel(
             athena_folder_id=job["athena_folder_id"],
             presumed_category=job["presumed_category"],
             od_target_folder_id=od_target_id,
-            essai=essai,
+            od_rel_dir=od_rel_dir,
         )
         fichiers_out.append(f_out)
-        if reg_row is not None:
-            registry_rows.append(reg_row)
+        registry_rows.append(reg_row)
 
-    if not essai:
-        reg_doc, reg_errors = courrier_model.record_enregistre(
-            cle,
-            msg_id,
-            dossier_id=dossier_id,
-            dossier_numero=dossier_num,
-            fichiers=registry_rows,
+    reg_doc, reg_errors = courrier_model.record_enregistre(
+        cle,
+        msg_id,
+        dossier_id=dossier_id,
+        dossier_numero=dossier_num,
+        fichiers=registry_rows,
+    )
+    if reg_errors or reg_doc is None:
+        raise _SaveMessageError(
+            "; ".join(reg_errors) or "Échec d'inscription au registre Courrier."
         )
-        if reg_errors or reg_doc is None:
-            raise _SaveMessageError(
-                "; ".join(reg_errors) or "Échec d'inscription au registre Courrier."
-            )
 
     return {
         "cle": cle,
@@ -1431,7 +1473,6 @@ def _enregistrer_un_courriel(
 def enregistrer_courriels(
     messages: list[dict[str, Any]],
     *,
-    essai: bool = False,
     user_id: Optional[str] = None,
     clock: Callable[[], float] = time.monotonic,
     budget_secondes: float = BUDGET_SECONDES,
@@ -1441,7 +1482,6 @@ def enregistrer_courriels(
         log_courrier_event(
             "courrier_enregistrement",
             "refused",
-            essai=bool(essai),
             reason="switch_off",
         )
         raise PermissionError("Le module Courrier est désactivé (COURRIER_ACTIF=false).")
@@ -1454,7 +1494,7 @@ def enregistrer_courriels(
             f"`messages` doit contenir entre 1 et {MAX_MESSAGES_SAVE} éléments."
         )
 
-    uid = storage_identity.require_uid(user_id) if not essai else user_id
+    uid = storage_identity.require_uid(user_id)
     started = clock()
     encoded_upn = quote(Config.COURRIER_UPN, safe="")
     racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "4 - Dossiers"
@@ -1517,7 +1557,6 @@ def enregistrer_courriels(
                 racine_id=racine_id,
                 od_by_numero=od_by_numero,
                 od_subfolder_cache=od_subfolder_cache,
-                essai=bool(essai),
             )
             results.append(res)
             traites += 1
@@ -1545,13 +1584,11 @@ def enregistrer_courriels(
     log_courrier_event(
         "courrier_enregistrement",
         "success" if echecs == 0 else "failure",
-        essai=bool(essai),
         traites=traites,
         echecs=echecs,
         differes=differes,
     )
     return {
-        "essai": bool(essai),
         "traites": traites,
         "echecs": echecs,
         "differes": differes,
@@ -1620,7 +1657,6 @@ def _deplacer_un_courriel(
     statut_folder_ids: dict[str, str],
     batch_state: dict[str, Any],
     avertissements: list[str],
-    essai: bool,
 ) -> dict[str, Any]:
     cle = str(item.get("cle") or "").strip()
     msg_id = str(item.get("id") or "").strip()
@@ -1712,7 +1748,26 @@ def _deplacer_un_courriel(
             )
 
     parent_fid = str(msg_meta.get("parentFolderId") or "").strip()
-    if parent_fid != inbox_id:
+    in_source_folder = bool(parent_fid) and parent_fid == inbox_id
+    if not in_source_folder and parent_fid:
+        sent_id = batch_state.get("sent_items_id")
+        if sent_id is None:
+            try:
+                sent_meta = graph_courrier.courrier_get(
+                    f"/users/{encoded_upn}/mailFolders/SentItems",
+                    params={"$select": "id"},
+                    immutable_id=True,
+                )
+                sent_id = str(sent_meta.get("id") or "").strip()
+            except graph_courrier.CourrierGraphError as exc:
+                if exc.status_code == 404:
+                    sent_id = ""
+                else:
+                    raise
+            batch_state["sent_items_id"] = sent_id
+        in_source_folder = bool(sent_id) and parent_fid == sent_id
+
+    if not in_source_folder:
         already_classified_here = (
             action == "classer"
             and reg_doc is not None
@@ -1782,48 +1837,30 @@ def _deplacer_un_courriel(
                     raise _MoveMessageError(
                         f"Dossier parent Outlook « Archive > Dossiers > {statut_req} » introuvable."
                     )
-                if essai:
-                    target_folder_id = None
-                    statut_cible = statut_req
-                    dossier_outlook_cree = True
-                else:
-                    created_folder, was_created = graph_courrier.courrier_creer_dossier_outlook(
-                        statut_parent_id, cleaned_nom, encoded_upn=encoded_upn
+                created_folder, was_created = graph_courrier.courrier_creer_dossier_outlook(
+                    statut_parent_id, cleaned_nom, encoded_upn=encoded_upn
+                )
+                new_id = str(created_folder.get("id") or "").strip()
+                new_name = str(created_folder.get("displayName") or cleaned_nom).strip()
+                if not new_id or extraire_prefixe_dossier(new_name) != dossier_num:
+                    raise _MoveMessageError(
+                        "Réponse invalide à la création du dossier Outlook."
                     )
-                    new_id = str(created_folder.get("id") or "").strip()
-                    new_name = str(created_folder.get("displayName") or cleaned_nom).strip()
-                    if not new_id or extraire_prefixe_dossier(new_name) != dossier_num:
-                        raise _MoveMessageError(
-                            "Réponse invalide à la création du dossier Outlook."
-                        )
-                    new_entry = {
-                        "id": new_id,
-                        "nom": new_name,
-                        "numero": dossier_num,
-                        "statut": statut_req,
-                    }
-                    by_outlook_id[new_id] = new_entry
-                    by_numero.setdefault(dossier_num, []).append(new_entry)
-                    target_folder_id = new_id
-                    statut_cible = statut_req
-                    dossier_outlook_cree = was_created
+                new_entry = {
+                    "id": new_id,
+                    "nom": new_name,
+                    "numero": dossier_num,
+                    "statut": statut_req,
+                }
+                by_outlook_id[new_id] = new_entry
+                by_numero.setdefault(dossier_num, []).append(new_entry)
+                target_folder_id = new_id
+                statut_cible = statut_req
+                dossier_outlook_cree = was_created
 
     current_cats, target_cats = _compute_target_categories(
         msg_meta.get("categories"), action
     )
-
-    if essai:
-        return {
-            "cle": cle,
-            "action": action,
-            "statut": "ok",
-            "dossier": dossier_num or None,
-            "statut_outlook_cible": statut_cible,
-            "outlook_folder_id": target_folder_id,
-            "dossier_outlook_cree": dossier_outlook_cree,
-            "id_immuable_verifie": False,
-            "erreur": None,
-        }
 
     if not batch_state["master_checked"]:
         batch_state["master_checked"] = True
@@ -1890,7 +1927,6 @@ def _deplacer_un_courriel(
 def deplacer_courriels(
     messages: list[dict[str, Any]],
     *,
-    essai: bool = False,
     clock: Callable[[], float] = time.monotonic,
     budget_secondes: float = BUDGET_SECONDES,
 ) -> dict[str, Any]:
@@ -1899,7 +1935,6 @@ def deplacer_courriels(
         log_courrier_event(
             "courrier_classement",
             "refused",
-            essai=bool(essai),
             reason="switch_off",
         )
         raise PermissionError("Le module Courrier est désactivé (COURRIER_ACTIF=false).")
@@ -1953,7 +1988,7 @@ def deplacer_courriels(
                     by_outlook_id[fid] = enriched
                     by_numero.setdefault(num, []).append(enriched)
 
-    batch_state: dict[str, Any] = {"master_checked": False}
+    batch_state: dict[str, Any] = {"master_checked": False, "sent_items_id": None}
     results: list[dict[str, Any]] = []
     classes = 0
     laisses = 0
@@ -2013,7 +2048,6 @@ def deplacer_courriels(
                 statut_folder_ids=statut_folder_ids,
                 batch_state=batch_state,
                 avertissements=avertissements,
-                essai=bool(essai),
             )
             results.append(res)
             if res["statut"] == "introuvable":
@@ -2052,7 +2086,6 @@ def deplacer_courriels(
     log_courrier_event(
         "courrier_classement",
         "success" if echecs == 0 else "failure",
-        essai=bool(essai),
         classes=classes,
         laisses=laisses,
         introuvables=introuvables,
@@ -2060,7 +2093,6 @@ def deplacer_courriels(
         differes=differes,
     )
     return {
-        "essai": bool(essai),
         "classes": classes,
         "laisses": laisses,
         "introuvables": introuvables,
@@ -2069,52 +2101,6 @@ def deplacer_courriels(
         "messages": results,
         "avertissements": avertissements,
     }
-
-
-# ── Phase 5 : record_courriels_temps (entrées de temps + lien atomique) ─
-
-
-def inscrire_temps_courriels(
-    entrees: list[dict[str, Any]],
-    *,
-    essai: bool = False,
-) -> tuple[Optional[dict[str, Any]], list[str]]:
-    """Validate and atomically record time entries linked to saved Courrier emails."""
-    if not Config.COURRIER_ACTIF:
-        log_courrier_event(
-            "courrier_temps",
-            "refused",
-            essai=bool(essai),
-            reason="switch_off",
-        )
-        raise PermissionError("Le module Courrier est désactivé (COURRIER_ACTIF=false).")
-
-    rows, errors = courrier_model.record_courriels_temps(entrees, essai=bool(essai))
-    if errors or rows is None:
-        uncertain = concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR in errors
-        log_courrier_event(
-            "courrier_temps",
-            "failure" if uncertain else "refused",
-            essai=bool(essai),
-            reason="uncertain" if uncertain else "validation_or_collision",
-            demandees=len(entrees) if isinstance(entrees, list) else 0,
-        )
-        return None, errors
-
-    courriels_lies = sum(len(r["cles"]) for r in rows)
-    log_courrier_event(
-        "courrier_temps",
-        "success",
-        essai=bool(essai),
-        creees=len(rows),
-        courriels_lies=courriels_lies,
-    )
-    return {
-        "essai": bool(essai),
-        "creees": len(rows),
-        "courriels_lies": courriels_lies,
-        "entrees": rows,
-    }, []
 
 
 def deposer_docx_interne_onedrive(

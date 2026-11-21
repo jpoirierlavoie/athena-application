@@ -384,7 +384,8 @@ def test_the_key_s_description_says_what_its_policy_does():
     # key (billable time entries + permanent Courrier registry links).
     # 13 → 14 (2026-11-21, deliberately): decide_meeting_transcript demands its
     # key (permanent note/document filing + staged WebVTT purge + optional OneDrive).
-    assert len(required) == 14, sorted(required)
+    # 14 → 13 (2026-11-21, deliberately): Courrier v3 retired record_courriels_temps.
+    assert len(required) == 13, sorted(required)
     for name, spec in tools.TOOLS.items():
         prop = spec["input_schema"]["properties"].get("idempotency_key")
         if prop is None:

@@ -943,30 +943,6 @@
    ".warnings"
   ]
  },
- "record_courriels_temps": {
-  "first_shipped_in": "courrier-phase5",
-  "required": [
-   ".courriels_lies",
-   ".creees",
-   ".entrees",
-   ".entrees[].amount_cents",
-   ".entrees[].amount_display",
-   ".entrees[].billable",
-   ".entrees[].cles",
-   ".entrees[].date",
-   ".entrees[].dossier",
-   ".entrees[].dossier_id",
-   ".entrees[].hours",
-   ".entrees[].legacy_ref",
-   ".entrees[].phase",
-   ".entrees[].rate_cents",
-   ".entrees[].rate_display",
-   ".entrees[].sous_phase",
-   ".entrees[].time_entry_id",
-   ".essai",
-   ".idempotent_replay"
-  ]
- },
  "record_document_analysis": {
   "first_shipped_in": "21012c0",
   "required": [

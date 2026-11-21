@@ -565,7 +565,7 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "financiers, sans numéro de compte ni de transit",
         "les demandes de rendez-vous en attente (nom et courriel) et les "
         "notes/transcriptions Teams à revoir",
-        "la boîte de réception Outlook, l'aperçu des pièces et OneDrive",
+        "la boîte de réception et les éléments envoyés Outlook, l'aperçu des pièces et OneDrive",
     ):
         assert must in flat, must
     # WRITE — the box, what it does, and what the lines must still say: the

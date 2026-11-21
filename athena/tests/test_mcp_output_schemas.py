@@ -3759,30 +3759,21 @@ def test_save_courriels_conforms(monkeypatch):
             "creer_dossier_onedrive": False,
             "eml": {"sous_dossier": "Correspondance\\Courriels"},
             "pieces": [
-                {"rang": 1, "id": "att-1", "sous_dossier": "Pièces", "nom": "piece.pdf"}
+                {"rang": 1, "id": "att-1", "sous_dossier": "Pièces"}
             ],
         }
     ]
-    dry_res = handlers.save_courriels(
-        {"messages": plan, "essai": True, "idempotency_key": "save-dry-001"}
-    )
-    _conforms("save_courriels", dry_res)
-    assert dry_res["essai"] is True and dry_res["idempotent_replay"] is False
-    assert fake.peek_collection("documents") == {}
-    assert fake.peek_collection("courrier_messages") == {}
-    assert fake.peek_collection("folders") == {}
-    assert fake.peek_collection("mcp_idempotency") == {}
-    assert bucket.objects == {}
-
     live_res = handlers.save_courriels(
-        {"messages": plan, "essai": False, "idempotency_key": "save-live-001"}
+        {"messages": plan, "idempotency_key": "save-live-001"}
     )
     _conforms("save_courriels", live_res)
-    assert live_res["essai"] is False and live_res["idempotent_replay"] is False
+    assert live_res["idempotent_replay"] is False
     assert live_res["traites"] == 1
+    assert "nom" in live_res["messages"][0]["fichiers"][0]
+    assert "chemin" in live_res["messages"][0]["fichiers"][0]
 
     replay_res = handlers.save_courriels(
-        {"messages": plan, "essai": False, "idempotency_key": "save-live-001"}
+        {"messages": plan, "idempotency_key": "save-live-001"}
     )
     _conforms("save_courriels", replay_res)
     assert replay_res["idempotent_replay"] is True
@@ -3834,6 +3825,8 @@ def test_move_courriels_conforms(monkeypatch):
         del params, immutable_id, prefer, follow_next
         if path.endswith("/mailFolders/Inbox"):
             return {"id": "inbox-1"}
+        if path.endswith("/mailFolders/SentItems"):
+            return {"id": "sent-1"}
         if path.endswith("/mailFolders"):
             return {"value": [{"id": "fld-archive", "displayName": "Archive"}]}
         if path.endswith("/mailFolders/fld-archive/childFolders"):
@@ -3868,7 +3861,7 @@ def test_move_courriels_conforms(monkeypatch):
             return {
                 "id": "imm-laisser-2",
                 "internetMessageId": imid_laisser,
-                "parentFolderId": "inbox-1",
+                "parentFolderId": "sent-1",
                 "categories": [],
                 "isRead": True,
             }
@@ -3897,109 +3890,15 @@ def test_move_courriels_conforms(monkeypatch):
         {"cle": cle_laisser, "id": "imm-laisser-2", "action": "laisser"},
     ]
 
-    dry_res = handlers.move_courriels(
-        {"messages": plan, "essai": True, "idempotency_key": "move-dry-001"}
-    )
-    _conforms("move_courriels", dry_res)
-    assert dry_res["essai"] is True and dry_res["idempotent_replay"] is False
-    assert dry_res["classes"] == 1 and dry_res["laisses"] == 1
-    assert fake.peek_collection("mcp_idempotency") == {}
-
     live_res = handlers.move_courriels(
-        {"messages": plan, "essai": False, "idempotency_key": "move-live-001"}
+        {"messages": plan, "idempotency_key": "move-live-001"}
     )
     _conforms("move_courriels", live_res)
-    assert live_res["essai"] is False and live_res["idempotent_replay"] is False
+    assert live_res["idempotent_replay"] is False
     assert live_res["classes"] == 1 and live_res["laisses"] == 1
 
     replay_res = handlers.move_courriels(
-        {"messages": plan, "essai": False, "idempotency_key": "move-live-001"}
+        {"messages": plan, "idempotency_key": "move-live-001"}
     )
     _conforms("move_courriels", replay_res)
     assert replay_res["idempotent_replay"] is True
-
-
-def test_record_courriels_temps_conforms(monkeypatch):
-    from config import Config
-    from models import courrier as courrier_model
-    from tests._fake_firestore import install
-
-    modules = [
-        m
-        for n, m in sorted(sys.modules.items())
-        if (n == "models" or n.startswith("models.") or n in ("dav.sync", "mcp.write_support"))
-        and getattr(m, "db", None) is not None
-    ]
-    fake = install(monkeypatch, *modules)
-    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
-
-    did = "a0000000-0000-4000-8000-000000000001"
-    fake.seed(
-        f"dossiers/{did}",
-        {
-            "id": did,
-            "file_number": "2026-001",
-            "title": "Dossier Test",
-            "status": "actif",
-            "hourly_rate": 30000,
-        },
-    )
-    cle1 = courrier_model.compute_cle("<temps-1@cabinet.example>")
-    cle2 = courrier_model.compute_cle("<temps-2@cabinet.example>")
-    for cle, gid in ((cle1, "imm-1"), (cle2, "imm-2")):
-        fake.seed(
-            f"courrier_messages/{cle}",
-            {
-                "cle": cle,
-                "graph_id": gid,
-                "etat": courrier_model.ETAT_ENREGISTRE,
-                "dossier_id": did,
-                "dossier_numero": "2026-001",
-                "fichiers": [],
-                "legacy_ref": "",
-                "time_entry_id": "",
-                "outlook_folder_id": "",
-                "saved_at": None,
-                "moved_at": None,
-                "expire_at": None,
-            },
-        )
-    ref = courrier_model.build_courrier_legacy_ref(
-        "2026-001", "2026-11-20", [cle1, cle2]
-    )
-    entrees = [
-        {
-            "legacy_ref": ref,
-            "cles": [cle1, cle2],
-            "entree": {
-                "dossier_id": did,
-                "date": "2026-11-20",
-                "description": "Prise de connaissance de deux courriels.",
-                "hours": 0.25,
-                "phase": "CTS",
-            },
-        }
-    ]
-
-    dry = handlers.record_courriels_temps(
-        {"entrees": entrees, "essai": True, "idempotency_key": "temps-dry-1"}
-    )
-    _conforms("record_courriels_temps", dry)
-    assert dry["essai"] is True and dry["idempotent_replay"] is False
-    assert dry["creees"] == 1 and dry["courriels_lies"] == 2
-    assert fake.peek_collection("timeentries") == {}
-    assert fake.peek_collection("mcp_idempotency") == {}
-
-    live = handlers.record_courriels_temps(
-        {"entrees": entrees, "essai": False, "idempotency_key": "temps-live-1"}
-    )
-    _conforms("record_courriels_temps", live)
-    assert live["essai"] is False and live["idempotent_replay"] is False
-    assert live["creees"] == 1 and live["courriels_lies"] == 2
-    assert live["entrees"][0]["amount_cents"] == 7500
-
-    replay = handlers.record_courriels_temps(
-        {"entrees": entrees, "essai": False, "idempotency_key": "temps-live-1"}
-    )
-    _conforms("record_courriels_temps", replay)
-    assert replay["idempotent_replay"] is True

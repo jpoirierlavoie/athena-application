@@ -423,17 +423,16 @@ Contacts (lot 4a, step 2). Always INFO. **IDs and field names only** — never a
 | `id_proof_renamed` | A proof's display name was changed (`routes/parties.id_proof_rename`, on the model's `modifie` — compare-and-set on the PROOF's etag). Fields: `partie_id`, `proof_id`. An unchanged name writes nothing and logs nothing; a refusal (a stale row, a refused name) logs nothing. **Never** the old or the new name |
 | `id_proof_deleted` | A proof was deleted for good (D6, `routes/parties.id_proof_delete`, on the model's `supprime` ONLY): its object erased by generation, then its record deleted by THIS call — beside its ONE `audit_events` row (`entity_type: piece_identite`, `entity_id` the contact, the NEUTRAL title « Preuve d'identité », `status` the file type; hidden from the connector's `list_deletions`, D7). Fields: `partie_id`, `proof_id`. The other half of a double submission (`deja`: the record already gone) logs nothing and writes no row: ONE event and ONE row per deletion |
 
-### `log_courrier_event(event, outcome='success', *, essai=None, reason=None, **counts)` — logger `pallas.courrier`
+### `log_courrier_event(event, outcome='success', *, reason=None, **counts)` — logger `pallas.courrier`
 
 Outlook mail intake pipeline (`mcp/handlers.py` + `services/courrier.py`). `success` emits at INFO, `refused` at WARNING (e.g. `reason="switch_off"` when `COURRIER_ACTIF=false`, or pre-write validation/collision refusal), `failure` at ERROR (per-message Graph/OneDrive failure or uncertain commit outcome). **Strict zero-PII contract (Loi 25):** counts, booleans, HTTP `status_code`, and fixed machine `reason` tokens ONLY — never email subjects, sender/recipient addresses or names, filenames, OneDrive/Outlook folder names, or time-entry descriptions.
 
 | `event` | Typical outcome | Structured fields |
 |---|---|---|
 | `courrier_connexion` | `success` \| `failure` | `configure`, `jeton_valide`, `boite_accessible`, `onedrive_accessible`, `envoi_absent` |
-| `courrier_inventaire` | `success` \| `failure` | `premier`, `nombre_retourne`, `boite_total`, `suite`, `budget_atteint` (or `reason="graph_error"`, `status_code` on failure) |
-| `courrier_enregistrement` | `success` \| `failure` \| `refused` | `essai`, `traites`, `echecs`, `differes` (or `reason="switch_off"`) |
-| `courrier_classement` | `success` \| `failure` \| `refused` | `essai`, `classes`, `laisses`, `introuvables`, `echecs`, `differes` (or `reason="switch_off"`) |
-| `courrier_temps` | `success` \| `failure` \| `refused` | `essai`, `creees`, `courriels_lies` (or `reason="switch_off"` \| `"validation_or_collision"` \| `"uncertain"`, `demandees`) |
+| `courrier_inventaire` | `success` \| `failure` | `provenance`, `filtre`, `premier`, `nombre_retourne`, `boite_total`, `suite`, `budget_atteint` (or `reason="graph_error"`, `status_code` on failure) |
+| `courrier_enregistrement` | `success` \| `failure` \| `refused` | `traites`, `echecs`, `differes` (or `reason="switch_off"`) |
+| `courrier_classement` | `success` \| `failure` \| `refused` | `classes`, `laisses`, `introuvables`, `echecs`, `differes` (or `reason="switch_off"`) |
 
 ### `log_chat_event` — RETIRÉ le 2026-09-02
 

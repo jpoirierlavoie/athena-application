@@ -34,6 +34,7 @@ MOTIFS_IGNORE: tuple[str, ...] = (
 )
 MOTIFS_APERCU_OMIS: tuple[str, ...] = (
     "ignoree",
+    "non_demande",
     "format_non_texte",
     "taille_depassee",
     "chiffre",

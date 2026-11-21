@@ -1,4 +1,4 @@
-# Athena — plugin 2.0.2
+# Athena — plugin 2.0.3
 
 Une compétence qui apprend à Claude à se servir du connecteur Athena **avec le moins
 d'appels possible** : routage clair, suite d'appels minimale par demande courante,
@@ -31,12 +31,12 @@ remplissent à la construction ; ne jamais les écrire à la main.
 ```bash
 cd athena
 python -m pytest tests/test_plugin_athena.py -q   # la porte, d'abord
-python -m scripts.exporter_plugin_athena           # → ../dist/athena-2.0.2.plugin (non versionné)
+python -m scripts.exporter_plugin_athena           # → ../dist/athena-2.0.3.plugin (non versionné)
 rm -rf ../../athena-plugin/plugins/athena
 python -m scripts.exporter_plugin_athena --deplie ../../athena-plugin/plugins/athena
 ```
 
-Puis, dans ce miroir (`jpoirierlavoie/athena-plugin`) : reporter la version `2.0.2` dans
+Puis, dans ce miroir (`jpoirierlavoie/athena-plugin`) : reporter la version `2.0.3` dans
 `.claude-plugin/marketplace.json`, valider, pousser. claude.ai s'y synchronise (réglage de
 l'organisation), puis Claude Code : rien à téléverser.
 

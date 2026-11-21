@@ -1008,11 +1008,10 @@ _SCENARIO_EVALS: tuple[dict, ...] = (
             "list_courriels",
             "save_courriels",
             "move_courriels",
-            "record_courriels_temps",
         ),
-        "forbidden_tools": ("create_time_entries_bulk",),
+        "forbidden_tools": (),
         "expected_params": {
-            "list_courriels": {"premier": 0, "nombre": 25},
+            "list_courriels": {"premier": 0, "nombre": 25, "filtre": "nouveaux"},
         },
     },
     {
