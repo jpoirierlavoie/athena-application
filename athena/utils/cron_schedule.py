@@ -20,6 +20,7 @@ OFFICE_HOURS = (9, 17)
 #: offset (rolling 5-minute stagger so cron jobs never fire simultaneously).
 JOBS = {
     "portail": ("/taches/portail/reconciliation", 15, 15),
+    "disponibilites": ("/taches/disponibilites/sync", 15, 3),
     "bookings": ("/taches/bookings/sync", 15, 5),
     "outlook": ("/taches/outlook/sync", 15, 10),
 }

@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Optional
 
+from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -45,7 +46,28 @@ from security import sanitize
 
 logger = logging.getLogger(__name__)
 
-VALID_TYPES = ("documents", "intake")  # « intake » réservé à la phase L3
+VALID_TYPES = ("documents", "intake", "rdv")
+VALID_ETATS_RDV = (
+    "en_attente_courriel",
+    "a_choisir",
+    "creneau_pris",
+    "a_confirmer",
+    "confirme",
+    "annule",
+    "refuse",
+)
+VALID_RDV_MODES = ("public", "invite")
+_RDV_UPDATE_FIELDS = frozenset({
+    "statut",
+    "etat_rdv",
+    "hearing_id",
+    "slot_debut_utc",
+    "slot_fin_utc",
+    "duree_minutes",
+    "preavis_modification_heures",
+    "expires_at",
+    "dernier_report_echec",
+})
 VALID_STATUTS = (
     "envoyée", "ouverte", "soumise", "traitée", "refusée", "révoquée",
 )
@@ -133,6 +155,16 @@ def creer_invitation(
     display_label: str = "",
     jours: Optional[int] = None,
     prefill: Optional[dict] = None,
+    inv_id: Optional[str] = None,
+    rdv_mode: Optional[str] = None,
+    type_rdv_cle: Optional[str] = None,
+    type_rdv_libelle: Optional[str] = None,
+    duree_minutes: Optional[int] = None,
+    etat_rdv: Optional[str] = None,
+    slot_debut_utc: Optional[datetime] = None,
+    slot_fin_utc: Optional[datetime] = None,
+    hearing_id: Optional[str] = None,
+    preavis_modification_heures: Optional[int] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Create an invitation document (statut « envoyée »).
 
@@ -140,7 +172,8 @@ def creer_invitation(
     portail-readable (confidentiality trap §5) — a low-sensitivity string on
     par with the ``email`` already stored; the richer contact (address,
     phone) is NEVER stored, only resolved main-side from ``partie_id`` when
-    the accusé is built.
+    the accusé is built. For ``type == "rdv"``, opposing parties, phone,
+    topic, discussion points, and custom agenda stay strictly in the bucket.
     """
     errors: list[str] = []
     if type_ not in VALID_TYPES:
@@ -151,6 +184,13 @@ def creer_invitation(
     display_label = sanitize(display_label, max_length=120)
     if not display_label:
         errors.append("Une désignation (visible par le client) est requise.")
+    if type_ == "rdv":
+        if rdv_mode not in VALID_RDV_MODES:
+            errors.append("Mode de rendez-vous portail invalide.")
+        if etat_rdv not in VALID_ETATS_RDV:
+            errors.append("État initial de rendez-vous invalide.")
+        if not isinstance(duree_minutes, int) or isinstance(duree_minutes, bool) or not (15 <= duree_minutes <= 240):
+            errors.append("Durée du rendez-vous invalide.")
     if errors:
         return None, errors
 
@@ -160,9 +200,10 @@ def creer_invitation(
             else INVITATION_INTAKE_JOURS
         )
     now = datetime.now(timezone.utc)
-    inv_id = str(uuid.uuid4())
+    explicit_id = bool(inv_id)
+    doc_id = (inv_id or "").strip() or str(uuid.uuid4())
     doc = {
-        "id": inv_id,
+        "id": doc_id,
         "type": type_,
         "email": email,
         "partie_id": partie_id or None,
@@ -190,12 +231,108 @@ def creer_invitation(
             if isinstance(prefill, dict) and prefill else None
         ),
     }
+    if type_ == "rdv":
+        doc.update({
+            "rdv_mode": rdv_mode,
+            "type_rdv_cle": sanitize(str(type_rdv_cle or ""), max_length=40),
+            "type_rdv_libelle": sanitize(str(type_rdv_libelle or ""), max_length=120),
+            "duree_minutes": int(duree_minutes),
+            "etat_rdv": etat_rdv,
+            "slot_debut_utc": slot_debut_utc,
+            "slot_fin_utc": slot_fin_utc,
+            "hearing_id": hearing_id or None,
+            "preavis_modification_heures": int(
+                24 if preavis_modification_heures is None else preavis_modification_heures
+            ),
+            "dernier_report_echec": "",
+        })
     try:
-        _col().document(inv_id).set(doc)
+        ref = _col().document(doc_id)
+        if explicit_id:
+            ref.create(doc)
+        else:
+            ref.set(doc)
+    except AlreadyExists:
+        return None, ["Cette demande de rendez-vous existe déjà."]
     except Exception:
         logger.exception("portail invitation create failed")
         return None, ["Erreur lors de la création de l'invitation."]
     return doc, []
+
+
+def lire_invitation_strict(inv_id: str) -> Optional[dict]:
+    """Read an invitation strictly (propagates Firestore failures)."""
+    if not inv_id:
+        return None
+    snap = _col().document(inv_id).get()
+    return snap.to_dict() if snap.exists else None
+
+
+def mettre_a_jour_rdv(inv_id: str, **fields) -> bool:
+    """Update whitelisted RDV scheduling metadata on an existing invitation."""
+    if not inv_id or not fields:
+        return False
+    invalid = set(fields) - _RDV_UPDATE_FIELDS
+    if invalid:
+        raise ValueError(f"Champs RDV non admis : {sorted(invalid)}")
+    maj = dict(fields)
+    if "statut" in maj and maj["statut"] not in VALID_STATUTS:
+        return False
+    if "etat_rdv" in maj and maj["etat_rdv"] not in VALID_ETATS_RDV:
+        return False
+    if "dernier_report_echec" in maj:
+        maj["dernier_report_echec"] = sanitize(
+            str(maj["dernier_report_echec"] or ""), max_length=300
+        )
+    maj["updated_at"] = datetime.now(timezone.utc)
+    try:
+        _col().document(inv_id).update(maj)
+        return True
+    except Exception:
+        logger.exception("portail invitation rdv update failed")
+        return False
+
+
+def compter_demandes_rdv_recentes_par_courriel(
+    email: str, depuis_utc: datetime
+) -> int:
+    """Strict count of public RDV requests by *email* since *depuis_utc*."""
+    norm = (email or "").strip().lower()
+    if not norm:
+        return 0
+    query = _col().where(filter=FieldFilter("email", "==", norm))
+    count = 0
+    for snap in query.stream():
+        doc = snap.to_dict() or {}
+        if doc.get("type") != "rdv" or doc.get("rdv_mode") != "public":
+            continue
+        created = doc.get("created_at")
+        if isinstance(created, datetime):
+            c_utc = (
+                created.replace(tzinfo=timezone.utc)
+                if created.tzinfo is None
+                else created.astimezone(timezone.utc)
+            )
+            if c_utc >= depuis_utc:
+                count += 1
+    return count
+
+
+def lister_durees_rdv_actives() -> set[int]:
+    """Fail-open durations for active RDV invitations (availability horizon)."""
+    try:
+        query = _col().where(filter=FieldFilter("type", "==", "rdv"))
+        out: set[int] = set()
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if doc.get("statut") not in STATUTS_SESSION or est_expiree(doc):
+                continue
+            d = doc.get("duree_minutes")
+            if isinstance(d, int) and not isinstance(d, bool) and d >= 15:
+                out.add(d)
+        return out
+    except Exception:
+        return set()
 
 
 def lire_invitation(inv_id: str) -> Optional[dict]:

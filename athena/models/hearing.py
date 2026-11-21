@@ -210,11 +210,16 @@ def _migrate_hearing(doc: dict) -> dict:
     doc.setdefault("client_nom", "")
     doc.setdefault("bookings_divergence", None)
     doc.setdefault("partie_id", "")
-    # Teams meetings & post-meeting capture (Lot 1+) — additive defaults.
+    # Teams meetings & post-meeting capture (Lot 1+) + portal RDV (Lot 2).
     doc.setdefault("online_meeting_id", "")
     doc.setdefault("teams_agenda", "")
     doc.setdefault("transcript_status", "")
     doc.setdefault("attendee_emails", [])
+    doc.setdefault("client_telephone", "")
+    doc.setdefault("parties_adverses", [])
+    doc.setdefault("sujet_client", "")
+    doc.setdefault("portail_invitation_id", "")
+    doc.setdefault("type_rdv_cle", "")
     # Séries récurrentes. Additifs, sans migration : un document hérité lit
     # serie_id == "" — « autonome » — ce qui est vrai.
     doc.setdefault("serie_id", "")
@@ -296,6 +301,11 @@ def _default_doc() -> dict:
         "teams_agenda": "",
         "transcript_status": "",
         "attendee_emails": [],
+        "client_telephone": "",
+        "parties_adverses": [],
+        "sujet_client": "",
+        "portail_invitation_id": "",
+        "type_rdv_cle": "",
         # ── Séries récurrentes ────────────────────────────────────────────
         # serie_id : UUIDv4 partagé par toutes les occurrences d'une chaîne.
         # "" = occurrence autonome. Toutes les occurrences sont ÉGALES — pas
@@ -324,7 +334,7 @@ def _default_doc() -> dict:
 
 
 def _sanitize_data(data: dict) -> dict:
-    """Sanitize all string values and attendee email lists in *data*."""
+    """Sanitize all string values and list fields in *data*."""
     out: dict = {}
     for key, val in data.items():
         if isinstance(val, str):
@@ -334,6 +344,12 @@ def _sanitize_data(data: dict) -> dict:
                 sanitize(str(addr), max_length=254)
                 for addr in val
                 if str(addr).strip()
+            ]
+        elif key == "parties_adverses" and isinstance(val, (list, tuple)):
+            out[key] = [
+                sanitize(str(name), max_length=200)
+                for name in list(val)[:10]
+                if str(name).strip()
             ]
         else:
             out[key] = val
@@ -666,11 +682,33 @@ BOOKINGS_PENDING: tuple[str, ...] = ("à_confirmer", "annulée_client")
 # The two values a decision writes: "" (confirmed — the event enters the
 # calendar and DAV) and « refusée ».
 BOOKINGS_DECISIONS: tuple[str, ...] = ("", "refusée")
+RDV_SOURCES: tuple[str, ...] = ("bookings", "portail")
 
 CONFIRMATION_READ_ERROR = (
     "Lecture du rendez-vous impossible — rien n'a été enregistré. "
     "Réessayez dans un moment."
 )
+
+
+def _list_by_source_strict(
+    sources: tuple[str, ...], *, include_confirmed: bool = False
+) -> list[dict]:
+    keep = BOOKINGS_PENDING + (("",) if include_confirmed else ())
+    seen: set[str] = set()
+    rows: list[dict] = []
+    for src in sources:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("source", "==", src)
+        )
+        for doc in query.stream():
+            item = _migrate_hearing(doc.to_dict())
+            hid = item.get("id") or doc.id
+            if hid in seen:
+                continue
+            seen.add(hid)
+            if (item.get("confirmation") or "") in keep:
+                rows.append(item)
+    return rows
 
 
 def list_bookings_strict(*, include_confirmed: bool = False) -> list[dict]:
@@ -681,20 +719,25 @@ def list_bookings_strict(*, include_confirmed: bool = False) -> list[dict]:
     :data:`BOOKINGS_PENDING` rows; ``include_confirmed`` also keeps the
     confirmed ones (``confirmation == ""``), on which Réception's divergence
     alerts live. ``refusée`` is dropped in both modes.
-
-    Why not ``list_hearings(include_unconfirmed=True)``: that reader
-    streams the WHOLE collection and swallows every error into ``[]``, so
-    « nothing pending » was indistinguishable from a Firestore outage —
-    and Réception printed « Aucun rendez-vous à confirmer » over a blip,
-    its own error banner being dead code (the try around it could never
-    fire). Unordered: the caller sorts.
     """
-    keep = BOOKINGS_PENDING + (("",) if include_confirmed else ())
-    query = db.collection(COLLECTION).where(
-        filter=FieldFilter("source", "==", "bookings")
-    )
-    rows = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
-    return [r for r in rows if (r.get("confirmation") or "") in keep]
+    return _list_by_source_strict(("bookings",), include_confirmed=include_confirmed)
+
+
+def list_rendez_vous_strict(*, include_confirmed: bool = False) -> list[dict]:
+    """Bookings and portal rendez-vous awaiting decision (or confirmed) — STRICT."""
+    return _list_by_source_strict(RDV_SOURCES, include_confirmed=include_confirmed)
+
+
+_EXTRA_CONFIRMATION_FIELDS = frozenset({
+    "status",
+    "conference_uri",
+    "graph_event_id",
+    "graph_ical_uid",
+    "online_meeting_id",
+    "teams_agenda",
+    "transcript_status",
+    "attendee_emails",
+})
 
 
 def set_bookings_confirmation(
@@ -703,54 +746,36 @@ def set_bookings_confirmation(
     *,
     partie_id: Optional[str] = None,
     expected_etag: Optional[str] = None,
+    extra_fields: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str], str]:
-    """Write a lawyer's decision on a Bookings import — a PARTIAL update.
+    """Write a lawyer's decision on a Bookings or portal import — a PARTIAL update.
 
-    Only the confirmation gate (and, when given, the linked ``partie_id``)
-    plus the write's own stamp (``provenance.update_fields``) — never the
-    merged full-document ``set()`` of :func:`update_hearing`. That shape is
-    the guarantee: a decision can move nothing else (not the slot the
-    Bookings sync may just have updated, not a divergence), and it cannot
-    be refused by a field validation that has nothing to do with it —
-    which matters most AFTER an Outlook cancellation, when the refusal must
-    be recorded whatever the rest of the document holds.
-
-    *confirmation* must be one of :data:`BOOKINGS_DECISIONS`, and the
-    hearing a Bookings import (``source == "bookings"``); the transition
-    rules (confirming an ``annulée_client`` import is refused, a confirmed
-    one is not refused here…) belong to ``services/rendez_vous.py``, which
-    is the only caller. The read is STRICT: a read failure answers
-    :data:`CONFIRMATION_READ_ERROR`, never « introuvable ».
-
-    ``expected_etag`` (keyword-only): when given, the write commits only if
-    the stored etag is still that one (``models.concurrency.commit_fields``,
-    same partial key set) — a stale one returns ``[STALE_ETAG_ERROR]``,
-    nothing written. ``None`` is the unconditional single ``update()`` —
-    what the refusal performs after an Outlook cancellation, when the truth
-    has already left the building.
-
-    Returns ``(doc, errors, previous)``: ``previous`` is the confirmation
-    the write REPLACED, as read (``""`` on a refusal). The third member
-    deviates from the house pair on purpose (the ``set_time_entry_phase``
-    precedent): a refusal recorded unconditionally over an import another
-    tab had just confirmed must tombstone it out of DAV, and only the
-    writer knows what it replaced.
+    Only the confirmation gate (and, when given, the linked ``partie_id`` or
+    whitelisted Teams metadata in ``extra_fields``) plus the write's own stamp
+    (``provenance.update_fields``) — never the merged full-document ``set()``
+    of :func:`update_hearing`.
     """
     if confirmation not in BOOKINGS_DECISIONS:
         return None, ["Décision inconnue pour un rendez-vous."], ""
+    if extra_fields:
+        disallowed = sorted(k for k in extra_fields if k not in _EXTRA_CONFIRMATION_FIELDS)
+        if disallowed:
+            return None, [f"Champ de confirmation refusé : « {disallowed[0]} »."], ""
     try:
         existing = get_hearing_strict(hearing_id)
     except Exception:
         log_unexpected("hearing read failed before a confirmation write")
         return None, [CONFIRMATION_READ_ERROR], ""
-    if not existing or existing.get("source") != "bookings":
+    if not existing or existing.get("source") not in RDV_SOURCES:
         return None, ["Rendez-vous introuvable."], ""
     previous = existing.get("confirmation") or ""
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR], previous
 
     now = datetime.now(timezone.utc)
-    fields = {"confirmation": confirmation, **provenance.update_fields(now)}
+    fields: dict = {"confirmation": confirmation, **provenance.update_fields(now)}
+    if extra_fields:
+        fields.update(_sanitize_data(extra_fields))
     if partie_id is not None:
         fields["partie_id"] = sanitize(str(partie_id), max_length=100)
     try:
@@ -856,6 +881,24 @@ def list_hearings_in_range(
     ).rows
 
 
+def list_hearings_range_strict(
+    floor_utc: datetime, ceiling_utc: datetime
+) -> list[dict]:
+    """Strict chronological read of all hearings starting in ``[floor_utc, ceiling_utc]``.
+
+    Propagates Firestore errors so availability computation never publishes an
+    empty busy set on a transient read failure. Includes ``à_confirmer`` held
+    slots; drops ``refusée`` and ``annulée_client`` at the caller.
+    """
+    query = (
+        db.collection(COLLECTION)
+        .where(filter=FieldFilter("start_datetime", ">=", floor_utc))
+        .where(filter=FieldFilter("start_datetime", "<=", ceiling_utc))
+        .order_by("start_datetime")
+    )
+    return [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+
+
 def list_hearings_window(
     pivot: datetime,
     direction: str = "upcoming",
@@ -941,7 +984,9 @@ SERVER_FIELDS = frozenset({
     "source", "confirmation",
     "graph_event_id", "graph_ical_uid", "graph_last_modified",
     "online_meeting_id", "teams_agenda", "transcript_status", "attendee_emails",
-    "client_email", "client_nom", "bookings_divergence", "partie_id",
+    "client_email", "client_nom", "client_telephone",
+    "parties_adverses", "sujet_client", "portail_invitation_id", "type_rdv_cle",
+    "bookings_divergence", "partie_id",
     "serie_id", "serie_rule",
 })
 # Neither set: id, vevent_uid, dav_href (recomputed on every update),

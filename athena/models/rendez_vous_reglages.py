@@ -131,6 +131,17 @@ def get_rendez_vous_reglages_state() -> tuple[dict, str]:
     return _project(stored), "store"
 
 
+def get_rendez_vous_reglages_strict() -> dict:
+    """Strict reader propagating Firestore failures for scheduling writes/sync."""
+    snap = db.collection(COLLECTION).document(DOC_ID).get()
+    if not getattr(snap, "exists", False):
+        return default_reglages()
+    data = snap.to_dict()
+    if not isinstance(data, dict):
+        raise RuntimeError("Rendez-vous settings document has non-dict payload.")
+    return _project(data)
+
+
 def get_rendez_vous_reglages() -> dict:
     """Fail-open reader returning the active settings or deep-copied defaults."""
     return get_rendez_vous_reglages_state()[0]
@@ -382,5 +393,6 @@ __all__ = [
     "changed_field_names",
     "get_rendez_vous_reglages",
     "get_rendez_vous_reglages_state",
+    "get_rendez_vous_reglages_strict",
     "update_rendez_vous_reglages",
 ]

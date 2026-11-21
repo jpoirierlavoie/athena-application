@@ -16,7 +16,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from firebase_admin import storage
@@ -62,7 +62,13 @@ from models.folder import (
     ensure_system_folder,
 )
 from models import concurrency
-from models.hearing import get_hearing, list_bookings_strict, update_hearing
+from models.hearing import (
+    RDV_SOURCES,
+    get_hearing,
+    list_hearings_in_range,
+    list_rendez_vous_strict,
+    update_hearing,
+)
 from models.partie import (
     ROLE_LABELS,
     create_partie,
@@ -71,12 +77,19 @@ from models.partie import (
     list_parties,
     update_partie,
 )
+from models.rendez_vous_reglages import get_rendez_vous_reglages
 from routes import edit_conflict
 from security import sanitize
 from services import portail_emission as emission
 from services import rendez_vous
 from services.carnet import apres_ecriture_contact
-from utils import cron_schedule, occupations, rapprochement, storage_identity
+from utils import (
+    cron_schedule,
+    disponibilites_math,
+    occupations,
+    rapprochement,
+    storage_identity,
+)
 from utils.logging_setup import log_bookings_event, log_portail_event
 
 logger = logging.getLogger(__name__)
@@ -107,16 +120,10 @@ _badge_lock = threading.Lock()
 
 
 def _compter_rdv() -> int:
-    """Rendez-vous « à_confirmer » (Bookings L2) awaiting review.
-
-    The Bookings imports only (``source == "bookings"`` equality — it used
-    to stream the WHOLE hearings collection), behind the same 60 s badge
-    cache. Fail-open here, and only here: a badge decides nothing, and the
-    tab itself says when it cannot read (``_contexte_rdv``).
-    """
+    """Rendez-vous « à_confirmer » (Bookings + portail) awaiting review."""
     try:
         return sum(
-            1 for h in list_bookings_strict()
+            1 for h in list_rendez_vous_strict()
             if h.get("confirmation") == "à_confirmer"
         )
     except Exception:
@@ -243,27 +250,121 @@ def _rediriger(message: str = "", erreur: str = "", onglet: str = ""):
 # ── Onglet « Rendez-vous » (Bookings L2 §5) ──────────────────────────────
 
 
-def _contexte_rdv() -> dict:
-    """Build the « Rendez-vous » tab context: à_confirmer + annulée_client
-    cards, plus confirmed events carrying an unseen divergence.
+def _enrichir_rdvs_portail(rdvs: list[dict]) -> None:
+    """Attach visual conflict candidates and overlapping schedule hints to portal RDVs."""
+    portail_rdvs = [h for h in rdvs if h.get("source") == "portail"]
+    if not portail_rdvs:
+        return
+    try:
+        parties = list_parties()
+    except Exception:
+        logger.exception("reception: parties read failed for rdv conflicts")
+        parties = []
+    try:
+        dossiers = list_dossiers()
+    except Exception:
+        logger.exception("reception: dossiers read failed for rdv conflicts")
+        dossiers = []
 
-    Both lists come from ``services.rendez_vous`` through a STRICT reader.
-    The old context read ``list_hearings(include_unconfirmed=True)``, which
-    swallows every error into ``[]``: its own try could never fire, and a
-    Firestore blip printed « Aucun rendez-vous à confirmer ». A failed read
-    now shows the warning banner and NO empty state (the template hides it
-    under ``erreur_rdv``). ``heures_synchro`` is what the tab's footnote
-    quotes for the import hours (``utils.cron_schedule``).
-    """
-    heures = cron_schedule.cadence_fr("bookings")
+    dossier_party_ids: set[str] = set()
+    for d in dossiers:
+        for champ in ("client_ids", "opposing_party_ids", "avocat_ids"):
+            dossier_party_ids.update(str(pid) for pid in (d.get(champ) or ()) if pid)
+
+    index = [(p["id"], display_name(p)) for p in parties if p.get("id")]
+
+    starts = [h.get("start_datetime") for h in portail_rdvs if isinstance(h.get("start_datetime"), datetime)]
+    ends = [h.get("end_datetime") for h in portail_rdvs if isinstance(h.get("end_datetime"), datetime)]
+    existing_intervals: list[tuple[str, datetime, datetime]] = []
+    if starts and ends:
+        try:
+            window_rows = list_hearings_in_range(
+                min(starts) - timedelta(days=2),
+                max(ends) + timedelta(days=2),
+                limit=500,
+                include_unconfirmed=True,
+            )
+            for row in window_rows:
+                iv = disponibilites_math.hearing_busy_interval(row)
+                if iv is not None:
+                    existing_intervals.append((str(row.get("id") or ""), iv[0], iv[1]))
+        except Exception:
+            logger.exception("reception: range read failed for rdv overlap hint")
+
+    for h in portail_rdvs:
+        noms: list[str] = []
+        client_nom = (h.get("client_nom") or "").strip()
+        if client_nom:
+            noms.append(client_nom)
+        for adv in h.get("parties_adverses") or ():
+            s_adv = str(adv or "").strip()
+            if s_adv:
+                noms.append(s_adv)
+
+        conflits = []
+        if index:
+            for nom in noms:
+                trouves = rapprochement.candidats(nom, index)
+                if trouves:
+                    conflits.append({
+                        "nom": nom,
+                        "candidats": [
+                            {
+                                "id": c.cle,
+                                "nom": c.nom,
+                                "motif": c.motif,
+                                "en_dossier": c.cle in dossier_party_ids,
+                            }
+                            for c in trouves
+                        ],
+                    })
+        h["_conflits_candidats"] = conflits
+
+        chevauche = False
+        hs = h.get("start_datetime")
+        he = h.get("end_datetime")
+        if isinstance(hs, datetime) and isinstance(he, datetime):
+            hid = str(h.get("id") or "")
+            for other_id, os_dt, oe_dt in existing_intervals:
+                if other_id != hid and hs < oe_dt and os_dt < he:
+                    chevauche = True
+                    break
+        h["_conflit_horaire"] = chevauche
+
+
+def _contexte_rdv() -> dict:
+    """Build the « Rendez-vous » tab context: pending cards, divergences, & pending invites."""
+    heures = cron_schedule.cadence_fr("disponibilites")
     try:
         rdvs = rendez_vous.lister_en_attente()
         divergences = rendez_vous.lister_divergences()
     except rendez_vous.LectureImpossible:
-        return {"rdvs": [], "divergences": [], "erreur_rdv": True,
-                "heures_synchro": heures}
-    return {"rdvs": rdvs, "divergences": divergences, "erreur_rdv": False,
-            "heures_synchro": heures}
+        return {
+            "rdvs": [],
+            "divergences": [],
+            "rdv_invites_attente": [],
+            "erreur_rdv": True,
+            "heures_synchro": heures,
+        }
+    _enrichir_rdvs_portail(rdvs)
+    rdv_invites_attente: list[dict] = []
+    if Config.PORTAIL_RDV_ACTIF:
+        try:
+            rdv_invites_attente = [
+                inv for inv in pi.lister_invitations(type_="rdv")
+                if inv.get("statut") in ("envoyée", "ouverte")
+                and inv.get("etat_rdv") in ("a_choisir", "creneau_pris")
+                and not pi.est_expiree(inv)
+            ]
+        except Exception:
+            logger.exception("reception: pending rdv invites read failed")
+    return {
+        "rdvs": rdvs,
+        "divergences": divergences,
+        "rdv_invites_attente": rdv_invites_attente,
+        "erreur_rdv": False,
+        "heures_synchro": heures,
+    }
 
 
 # ── Ouvertures (L3 §5) ───────────────────────────────────────────────────
@@ -537,13 +638,36 @@ def _email_du_dossier(dossier: dict) -> str:
     return ""
 
 
+def _rdv_inviter_context() -> dict:
+    """Meeting types + default duration/agenda for the inviter form."""
+    reglages = get_rendez_vous_reglages()
+    types = [
+        t for t in (reglages.get("types_rdv") or ())
+        if isinstance(t, dict) and t.get("cle")
+    ]
+    first = types[0] if types else {}
+    return {
+        "rdv_types": types,
+        "rdv_type_defaut": str(first.get("cle") or ""),
+        "rdv_duree_defaut": int(first.get("duree_minutes") or 30),
+        "rdv_agenda_defaut": str(first.get("ordre_du_jour") or ""),
+    }
+
+
+def _parse_duree(raw: str) -> Optional[int]:
+    try:
+        return int(str(raw or "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
 @reception_bp.get("/inviter")
 @login_required
 def inviter_form():
     dossier_id = request.args.get("dossier_id", "")
     dossier = get_dossier(dossier_id) if dossier_id else None
     type_ = request.args.get("type", "documents")
-    if type_ not in ("documents", "intake"):
+    if type_ not in ("documents", "intake", "rdv"):
         type_ = "documents"
     # Déclencheur (b) : la fiche partie amène ici avec ?partie_id=, ce qui
     # préremplit le contact et, à la soumission, l'instantané non sensible.
@@ -565,6 +689,7 @@ def inviter_form():
         ),
         errors=[],
         form={},
+        **_rdv_inviter_context(),
     )
 
 
@@ -592,35 +717,37 @@ def partie_search():
 @login_required
 def inviter_submit():
     f = request.form
-    # Déclencheur (c) : un sélecteur sur le formulaire existant plutôt qu'un
-    # second formulaire — c'est ici le SEUL endroit où le type était écrit en
-    # dur, donc le seul à brancher.
     type_ = f.get("type", "documents")
-    if type_ not in ("documents", "intake"):
+    if type_ not in ("documents", "intake", "rdv"):
         type_ = "documents"
     dossier_id = f.get("dossier_id", "").strip()
     dossier = get_dossier(dossier_id) if dossier_id else None
     display_label = sanitize(f.get("display_label", ""), max_length=120).strip()
     if not display_label:
         if type_ == "intake":
-            # Générique à dessein (§2) : jamais un numéro de dossier ni une
-            # partie adverse — ce libellé est le seul que le client voit, et
-            # tout le document d'invitation est lu par le service PUBLIC.
             display_label = "Ouverture de votre dossier client"
+        elif type_ == "rdv":
+            display_label = ""  # portail_emission fills from meeting type
         elif dossier:
             display_label = f"Dossier {dossier.get('file_number', '')}".strip()
     defaut_jours = (
         INVITATION_INTAKE_JOURS if type_ == "intake"
         else INVITATION_DOCUMENTS_JOURS
     )
-    try:
-        jours = int(f.get("jours", str(defaut_jours)))
-    except ValueError:
-        jours = defaut_jours
+    jours: Optional[int]
+    if type_ == "rdv":
+        jours = None
+        try:
+            jours_fallback = int(f.get("jours", str(defaut_jours)))
+        except ValueError:
+            jours_fallback = defaut_jours
+    else:
+        try:
+            jours = int(f.get("jours", str(defaut_jours)))
+        except ValueError:
+            jours = defaut_jours
+        jours_fallback = jours
 
-    # A chosen party links partie_id (richer contact resolved main-side at
-    # accusé time). An unresolvable id is ignored, never a blocking error —
-    # client_name + email still carry the manual case.
     partie_id = f.get("partie_id", "").strip() or None
     partie = get_partie(partie_id) if partie_id else None
     if partie is None:
@@ -635,12 +762,13 @@ def inviter_submit():
         client_name=client_name,
         display_label=display_label,
         jours=jours,
-        # Le préremplissage n'a de sens que pour une MISE À JOUR : une
-        # ouverture sans contact lié part de zéro.
         prefill=(
             pi.prefill_depuis_partie(partie)
             if type_ == "intake" and partie else None
         ),
+        type_rdv_cle=f.get("type_rdv_cle", "") if type_ == "rdv" else None,
+        duree_minutes=_parse_duree(f.get("duree_minutes", "")) if type_ == "rdv" else None,
+        ordre_du_jour=f.get("ordre_du_jour", "") if type_ == "rdv" else None,
     )
     if errors:
         return render_template(
@@ -651,19 +779,19 @@ def inviter_submit():
             partie=partie,
             email_prefill="",
             jours_choix=_JOURS_CHOIX,
-            jours_selection=jours,
+            jours_selection=jours_fallback,
             errors=errors,
             form=f,
+            **_rdv_inviter_context(),
         ), 400
     if lien_manuel:
-        # Graph absent/en panne : l'invitation existe, le juriste transmet
-        # le lien lui-même (jamais d'invitation morte silencieuse).
         return render_template(
             "reception/lien.html", invitation=invitation, lien=lien_manuel
         )
+    onglet = "ouvertures" if type_ == "intake" else ("rdv" if type_ == "rdv" else "")
     return _rediriger(
         message="Invitation transmise par courriel.",
-        onglet="ouvertures" if type_ == "intake" else "",
+        onglet=onglet,
     )
 
 
@@ -1155,10 +1283,9 @@ def traiter_lot(inv_id: str, batch: str):
 
 
 def _rdv_ou_erreur(hid: str) -> Optional[dict]:
-    """Fetch a Bookings hearing or None. get_hearing does NOT filter on
-    confirmation, so an à_confirmer/annulée_client import is reachable."""
+    """Fetch a Bookings or portal RDV hearing or None."""
     hearing = get_hearing(hid)
-    if not hearing or hearing.get("source") != "bookings":
+    if not hearing or hearing.get("source") not in RDV_SOURCES:
         return None
     return hearing
 
@@ -1168,10 +1295,10 @@ def _rdv_ou_erreur(hid: str) -> Optional[dict]:
 # may have decided already. Said in the rendez-vous' own terms: the model's
 # generic refusal speaks of « modifications » the lawyer never made here.
 _RDV_PERIME = (
-    "Ce rendez-vous a changé depuis l'affichage de la page — la "
-    "synchronisation Bookings l'a peut-être mis à jour. Rien n'a été fait "
-    "et Outlook n'a pas été touché : vérifiez-le ci-dessous, puis refaites "
-    "votre choix."
+    "Ce rendez-vous a changé depuis l'affichage de la page — il a peut-être "
+    "été mis à jour depuis un autre onglet ou par le client. Rien n'a été fait, "
+    "Outlook n'a pas été touché et rien n'a été envoyé : vérifiez-le ci-dessous, "
+    "puis refaites votre choix."
 )
 
 
@@ -1192,6 +1319,7 @@ def rdv_confirmer(hid: str):
     hearing, errors, rapport = rendez_vous.confirmer(
         hid, lier_partie=request.form.get("lier") == "on",
         expected_etag=expected,
+        teams_agenda=request.form.get("teams_agenda"),
     )
     if errors:
         return _erreur_rdv(errors)
@@ -1246,7 +1374,7 @@ def rdv_refuser(hid: str):
     # page's version is checked BEFORE Graph, the write after it is
     # unconditional.
     expected = edit_conflict.submitted_etag()
-    _hearing, errors, rapport = rendez_vous.refuser(hid, expected_etag=expected)
+    hearing, errors, rapport = rendez_vous.refuser(hid, expected_etag=expected)
     if errors:
         return _erreur_rdv(errors)
     if rapport["warning"]:
@@ -1256,10 +1384,20 @@ def rdv_refuser(hid: str):
     if not rapport["changed"]:
         return _rediriger(message="Ce rendez-vous était déjà refusé.",
                           onglet="rdv")
-    message = (
-        "Rendez-vous refusé — la réunion Outlook a été annulée et le client "
-        "notifié." if rapport["graph_cancelled"] else "Rendez-vous refusé."
-    )
+    envoye_portail = False
+    if rapport.get("envoyer_refus_portail") and hearing is not None:
+        envoye_portail, warn_mail = emission.envoyer_refus_rdv_portail(hearing)
+        if warn_mail:
+            return _rediriger(erreur=warn_mail, onglet="rdv")
+    if envoye_portail:
+        message = "Rendez-vous refusé — un courriel de refus poli a été transmis."
+    elif rapport["graph_cancelled"]:
+        message = (
+            "Rendez-vous refusé — la réunion Outlook a été annulée et le client "
+            "notifié."
+        )
+    else:
+        message = "Rendez-vous refusé."
     return _rediriger(message=message, onglet="rdv")
 
 

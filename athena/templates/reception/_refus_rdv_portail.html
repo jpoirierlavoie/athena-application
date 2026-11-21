@@ -1,0 +1,20 @@
+{# Avis courtois envoyé au demandeur lorsque le cabinet décline une demande /rdv. #}
+<p>Bonjour,</p>
+
+<p>Nous accusons réception de votre demande de rendez-vous pour le
+<strong>{{ quand_fr }}</strong> ({{ display_label }}).</p>
+
+<p>Nous ne sommes malheureusement pas en mesure de donner suite à ce
+rendez-vous dans ce cadre. Aucun mandat ni aucune relation avocat-client
+n'a été formé à la suite de cette demande.</p>
+
+<p>Nous vous invitons, le cas échéant, à consulter un autre professionnel ou
+le service de référence du Barreau de votre région.</p>
+
+{% if firm_name or firm_phone or firm_email %}
+<p>
+  {%- if firm_name %}{{ firm_name }}{% endif %}
+  {%- if firm_phone %}{% if firm_name %}<br>{% endif %}{{ firm_phone }}{% endif %}
+  {%- if firm_email %}{% if firm_name or firm_phone %}<br>{% endif %}{{ firm_email }}{% endif %}
+</p>
+{% endif %}

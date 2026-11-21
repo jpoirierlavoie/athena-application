@@ -11,11 +11,14 @@ from __future__ import annotations
 import base64
 import html
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from config import Config
+from tz import MTL
 from utils import graph
 from utils.graph import GraphError, GraphNotConfigured
 from utils.graph_calendrier import MIROIR_CATEGORIE
@@ -111,6 +114,115 @@ def _utc_graph_dt(dt: datetime) -> dict[str, str]:
 
 def _is_not_found(exc: GraphError) -> bool:
     return "HTTP 404" in str(exc)
+
+
+_FRAC_RE = re.compile(r"\.(\d{1,})")
+_WINDOWS_EASTERN_TZ = frozenset({
+    "eastern standard time",
+    "us eastern standard time",
+    "america/toronto",
+    "america/montreal",
+})
+
+
+def _parse_schedule_dt(obj: Any) -> datetime:
+    """Parse a Graph schedule ``{dateTime, timeZone}`` object into UTC (fail-closed)."""
+    if not isinstance(obj, dict):
+        raise GraphError("Horodatage Graph getSchedule invalide.")
+    raw = str(obj.get("dateTime") or "").strip()
+    if not raw:
+        raise GraphError("Horodatage Graph getSchedule manquant.")
+    has_z = raw.endswith(("Z", "z"))
+    cleaned = raw.rstrip("Zz")
+    cleaned = _FRAC_RE.sub(lambda m: "." + m.group(1)[:6], cleaned)
+    try:
+        dt = datetime.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise GraphError("Format de date Graph getSchedule invalide.") from exc
+    if dt.tzinfo is None:
+        if has_z:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            tz_name = str(obj.get("timeZone") or "").strip()
+            low = tz_name.lower()
+            if not tz_name or low in ("utc", "coordinated universal time"):
+                dt = dt.replace(tzinfo=timezone.utc)
+            elif low in _WINDOWS_EASTERN_TZ:
+                dt = dt.replace(tzinfo=MTL)
+            else:
+                try:
+                    dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+                except Exception as exc:
+                    raise GraphError("Fuseau horaire Graph getSchedule inconnu.") from exc
+    return dt.astimezone(timezone.utc)
+
+
+def lire_plages_occupees(
+    debut_utc: datetime, fin_utc: datetime
+) -> list[tuple[datetime, datetime]]:
+    """Read busy Outlook intervals in UTC via Graph ``getSchedule`` (chunked <= 60 days)."""
+    if not Config.teams_configured():
+        raise GraphNotConfigured(
+            "L'intégration Microsoft Teams / calendrier Graph n'est pas configurée."
+        )
+    utc_start = (
+        debut_utc.replace(tzinfo=timezone.utc)
+        if debut_utc.tzinfo is None
+        else debut_utc.astimezone(timezone.utc)
+    )
+    utc_end = (
+        fin_utc.replace(tzinfo=timezone.utc)
+        if fin_utc.tzinfo is None
+        else fin_utc.astimezone(timezone.utc)
+    )
+    if utc_end <= utc_start:
+        return []
+
+    upn = Config.BOOKINGS_JURISTE_UPN.strip()
+    encoded_upn = quote(upn, safe="")
+    upn_lower = upn.lower()
+    chunk = timedelta(days=60)
+    intervals: list[tuple[datetime, datetime]] = []
+
+    cursor = utc_start
+    while cursor < utc_end:
+        chunk_end = min(cursor + chunk, utc_end)
+        resp = graph.graph_post(
+            f"/users/{encoded_upn}/calendar/getSchedule",
+            {
+                "schedules": [upn],
+                "startTime": _utc_graph_dt(cursor),
+                "endTime": _utc_graph_dt(chunk_end),
+                "availabilityViewInterval": 15,
+            },
+        )
+        values = (resp or {}).get("value") if isinstance(resp, dict) else None
+        if not isinstance(values, list) or not values:
+            raise GraphError("Réponse Graph getSchedule incomplète.")
+        entry = next(
+            (
+                v for v in values
+                if isinstance(v, dict)
+                and str(v.get("scheduleId") or "").strip().lower() == upn_lower
+            ),
+            values[0],
+        )
+        if not isinstance(entry, dict) or entry.get("error"):
+            raise GraphError("Échec de lecture des disponibilités Graph.")
+        for item in entry.get("scheduleItems") or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status == "free":
+                continue
+            s_utc = _parse_schedule_dt(item.get("start"))
+            e_utc = _parse_schedule_dt(item.get("end"))
+            if e_utc > s_utc:
+                intervals.append((s_utc, e_utc))
+        cursor = chunk_end
+
+    intervals.sort(key=lambda pair: (pair[0], pair[1]))
+    return intervals
 
 
 def creer_reunion_teams(
@@ -410,6 +522,7 @@ __all__ = [
     "annuler_reunion_teams",
     "construire_corps_html_reunion",
     "creer_reunion_teams",
+    "lire_plages_occupees",
     "modifier_reunion_teams",
     "powershell_setup_commands",
     "supprimer_reunion_teams",

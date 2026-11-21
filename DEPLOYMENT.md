@@ -202,7 +202,7 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `GRAPH_CLIENT_SECRET` → secret `graph-client-secret` | ○ | `""` | Resolved with `required=False`, which **swallows a PERMISSION_DENIED into `""`** — a missing accessor binding therefore turns outbound email off in silence. §6.4's grant loop covers it |
 | `BOOKINGS_JURISTE_UPN` | ○ | `""` | The mailbox whose calendar is polled. **Empty short-circuits the sync** |
 | `BOOKINGS_JURISTE_OBJECT_ID` | ○ | `""` | Entra user object GUID (`az ad user show --id <UPN> --query id -o tsv`) of `BOOKINGS_JURISTE_UPN` — required by Graph `onlineMeetings` and `getAllTranscripts` so the app never needs directory-wide `User.Read.All` |
-| `BOOKINGS_SYNC_ACTIVE` | ○ | `true` | Kill switch for the 10-minute Bookings import |
+| `BOOKINGS_SYNC_ACTIVE` | ○ | `true` | Kill switch for the 15-minute Bookings import (`app.yaml` ships `"false"` since Lot 2 replaced Bookings polling with `PORTAIL_RDV_ACTIF`) |
 | `BOOKINGS_SUBJECT_KEYWORDS` | ○ | `Consultation` | Comma-separated. A subject matches when it **ends** with « {separator} {keyword} », case- and accent-folded — Bookings names the event `{Customer} - {Service}`, so the service name is a suffix. ⚠ An **empty** value is a total, silent outage: nothing matches, and the absence loop then flags every already-imported reservation `annulée_client`. The sync refuses to run rather than proceed |
 | `BOOKINGS_SYNC_LOOKAHEAD_DAYS` | ○ | `90` | Forward window of the poll |
 | `BOOKINGS_SYNC_LOOKBACK_DAYS` | ○ | `1` | Backward window of the poll |
@@ -211,6 +211,7 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `MIROIR_OUTLOOK_LOOKAHEAD_DAYS` | ○ | `365` | The mirror's forward window — **shared** by the Athéna read and the Outlook read, which is what keeps a mirror from becoming an invisible orphan |
 | `MIROIR_OUTLOOK_LOOKBACK_DAYS` | ○ | `30` | Its backward window |
 | `TEAMS_REUNIONS_ACTIF` | ○ | `false` | Kill switch for Graph Teams meeting creation and post-meeting transcript/Copilot retrieval (`app.yaml` ships `"true"` after Entra & Teams Admin policies were applied; toggle to `"false"` to stop Teams creation) |
+| `PORTAIL_RDV_ACTIF` | ○ | `false` | Kill switch for Lot 2 portal self-service rendez-vous (`app.yaml` and `portail.yaml` ship `"true"`): Graph free/busy projection to `portail` DB, `/rdv`, `type="rdv"` invitations, and self-serve reschedule/cancel |
 | `COURRIER_ACTIF` | ○ | `false` | Kill switch for Courrier write tools (`app.yaml` ships `"false"` until Phase 6 acceptance tests pass) |
 | `COURRIER_GRAPH_CLIENT_ID` | ○ | `""` | Dedicated Entra app registration for Courrier (Application mode, zero `Mail.Send`) |
 | `COURRIER_GRAPH_CLIENT_SECRET` → secret `courrier-graph-client-secret` | ○ | `""` | Client secret for Courrier's Entra app registration (Secret Manager in prod, `required=False`) |

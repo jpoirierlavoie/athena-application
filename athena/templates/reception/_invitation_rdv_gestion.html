@@ -1,0 +1,8 @@
+{# Lien de secours pour consulter, reporter ou annuler un rendez-vous portail. #}
+<p>Bonjour,</p>
+
+<p>Vous avez demandé un nouveau lien sécurisé pour gérer votre rendez-vous
+(<strong>{{ display_label }}</strong>{% if quand_rdv %}, prévu le {{ quand_rdv }}{% endif %})&nbsp;:
+<a href="{{ lien }}">gérer mon rendez-vous</a>.</p>
+
+{% include "reception/_invitation_pied.html" %}

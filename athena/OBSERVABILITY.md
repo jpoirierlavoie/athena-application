@@ -362,6 +362,13 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 | `intake_partie_mise_a_jour` | success | Field-by-field apply; `champs` (count applied), `adverses_crees` |
 | `intake_adverse_cree` | success | A declared adverse party was created as a contact (D-L3-2); `invitation_id` only — **never the name** |
 | `intake_refuse` | refused | An ouverture was refused; no email is sent to the client (D-L3-3) |
+| `demande_rdv_recue` | success | Public `/rdv` request accepted into quarantine and verification email dispatched; `invitation_id` only — never names, phone, opposing parties, or topic |
+| `demande_rdv_ignoree` | refused | Public `/rdv` request ignored on `default` (per-email daily cap, `AUTHORIZED_USER_EMAIL`, disabled switch, or unavailable slot); `invitation_id`, `reason` |
+| `rdv_creneau_retenu` | success | Public requester verified email and held slot (`source="portail"`, `confirmation="à_confirmer"`); `invitation_id`, `hearing_id` |
+| `rdv_creneau_pris` | refused | Verified public `/rdv` slot was already taken before hold completed (client prompted to pick another open slot without re-verifying email); `invitation_id` |
+| `rdv_invite_confirme` | success | Invited `type="rdv"` client selected a slot; Graph Teams meeting + confirmed hearing created immediately and DavX5 CTag bumped; `invitation_id`, `hearing_id` |
+| `rdv_reporte` | success / refused | Self-serve reschedule (`invitation_id`, optional `hearing_id`, `reason` on refusal such as `delai_depasse` or `creneau_indisponible`) |
+| `rdv_annule_client` | success / refused | Self-serve cancellation (`invitation_id`, optional `hearing_id`, `reason` on refusal such as `delai_depasse`) |
 
 > `log_auth_event` gained one `reason`: `portail_claim` — a Firebase token carrying the portal custom claim tried to open a session on the main service (spec L1 §1.2 defense in depth).
 
@@ -384,6 +391,8 @@ Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confir
 | `teams_reunion_annulee` | success | Graph Teams event cancelled after an Athena status transition to `annulée` (or deletion); `hearing_id` |
 | `teams_reunion_erreur_graph` | **failure** | Graph Teams API call failed during create, update, cancel, or delete; optional `hearing_id`, `reason` (`create_failed`, `update_failed`, `cancel_failed`, `delete_failed`), optional `status_code`. IDs and codes only — never subject or client info |
 | `teams_connexion_verifiee` | success / **failure** | Diagnostic probe from « Paramètres → Rendez-vous » (`POST /parametres/rendez-vous/tester`); booleans `configure`, `jeton_valide`, `utilisateur_accessible`, `online_meetings_accessible`, `politique_teams_requise`, `transcriptions_accessibles`, `onedrive_accessible`, plus `roles_manquants_count` |
+| `disponibilites_synchronisees` | success | Portal anonymized slot projection (`disponibilites/courant`) updated in `portail` DB; counts only (`horizon_jours`, `plages_occupees`, `creneaux_total`) |
+| `disponibilites_sync_echec` | **failure** | Portal availability projection sync failed (`reason` / `error_type`); zero PII |
 
 ### `log_hearing_series_event(event, serie_id, **extra)` — logger `pallas.hearing`
 

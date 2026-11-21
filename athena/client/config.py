@@ -33,6 +33,7 @@ PORTAIL_QUEUE = "portail"       # Cloud Tasks queue name
 # Must equal the App Engine application region (verify with
 # `gcloud app describe` before creating the queue — spec L1 §8.2).
 TASKS_LOCATION = os.environ.get("TASKS_LOCATION", "northamerica-northeast1")
+PORTAIL_RDV_ACTIF = os.environ.get("PORTAIL_RDV_ACTIF", "false").lower() == "true"
 PORTAIL_SESSION_HOURS = 24
 PORTAIL_MAX_FILE_MB = 200
 PORTAIL_MAX_FILES = 50

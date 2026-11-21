@@ -83,6 +83,14 @@
                    hover:bg-gray-800 disabled:opacity-50">
       Demander un nouveau lien
     </button>
+    {% if portail_rdv_actif %}
+    <div class="mt-5 pt-4 border-t border-gray-200 text-center">
+      <a href="{{ url_for('portail.page_rdv_public') }}"
+         class="text-sm font-medium text-indigo-600 hover:text-indigo-500">
+        Prendre rendez-vous en ligne
+      </a>
+    </div>
+    {% endif %}
   </div>
 
 </div>

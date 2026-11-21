@@ -89,7 +89,9 @@ def test_the_cron_time_zone_is_montreals_daylight_saving_included():
 
 def test_the_cadences_read_in_french_and_in_english():
     assert cron_schedule.cadence_fr("bookings") == "toutes les 15 minutes, de 9 h à 17 h"
+    assert cron_schedule.cadence_fr("disponibilites") == "toutes les 15 minutes, de 9 h à 17 h"
     assert cron_schedule.cadence_fr("portail") == "toutes les 15 minutes, de 9 h à 17 h"
+    assert cron_schedule.cadence_en("disponibilites") == "every 15 minutes from 09:03 to 17:03"
     assert cron_schedule.cadence_en("bookings") == "every 15 minutes from 09:05 to 17:05"
     assert cron_schedule.cadence_en("outlook") == "every 15 minutes from 09:10 to 17:10"
     assert cron_schedule.cadence_en("portail") == "every 15 minutes from 09:15 to 17:15"
@@ -127,8 +129,10 @@ def test_the_reception_footnote_quotes_the_cadence(monkeypatch, read_fails):
         html = render_template("reception/_rdv.html", feature_intake=True,
                                **reception._contexte_rdv())
     flat = " ".join(html.split())
-    assert (f"importés automatiquement {cron_schedule.cadence_fr('bookings')}."
-            in flat)
+    assert (
+        f"synchronisées automatiquement {cron_schedule.cadence_fr('disponibilites')}."
+        in flat
+    )
 
 
 def test_no_source_still_promises_the_old_cadence():

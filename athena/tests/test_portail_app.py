@@ -123,6 +123,10 @@ def test_route_map_is_exactly_the_portal_set(app):
         "/api/televersement", "/api/finaliser", "/confirmation", "/sante",
         # Formulaire d'ouverture (L3)
         "/ouverture", "/api/intake/etape", "/api/intake/finaliser",
+        # Prise de rendez-vous & gestion (Lot 2)
+        "/rdv", "/api/rdv/demander", "/rendez-vous", "/api/rdv/etat",
+        "/api/rdv/retenir", "/api/rdv/reserver", "/api/rdv/reporter",
+        "/api/rdv/annuler",
         "/static/<path:filename>",
     }
     # Belt: none of the main service's surfaces exist in this process.

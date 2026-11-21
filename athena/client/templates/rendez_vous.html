@@ -1,0 +1,374 @@
+{% extends "base.html" %}
+{% block title %}Votre rendez-vous — Portail sécurisé{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+  <h2 class="text-base font-semibold text-gray-900">{{ invitation.display_label }}</h2>
+  <p class="mt-1 text-sm text-gray-500">
+    Visioconférence Microsoft Teams ({{ invitation.duree_minutes }} minutes).
+  </p>
+
+  <p id="rdv-erreur" class="hidden mt-4 px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg" role="alert"></p>
+
+  {% if invitation.etat_rdv == 'en_attente_courriel' %}
+  <div id="bloc-attente-validation" class="mt-5 p-4 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-700">
+    Vérification de votre créneau en cours… Cette page se mettra à jour
+    automatiquement dans un instant.
+  </div>
+
+  {% elif invitation.etat_rdv in ('a_choisir', 'creneau_pris') %}
+  {% if invitation.etat_rdv == 'creneau_pris' %}
+  <div class="mt-4 px-3 py-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    Le créneau précédemment demandé n'est plus libre. Votre adresse courriel
+    étant vérifiée, choisissez simplement un autre créneau ci-dessous.
+  </div>
+  {% endif %}
+  {% if not jours %}
+  <div class="mt-5 px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg">
+    Aucune disponibilité n'est actuellement libre en ligne.
+    {% if firm_phone %}Joignez-nous au {{ firm_phone }}.{% endif %}
+  </div>
+  {% else %}
+  <div class="mt-5 space-y-4">
+    <div>
+      <label for="jour-select" class="block text-sm font-medium text-gray-700 mb-1">Date souhaitée</label>
+      <select id="jour-select"
+              class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"></select>
+    </div>
+    <div>
+      <span class="block text-sm font-medium text-gray-700 mb-2">Heure (heure de Montréal)</span>
+      <div id="creneaux-grille" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+    </div>
+    {% if invitation.rdv_mode == 'invite' %}
+    <div>
+      <label for="points-discussion" class="block text-sm font-medium text-gray-700 mb-1">
+        Points à aborder à l'ordre du jour <span class="text-gray-400">(facultatif)</span>
+      </label>
+      <textarea id="points-discussion" rows="3" maxlength="1000"
+                placeholder="Sujets ou questions que vous souhaitez ajouter à l'ordre du jour"
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+    </div>
+    {% endif %}
+    <button id="btn-reserver" type="button"
+            class="w-full min-h-[44px] bg-gray-900 text-white rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-gray-800 disabled:opacity-50">
+      Confirmer ce créneau
+    </button>
+    <p id="statut-traitement" class="hidden text-xs text-gray-500 text-center">Enregistrement en cours…</p>
+  </div>
+  {% endif %}
+
+  {% elif invitation.etat_rdv in ('a_confirmer', 'confirme') %}
+  <div class="mt-5 p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Rendez-vous prévu</span>
+      <span class="text-xs px-2 py-0.5 rounded-full font-medium {{ 'bg-green-100 text-green-700' if invitation.etat_rdv == 'confirme' else 'bg-amber-100 text-amber-700' }}">
+        {{ 'Confirmé' if invitation.etat_rdv == 'confirme' else 'En attente de confirmation' }}
+      </span>
+    </div>
+    <p class="text-sm font-semibold text-gray-900">{{ slot_label_fr }}</p>
+    <p class="text-xs text-gray-600">
+      {% if invitation.etat_rdv == 'confirme' %}
+      Votre invitation Microsoft Teams vous a été transmise par courriel.
+      {% else %}
+      Votre créneau est retenu. Le cabinet vous transmettra l'invitation Teams
+      après validation.
+      {% endif %}
+    </p>
+  </div>
+
+  {% if invitation.dernier_report_echec %}
+  <p class="mt-4 px-3 py-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    {{ invitation.dernier_report_echec }}
+  </p>
+  {% endif %}
+
+  {% if modifiable %}
+  <div class="mt-5 space-y-4">
+    <button id="btn-ouvrir-report" type="button"
+            class="w-full min-h-[44px] bg-white text-gray-800 border border-gray-300 rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-gray-50">
+      Déplacer ce rendez-vous
+    </button>
+
+    <div id="bloc-report" class="hidden p-4 border border-gray-200 rounded-xl space-y-4">
+      {% if not jours %}
+      <p class="text-sm text-gray-600">Aucun autre créneau n'est disponible en ligne pour le moment.</p>
+      {% else %}
+      <div>
+        <label for="jour-select" class="block text-sm font-medium text-gray-700 mb-1">Nouvelle date</label>
+        <select id="jour-select"
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white"></select>
+      </div>
+      <div>
+        <span class="block text-sm font-medium text-gray-700 mb-2">Nouvelle heure</span>
+        <div id="creneaux-grille" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+      </div>
+      <button id="btn-confirmer-report" type="button"
+              class="w-full min-h-[44px] bg-gray-900 text-white rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-gray-800 disabled:opacity-50">
+        Valider le déplacement
+      </button>
+      {% endif %}
+    </div>
+
+    <div class="pt-3 border-t border-gray-100">
+      <button id="btn-ouvrir-annulation" type="button"
+              class="w-full min-h-[44px] text-sm font-medium text-red-600 hover:text-red-500">
+        Annuler ce rendez-vous
+      </button>
+      <div id="bloc-confirmer-annulation" class="hidden mt-3 p-3 bg-red-50 border border-red-200 rounded-lg space-y-3">
+        <p class="text-xs text-red-800">Confirmez-vous l'annulation définitive de ce rendez-vous&nbsp;?</p>
+        <button id="btn-confirmer-annulation" type="button"
+                class="w-full min-h-[44px] bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-red-700 disabled:opacity-50">
+          Oui, annuler mon rendez-vous
+        </button>
+      </div>
+    </div>
+    <p id="statut-traitement" class="hidden text-xs text-gray-500 text-center">Mise à jour en cours…</p>
+  </div>
+  {% else %}
+  <div class="mt-5 px-4 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    Les modifications et annulations en ligne ne sont plus possibles dans les
+    {{ preavis_h }}&nbsp;heures précédant le rendez-vous.
+    {% if firm_phone %}Veuillez appeler le cabinet au {{ firm_phone }}.{% endif %}
+  </div>
+  {% endif %}
+
+  {% elif invitation.etat_rdv == 'annule' %}
+  <div class="mt-5 px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg">
+    Ce rendez-vous a été annulé. Vous pouvez fermer cette page.
+  </div>
+
+  {% else %}
+  <div class="mt-5 px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg">
+    Cette demande de rendez-vous n'est plus active.
+    {% if firm_phone %}Joignez-nous au {{ firm_phone }}.{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+<script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
+{% endif %}
+{% if config.ENV == 'development' %}
+<script nonce="{{ csp_nonce }}">
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ (config.APPCHECK_DEBUG_TOKEN or true)|tojson }};
+</script>
+{% endif %}
+<script id="rdv-gestion-data" type="application/json">{{ page_data|tojson }}</script>
+<script nonce="{{ csp_nonce }}">
+  'use strict';
+  (function () {
+    var dataEl = document.getElementById('rdv-gestion-data');
+    if (!dataEl) { return; }
+    var cfg = JSON.parse(dataEl.textContent || '{}');
+    var jetonCsrf = document.querySelector('meta[name="csrf-token"]').content;
+    if (cfg.siteKey && window.firebase) {
+      firebase.initializeApp({
+        apiKey: cfg.apiKey || '',
+        projectId: cfg.projectId || '',
+        appId: cfg.appId || ''
+      });
+      firebase.appCheck().activate(
+        new firebase.appCheck.ReCaptchaEnterpriseProvider(cfg.siteKey), true
+      );
+    }
+
+    async function enTetesFetch() {
+      var h = { 'Content-Type': 'application/json', 'X-CSRFToken': jetonCsrf };
+      if (cfg.siteKey && window.firebase) {
+        try {
+          var t = await firebase.appCheck().getToken(false);
+          h['X-Firebase-AppCheck'] = t.token;
+        } catch (e) { /* le serveur tranchera */ }
+      }
+      return h;
+    }
+
+    var errEl = document.getElementById('rdv-erreur');
+    function montrerErreur(msg) {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+    }
+
+    async function attendreChangement(attendus, avantSlot) {
+      var essais = 0;
+      while (essais < 15) {
+        await new Promise(function (r) { setTimeout(r, 1200); });
+        essais += 1;
+        try {
+          var rep = await fetch('/api/rdv/etat', { credentials: 'same-origin' });
+          if (!rep.ok) { continue; }
+          var d = await rep.json();
+          if (attendus && attendus.indexOf(d.etat_rdv) >= 0) {
+            window.location.reload();
+            return;
+          }
+          if (avantSlot && (d.slot_debut_utc !== avantSlot || d.dernier_report_echec)) {
+            window.location.reload();
+            return;
+          }
+        } catch (e) { /* continue polling */ }
+      }
+      window.location.reload();
+    }
+
+    if (cfg.etat === 'en_attente_courriel') {
+      (async function () {
+        try {
+          await fetch('/api/rdv/retenir', {
+            method: 'POST',
+            headers: await enTetesFetch(),
+            body: '{}'
+          });
+        } catch (e) { /* poll below */ }
+        attendreChangement(['a_confirmer', 'creneau_pris', 'annule', 'refuse'], null);
+      })();
+      return;
+    }
+
+    var selJour = document.getElementById('jour-select');
+    var grille = document.getElementById('creneaux-grille');
+    var slotChoisi = '';
+    if (selJour && grille) {
+      function rendreCreneaux() {
+        grille.textContent = '';
+        slotChoisi = '';
+        var jour = (cfg.jours || []).find(function (j) { return j.jour_iso === selJour.value; }) || (cfg.jours || [])[0];
+        if (!jour) { return; }
+        jour.creneaux.forEach(function (c) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = c.heure_label;
+          b.dataset.utc = c.utc;
+          b.className = 'min-h-[44px] px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50';
+          b.addEventListener('click', function () {
+            slotChoisi = c.utc;
+            grille.querySelectorAll('button').forEach(function (other) {
+              var actif = other.dataset.utc === slotChoisi;
+              other.classList.toggle('bg-gray-900', actif);
+              other.classList.toggle('text-white', actif);
+              other.classList.toggle('border-gray-900', actif);
+              other.classList.toggle('text-gray-700', !actif);
+            });
+          });
+          grille.appendChild(b);
+        });
+      }
+      (cfg.jours || []).forEach(function (j) {
+        var opt = document.createElement('option');
+        opt.value = j.jour_iso;
+        opt.textContent = j.jour_label;
+        selJour.appendChild(opt);
+      });
+      selJour.addEventListener('change', rendreCreneaux);
+      rendreCreneaux();
+    }
+
+    var btnReserver = document.getElementById('btn-reserver');
+    var statutEl = document.getElementById('statut-traitement');
+    if (btnReserver) {
+      btnReserver.addEventListener('click', async function () {
+        errEl.classList.add('hidden');
+        if (!slotChoisi) {
+          montrerErreur('Veuillez choisir une heure de rendez-vous.');
+          return;
+        }
+        btnReserver.disabled = true;
+        var ptsEl = document.getElementById('points-discussion');
+        try {
+          var rep = await fetch('/api/rdv/reserver', {
+            method: 'POST',
+            headers: await enTetesFetch(),
+            body: JSON.stringify({
+              slot_debut_utc: slotChoisi,
+              points_discussion: ptsEl ? ptsEl.value : ''
+            })
+          });
+          var d = await rep.json().catch(function () { return {}; });
+          if (rep.ok) {
+            if (statutEl) { statutEl.classList.remove('hidden'); }
+            attendreChangement(['a_confirmer', 'confirme', 'creneau_pris'], null);
+            return;
+          }
+          montrerErreur(d.erreur || 'Une erreur est survenue.');
+        } catch (e) {
+          montrerErreur('Erreur de réseau. Veuillez réessayer.');
+        }
+        btnReserver.disabled = false;
+      });
+    }
+
+    var btnOuvrirReport = document.getElementById('btn-ouvrir-report');
+    var blocReport = document.getElementById('bloc-report');
+    if (btnOuvrirReport && blocReport) {
+      btnOuvrirReport.addEventListener('click', function () {
+        blocReport.classList.toggle('hidden');
+      });
+    }
+
+    var btnConfReport = document.getElementById('btn-confirmer-report');
+    if (btnConfReport) {
+      btnConfReport.addEventListener('click', async function () {
+        errEl.classList.add('hidden');
+        if (!slotChoisi) {
+          montrerErreur('Veuillez choisir un nouveau créneau.');
+          return;
+        }
+        btnConfReport.disabled = true;
+        try {
+          var rep = await fetch('/api/rdv/reporter', {
+            method: 'POST',
+            headers: await enTetesFetch(),
+            body: JSON.stringify({ slot_debut_utc: slotChoisi })
+          });
+          var d = await rep.json().catch(function () { return {}; });
+          if (rep.ok) {
+            if (statutEl) { statutEl.classList.remove('hidden'); }
+            attendreChangement(null, cfg.slotDebutUtc || '');
+            return;
+          }
+          montrerErreur(d.erreur || 'Impossible de déplacer le rendez-vous.');
+        } catch (e) {
+          montrerErreur('Erreur de réseau. Veuillez réessayer.');
+        }
+        btnConfReport.disabled = false;
+      });
+    }
+
+    var btnOuvrirAnnul = document.getElementById('btn-ouvrir-annulation');
+    var blocAnnul = document.getElementById('bloc-confirmer-annulation');
+    if (btnOuvrirAnnul && blocAnnul) {
+      btnOuvrirAnnul.addEventListener('click', function () {
+        blocAnnul.classList.toggle('hidden');
+      });
+    }
+
+    var btnConfAnnul = document.getElementById('btn-confirmer-annulation');
+    if (btnConfAnnul) {
+      btnConfAnnul.addEventListener('click', async function () {
+        errEl.classList.add('hidden');
+        btnConfAnnul.disabled = true;
+        try {
+          var rep = await fetch('/api/rdv/annuler', {
+            method: 'POST',
+            headers: await enTetesFetch(),
+            body: '{}'
+          });
+          var d = await rep.json().catch(function () { return {}; });
+          if (rep.ok) {
+            if (statutEl) { statutEl.classList.remove('hidden'); }
+            attendreChangement(['annule'], null);
+            return;
+          }
+          montrerErreur(d.erreur || "Impossible d'annuler ce rendez-vous.");
+        } catch (e) {
+          montrerErreur('Erreur de réseau. Veuillez réessayer.');
+        }
+        btnConfAnnul.disabled = false;
+      });
+    }
+  })();
+</script>
+{% endblock %}

@@ -929,7 +929,10 @@ def _observability_md() -> str:
      # the dossier joined it; the others were documented already).
      "AdminLedgerEvent",
      # 2026-11-20: Courrier intake events (zero-PII telemetry).
-     "CourrierEvent"],
+     "CourrierEvent",
+     # Lot 2 portal RDV + availability events.
+     "PortailEvent",
+     "BookingsEvent"],
 )
 def test_every_event_name_is_documented(nom_du_type):
     """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding

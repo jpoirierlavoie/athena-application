@@ -249,6 +249,11 @@ class Config:
     TEAMS_REUNIONS_ACTIF: bool = (
         os.environ.get("TEAMS_REUNIONS_ACTIF", "false").lower() == "true"
     )
+    # Portail self-service rendez-vous (Lot 2): availability sync + public /rdv
+    # + invite type="rdv" + self-serve reschedule/cancel.
+    PORTAIL_RDV_ACTIF: bool = (
+        os.environ.get("PORTAIL_RDV_ACTIF", "false").lower() == "true"
+    )
 
     @classmethod
     def teams_configured(cls) -> bool:
