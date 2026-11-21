@@ -13,9 +13,11 @@ import html
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+
+import requests
 
 from config import Config
 from tz import MTL
@@ -114,6 +116,23 @@ def _utc_graph_dt(dt: datetime) -> dict[str, str]:
 
 def _is_not_found(exc: GraphError) -> bool:
     return "HTTP 404" in str(exc)
+
+
+def _is_copilot_unavailable(exc: GraphError) -> bool:
+    msg = str(exc)
+    return "HTTP 400" in msg or "HTTP 403" in msg
+
+
+MAX_TRANSCRIPT_VTT_BYTES = 5 * 1024 * 1024
+_VTT_CHUNK_BYTES = 65_536
+
+
+def _require_teams_user_id() -> str:
+    if not Config.teams_configured():
+        raise GraphNotConfigured(
+            "L'intégration Microsoft Teams n'est pas configurée."
+        )
+    return quote(Config.BOOKINGS_JURISTE_OBJECT_ID.strip(), safe="")
 
 
 _FRAC_RE = re.compile(r"\.(\d{1,})")
@@ -517,12 +536,159 @@ def verifier_connexion_teams() -> dict[str, Any]:
     return result
 
 
+def lister_transcriptions_reunion(online_meeting_id: str) -> list[dict[str, Any]]:
+    """List Microsoft Teams call transcripts for *online_meeting_id*."""
+    encoded_uid = _require_teams_user_id()
+    mid = (online_meeting_id or "").strip()
+    if not mid:
+        raise GraphError("Identifiant de réunion Teams manquant.")
+    encoded_mid = quote(mid, safe="")
+    try:
+        data = graph.graph_get(
+            f"/users/{encoded_uid}/onlineMeetings/{encoded_mid}/transcripts"
+        )
+    except GraphError as exc:
+        if _is_not_found(exc):
+            return []
+        raise
+    items = (data or {}).get("value") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        raise GraphError("Réponse Graph transcripts invalide.")
+    return [item for item in items if isinstance(item, dict)]
+
+
+def lire_contenu_transcription_vtt(
+    online_meeting_id: str,
+    transcript_id: str,
+    *,
+    max_bytes: int = MAX_TRANSCRIPT_VTT_BYTES,
+) -> bytes:
+    """Download raw WebVTT bytes for one transcript up to *max_bytes*."""
+    if max_bytes <= 0:
+        raise ValueError("max_bytes doit être positif.")
+    encoded_uid = _require_teams_user_id()
+    mid = (online_meeting_id or "").strip()
+    tid = (transcript_id or "").strip()
+    if not mid or not tid:
+        raise GraphError("Identifiant de réunion ou de transcription manquant.")
+    url = (
+        f"{graph._GRAPH_BASE}/users/{encoded_uid}/onlineMeetings/"
+        f"{quote(mid, safe='')}/transcripts/{quote(tid, safe='')}/content"
+    )
+    response: Optional[requests.Response] = None
+    try:
+        try:
+            token = graph.jeton_application()
+            response = graph._session.get(
+                url,
+                params={"$format": "text/vtt"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "text/vtt",
+                },
+                timeout=graph._HTTP_TIMEOUT,
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise GraphError(
+                f"Échec réseau Graph ({type(exc).__name__})."
+            ) from exc
+
+        if response.status_code != 200:
+            raise GraphError(
+                f"Échec du téléchargement de la transcription Graph (HTTP {response.status_code})."
+            )
+
+        resp_headers = getattr(response, "headers", None) or {}
+        raw_len = resp_headers.get("Content-Length")
+        if raw_len is not None and str(raw_len).strip():
+            try:
+                declared_len = int(str(raw_len).strip())
+            except ValueError:
+                declared_len = None
+            if declared_len is not None and declared_len > max_bytes:
+                raise GraphError("Transcription Graph au-delà du plafond autorisé.")
+
+        buf = bytearray()
+        for chunk in response.iter_content(chunk_size=_VTT_CHUNK_BYTES):
+            if not chunk:
+                continue
+            if len(buf) + len(chunk) > max_bytes:
+                raise GraphError("Transcription Graph au-delà du plafond autorisé.")
+            buf.extend(chunk)
+        if not buf:
+            raise GraphError("Transcription Graph reçue vide.")
+        return bytes(buf)
+    finally:
+        if response is not None:
+            close_fn = getattr(response, "close", None)
+            if callable(close_fn):
+                close_fn()
+
+
+def lister_insights_reunion(
+    online_meeting_id: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """List Copilot ``aiInsights`` for *online_meeting_id*.
+
+    Returns ``(insights, copilot_disponible)``. HTTP 400/403 returns
+    ``([], False)`` so polling proceeds cleanly when Copilot notes are not
+    enabled/licensed for the call.
+    """
+    encoded_uid = _require_teams_user_id()
+    mid = (online_meeting_id or "").strip()
+    if not mid:
+        raise GraphError("Identifiant de réunion Teams manquant.")
+    encoded_mid = quote(mid, safe="")
+    try:
+        data = graph.graph_get(
+            f"/copilot/users/{encoded_uid}/onlineMeetings/{encoded_mid}/aiInsights"
+        )
+    except GraphError as exc:
+        if _is_not_found(exc):
+            return [], True
+        if _is_copilot_unavailable(exc):
+            return [], False
+        raise
+    items = (data or {}).get("value") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        raise GraphError("Réponse Graph aiInsights invalide.")
+    return [item for item in items if isinstance(item, dict)], True
+
+
+def lire_insight_reunion(
+    online_meeting_id: str, insight_id: str
+) -> Optional[dict[str, Any]]:
+    """Fetch a single Copilot ``callAiInsight`` object, or None on HTTP 404."""
+    encoded_uid = _require_teams_user_id()
+    mid = (online_meeting_id or "").strip()
+    iid = (insight_id or "").strip()
+    if not mid or not iid:
+        raise GraphError("Identifiant de réunion ou de résumé Copilot manquant.")
+    encoded_mid = quote(mid, safe="")
+    encoded_iid = quote(iid, safe="")
+    try:
+        data = graph.graph_get(
+            f"/copilot/users/{encoded_uid}/onlineMeetings/{encoded_mid}/aiInsights/{encoded_iid}"
+        )
+    except GraphError as exc:
+        if _is_not_found(exc) or _is_copilot_unavailable(exc):
+            return None
+        raise
+    return data if isinstance(data, dict) else None
+
+
 __all__ = [
+    "MAX_TRANSCRIPT_VTT_BYTES",
     "REQUIRED_GRAPH_ROLES",
     "annuler_reunion_teams",
     "construire_corps_html_reunion",
     "creer_reunion_teams",
+    "lire_contenu_transcription_vtt",
+    "lire_insight_reunion",
     "lire_plages_occupees",
+    "lister_insights_reunion",
+    "lister_transcriptions_reunion",
     "modifier_reunion_teams",
     "powershell_setup_commands",
     "supprimer_reunion_teams",

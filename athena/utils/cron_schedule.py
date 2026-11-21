@@ -22,6 +22,7 @@ JOBS = {
     "portail": ("/taches/portail/reconciliation", 15, 15),
     "disponibilites": ("/taches/disponibilites/sync", 15, 3),
     "bookings": ("/taches/bookings/sync", 15, 5),
+    "transcriptions": ("/taches/transcriptions/sync", 15, 7),
     "outlook": ("/taches/outlook/sync", 15, 10),
 }
 

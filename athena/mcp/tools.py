@@ -641,6 +641,7 @@ _PROTOCOL_ETAG_READERS = ("list_protocol_steps",)
 _STEP_ETAG_READERS = ("list_protocol_steps", "get_agenda")
 _HEARING_ETAG_READERS = ("list_hearings", "get_agenda")
 _RENDEZ_VOUS_ETAG_READERS = ("list_hearings",)
+_TRANSCRIPT_ETAG_READERS = ("get_meeting_transcripts",)
 
 
 def _expected_etag_required_when(readers: tuple[str, ...], when: str) -> dict:
@@ -770,7 +771,7 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # request's decision gate, and its refusal cancels the client's Outlook
     # meeting: the one write here whose effect leaves the building
     # (OUTBOUND_TOOLS below).
-    "update_hearing", "decide_rendez_vous",
+    "update_hearing", "decide_rendez_vous", "decide_meeting_transcript",
     # Lot 2A (T7) — FILES. update_document REPLACES a document's filing
     # fields (its name, date, tags, folder, a presumed category) — none kept;
     # move_documents REPLACES each row's folder; manage_folder REPLACES a
@@ -854,7 +855,7 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #
 # * ``optional`` — an ``idempotency_key`` is accepted, not demanded. The
 #   store fails OPEN: a Firestore blip on the claim must not block a
-#   legitimate first write. Every write tool but the 13 below is
+#   legitimate first write. Every write tool but the 14 below is
 #   ``optional``.
 # * ``required`` — the key is demanded (a call without one is refused), and
 #   the store fails CLOSED: an unreadable claim refuses the call rather than
@@ -1977,7 +1978,7 @@ TOOLS: dict[str, dict] = {
             "`conference_uri` et `etag` (`update_hearing`). Deux modes "
             "exclusifs des dates : `serie_id` liste toute une série "
             "récurrente (passé inclus) ; `bookings` \"pending\" liste les "
-            "demandes Bookings en attente de décision (`decide_rendez_vous`)."
+            "demandes Bookings et portail en attente de décision (`decide_rendez_vous`)."
         )
         ),
         "input_schema": {
@@ -1999,7 +2000,7 @@ TOOLS: dict[str, dict] = {
                     "type": "string",
                     "enum": ["pending"],
                     "description": (
-                        "\"pending\" : demandes Bookings en attente — à_confirmer ou annulée_client (refuser la retire). Exclut dates, dossier_id et serie_id."
+                        "\"pending\" : demandes Bookings et portail en attente — à_confirmer ou annulée_client (refuser la retire). Exclut dates, dossier_id et serie_id."
                     ),
                 },
                 "limit": _limit(25),
@@ -2010,6 +2011,34 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "list_hearings",
+    },
+    "get_meeting_transcripts": {
+        "title": "Transcriptions et notes Teams post-réunion",
+        "description": (
+            "LECTURE SEULE — lit les transcriptions WebVTT et résumés Copilot Teams "
+            "préparés post-réunion (`a_revoir` par défaut, ou `versee`/`ecartee`, "
+            "ou un `hearing_id` précis). Retourne métadonnées, locuteurs, aperçu, "
+            "`copilot_markdown`, suggestions de classement et `etag` (pour "
+            "`decide_meeting_transcript`). Aucun lien de téléchargement ni chemin GCS."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hearing_id": _id(
+                    "UUIDv4 d'une réunion précise (optionnel). Omettre pour lister selon `status`."
+                ),
+                "status": {
+                    "type": "string",
+                    "enum": ["a_revoir", "versee", "ecartee"],
+                    "description": (
+                        "Filtre de statut lorsque `hearing_id` est omis (défaut : \"a_revoir\")."
+                    ),
+                },
+                "limit": _limit(20),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "get_meeting_transcripts",
     },
     "list_notes": {
         "title": "Notes (dossier ou cabinet)",
@@ -3748,31 +3777,23 @@ TOOLS: dict[str, dict] = {
         "etag_readers": _HEARING_ETAG_READERS,
     },
     "decide_rendez_vous": {
-        "title": "Confirmer ou refuser un rendez-vous Bookings",
+        "title": "Confirmer ou refuser un rendez-vous",
         "annotations": {
             # The same decision twice writes nothing and never contacts the
             # client again.
             "idempotentHint": True,
         },
         "description": (
-            (
-            (
-            (
-            (
-            "ÉCRITURE EXTÉRIEURE — décide d'une demande « Bookings with me » "
+            "ÉCRITURE EXTÉRIEURE — décide d'une demande Bookings ou portail "
             "en attente (`list_hearings`, `bookings=\"pending\"`). `confirmer` "
-            "ajoute l'événement à l'agenda et au téléphone ; `lier_partie` "
-            "(défaut true) lie le contact au courriel exact du demandeur "
-            "(refusé si absent : renvoyer avec `lier_partie: false`). "
-            "Impossible si le client a annulé. `refuser` ANNULE LA RÉUNION "
-            "OUTLOOK ET NOTIFIE LE CLIENT avec texte fixe (ou retire si déjà "
-            "annulée par le client). Un rendez-vous déjà CONFIRMÉ n'est pas "
-            "refusé ici : il s'annule dans Outlook. `expected_etag` et "
-            "`idempotency_key` REQUIS. Toujours confirmer avant d'appeler."
-        )
-        )
-        )
-        )
+            "ajoute l'événement au calendrier et au téléphone (et crée "
+            "l'invitation Teams pour un rendez-vous portail) ; `lier_partie` "
+            "(défaut true) lie le contact au courriel exact du demandeur. "
+            "`refuser` ANNULE LA RÉUNION OUTLOOK ET NOTIFIE LE CLIENT avec texte "
+            "fixe pour Bookings (pour le portail : met à jour le statut sans "
+            "courriel sortant ici). Un rendez-vous déjà CONFIRMÉ n'est pas "
+            "refusé ici : il s'annule dans Outlook ou l'application. "
+            "`expected_etag` et `idempotency_key` REQUIS."
         ),
         "input_schema": {
             "type": "object",
@@ -3805,6 +3826,75 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_REQUIRED,
         "concurrency": CONCURRENCY_REQUIRED,
         "etag_readers": _RENDEZ_VOUS_ETAG_READERS,
+    },
+    "decide_meeting_transcript": {
+        "title": "Verser ou écarter une transcription Teams",
+        "annotations": {
+            "idempotentHint": True,
+        },
+        "description": (
+            "ÉCRITURE — traite une transcription/notes Teams préparée "
+            "(`get_meeting_transcripts`). `verser` crée la Note Athéna, dépose "
+            "la transcription `.docx` dans « Interne » (+ OneDrive si "
+            "configuré) et purge le WebVTT temporaire. `ecarter` purge le "
+            "WebVTT sans rien verser au dossier. Catégorie/classement posé par "
+            "le connecteur (présumé). `expected_etag` et `idempotency_key` REQUIS ; "
+            "toujours confirmer avec l'avocat avant d'appeler."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hearing_id": _id(
+                    "UUIDv4 de la réunion (de `get_meeting_transcripts`)."
+                ),
+                "action": {
+                    "type": "string",
+                    "enum": ["verser", "ecarter"],
+                    "description": (
+                        "\"verser\" classe la note + .docx au dossier ; \"ecarter\" "
+                        "purge la transcription temporaire."
+                    ),
+                },
+                "dossier_id": _id(
+                    "Dossier de destination (UUIDv4) — requis pour `action=\"verser\"`."
+                ),
+                "note_title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": (
+                        "Titre de la Note Athéna (requis pour `action=\"verser\"`)."
+                    ),
+                },
+                "note_category": {
+                    "type": "string",
+                    "enum": ["consultation", "rencontre"],
+                    "description": (
+                        "Catégorie de la Note Athéna (requis pour `action=\"verser\"`)."
+                    ),
+                },
+                "copilot_markdown": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100_000,
+                    "description": (
+                        "Contenu Markdown des notes (optionnel pour `verser` ; "
+                        "défaut : notes préparées dans Athéna)."
+                    ),
+                },
+                **_expected_etag_prop(_TRANSCRIPT_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": [
+                "hearing_id", "action", "expected_etag", "idempotency_key",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": "decide_meeting_transcript",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_REQUIRED,
+        "etag_readers": _TRANSCRIPT_ETAG_READERS,
     },
     "create_time_entries_bulk": {
         "title": "Créer plusieurs entrées de temps",

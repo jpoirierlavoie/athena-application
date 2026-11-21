@@ -965,8 +965,8 @@ def _decide_rendez_vous_result() -> dict:
         "graph_cancelled": _bool(
             "refuser: Outlook accepted the cancellation."),
         "client_notified": _bool(
-            "true = the cancellation went out, and Bookings sends it to "
-            "the client."),
+            "true = a notification went out to the client (Bookings refusal "
+            "cancellation, or portal confirmation Teams invite)."),
         "cancellation_message": _nstr(
             "The FIXED text sent with that cancellation; null when nothing "
             "was sent."),
@@ -2303,6 +2303,39 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         },
         extra_required=["mode", "window", "next_cursor"],
     ),
+
+    "get_meeting_transcripts": _list_envelope(_obj({
+        "hearing_id": _str(),
+        "status": {
+            "type": "string",
+            "enum": ["a_revoir", "versee", "ecartee"],
+        },
+        "dossier_id": _str(),
+        "hearing_title": _str(),
+        "hearing_date": _str("YYYY-MM-DD (Montréal) or '' when unknown."),
+        "hearing_type": _str(),
+        "client_nom": _str(),
+        "has_transcript": _bool(),
+        "has_insights": _bool(),
+        "transcript_cue_count": _int(),
+        "transcript_speakers": _arr(_str()),
+        "transcript_preview": _str("Bounded plain-text speaker preview."),
+        "copilot_markdown": _str("Structured meeting notes in Markdown."),
+        "suggested_dossier_id": _str(),
+        "suggested_note_category": _str(),
+        "suggested_note_title": _str(),
+        "versement": _obj({
+            "note_id": _str(),
+            "transcript_document_id": _str(),
+            "onedrive_statut": _str(),
+            "dossier_id": _str(),
+            "dossier_file_number": _str(),
+            "note_category": _str(),
+            "versed_at": _nstr("ISO-8601 Montréal; null while not filed."),
+        }),
+        "captured_at": _nstr("ISO-8601 Montréal."),
+        **_stamps(),
+    }, optional=_PROVENANCE_KEYS)),
 
     "list_notes": _list_envelope(_obj({
         "id": _str(),
@@ -3968,6 +4001,33 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     ),
 
     "decide_rendez_vous": _decide_rendez_vous_result(),
+
+    "decide_meeting_transcript": _obj({
+        "decided": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("« meeting_transcript »."),
+        "entity": _obj({
+            "id": _str("The hearing_id keying the staged transcript record."),
+            "status": {"type": "string", "enum": ["versee", "ecartee"]},
+            "dossier_id": _str(),
+            "dossier_file_number": _str(),
+            "note_id": _str("Created Athena Note ID ('' for ecarter)."),
+            "note_category": _str(),
+            "transcript_document_id": _str(
+                "Ingested Interne .docx document ID ('' when absent)."),
+            "onedrive_statut": _str(
+                "« depose », « non_configure » or '' (ecarter)."),
+            **_written_etag(),
+        }, optional=("etag",)),
+        "hearing_id": _str(),
+        "action": {"type": "string", "enum": ["verser", "ecarter"]},
+        "changed": _bool(
+            "false = that decision was already stored: nothing new written."),
+        "ctag_bumped": _bool("Whether the dossier DAV CTag bumped."),
+        "dav_synced": _bool(
+            "ctag_bumped AND the target dossier collection is visible to DavX5."),
+        "warnings": _arr(_str()),
+        **_write_protocol_keys(),
+    }),
 
     "create_time_entries_bulk": _entry_bulk_result(
         "time_entry", _created_time_entry_extra()),

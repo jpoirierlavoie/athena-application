@@ -211,6 +211,11 @@ def create_app() -> Flask:
     app.register_blueprint(taches_disponibilites_bp)
     csrf.exempt(taches_disponibilites_bp)
 
+    # ── Transcriptions Teams (Lot 3): targeted post-meeting poll ────────
+    from routes.taches_transcriptions import taches_transcriptions_bp
+    app.register_blueprint(taches_transcriptions_bp)
+    csrf.exempt(taches_transcriptions_bp)
+
     # ── Miroir Outlook : cron-driven push of confirmed hearings to the
     # juriste's Outlook calendar (Graph). Same machine-blueprint discipline.
     from routes.taches_outlook import taches_outlook_bp

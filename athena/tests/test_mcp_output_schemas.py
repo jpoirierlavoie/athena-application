@@ -2642,6 +2642,113 @@ def test_list_hearings_conforms_in_its_two_selection_modes(monkeypatch):
     assert serie["mode"] == "serie" and serie["window"]["from"] is None
 
 
+def test_meeting_transcripts_and_portal_rdv_conform_to_output_schemas(monkeypatch):
+    from datetime import datetime, timezone
+    from config import Config
+    from models import document as document_model
+    from models import transcription_reunion as tr_model
+    from utils import graph_teams
+
+    fake = _calendar_world(monkeypatch)
+    fake.seed("dossiers/d1", {
+        "id": "d1", "file_number": "2026-001", "title": "Tremblay c. Roy",
+        "status": "actif", "etag": "e-d1",
+    })
+    fake.seed("hearings/h-portail-1", {
+        "id": "h-portail-1", "source": "portail", "confirmation": "à_confirmer",
+        "title": "Consultation portail", "hearing_type": "consultation",
+        "start_datetime": datetime(2026, 11, 22, 14, 0, tzinfo=timezone.utc),
+        "end_datetime": datetime(2026, 11, 22, 15, 0, tzinfo=timezone.utc),
+        "all_day": False, "dossier_id": "", "client_nom": "Alice Martin",
+        "client_email": "alice@example.com", "etag": "e-hp1",
+        "portail_invitation_id": "inv-1",
+    })
+    monkeypatch.setattr(Config, "TEAMS_REUNIONS_ACTIF", True)
+    monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "t1")
+    monkeypatch.setattr(Config, "GRAPH_CLIENT_ID", "c1")
+    monkeypatch.setattr(Config, "GRAPH_CLIENT_SECRET", "s1")
+    monkeypatch.setattr(Config, "GRAPH_SENDER_UPN", "reception@cabinet.example")
+    monkeypatch.setattr(Config, "BOOKINGS_JURISTE_UPN", "juriste@cabinet.example")
+    monkeypatch.setattr(Config, "BOOKINGS_JURISTE_OBJECT_ID", "obj-1")
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "")
+    monkeypatch.setattr(graph_teams, "creer_reunion_teams", lambda **_kw: {
+        "graph_event_id": "ge-p1", "graph_ical_uid": "uid-p1",
+        "online_meeting_id": "om-p1", "join_url": "https://teams.microsoft.com/p1",
+        "options_appliquees": True,
+    })
+    monkeypatch.setattr(
+        "models.portail_invitation.mettre_a_jour_rdv", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        "services.disponibilites.rafraichir_disponibilites_best_effort", lambda: None
+    )
+    portal_confirmed = handlers.decide_rendez_vous({
+        "hearing_id": "h-portail-1", "action": "confirmer", "lier_partie": False,
+        "expected_etag": "e-hp1", "idempotency_key": "cle-portail-conf-1",
+    })
+    _conforms("decide_rendez_vous", portal_confirmed)
+    assert portal_confirmed["client_notified"] is True
+
+    fake.seed("hearings/h-tx1", {
+        "id": "h-tx1", "source": "portail", "confirmation": "",
+        "title": "Rencontre client", "hearing_type": "consultation",
+        "start_datetime": datetime(2026, 11, 20, 14, 0, tzinfo=timezone.utc),
+        "end_datetime": datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc),
+        "dossier_id": "d1", "online_meeting_id": "om-tx1", "etag": "e-htx1",
+    })
+    fake.seed("meeting_transcripts/h-tx1", {
+        "id": "h-tx1", "hearing_id": "h-tx1", "online_meeting_id": "om-tx1",
+        "status": "a_revoir", "dossier_id": "d1", "has_transcript": True,
+        "has_insights": True, "transcript_cue_count": 2,
+        "transcript_speakers": ["Me Dupont", "Client"],
+        "transcript_preview": "[00:00:05] Me Dupont : Bonjour",
+        "copilot_markdown": "## Synthèse\n\n- Point A",
+        "staged_vtt_path": "staging/u1/transcriptions/h-tx1/transcript.vtt",
+        "etag": "e-tx1",
+    })
+    fake.seed("meeting_transcripts/h-tx2", {
+        "id": "h-tx2", "hearing_id": "h-tx2", "online_meeting_id": "om-tx2",
+        "status": "a_revoir", "dossier_id": "", "has_transcript": False,
+        "has_insights": True, "transcript_cue_count": 0,
+        "copilot_markdown": "## Synthèse\n\n- Rejeter",
+        "etag": "e-tx2",
+    })
+
+    listed = handlers.get_meeting_transcripts({"status": "a_revoir"})
+    _conforms("get_meeting_transcripts", listed)
+    assert listed["count"] == 2
+
+    vtt = b"WEBVTT\n\n00:00:01.000 --> 00:00:05.000\n<v Me Dupont>Bonjour.\n"
+    monkeypatch.setattr(tr_model, "read_staged_vtt_bytes", lambda _p: vtt)
+    monkeypatch.setattr(
+        tr_model, "stage_temp_docx_bytes", lambda _b, **_kw: object()
+    )
+    monkeypatch.setattr(tr_model, "purge_staged_blob", lambda _p: None)
+    monkeypatch.setattr(
+        document_model,
+        "ingest_blob_as_document",
+        lambda _blob, did, _fn, _name, _meta, _uid, **kw: (
+            {"id": kw.get("document_id") or "doc-1", "dossier_id": did},
+            [],
+        ),
+    )
+
+    versee = handlers.decide_meeting_transcript({
+        "hearing_id": "h-tx1", "action": "verser", "dossier_id": "d1",
+        "note_title": "Notes Consultation", "note_category": "consultation",
+        "expected_etag": "e-tx1", "idempotency_key": "cle-tx-verser-1",
+    })
+    _conforms("decide_meeting_transcript", versee)
+    assert versee["entity"]["status"] == "versee" and versee["entity"]["note_id"]
+
+    ecartee = handlers.decide_meeting_transcript({
+        "hearing_id": "h-tx2", "action": "ecarter",
+        "expected_etag": "e-tx2", "idempotency_key": "cle-tx-ecarter-1",
+    })
+    _conforms("decide_meeting_transcript", ecartee)
+    assert ecartee["entity"]["status"] == "ecartee" and ecartee["changed"] is True
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Lot 2A (T7) — FILES: update_document, move_documents, manage_folder,
 # every outcome run through the REAL handler on the shared fake store

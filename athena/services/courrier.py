@@ -113,6 +113,7 @@ __all__ = [
     "VALID_SOUS_DOSSIERS",
     "construire_nom_eml",
     "deplacer_courriels",
+    "deposer_docx_interne_onedrive",
     "enregistrer_courriels",
     "extraire_prefixe_dossier",
     "inscrire_temps_courriels",
@@ -2114,3 +2115,110 @@ def inscrire_temps_courriels(
         "courriels_lies": courriels_lies,
         "entrees": rows,
     }, []
+
+
+def deposer_docx_interne_onedrive(
+    *,
+    user_id: str,
+    dossier_numero: str,
+    dossier_titre: str,
+    nom_fichier: str,
+    contenu_docx: bytes,
+) -> dict[str, Any]:
+    """Dépose un ``.docx`` idempotemment dans ``{racine}/{dossier}/Interne`` sur OneDrive."""
+    if not Config.courrier_configured():
+        raise graph_courrier.CourrierNotConfigured(
+            "Le module Courrier (OneDrive) n'est pas configuré."
+        )
+    dossier_num = str(dossier_numero or "").strip()
+    if not _DOSSIER_STRICT_RE.match(dossier_num):
+        raise ValueError("Numéro de dossier Athéna invalide (AAAA-NNN attendu).")
+    if not isinstance(contenu_docx, (bytes, bytearray)) or not contenu_docx:
+        raise ValueError("Contenu DOCX vide ou invalide.")
+    uid = storage_identity.require_uid(user_id)
+
+    raw_name = str(nom_fichier or "").strip() or "document.docx"
+    if not raw_name.lower().endswith(".docx"):
+        raw_name = f"{raw_name}.docx"
+    clean_name, name_err = nettoyer_nom_piece(raw_name, "document.docx")
+    if name_err or not clean_name:
+        raise ValueError(name_err or "Nom de fichier .docx invalide.")
+    if not clean_name.lower().endswith(".docx"):
+        clean_name = f"{clean_name[:PIECE_NOM_MAX_CHARS - 5].rstrip(' .')}.docx"
+
+    cleaned_title = _sanitize_component_text(str(dossier_titre or ""))
+    candidate_folder = (
+        f"{dossier_num} {cleaned_title}" if cleaned_title else f"{dossier_num} Dossier"
+    )[:140].rstrip(" .")
+    cleaned_od_name = (
+        _clean_dossier_onedrive_name(candidate_folder, dossier_num)
+        or f"{dossier_num} Dossier"
+    )
+
+    encoded_upn = quote(Config.COURRIER_UPN, safe="")
+    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "4 - Dossiers"
+
+    od_carte = _lire_carte_onedrive(encoded_upn, racine_onedrive)
+    racine_id = str(od_carte.get("racine_id") or "")
+    if not racine_id:
+        raise graph_courrier.CourrierGraphError(
+            "Dossier racine OneDrive introuvable."
+        )
+    doublons = set(od_carte.get("doublons") or ())
+    matches = [
+        d for d in (od_carte.get("dossiers") or [])
+        if str(d.get("numero") or "") == dossier_num
+    ]
+    if dossier_num in doublons or len(matches) > 1:
+        raise graph_courrier.CourrierGraphError(
+            f"Plusieurs dossiers OneDrive portent déjà le numéro {dossier_num}."
+        )
+
+    if len(matches) == 1:
+        od_dossier_id = str(matches[0].get("id") or "")
+    else:
+        created_od, _ = graph_courrier.courrier_creer_dossier_onedrive(
+            racine_id, cleaned_od_name, encoded_upn=encoded_upn
+        )
+        od_dossier_id = str(created_od.get("id") or "")
+    if not od_dossier_id:
+        raise graph_courrier.CourrierGraphError(
+            "Identifiant du dossier OneDrive manquant."
+        )
+
+    cle = hashlib.sha256(
+        f"interne:{dossier_num}:{clean_name}".encode("utf-8")
+    ).hexdigest()[:16]
+    staged: Optional[courrier_model.StagedCourrierBlob] = None
+    try:
+        od_interne_id = _obtenir_sous_dossier_onedrive(
+            encoded_upn, od_dossier_id, "Interne", cache={}, creer=True
+        )
+        if not od_interne_id:
+            raise graph_courrier.CourrierGraphError(
+                "Sous-dossier OneDrive « Interne » introuvable."
+            )
+        staged = courrier_model.stage_courrier_bytes(
+            [bytes(contenu_docx)],
+            user_id=uid,
+            cle=cle,
+            slot_token="docx",
+            ext=".docx",
+        )
+        statut_od, _renomme_idx, item_id, final_name = _televerser_sur_onedrive(
+            encoded_upn,
+            od_interne_id,
+            clean_name,
+            max_chars=PIECE_NOM_MAX_CHARS,
+            staged=staged,
+        )
+    except _SaveMessageError as exc:
+        raise graph_courrier.CourrierGraphError(str(exc)) from exc
+    finally:
+        courrier_model.discard_staged_courrier_blob(staged)
+
+    return {
+        "statut": statut_od,
+        "item_id": item_id,
+        "nom": final_name,
+    }

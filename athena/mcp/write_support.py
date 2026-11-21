@@ -110,7 +110,7 @@ A release is a ``delete()`` under the ``last_update_time`` the claim's own
 The policy is read from the registry — ``mcp.tools.idempotency_policy``,
 the tool's ``"idempotency"`` spec key — never passed by the handler.
 
-* ``optional`` (every write tool but the 13 ``required`` ones below):
+* ``optional`` (every write tool but the 14 ``required`` ones below):
   the store fails OPEN. A Firestore blip on
   the claim must not block a legitimate first write; the call runs
   unclaimed, and afterwards a best-effort ``create()`` stores its result so
@@ -127,11 +127,13 @@ the tool's ``"idempotency"`` spec key — never passed by the handler.
   ``create_time_entries_bulk`` and ``create_expenses_bulk`` — money: a
   retry without the key would write a second batch of billable rows the
   next invoice sweeps, and nothing in the connector can delete it —,
-  and since 2026-11-20 ``save_courriels`` — external OneDrive writes and
+  since 2026-11-20 ``save_courriels`` — external OneDrive writes and
   permanent document/registry rows —, ``move_courriels`` — Outlook
   folder/category writes and permanent classification state —, and
   ``record_courriels_temps`` — billable time entries and permanent
-  Courrier links): the
+  Courrier links, and since 2026-11-21 ``decide_meeting_transcript`` —
+  permanent note/document filing, optional OneDrive writes and purge of
+  staged WebVTT): the
   key is demanded (``idempotency_required``) and the store
   fails CLOSED (``idempotency_store_unavailable``): nothing executes when
   the claim cannot be established. (Review of lot 5, step 5: this list

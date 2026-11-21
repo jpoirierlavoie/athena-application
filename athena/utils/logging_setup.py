@@ -972,6 +972,13 @@ BookingsEvent = Literal[
     "teams_connexion_verifiee",
     "disponibilites_synchronisees",
     "disponibilites_sync_echec",
+    # Transcriptions & résumés Copilot post-réunion (Lot 3) : IDs, booléens
+    # et compteurs uniquement — jamais de contenu ni nom client.
+    "teams_transcription_preparee",
+    "teams_transcription_aucune",
+    "teams_transcription_erreur_graph",
+    "teams_transcription_versee",
+    "teams_transcription_ecartee",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
 # Courrier intake (Phase 5). Counts, booleans, technical `cle` keys (when single

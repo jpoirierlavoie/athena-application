@@ -25,6 +25,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 
@@ -62,6 +63,7 @@ from models.folder import (
     ensure_system_folder,
 )
 from models import concurrency
+from models import transcription_reunion as tr_model
 from models.hearing import (
     RDV_SOURCES,
     get_hearing,
@@ -82,6 +84,7 @@ from routes import edit_conflict
 from security import sanitize
 from services import portail_emission as emission
 from services import rendez_vous
+from services import transcription_reunion
 from services.carnet import apres_ecriture_contact
 from utils import (
     cron_schedule,
@@ -119,16 +122,26 @@ _badge_cache: dict = {"at": 0.0, "n": None}
 _badge_lock = threading.Lock()
 
 
+def _invalidater_pastille() -> None:
+    with _badge_lock:
+        _badge_cache["at"] = 0.0
+
+
 def _compter_rdv() -> int:
-    """Rendez-vous « à_confirmer » (Bookings + portail) awaiting review."""
+    """Rendez-vous « à_confirmer » + transcriptions Teams « a_revoir » en attente."""
+    total = 0
     try:
-        return sum(
+        total += sum(
             1 for h in list_rendez_vous_strict()
             if h.get("confirmation") == "à_confirmer"
         )
     except Exception:
         logger.exception("reception: rdv count failed")
-        return 0
+    try:
+        total += len(tr_model.list_transcriptions_a_revoir())
+    except Exception:
+        logger.exception("reception: transcript count failed")
+    return total
 
 
 def compteur_reception() -> Optional[int]:
@@ -333,22 +346,24 @@ def _enrichir_rdvs_portail(rdvs: list[dict]) -> None:
 
 
 def _contexte_rdv() -> dict:
-    """Build the « Rendez-vous » tab context: pending cards, divergences, & pending invites."""
+    """Build the « Rendez-vous » tab context: pending cards, divergences, pending invites & transcripts."""
     heures = cron_schedule.cadence_fr("disponibilites")
+    teams_actif = bool(Config.TEAMS_REUNIONS_ACTIF and Config.teams_configured())
+    od_configure = bool(Config.courrier_configured())
     try:
         rdvs = rendez_vous.lister_en_attente()
         divergences = rendez_vous.lister_divergences()
+        erreur_rdv = False
     except rendez_vous.LectureImpossible:
-        return {
-            "rdvs": [],
-            "divergences": [],
-            "rdv_invites_attente": [],
-            "erreur_rdv": True,
-            "heures_synchro": heures,
-        }
-    _enrichir_rdvs_portail(rdvs)
+        rdvs = []
+        divergences = []
+        erreur_rdv = True
+
+    if not erreur_rdv:
+        _enrichir_rdvs_portail(rdvs)
+
     rdv_invites_attente: list[dict] = []
-    if Config.PORTAIL_RDV_ACTIF:
+    if not erreur_rdv and Config.PORTAIL_RDV_ACTIF:
         try:
             rdv_invites_attente = [
                 inv for inv in pi.lister_invitations(type_="rdv")
@@ -358,11 +373,26 @@ def _contexte_rdv() -> dict:
             ]
         except Exception:
             logger.exception("reception: pending rdv invites read failed")
+
+    rdv_transcriptions: list[dict] = []
+    erreur_transcriptions = False
+    try:
+        rdv_transcriptions = transcription_reunion.lister_a_revoir_enrichies()
+    except transcription_reunion.LectureImpossible:
+        erreur_transcriptions = True
+
+    dossiers_actifs = list_dossiers(status_filter="actif") if rdv_transcriptions else []
+
     return {
         "rdvs": rdvs,
         "divergences": divergences,
         "rdv_invites_attente": rdv_invites_attente,
-        "erreur_rdv": False,
+        "erreur_rdv": erreur_rdv,
+        "rdv_transcriptions": rdv_transcriptions,
+        "erreur_transcriptions": erreur_transcriptions,
+        "dossiers_actifs": dossiers_actifs,
+        "teams_reunions_actif": teams_actif,
+        "onedrive_configure": od_configure,
         "heures_synchro": heures,
     }
 
@@ -1666,3 +1696,82 @@ def ouverture_refuser(inv_id: str, batch: str):
     log_portail_event("intake_refuse", "refused", invitation_id=inv_id,
                       batch=batch)
     return _rediriger(message="Ouverture refusée.", onglet="ouvertures")
+
+
+# ── Transcriptions & notes Teams post-réunion (Lot 3) ────────────────────
+
+
+@reception_bp.post("/transcriptions/verifier")
+@login_required
+def transcriptions_verifier():
+    operator_email = str(session.get("email") or Config.AUTHORIZED_USER_EMAIL or "")
+    try:
+        res = transcription_reunion.verifier_reunions_terminees(user_id=operator_email)
+    except transcription_reunion.LectureImpossible:
+        return _rediriger(erreur=transcription_reunion.LECTURE_IMPOSSIBLE, onglet="rdv")
+    _invalidater_pastille()
+    if res["eligibles"] == 0:
+        msg = "Aucune réunion Teams terminée en attente de transcription."
+    else:
+        msg = (
+            f"Vérification terminée : {res['pretes']} prête(s), "
+            f"{res['attente']} en attente, {res['aucune']} sans transcription"
+        )
+        if res["erreurs"]:
+            msg += f", {res['erreurs']} erreur(s) Graph"
+        msg += "."
+    return _rediriger(message=msg, onglet="rdv")
+
+
+@reception_bp.post("/transcriptions/<hid>/verser")
+@login_required
+def transcription_verser(hid: str):
+    expected = edit_conflict.submitted_etag()
+    dossier_id = (request.form.get("dossier_id") or "").strip()
+    if not dossier_id:
+        return _rediriger(erreur="Veuillez sélectionner un dossier de destination.", onglet="rdv")
+    note_title = request.form.get("note_title") or ""
+    note_category = (request.form.get("note_category") or "").strip()
+    copilot_markdown = request.form.get("copilot_markdown") or ""
+    operator_email = str(session.get("email") or Config.AUTHORIZED_USER_EMAIL or "")
+
+    _doc, errors, warnings = transcription_reunion.verser_transcription(
+        hid,
+        dossier_id=dossier_id,
+        note_title=note_title,
+        note_category=note_category,
+        markdown_content=copilot_markdown,
+        expected_etag=expected,
+        user_id=operator_email,
+        category_source="juriste",
+    )
+    _invalidater_pastille()
+    if errors:
+        if concurrency.is_stale(errors):
+            return _rediriger(
+                erreur="Cette transcription a été modifiée ailleurs — vérifiez ci-dessous avant de réessayer.",
+                onglet="rdv",
+            )
+        return _rediriger(erreur=" ".join(errors), onglet="rdv")
+    message = "Notes et transcription versées au dossier."
+    if warnings:
+        message += " " + " ".join(warnings)
+    return _rediriger(message=message, onglet="rdv")
+
+
+@reception_bp.post("/transcriptions/<hid>/ecarter")
+@login_required
+def transcription_ecarter(hid: str):
+    expected = edit_conflict.submitted_etag()
+    _doc, errors = transcription_reunion.ecarter_transcription(
+        hid, expected_etag=expected
+    )
+    _invalidater_pastille()
+    if errors:
+        if concurrency.is_stale(errors):
+            return _rediriger(
+                erreur="Cette transcription a été modifiée ailleurs — vérifiez ci-dessous avant de réessayer.",
+                onglet="rdv",
+            )
+        return _rediriger(erreur=" ".join(errors), onglet="rdv")
+    return _rediriger(message="Transcription écartée et fichier temporaire purgé.", onglet="rdv")

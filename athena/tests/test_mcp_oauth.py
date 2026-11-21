@@ -563,8 +563,8 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "<strong>transite par claude.ai</strong> quand vous l'y faites lire",
         "le fidéicommis, le registre d'administration et les états "
         "financiers, sans numéro de compte ni de transit",
-        "les demandes Bookings en attente, avec le nom et le courriel du "
-        "demandeur",
+        "les demandes de rendez-vous en attente (nom et courriel) et les "
+        "notes/transcriptions Teams à revoir",
         "la boîte de réception Outlook, l'aperçu des pièces et OneDrive",
     ):
         assert must in flat, must
