@@ -1,4 +1,4 @@
-# Notes, théorie de la cause, documents et gabarits
+# Notes, théorie de la cause, documents, courriels et gabarits
 
 Analyse probante et théorie : `analyse-et-strategie` ; rédaction d'actes : `redaction-juridique` ; bordereaux, cotes, cahiers, endos et conformité formelle : `production-et-conformite` ; jugement et appel : `phase-jugement-et-suites` (compétences locales en session ; aucun nom, n° dossier ni extrait de pièce vers le web, `lois.find_relevant` / `lois.search_text` ou `juris.*`).
 
@@ -50,3 +50,10 @@ Analyse probante et théorie : `analyse-et-strategie` ; rédaction d'actes : `re
 - **Appels** : (1) `list_templates(kind="gabarit", query=…)`, puis `list_templates(template_id, dossier_id)` : blocs et champs requis ; (2) confirmer, puis `fill_gabarit(template_id, dossier_id, blocs, champs_manuels, idempotency_key)` ; (3) Markdown sur gabarit d'impression : `create_document(source="markdown", dossier_id, title, markdown)` ; (4) gabariser : `preview_templatize(document_id, substitutions)`, puis `create_template(source_document_id, name, category, substitutions)` (`index` base 0, « n° 1 » base 1) ; (5) classer : `move_documents` (50 max), `manage_folder`, `update_document`.
 - **Arrêt** : rapporter document créé et `folder` (souvent « Interne › Projets »).
 - **À éviter** : `list_templates(dossier_id)` sans `template_id` (refusé) ou classer pièce par pièce via `update_document`.
+
+## Doc6 Trier et classer les courriels
+{{GEN:charger}}
+- **Déclencheur** : « trie ma boîte de réception », « classe ces courriels ».
+- **Appels** : (1) `get_courrier_connexion()` au diagnostic, puis `list_courriels(premier=0, nombre=25)` (et `premier` suivant tant que `suite` vaut `true`) ; (2) rattacher chaque courriel via `list_dossiers(query=…)` ou `get_dossier` ; (3) confirmer (sauf tâche planifiée autorisée), puis dans l'ordre `save_courriels(messages=[…], idempotency_key)` (OneDrive et Athena, catégorie présumée), `move_courriels(messages=[…], idempotency_key)` (`action="classer"` ou `action="laisser"` si incertain) et `record_courriels_temps(entrees=[…], idempotency_key)` (`essai=true` simule les trois sans rien écrire).
+- **Arrêt** : laisser en boîte avec `action="laisser"` tout courriel ambigu ; signaler tout type non pris en charge dans Athena (sauvé dans OneDrive).
+- **À éviter** : appeler `move_courriels` (`action="classer"`) ou `record_courriels_temps` avant `save_courriels`, ou utiliser `create_time_entries_bulk` pour le temps du courrier.

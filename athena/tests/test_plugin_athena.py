@@ -1,4 +1,4 @@
-"""The claude.ai plugin « athena » (skill 2.0.1) — the deploy gate.
+"""The claude.ai plugin « athena » (skill 2.0.2) — the deploy gate.
 
 ``scripts/exporter_plugin_athena.py`` builds the plugin from its handwritten
 source (``plugin/athena/`` at the repo root) and the tool registry.
@@ -17,7 +17,7 @@ against the registry, and runs offline scenario evals:
 * no ``{{GEN:…}}`` is left, none of the retired strings or retired singular
   tools is back, ``dry_run`` stands only on its Noyau line, ``.mcp.json``
   names the connector « Athena »;
-* 25 deterministic offline scenario evals verify routing, confirmation tiers,
+* 26 deterministic offline scenario evals verify routing, confirmation tiers,
   anonymization firewall rules, and real registry schemas/enums.
 """
 
@@ -791,7 +791,7 @@ def test_version_digest_tracks_the_registry(monkeypatch):
     assert ex.empreinte_registre() != before
 
 
-# ── Offline scenario evals (25 realistic lawyer prompts) ───────────────
+# ── Offline scenario evals (26 realistic lawyer prompts) ───────────────
 
 _SCENARIO_EVALS: tuple[dict, ...] = (
     {
@@ -996,6 +996,24 @@ _SCENARIO_EVALS: tuple[dict, ...] = (
         "expected_tools": ("list_templates", "fill_gabarit"),
         "forbidden_tools": (),
         "expected_params": {"list_templates": {"kind": "gabarit"}},
+    },
+    {
+        "id": "doc6_courrier_intake_pipeline",
+        "prompt": "Trie ma boîte de réception et classe ces courriels dans OneDrive et Athena",
+        "surface": "skills/athena/references/notes-et-documents.md",
+        "marker": "## Doc6 Trier et classer les courriels",
+        "tier": "ecriture_courante",
+        "expected_tools": (
+            "get_courrier_connexion",
+            "list_courriels",
+            "save_courriels",
+            "move_courriels",
+            "record_courriels_temps",
+        ),
+        "forbidden_tools": ("create_time_entries_bulk",),
+        "expected_params": {
+            "list_courriels": {"premier": 0, "nombre": 25},
+        },
     },
     {
         "id": "accounting_admin_anthropic_and_receipt",
