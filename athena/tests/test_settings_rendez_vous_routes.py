@@ -269,6 +269,7 @@ def test_post_tester_renders_diagnostic_and_logs_bookings_event(
             "online_meetings_accessible": True,
             "politique_teams_requise": False,
             "transcriptions_accessibles": True,
+            "onedrive_configure": True,
             "onedrive_accessible": True,
             "erreurs": [],
         },
@@ -281,6 +282,7 @@ def test_post_tester_renders_diagnostic_and_logs_bookings_event(
     body = r.data.decode("utf-8")
     assert "TEAMS_REUNIONS_ACTIF — actif" in body
     assert "Jeton Entra : valide" in body
+    assert "Calendrier Graph du juriste : accessible" in body
     assert "API onlineMeetings (Teams) : accessible" in body
     assert "API transcriptions Graph : accessible" in body
     assert "OneDrive (module Courrier) : accessible" in body
@@ -288,3 +290,31 @@ def test_post_tester_renders_diagnostic_and_logs_bookings_event(
         rec.getMessage() == "teams_connexion_verifiee"
         for rec in caplog.records
     )
+
+
+def test_post_tester_shows_optional_onedrive_when_courrier_unconfigured(
+    web, monkeypatch
+):
+    monkeypatch.setattr(Config, "TEAMS_REUNIONS_ACTIF", True)
+    monkeypatch.setattr(
+        graph_teams,
+        "verifier_connexion_teams",
+        lambda: {
+            "interrupteur_actif": True,
+            "configure": True,
+            "jeton_valide": True,
+            "roles_presents": ["Calendars.ReadWrite"],
+            "roles_manquants": [],
+            "utilisateur_accessible": True,
+            "online_meetings_accessible": True,
+            "politique_teams_requise": False,
+            "transcriptions_accessibles": True,
+            "onedrive_configure": False,
+            "onedrive_accessible": False,
+            "erreurs": [],
+        },
+    )
+    r = web.post("/parametres/rendez-vous/tester")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8")
+    assert "OneDrive (module Courrier) : non configuré (optionnel au lot 1)" in body

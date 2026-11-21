@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import sys
+import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -39,8 +40,8 @@ def configured(monkeypatch):
         ("GRAPH_CLIENT_ID", "client-99"),
         ("GRAPH_CLIENT_SECRET", "secret-val"),
         ("BOOKINGS_JURISTE_UPN", UPN),
+        ("BOOKINGS_JURISTE_OBJECT_ID", UID),
         ("GRAPH_SENDER_UPN", UPN),
-        ("COURRIER_GRAPH_CLIENT_ID", ""),
     ):
         monkeypatch.setattr(Config, key, val)
 
@@ -119,8 +120,7 @@ def test_creer_reunion_teams_happy_path_sets_options_and_escapes_odata_quote(
 
     def fake_get(path, params=None, **kw):
         gets.append((path, params))
-        if params == {"$select": "id"}:
-            return {"id": UID}
+        assert not path.endswith("/juriste%40example.com"), "User.Read.All lookup forbidden"
         return {"value": [{"id": "OM-900"}]}
 
     def fake_patch(path, payload):
@@ -162,8 +162,9 @@ def test_creer_reunion_teams_happy_path_sets_options_and_escapes_odata_quote(
     ]
     assert ev_payload["start"] == {"dateTime": "2026-11-24T14:00:00", "timeZone": "UTC"}
 
-    assert gets[1][0] == f"/users/{UID}/onlineMeetings"
-    assert gets[1][1]["$filter"] == (
+    assert len(gets) == 1
+    assert gets[0][0] == f"/users/{UID}/onlineMeetings"
+    assert gets[0][1]["$filter"] == (
         "JoinWebUrl eq 'https://teams.microsoft.com/l/meetup-join/19%3ameeting/O''Brien'"
     )
 
@@ -192,9 +193,9 @@ def test_creer_reunion_teams_degrades_honestly_when_step2_fails(configured, monk
     monkeypatch.setattr(
         graph,
         "graph_get",
-        lambda path, params=None, **kw: {"id": UID}
-        if params == {"$select": "id"}
-        else (_ for _ in ()).throw(GraphError("Échec d'un GET Graph (HTTP 403).")),
+        lambda path, params=None, **kw: (_ for _ in ()).throw(
+            GraphError("Échec d'un GET Graph (HTTP 403).")
+        ),
     )
 
     debut = datetime(2026, 11, 24, 14, 0, tzinfo=UTC)
@@ -277,13 +278,16 @@ def test_annuler_and_supprimer_treat_404_as_noop_and_reraise_other_errors(
 # ── Read-only diagnostic & pagination guard ───────────────────────────────
 
 
-def test_verifier_connexion_teams_when_unconfigured(monkeypatch):
-    monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "")
-    monkeypatch.setattr(Config, "BOOKINGS_JURISTE_UPN", "")
+def test_verifier_connexion_teams_when_unconfigured(configured, monkeypatch):
+    monkeypatch.setattr(Config, "BOOKINGS_JURISTE_OBJECT_ID", "")
     res = gt.verifier_connexion_teams()
     assert res["configure"] is False
     assert res["jeton_valide"] is False
     assert res["erreurs"]
+
+    monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "")
+    res2 = gt.verifier_connexion_teams()
+    assert res2["configure"] is False
 
 
 def test_verifier_connexion_teams_reports_missing_roles_and_403_policy(
@@ -296,9 +300,9 @@ def test_verifier_connexion_teams_reports_missing_roles_and_403_policy(
     )
 
     def fake_get(path, params=None, **kw):
-        if params == {"$select": "id"}:
-            return {"id": UID}
-        if path.endswith("/onlineMeetings"):
+        if path == "/users/juriste%40example.com/calendar":
+            return {"id": "cal-1"}
+        if path == f"/users/{UID}/onlineMeetings":
             raise GraphError("Échec d'un GET Graph (HTTP 403).")
         return {"value": []}
 
@@ -309,12 +313,12 @@ def test_verifier_connexion_teams_reports_missing_roles_and_403_policy(
         classmethod(lambda cls: True),
         raising=False,
     )
-    from utils import graph_courrier
-
-    monkeypatch.setattr(
-        graph_courrier,
-        "verifier_connexion",
-        lambda: {"onedrive_accessible": True},
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.graph_courrier",
+        types.SimpleNamespace(
+            verifier_connexion=lambda: {"onedrive_accessible": True}
+        ),
     )
 
     res = gt.verifier_connexion_teams()
@@ -324,8 +328,52 @@ def test_verifier_connexion_teams_reports_missing_roles_and_403_policy(
     assert res["online_meetings_accessible"] is False
     assert res["politique_teams_requise"] is True
     assert res["transcriptions_accessibles"] is True
+    assert res["onedrive_configure"] is True
     assert res["onedrive_accessible"] is True
     assert any("CsApplicationAccessPolicy" in e for e in res["erreurs"])
+
+
+def test_verifier_connexion_teams_treats_404_on_valid_probe_url_as_accessible(
+    configured, monkeypatch
+):
+    """HTTP 404 on the syntactically valid Teams meetup-join URL proves
+    CsApplicationAccessPolicy succeeded (the synthetic meeting id simply does
+    not exist), and unconfigured OneDrive does not fail the diagnostic."""
+    monkeypatch.setattr(
+        graph,
+        "jeton_application",
+        lambda: _jwt_with_roles(list(gt.REQUIRED_GRAPH_ROLES)),
+    )
+    monkeypatch.setattr(
+        Config,
+        "courrier_configured",
+        classmethod(lambda cls: False),
+        raising=False,
+    )
+    seen_paths = []
+
+    def fake_get(path, params=None, **kw):
+        seen_paths.append((path, params))
+        if path == "/users/juriste%40example.com/calendar":
+            return {"id": "cal-1"}
+        if path == f"/users/{UID}/onlineMeetings":
+            flt = (params or {}).get("$filter", "")
+            assert "19%3ameeting_00000000-0000-0000-0000-000000000000%40thread.v2" in flt
+            assert "tenant-1" in flt and UID in flt
+            raise GraphError("Échec d'un GET Graph (HTTP 404).")
+        return {"value": []}
+
+    monkeypatch.setattr(graph, "graph_get", fake_get)
+
+    res = gt.verifier_connexion_teams()
+    assert res["utilisateur_accessible"] is True
+    assert res["online_meetings_accessible"] is True
+    assert res["politique_teams_requise"] is False
+    assert res["transcriptions_accessibles"] is True
+    assert res["onedrive_configure"] is False
+    assert res["onedrive_accessible"] is False
+    assert res["erreurs"] == []
+    assert not any(p.endswith("/juriste%40example.com") for p, _ in seen_paths)
 
 
 def test_verifier_connexion_teams_transcript_probe_stops_after_one_page(
@@ -349,8 +397,8 @@ def test_verifier_connexion_teams_transcript_probe_stops_after_one_page(
     session_urls: list[str] = []
 
     class _FakeResp:
-        def __init__(self, payload: dict):
-            self.status_code = 200
+        def __init__(self, payload: dict, status_code: int = 200):
+            self.status_code = status_code
             self._payload = payload
 
         def json(self):
@@ -358,8 +406,10 @@ def test_verifier_connexion_teams_transcript_probe_stops_after_one_page(
 
     def fake_session_get(url, params=None, headers=None, timeout=None):
         session_urls.append(url)
-        if url.endswith(f"/users/juriste%40example.com"):
-            return _FakeResp({"id": UID})
+        if "/calendar" in url:
+            return _FakeResp({"id": "cal-1"})
+        if url.endswith(f"/users/{UID}/onlineMeetings"):
+            return _FakeResp({"error": {"code": "NotFound"}}, status_code=404)
         if "/getAllTranscripts(" in url:
             return _FakeResp(
                 {
@@ -373,9 +423,12 @@ def test_verifier_connexion_teams_transcript_probe_stops_after_one_page(
     monkeypatch.setattr(graph._session, "get", fake_session_get)
 
     res = gt.verifier_connexion_teams()
+    assert res["utilisateur_accessible"] is True
+    assert res["online_meetings_accessible"] is True
     assert res["transcriptions_accessibles"] is True
     assert res["roles_manquants"] == []
-    assert res["erreurs"] == ["Le module Courrier (OneDrive) n'est pas configuré."]
+    assert res["onedrive_configure"] is False
+    assert res["erreurs"] == []
     transcript_calls = [u for u in session_urls if "getAllTranscripts" in u]
     assert len(transcript_calls) == 1
     assert not any("next-page" in u for u in session_urls)

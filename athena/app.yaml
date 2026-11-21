@@ -120,6 +120,7 @@ env_variables:
   # ⚠️ An EMPTY value disables the predicate entirely — the sync then imports
   # nothing and the absence loop flags existing reservations as cancelled.
   BOOKINGS_JURISTE_UPN: "jason@poirierlavoie.ca"
+  BOOKINGS_JURISTE_OBJECT_ID: "1f98a3fb-bb35-4a7e-8de0-7e99eb69079c"
   BOOKINGS_SUBJECT_KEYWORDS: "Consultation,Rencontre"
   BOOKINGS_SYNC_ACTIVE: "true"
   # Miroir Outlook — pousse les audiences confirmées d'Athéna dans le
