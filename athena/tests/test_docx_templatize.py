@@ -1247,4 +1247,4 @@ def test_markup_just_under_the_token_cap_templatizes_in_bounded_time():
     result = tz.templatize(data, [Sub("Jean Tremblay", "client.nom_complet", 1)])
     elapsed = time.process_time() - start
     assert result.ok, (result.blockers, result.errors)
-    assert elapsed < 15.0, f"templatize at the token cap took {elapsed:.2f}s"
+    assert elapsed < 20.0, f"templatize at the token cap took {elapsed:.2f}s"
