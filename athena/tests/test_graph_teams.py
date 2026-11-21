@@ -53,6 +53,11 @@ def test_powershell_setup_commands_use_placeholders_or_supplied_values():
     default_cmds = gt.powershell_setup_commands()
     assert default_cmds[0] == "Connect-MicrosoftTeams"
     assert "Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true" in default_cmds
+    assert (
+        "Set-CsTeamsMeetingPolicy -Identity Global "
+        "-Copilot EnabledWithTranscriptDefaultOn "
+        "-AutomaticallyStartCopilot Enabled"
+    ) in default_cmds
     assert "<GRAPH_CLIENT_ID>" in default_cmds[2]
     assert "<BOOKINGS_JURISTE_UPN>" in default_cmds[3]
 
@@ -171,8 +176,10 @@ def test_creer_reunion_teams_happy_path_sets_options_and_escapes_odata_quote(
     patch_path, om_payload = patches[0]
     assert patch_path == f"/users/{UID}/onlineMeetings/OM-900"
     assert om_payload == {
+        "allowRecording": False,
         "allowTranscription": True,
         "recordAutomatically": False,
+        "meetingSpokenLanguageTag": "fr-ca",
         "lobbyBypassSettings": {
             "scope": "organizer",
             "isDialInBypassEnabled": False,

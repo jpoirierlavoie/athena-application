@@ -59,6 +59,11 @@ def powershell_setup_commands(
             'Grant-CsApplicationAccessPolicy -PolicyName "PallasAthenaTeamsAccess" '
             f'-Identity "{upn}"'
         ),
+        (
+            "Set-CsTeamsMeetingPolicy -Identity Global "
+            "-Copilot EnabledWithTranscriptDefaultOn "
+            "-AutomaticallyStartCopilot Enabled"
+        ),
     ]
 
 
@@ -182,8 +187,10 @@ def creer_reunion_teams(
                 f"/users/{quote(user_id, safe='')}/onlineMeetings/"
                 f"{quote(online_meeting_id, safe='')}",
                 {
+                    "allowRecording": False,
                     "allowTranscription": True,
                     "recordAutomatically": False,
+                    "meetingSpokenLanguageTag": "fr-ca",
                     "lobbyBypassSettings": {
                         "scope": "organizer",
                         "isDialInBypassEnabled": False,
