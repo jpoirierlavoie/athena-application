@@ -17,7 +17,6 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 from config import Config  # noqa: E402
-import utils  # noqa: E402
 from utils import graph, graph_teams as gt  # noqa: E402
 from utils.graph import GraphError, GraphNotConfigured  # noqa: E402
 from utils.graph_calendrier import MIROIR_CATEGORIE  # noqa: E402
@@ -318,7 +317,9 @@ def test_verifier_connexion_teams_reports_missing_roles_and_403_policy(
         verifier_connexion=lambda: {"onedrive_accessible": True}
     )
     monkeypatch.setitem(sys.modules, "utils.graph_courrier", fake_courrier)
-    monkeypatch.setattr(utils, "graph_courrier", fake_courrier, raising=False)
+    monkeypatch.setattr(
+        sys.modules["utils"], "graph_courrier", fake_courrier, raising=False
+    )
 
     res = gt.verifier_connexion_teams()
     assert res["jeton_valide"] is True
