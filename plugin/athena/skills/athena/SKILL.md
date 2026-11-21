@@ -1,6 +1,6 @@
 ---
 name: athena
-description: "Guide d'utilisation du connecteur Athena (pratique de litige civil québécois) : séquences d'appels courtes, résolution d'identifiants et garde-fous d'écriture. Activer dès qu'une demande lit ou écrit dans Athena, même sans le nommer (Quebec litigation case & matter management, billing, trust accounting, deadlines, docs). Déclencheurs : breffage, qu'est-ce qui s'en vient, dossier, client, parties, conflits, KYC, tâche, échéance, audience, Bookings, protocole, note, théorie de la cause, document, gabarit, heures, débours, non facturé, facture, budget, fidéicommis, administration, états financiers, reprise. Complète droit-civil-quebecois (compétences locales ; pare-feu sur ses appels réseau sortants et le web). Ne pas utiliser pour trancher le droit, rédiger un acte ni qualifier hors Athena."
+description: "Guide d'utilisation du connecteur Athena (pratique de litige civil québécois) : séquences d'appels courtes, résolution d'identifiants et garde-fous d'écriture. Activer dès qu'une demande lit ou écrit dans Athena, même sans le nommer (Quebec litigation case & matter management, billing, trust accounting, deadlines, docs). Déclencheurs : breffage, qu'est-ce qui s'en vient, dossier, client, parties, conflits, KYC, tâche, échéance, audience, Bookings, protocole, note, théorie de la cause, document, courriel, gabarit, heures, débours, non facturé, facture, budget, fidéicommis, administration, états financiers, reprise. Complète droit-civil-quebecois (compétences locales ; pare-feu sur ses appels réseau sortants et le web). Ne pas utiliser pour trancher le droit, rédiger un acte ni qualifier hors Athena."
 ---
 
 {{GEN:version}}
@@ -30,7 +30,7 @@ description: "Guide d'utilisation du connecteur Athena (pratique de litige civil
 - Pivot : le dossier ; « Général » = notes, tâches, événements hors dossier ; une théorie par dossier.
 - Contacts au cabinet ; le dossier fige leurs noms pour gabarits/procédures.
 - Téléphone : les contacts sauf les fournisseurs ; tâches, notes, événements des dossiers actifs/`en_attente` et Général (ni finances, documents ni protocoles hors tâche liée).
-- `droit-civil-quebecois` (local en session) : services `recherche-juridique`, `analyse-et-strategie`, `redaction-juridique`, `production-et-conformite`, `gestion-du-mandat` ; phases `phase-ouverture-dossier`, `phase-introduction-reponse`, `phase-interrogatoires-instruction`, `phase-preparation-audience`, `phase-jugement-et-suites`. Courriels : Microsoft 365 (envoi sur demande).
+- `droit-civil-quebecois` (local en session) : services `recherche-juridique`, `analyse-et-strategie`, `redaction-juridique`, `production-et-conformite`, `gestion-du-mandat` ; phases `phase-ouverture-dossier`, `phase-introduction-reponse`, `phase-interrogatoires-instruction`, `phase-preparation-audience`, `phase-jugement-et-suites`. Courriels : réception/classement dans Athena ; envoi via Microsoft 365 sur demande.
 
 ## Économie d'appels
 
@@ -57,7 +57,7 @@ Lire au plus **une** feuille ci-dessous hors R1–R4 ; sinon `references/index-o
 
 - Contacts, dossiers, KYC/conflits, significations/prescription → `references/dossiers-et-contacts.md`
 - Tâches, audiences, Bookings, échéances, protocole → `references/agenda-et-protocole.md`
-- Notes, théorie de la cause, documents, téléversement, gabarits → `references/notes-et-documents.md`
+- Notes, théorie de la cause, documents, courriels, téléversement, gabarits → `references/notes-et-documents.md`
 - Non facturé, période, facture, reclassement phases, budget → `references/facturation-et-budget.md`
 - Fidéicommis, grand livre d'administration, reçus, états financiers → `references/comptabilite-et-etats.md`
 - Reprise historique d'un dossier → `references/reprise-historique.md`
