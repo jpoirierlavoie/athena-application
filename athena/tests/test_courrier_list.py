@@ -530,3 +530,178 @@ def test_list_courriels_fails_closed_on_unconfigured_graph_or_firestore_error(mo
     )
     with pytest.raises(handlers.ToolArgumentError, match="échoué"):
         handlers.list_courriels({})
+
+
+def test_list_courriels_filtre_nouveaux_and_a_classer_skip_bytes_and_advance_cursor(monkeypatch):
+    fake = install(monkeypatch, courrier_model)
+    byte_calls = []
+
+    cle_held = courrier_model.compute_cle("<held@cabinet.example>")
+    cle_classed = courrier_model.compute_cle("<classed@cabinet.example>")
+    fake.seed(
+        f"courrier_messages/{cle_classed}",
+        {
+            "cle": cle_classed,
+            "graph_id": "m-classed",
+            "etat": courrier_model.ETAT_CLASSE,
+            "dossier_id": "d1",
+            "dossier_numero": "2026-001",
+            "fichiers": [],
+            "legacy_ref": "",
+            "time_entry_id": "",
+            "outlook_folder_id": "f1",
+            "saved_at": None,
+            "moved_at": None,
+            "expire_at": None,
+        },
+    )
+
+    raw_inbox = [
+        {
+            "id": "m-held",
+            "internetMessageId": "<held@cabinet.example>",
+            "conversationId": "c-held",
+            "receivedDateTime": "2026-11-18T15:00:00Z",
+            "from": {"emailAddress": {"name": "Inconnu", "address": "x@ex.com"}},
+            "categories": [graph_courrier.CATEGORIE_A_CLASSER],
+            "uniqueBody": {"contentType": "text", "content": "Retenu"},
+            "hasAttachments": True,
+        },
+        {
+            "id": "m-classed",
+            "internetMessageId": "<classed@cabinet.example>",
+            "conversationId": "c-cls",
+            "receivedDateTime": "2026-11-19T15:00:00Z",
+            "from": {"emailAddress": {"name": "Client", "address": "c@ex.com"}},
+            "categories": [graph_courrier.CATEGORIE_CLASSE],
+            "uniqueBody": {"contentType": "text", "content": "Déjà classé"},
+            "hasAttachments": True,
+        },
+        {
+            "id": "m-new",
+            "internetMessageId": "<new@cabinet.example>",
+            "conversationId": "c-new",
+            "receivedDateTime": "2026-11-20T15:00:00Z",
+            "from": {"emailAddress": {"name": "Confrère", "address": "av@ex.com"}},
+            "categories": [],
+            "uniqueBody": {"contentType": "text", "content": "Nouveau courriel"},
+            "hasAttachments": True,
+        },
+    ]
+
+    def fake_get(path, *, params=None, immutable_id=True, prefer=(), follow_next=True):
+        del immutable_id, prefer, follow_next
+        if path.endswith("/mailFolders/Inbox"):
+            return {"id": "inbox-id", "totalItemCount": len(raw_inbox)}
+        if path.endswith("/mailFolders/Inbox/messages"):
+            skip = int((params or {}).get("$skip", 0))
+            top = int((params or {}).get("$top", 25))
+            return {"value": raw_inbox[skip : skip + top]}
+        if path.endswith("/attachments"):
+            msg_id = path.split("/messages/", 1)[1].split("/", 1)[0]
+            return {
+                "value": [
+                    {
+                        "id": f"att-{msg_id}",
+                        "name": f"{msg_id}.pdf",
+                        "contentType": "application/pdf",
+                        "size": 1000,
+                        "isInline": False,
+                    }
+                ]
+            }
+        if path.endswith("/messages") and params and "$filter" in params:
+            return {"value": []}
+        if path.endswith("/mailFolders") or "/childFolders" in path or path.endswith("/children"):
+            return {"value": []}
+        if "/drive/root:/" in path:
+            return {"id": "od-root", "folder": {}}
+        raise AssertionError(f"unexpected {path}")
+
+    def fake_get_bytes(path, *, max_bytes, immutable_id=True):
+        del max_bytes, immutable_id
+        byte_calls.append(path)
+        return _pdf(["Contenu pièce"])
+
+    monkeypatch.setattr(graph_courrier, "courrier_get", fake_get)
+    monkeypatch.setattr(graph_courrier, "courrier_get_bytes", fake_get_bytes)
+
+    # 1. filtre="nouveaux": skips held & classed without downloading their attachments!
+    res_new = handlers.list_courriels({"premier": 0, "nombre": 1, "filtre": "nouveaux"})
+    assert res_new["provenance"] == "recus"
+    assert res_new["filtre"] == "nouveaux"
+    assert res_new["filtre_total"] == 1
+    assert [m["id"] for m in res_new["messages"]] == ["m-new"]
+    assert res_new["prochain"] == 3  # raw Graph cursor past all 3 inspected raw msgs!
+    assert res_new["suite"] is False
+    assert byte_calls == [p for p in byte_calls if "/m-new/" in p]
+    assert len(byte_calls) == 1
+
+    # 2. filtre="a_classer": returns ONLY held email with metadata, ZERO bytes downloaded!
+    byte_calls.clear()
+    res_held = handlers.list_courriels({"premier": 0, "nombre": 25, "filtre": "a_classer"})
+    assert res_held["filtre"] == "a_classer"
+    assert res_held["filtre_total"] == 1
+    assert [m["cle"] for m in res_held["messages"]] == [cle_held]
+    assert res_held["messages"][0]["pieces"][0]["id"] == "att-m-held"
+    assert res_held["messages"][0]["pieces"][0]["apercu"] == ""
+    assert res_held["messages"][0]["pieces"][0]["apercu_omis"] == "non_demande"
+    assert byte_calls == []
+
+
+def test_list_courriels_sent_items_depuis_and_input_validation(monkeypatch):
+    install(monkeypatch, courrier_model)
+    seen_queries = []
+
+    def fake_get(path, *, params=None, immutable_id=True, prefer=(), follow_next=True):
+        del immutable_id, prefer, follow_next
+        if path.endswith("/mailFolders/SentItems"):
+            return {"id": "sent-folder-id", "totalItemCount": 900}
+        if path.endswith("/mailFolders/SentItems/messages"):
+            seen_queries.append((path, dict(params or {})))
+            return {
+                "value": [
+                    {
+                        "id": "sent-1",
+                        "internetMessageId": "<sent-1@cabinet.example>",
+                        "conversationId": "conv-s1",
+                        "sentDateTime": "2026-11-19T14:00:00Z",  # Fallback without receivedDateTime -> 09:00 EST
+                        "from": {"emailAddress": {"name": "Me Jason Poirier Lavoie", "address": "me@cabinet.example"}},
+                        "toRecipients": [{"emailAddress": {"address": "client@ex.com"}}],
+                        "categories": [],
+                        "uniqueBody": {"contentType": "text", "content": "Voir ci-joint."},
+                        "hasAttachments": False,
+                    }
+                ]
+            }
+        if path.endswith("/messages") and params and "$filter" in params:
+            return {"value": [{"id": "sent-1", "parentFolderId": "sent-folder-id"}, {"id": "sent-2", "parentFolderId": "sent-folder-id"}]}
+        if path.endswith("/mailFolders") or "/childFolders" in path or path.endswith("/children"):
+            return {"value": []}
+        if "/drive/root:/" in path:
+            return {"id": "od-root", "folder": {}}
+        raise AssertionError(f"unexpected {path}")
+
+    monkeypatch.setattr(graph_courrier, "courrier_get", fake_get)
+
+    res = handlers.list_courriels({
+        "premier": 0,
+        "nombre": 10,
+        "provenance": "envoyes",
+        "filtre": "nouveaux",
+        "depuis": "2026-11-19",
+    })
+    assert res["provenance"] == "envoyes"
+    assert res["filtre"] == "nouveaux"
+    assert res["filtre_total"] == 1
+    assert res["suite"] is False
+    assert seen_queries[0][1]["$filter"] == "receivedDateTime ge 2026-11-19T05:00:00Z"
+    assert res["messages"][0]["recu"] == "2026-11-19 09:00"
+    assert res["messages"][0]["fil"] == {"envoyes": 1}
+
+    with pytest.raises(handlers.ToolArgumentError, match="provenance"):
+        handlers.list_courriels({"provenance": "brouillons"})
+    with pytest.raises(handlers.ToolArgumentError, match="filtre"):
+        handlers.list_courriels({"filtre": "inconnu"})
+    with pytest.raises(handlers.ToolArgumentError, match="depuis"):
+        handlers.list_courriels({"depuis": "2026-02-30"})

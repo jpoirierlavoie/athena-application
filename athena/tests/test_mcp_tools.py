@@ -378,7 +378,8 @@ def test_registry_shape():
     # (2026-11-20, deliberately): Courrier Phase 5 write record_courriels_temps.
     # 91 -> 93 (2026-11-21, deliberately): Lot 3 read get_meeting_transcripts
     # + write decide_meeting_transcript.
-    assert len(tools.TOOLS) == 93  # 37 lectures + 56 ecritures
+    # 93 -> 92 (2026-11-21, deliberately): Courrier v3 retired record_courriels_temps.
+    assert len(tools.TOOLS) == 92  # 37 lectures + 55 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -529,8 +530,6 @@ def test_write_tools_set_is_pinned():
         "save_courriels",
         # Courrier Phase 4 — classement et étiquetage Outlook.
         "move_courriels",
-        # Courrier Phase 5 — création atomique d'entrées de temps + lien registre.
-        "record_courriels_temps",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 

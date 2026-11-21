@@ -388,19 +388,18 @@ FAMILIES: tuple[Family, ...] = (
         key="courrier",
         label="COURRIER",
         scope=SCOPE_WRITE,
-        tools=("save_courriels", "move_courriels", "record_courriels_temps"),
+        tools=("save_courriels", "move_courriels"),
         title_fr="Courrier",
         consent_fr=(
-            "enregistrer les courriels et pièces dans OneDrive et Athéna "
-            "(catégorie <strong>présumée</strong>, sans écraser), inscrire le "
-            "temps et classer dans Outlook"
+            "enregistrer courriels et pièces dans OneDrive et Athéna "
+            "(catégorie <strong>présumée</strong>, sans écraser) et classer "
+            "dans Outlook"
         ),
         instructions_en=(
             "`save_courriels` (`list_courriels` d'abord) verse `.eml`/pièces "
             "dans OneDrive (`4 - Dossiers`) et Athéna ; "
-            "`record_courriels_temps` crée temps + lien registre ; "
             "`move_courriels` classe sous `Archive > Dossiers` ou « à "
-            "classer » ; `idempotency_key` REQUISE ; `essai` simule."
+            "classer » ; `idempotency_key` REQUISE."
         ),
     ),
 )

@@ -4769,6 +4769,15 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     }),
 
     "get_courrier_connexion": _obj({
+        "pret": _bool(
+            "True iff Courrier is configured, COURRIER_ACTIF is enabled, the "
+            "Graph token is valid without Mail.Send or reconsentement_requis, "
+            "both probes succeeded, and erreur is null."
+        ),
+        "motifs": _arr(
+            _str(),
+            "Plain French unmet conditions when pret is false; [] when ready.",
+        ),
         "interrupteur_actif": _bool(
             "True when COURRIER_ACTIF allows Courrier write tools to execute."
         ),
@@ -4804,6 +4813,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     }),
 
     "list_courriels": _obj({
+        "provenance": {"type": "string", "enum": ["recus", "envoyes"]},
+        "filtre": {"type": "string", "enum": ["tous", "nouveaux", "a_classer"]},
+        "filtre_total": _nint(
+            "Exact matching count when premier=0 and suite is false; null otherwise."
+        ),
         "messages": _arr(_obj({
             "cle": _str("16-hex SHA-256 key of internetMessageId."),
             "id": _str("Immutable Outlook message id."),
@@ -4838,6 +4852,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "type": ["string", "null"],
                     "enum": [
                         "ignoree",
+                        "non_demande",
                         "format_non_texte",
                         "taille_depassee",
                         "chiffre",
@@ -4851,7 +4866,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "type": "object",
                 "description": (
                     "Other messages in the conversation counted by location "
-                    "(AAAA-NNN, statut:<name>, boite, autre)."
+                    "(AAAA-NNN, statut:<name>, boite, envoyes, autre)."
                 ),
             },
             "etat": {
@@ -4987,7 +5002,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     },
 
     "save_courriels": _obj({
-        "essai": _bool(),
         "traites": _int(),
         "echecs": _int(),
         "differes": _int(),
@@ -4998,35 +5012,29 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "dossier_onedrive_cree": _bool(),
             "fichiers": _arr(_obj({
                 "slot": _str(),
+                "nom": _str("Final cleaned/suffixed filename on OneDrive and Athena."),
+                "chemin": _str("OneDrive path relative to COURRIER_ONEDRIVE_ROOT."),
                 "sha256": _str(),
                 "quickxorhash": _str(),
                 "taille": _int(),
                 "statut_onedrive": {
                     "type": "string",
-                    "enum": [
-                        "cree", "deja_present", "renomme",
-                        "prevu_cree", "prevu_deja_present", "prevu_renomme",
-                    ],
+                    "enum": ["cree", "deja_present", "renomme"],
                 },
                 "renomme_index": {"type": ["integer", "null"]},
                 "onedrive_item_id": _nstr("Opaque OneDrive item id."),
                 "statut_athena": {
                     "type": "string",
-                    "enum": [
-                        "cree", "deja_present", "non_pris_en_charge",
-                        "prevu_cree", "prevu_deja_present",
-                        "prevu_non_pris_en_charge",
-                    ],
+                    "enum": ["cree", "deja_present", "non_pris_en_charge"],
                 },
                 "document_id": _nstr("Athena document UUIDv4 when ingested."),
-            })),
+            }, optional=("nom", "chemin"))),
             "erreur": _nstr("Fixed French error when failed or deferred."),
         })),
         **_write_protocol_keys(),
     }),
 
     "move_courriels": _obj({
-        "essai": _bool(),
         "classes": _int(),
         "laisses": _int(),
         "introuvables": _int(),
@@ -5047,28 +5055,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "erreur": _nstr("Fixed French error when failed or deferred."),
         })),
         "avertissements": _arr(_str()),
-        **_write_protocol_keys(),
-    }),
-
-    "record_courriels_temps": _obj({
-        "essai": _bool(),
-        "creees": _int(),
-        "courriels_lies": _int(),
-        "entrees": _arr(_obj({
-            "legacy_ref": _str("Anchor recep:{dossier}:{date}:{cle}."),
-            "dossier_id": _str(),
-            "dossier": _str("Dossier AAAA-NNN."),
-            "date": _str("YYYY-MM-DD."),
-            "hours": _num(),
-            **_money("rate"),
-            **_money("amount"),
-            "billable": _bool(),
-            "phase": _str(),
-            "sous_phase": _str(),
-            "cles": _arr(_str(), "Linked 16-hex email keys."),
-            "time_entry_id": _nstr("Created time entry UUIDv4 (null on essai)."),
-            "etag": _nstr("Stored etag (null on essai)."),
-        }, optional=("etag",))),
         **_write_protocol_keys(),
     }),
 }

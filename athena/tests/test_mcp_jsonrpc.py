@@ -665,15 +665,15 @@ def test_initialize_tells_every_token_the_same_instructions(monkeypatch, scope):
 
 @pytest.mark.parametrize("scope, expected", [
     ("athena:read", 37),
-    ("athena:read athena:write", 93),
+    ("athena:read athena:write", 92),
     (f"athena:read {_RETIRED_SCOPE}", 37),
-    (f"athena:read athena:write {_RETIRED_SCOPE}", 93),
+    (f"athena:read athena:write {_RETIRED_SCOPE}", 92),
 ])
 def test_tools_list_counts_per_token_are_the_train_s_checklist(
     monkeypatch, scope, expected
 ):
     bearer.reset_brake_state()
-    assert len(tools.TOOLS) == 93 and len(tools.WRITE_TOOLS) == 56
+    assert len(tools.TOOLS) == 92 and len(tools.WRITE_TOOLS) == 55
     # The five accounting writes, by name — the set the recorder tests above
     # dispatch, every one of them.
     assert tools.ACCOUNTING_WRITE_TOOLS == set(_ACCOUNTING_CALLS) == {

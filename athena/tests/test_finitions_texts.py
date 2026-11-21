@@ -182,11 +182,10 @@ _RETIRED_IN_V2 = frozenset({
 # The write tools shipped AFTER the D22 release, each under its own train.
 _AFTER_D22 = frozenset({"create_time_entries_bulk", "create_expenses_bulk"})
 
-# The write tools shipped AFTER the bulk creators' release (2026-11-20: Courrier Phase 3-5).
+# The write tools shipped AFTER the bulk creators' release (2026-11-20: Courrier Phase 3-4, Lot 3).
 _WRITES_AFTER_BULK = frozenset({
     "save_courriels",
     "move_courriels",
-    "record_courriels_temps",
     "decide_meeting_transcript",
 })
 

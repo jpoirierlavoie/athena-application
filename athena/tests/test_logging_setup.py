@@ -559,13 +559,13 @@ def test_log_courrier_event_severity_and_secret_redaction(caplog):
 
     with caplog.at_level(logging.DEBUG, logger="pallas.courrier"):
         log_courrier_event("courrier_connexion", "success", boite_accessible=True)
-        log_courrier_event("courrier_temps", "refused", essai=False, reason="switch_off")
-        log_courrier_event("courrier_enregistrement", "failure", essai=False, echecs=1)
+        log_courrier_event("courrier_classement", "refused", reason="switch_off")
+        log_courrier_event("courrier_enregistrement", "failure", echecs=1)
 
     recs = [r for r in caplog.records if r.name == "pallas.courrier"]
     assert [r.levelno for r in recs[-3:]] == [logging.INFO, logging.WARNING, logging.ERROR]
     assert recs[-2].json_fields["reason"] == "switch_off"
-    assert recs[-2].json_fields["essai"] is False
+    assert "essai" not in recs[-2].json_fields
 
     redacted = _make_record(json_fields={"courrier_graph_client_secret": "top-secret"})
     RedactionFilter().filter(redacted)

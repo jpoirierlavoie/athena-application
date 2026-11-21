@@ -305,6 +305,9 @@ def test_verifier_connexion_unconfigured(monkeypatch):
     assert res["boite_accessible"] is False
     assert res["onedrive_accessible"] is False
     assert res["erreur"] == "Le module Courrier n'est pas configuré."
+    assert res["pret"] is False
+    assert "Module Courrier non configuré." in res["motifs"]
+    assert "Interrupteur COURRIER_ACTIF désactivé." in res["motifs"]
 
 
 def test_verifier_connexion_healthy_montreal_expiry_and_switch(monkeypatch):
@@ -340,9 +343,18 @@ def test_verifier_connexion_healthy_montreal_expiry_and_switch(monkeypatch):
     assert res["boite_accessible"] is True
     assert res["onedrive_accessible"] is True
     assert res["erreur"] is None
+    assert res["pret"] is True
+    assert res["motifs"] == []
+
+    # Flip COURRIER_ACTIF off: probes succeed, yet pret is False with clear motif.
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", False)
+    res_off = handlers.get_courrier_connexion({})
+    assert res_off["pret"] is False
+    assert res_off["motifs"] == ["Interrupteur COURRIER_ACTIF désactivé."]
 
 
 def test_verifier_connexion_token_401_flags_reconsent(monkeypatch):
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
     monkeypatch.setattr(
         graph_courrier._session,
         "post",
@@ -353,10 +365,13 @@ def test_verifier_connexion_token_401_flags_reconsent(monkeypatch):
     assert res["reconsentement_requis"] is True
     assert res["expiration"] is None
     assert "HTTP 401" in res["erreur"]
+    assert res["pret"] is False
+    assert res["motifs"] == ["Reconsentement ou rotation de secret Microsoft requis."]
 
 
 def test_verifier_connexion_refuses_mail_send_and_skips_probes(monkeypatch):
     tok = _make_jwt({"roles": ["Files.ReadWrite.All", "Mail.ReadWrite", "Mail.Send"]})
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
     monkeypatch.setattr(
         graph_courrier._session,
         "post",
@@ -374,10 +389,13 @@ def test_verifier_connexion_refuses_mail_send_and_skips_probes(monkeypatch):
     assert res["boite_accessible"] is False
     assert res["onedrive_accessible"] is False
     assert "Mail.Send" in res["erreur"]
+    assert res["pret"] is False
+    assert res["motifs"] == ["Permission interdite Mail.Send présente sur le jeton."]
 
 
 def test_verifier_connexion_inbox_403_and_onedrive_ok(monkeypatch):
     tok = _make_jwt({"roles": ["Files.ReadWrite.All", "Mail.ReadWrite"]})
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
     monkeypatch.setattr(
         graph_courrier._session,
         "post",
@@ -397,10 +415,14 @@ def test_verifier_connexion_inbox_403_and_onedrive_ok(monkeypatch):
     assert res["onedrive_accessible"] is True
     assert res["reconsentement_requis"] is True
     assert "Boîte de réception" in res["erreur"]
+    assert res["pret"] is False
+    assert "Reconsentement ou rotation de secret Microsoft requis." in res["motifs"]
+    assert "Boîte de réception Outlook inaccessible." in res["motifs"]
 
 
 def test_verifier_connexion_onedrive_404_and_non_folder(monkeypatch):
     tok = _make_jwt({"roles": ["Files.ReadWrite.All", "Mail.ReadWrite"]})
+    monkeypatch.setattr(Config, "COURRIER_ACTIF", True)
     monkeypatch.setattr(
         graph_courrier._session,
         "post",
@@ -419,6 +441,8 @@ def test_verifier_connexion_onedrive_404_and_non_folder(monkeypatch):
     assert res["onedrive_accessible"] is False
     assert res["reconsentement_requis"] is False
     assert "OneDrive" in res["erreur"]
+    assert res["pret"] is False
+    assert res["motifs"] == ["Dossier racine OneDrive inaccessible."]
 
     def fake_get_file(url, **kw):
         if "/mailFolders/Inbox" in url:
@@ -430,3 +454,5 @@ def test_verifier_connexion_onedrive_404_and_non_folder(monkeypatch):
     assert res2["boite_accessible"] is True
     assert res2["onedrive_accessible"] is False
     assert "pas un dossier" in res2["erreur"]
+    assert res2["pret"] is False
+    assert res2["motifs"] == ["Dossier racine OneDrive inaccessible."]

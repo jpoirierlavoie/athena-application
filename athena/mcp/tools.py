@@ -855,7 +855,7 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #
 # * ``optional`` — an ``idempotency_key`` is accepted, not demanded. The
 #   store fails OPEN: a Firestore blip on the claim must not block a
-#   legitimate first write. Every write tool but the 14 below is
+#   legitimate first write. Every write tool but the 13 below is
 #   ``optional``.
 # * ``required`` — the key is demanded (a call without one is refused), and
 #   the store fails CLOSED: an unreadable claim refuses the call rather than
@@ -870,9 +870,10 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #   sweeps), ``save_courriels`` (external OneDrive writes and permanent
 #   document/registry rows), ``move_courriels`` (Outlook folder/category
 #   writes and permanent classification state), and
-#   ``record_courriels_temps`` (billable time entries and permanent
-#   Courrier links). Such a tool must also list ``idempotency_key`` in its
-#   input schema's ``required`` (pinned by test_mcp_framework_guards).
+#   ``decide_meeting_transcript`` (permanent note/document filing, staged
+#   WebVTT purge and optional OneDrive upload). Such a tool must also list
+#   ``idempotency_key`` in its input schema's ``required`` (pinned by
+#   test_mcp_framework_guards).
 IDEMPOTENCY_OPTIONAL = "optional"
 IDEMPOTENCY_REQUIRED = "required"
 IDEMPOTENCY_POLICIES: tuple[str, ...] = (IDEMPOTENCY_OPTIONAL, IDEMPOTENCY_REQUIRED)
@@ -6123,8 +6124,9 @@ TOOLS: dict[str, dict] = {
         "title": "État de la connexion Courrier",
         "description": (
             "Vérifie la configuration et l'accès Microsoft Graph du module "
-            "Courrier : compte cible, portées accordées sur le jeton, validité "
-            "et expiration (heure de Montréal), absence de Mail.Send, accès "
+            "Courrier : indicateur global `pret` et liste française `motifs`, "
+            "compte cible, portées accordées sur le jeton, validité et "
+            "expiration (heure de Montréal), absence de Mail.Send, accès "
             "effectif à la boîte de réception et au dossier racine OneDrive, "
             "état de l'interrupteur COURRIER_ACTIF et région d'exécution."
         ),
@@ -6136,20 +6138,21 @@ TOOLS: dict[str, dict] = {
         "handler": "get_courrier_connexion",
     },
     "list_courriels": {
-        "title": "Inventaire de la boîte de réception Courrier",
+        "title": "Inventaire des courriels Courrier",
         "description": (
-            "Inventorie la boîte de réception Outlook du plus ancien au plus "
-            "récent (`premier`, `nombre` <= 25) sans rien écrire ni modifier : "
-            "clé 16 hex (`cle`), identifiant immuable (`id`), horodatage "
-            "Montréal (`recu`), expéditeur, destinataires, objet, corps "
-            "texte (<= 1 500 car.), pièces jointes avec aperçu page 1 "
-            "(<= 400 car. pour PDF, DOCX, TXT, CSV <= 10 Mo ; pièces "
-            "incorporées, liens infonuagiques, .ics/.vcf et images de "
-            "signature ignorés sans téléchargement), fil de conversation "
-            "(`fil`) et état au registre (`etat`, `legacy_ref`). Au premier "
-            "appel (`premier` à 0), retourne aussi `outlook` et `onedrive`. "
-            "S'arrête au budget (~25 s) avec `suite` à true ; utiliser "
-            "`list_dossiers` / `get_dossier` pour rattacher un courriel."
+            "Inventorie la boîte de réception (`provenance=\"recus\"`, défaut) "
+            "ou les Éléments envoyés (`provenance=\"envoyes\"`, bornable par "
+            "`depuis` AAAA-MM-JJ) du plus ancien au plus récent (`premier`, "
+            "`nombre` <= 25) sans rien écrire : `filtre=\"nouveaux\"` exclut "
+            "« Réception — à classer » et déjà classés sans télécharger les "
+            "aperçus ; `filtre=\"a_classer\"` liste les seuls retenus avec "
+            "métadonnées des pièces sans téléchargement. Retourne clé (`cle`), "
+            "id immuable (`id`), horodatage Montréal (`recu`), expéditeur, "
+            "destinataires, objet, texte (<= 1 500 car.), pièces (`apercu` "
+            "<= 400 car. sous `tous`/`nouveaux`), `fil`, `etat`, `legacy_ref` "
+            "et `filtre_total` (`outlook` et `onedrive` si `premier=0`). "
+            "Budget ~25 s (`suite`). Utiliser `list_dossiers` / `get_dossier` "
+            "pour rattacher."
         ),
         "input_schema": {
             "type": "object",
@@ -6158,7 +6161,7 @@ TOOLS: dict[str, dict] = {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 10000,
-                    "description": "Décalage de pagination (0 par défaut).",
+                    "description": "Décalage brut de pagination (0 par défaut ; reprendre à `prochain`).",
                 },
                 "nombre": {
                     "type": "integer",
@@ -6166,6 +6169,30 @@ TOOLS: dict[str, dict] = {
                     "maximum": 25,
                     "description": (
                         "Nombre de courriels à inventorier (5 par défaut, max 25)."
+                    ),
+                },
+                "provenance": {
+                    "type": "string",
+                    "enum": ["recus", "envoyes"],
+                    "description": (
+                        "`recus` (boîte de réception, défaut) ou `envoyes` (Éléments envoyés)."
+                    ),
+                },
+                "filtre": {
+                    "type": "string",
+                    "enum": ["tous", "nouveaux", "a_classer"],
+                    "description": (
+                        "`tous` (défaut), `nouveaux` (exclut « Réception — à classer » "
+                        "et déjà classés) ou `a_classer` (retenus seulement, sans aperçu binaire)."
+                    ),
+                },
+                "depuis": {
+                    "type": "string",
+                    "minLength": 10,
+                    "maxLength": 10,
+                    "description": (
+                        "Optionnel : date minimale AAAA-MM-JJ (heure de Montréal), "
+                        "recommandée sur `envoyes`."
                     ),
                 },
             },
@@ -6530,18 +6557,16 @@ TOOLS: dict[str, dict] = {
     "save_courriels": {
         "title": "Enregistrer des courriels dans OneDrive et Athéna",
         "description": (
-            "ÉCRITURE — Enregistre des courriels Outlook et pièces jointes "
-            "dans OneDrive (`4 - Dossiers`) et Athéna (`category_source=\"mcp\"`, "
-            "catégorie présumée), sans jamais écraser ni déplacer dans Outlook. "
-            "Vérifie le dossier Athéna (`AAAA-NNN`), la correspondance `cle` "
-            "<-> `internetMessageId` et le dossier OneDrive "
-            "(`creer_dossier_onedrive`). Le nom `.eml` (`AAAA-NNN - AAAA-MM-JJ "
-            "HHhMM - {expéditeur}.eml`, <= 80 car.) est imposé côté serveur ; "
-            "les pièces gardent leur extension d'origine (<= 100 car.). Conflits "
-            "OneDrive : contenu identique -> `deja_present`, contenu différent "
-            "-> ` (2)`. Types non pris en charge dans Athéna (ex. `.heic`) : "
-            "sauvés dans OneDrive, `statut_athena=\"non_pris_en_charge\"`. "
-            "Exige `idempotency_key` ; `essai=true` simule sans rien écrire."
+            "ÉCRITURE — Enregistre des courriels Outlook et pièces dans "
+            "OneDrive (`4 - Dossiers`) et Athéna (`category_source=\"mcp\"`, "
+            "catégorie présumée), sans jamais écraser ni déplacer dans "
+            "Outlook. Vérifie le dossier (`AAAA-NNN`), `cle` <-> "
+            "`internetMessageId` et le dossier OneDrive. Noms imposés : "
+            "`.eml` <= 80 car. ; pièces <= 100 car. préfixées d'office (voir "
+            "`pieces[].nom`), extension conservée. Retourne `nom` final et "
+            "`chemin` relatif. Conflit OneDrive : identique -> `deja_present`, "
+            "différent -> ` (2)`. Types exclus (ex. `.heic`) : sauvés dans "
+            "OneDrive, `statut_athena=\"non_pris_en_charge\"`. Exige `idempotency_key`."
         ),
         "input_schema": {
             "type": "object",
@@ -6639,6 +6664,9 @@ TOOLS: dict[str, dict] = {
                                         "nom": {
                                             "type": "string",
                                             "maxLength": 200,
+                                            "description": (
+                                                "Optionnel : omis ou sans préfixe `AAAA-NNN`, préfixé `AAAA-NNN - AAAA-MM-JJ - ` d'office (<= 100 car.)."
+                                            ),
                                         },
                                     },
                                     "required": ["id", "sous_dossier"],
@@ -6649,12 +6677,6 @@ TOOLS: dict[str, dict] = {
                         "required": ["cle", "id", "dossier", "dossier_onedrive"],
                         "additionalProperties": False,
                     },
-                },
-                "essai": {
-                    "type": "boolean",
-                    "description": (
-                        "Simulation complète sans écriture (défaut false)."
-                    ),
                 },
                 **_write_protocol_props(),
             },
@@ -6668,15 +6690,15 @@ TOOLS: dict[str, dict] = {
     "move_courriels": {
         "title": "Classer ou étiqueter des courriels dans Outlook",
         "description": (
-            "ÉCRITURE — Classe des courriels Outlook sous `Archive > Dossiers > "
-            "{Actifs, Suspendu, Services-conseils}` (`action=\"classer\"`) ou "
-            "pose l'étiquette « Réception — à classer » (`action=\"laisser\"`). "
-            "`classer` exige d'abord l'état `enregistre` (ou `classe`) au "
-            "registre Courrier, vérifie la correspondance `cle` <-> "
-            "`internetMessageId`, crée le sous-dossier Outlook au besoin "
-            "(`outlook_creer`), préserve l'état non-lu (`isRead`), contrôle "
-            "l'identifiant immuable après déplacement et passe le registre à "
-            "`classe`. Exige `idempotency_key` ; `essai=true` simule sans rien écrire."
+            "ÉCRITURE — Classe des courriels Outlook (boîte de réception ou "
+            "Éléments envoyés) sous `Archive > Dossiers > {Actifs, Suspendu, "
+            "Services-conseils}` (`action=\"classer\"`) ou pose l'étiquette "
+            "« Réception — à classer » (`action=\"laisser\"`). `classer` exige "
+            "d'abord l'état `enregistre` (ou `classe`) au registre Courrier, "
+            "vérifie la correspondance `cle` <-> `internetMessageId`, crée le "
+            "sous-dossier Outlook au besoin (`outlook_creer`), préserve l'état "
+            "non-lu (`isRead`), contrôle l'identifiant immuable après "
+            "déplacement et passe le registre à `classe`. Exige `idempotency_key`."
         ),
         "input_schema": {
             "type": "object",
@@ -6705,7 +6727,7 @@ TOOLS: dict[str, dict] = {
                                 "type": "string",
                                 "enum": ["classer", "laisser"],
                                 "description": (
-                                    "`classer` sous Archive > Dossiers ou `laisser` en boîte."
+                                    "`classer` sous Archive > Dossiers ou `laisser` en place."
                                 ),
                             },
                             "dossier": {
@@ -6752,12 +6774,6 @@ TOOLS: dict[str, dict] = {
                         "additionalProperties": False,
                     },
                 },
-                "essai": {
-                    "type": "boolean",
-                    "description": (
-                        "Simulation complète sans écriture (défaut false)."
-                    ),
-                },
                 **_write_protocol_props(),
             },
             "required": ["messages", "idempotency_key"],
@@ -6772,83 +6788,6 @@ TOOLS: dict[str, dict] = {
             "internetMessageId and enforces transactional state transitions in "
             "courrier_messages (enregistre -> classe, never overwriting or downgrading)."
         ),
-    },
-    "record_courriels_temps": {
-        "title": "Inscrire les entrées de temps du courrier",
-        "description": (
-            "ÉCRITURE — TOUT OU RIEN : crée des entrées de temps non facturées "
-            "et estampille atomiquement chaque courriel couvert dans le registre "
-            "Courrier (`recep:{dossier}:{date}:{première_clé}`). Refuse tout "
-            "courriel non enregistré, d'un autre dossier ou déjà compté. "
-            "`hours` à au plus deux décimales (jamais arrondi), `description` "
-            "imprimée verbatim sur la facture. Exige `idempotency_key` ; "
-            "`essai=true` valide tout sans rien écrire."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "entrees": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 25,
-                    "description": "Entrées de temps Courrier à créer (1 à 25).",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "legacy_ref": {
-                                "type": "string",
-                                "minLength": 27,
-                                "maxLength": 64,
-                                "description": (
-                                    "Référence `recep:{dossier}:{date}:{première_clé_triée}`."
-                                ),
-                            },
-                            "cles": {
-                                "type": "array",
-                                "minItems": 1,
-                                "maxItems": 25,
-                                "description": (
-                                    "Clés 16 hex des courriels couverts par cette entrée."
-                                ),
-                                "items": {
-                                    "type": "string",
-                                    "minLength": 16,
-                                    "maxLength": 16,
-                                },
-                            },
-                            "entree": {
-                                "type": "object",
-                                "properties": {
-                                    k: v
-                                    for k, v in _time_entry_fields().items()
-                                    if k != "legacy_ref"
-                                },
-                                "required": _TIME_ENTRY_REQUIRED,
-                                "additionalProperties": False,
-                                "description": (
-                                    "Paramètres de l'entrée de temps (comme "
-                                    "`create_time_entries_bulk`)."
-                                ),
-                            },
-                        },
-                        "required": ["legacy_ref", "cles", "entree"],
-                        "additionalProperties": False,
-                    },
-                },
-                "essai": {
-                    "type": "boolean",
-                    "description": (
-                        "Simulation complète sans écriture (défaut false)."
-                    ),
-                },
-                **_write_protocol_props(),
-            },
-            "required": ["entrees", "idempotency_key"],
-            "additionalProperties": False,
-        },
-        "handler": "record_courriels_temps",
-        "scope": SCOPE_WRITE,
-        "idempotency": IDEMPOTENCY_REQUIRED,
     },
 }
 

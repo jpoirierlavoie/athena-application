@@ -981,15 +981,14 @@ BookingsEvent = Literal[
     "teams_transcription_ecartee",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
-# Courrier intake (Phase 5). Counts, booleans, technical `cle` keys (when single
-# or anonymized), dossier numbers and machine codes ONLY — never email subjects,
-# addresses, sender/recipient names, filenames, folder names, or descriptions.
+# Courrier intake. Counts, booleans, technical `cle` keys, dossier numbers and
+# machine codes ONLY — never email subjects, addresses, sender/recipient names,
+# filenames, folder names, or descriptions.
 CourrierEvent = Literal[
     "courrier_connexion",
     "courrier_inventaire",
     "courrier_enregistrement",
     "courrier_classement",
-    "courrier_temps",
 ]
 CourrierOutcome = Literal["success", "failure", "refused"]
 
@@ -1479,7 +1478,6 @@ def log_courrier_event(
     event: CourrierEvent,
     outcome: CourrierOutcome = "success",
     *,
-    essai: Optional[bool] = None,
     reason: Optional[str] = None,
     **counts: Any,
 ) -> None:
@@ -1491,8 +1489,6 @@ def log_courrier_event(
     names, or time-entry descriptions (zero-PII invariant, Loi 25).
     """
     fields: dict[str, Any] = {"event": event, "outcome": outcome, **counts}
-    if essai is not None:
-        fields["essai"] = bool(essai)
     if reason is not None:
         fields["reason"] = reason
     level = {

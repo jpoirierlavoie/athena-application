@@ -398,16 +398,49 @@ def test_naming_helpers_enforce_caps_and_strip_honorifics():
     )
 
     # 2026-11-20T14:30:00Z == 09h30 EST (America/Montreal)
+    recu_dt = datetime(2026, 11, 20, 14, 30, tzinfo=timezone.utc)
     eml_name = courrier_service.construire_nom_eml(
         "2026-001",
-        datetime(2026, 11, 20, 14, 30, tzinfo=timezone.utc),
+        recu_dt,
         "Me " + ("A" * 120),
     )
     assert eml_name.startswith("2026-001 - 2026-11-20 09h30 - ")
     assert eml_name.endswith(".eml")
     assert len(eml_name) <= courrier_service.EML_MAX_CHARS
 
-    ok_name, err = courrier_service.nettoyer_nom_piece("Rapport <final> " + ("x" * 150) + ".pdf", "raw.PDF")
+    # Server-side attachment naming: auto-prefix, no double prefix, and preserve exhibit code.
+    auto_name, err_auto = courrier_service.nettoyer_nom_piece(
+        "", "Confirmation <TAL>.PDF", dossier_num="2026-034", recu_dt=recu_dt
+    )
+    assert err_auto is None and auto_name == "2026-034 - 2026-11-20 - Confirmation TAL.pdf"
+
+    already_prefixed, err_dup = courrier_service.nettoyer_nom_piece(
+        "", "2026-034 - D-70 Decision finale.pdf", dossier_num="2026-034", recu_dt=recu_dt
+    )
+    assert err_dup is None and already_prefixed == "2026-034 - D-70 Decision finale.pdf"
+
+    custom_short, err_custom = courrier_service.nettoyer_nom_piece(
+        "Facture medecin", "scan001.PDF", dossier_num="2026-034", recu_dt=recu_dt
+    )
+    assert err_custom is None and custom_short == "2026-034 - 2026-11-20 - Facture medecin.pdf"
+
+    long_cote, err_cote = courrier_service.nettoyer_nom_piece(
+        "",
+        "Très longue description détaillée de la décision rendue par le Tribunal administratif du logement "
+        + ("a " * 30)
+        + "D-70.PDF",
+        dossier_num="2026-034",
+        recu_dt=recu_dt,
+    )
+    assert err_cote is None and long_cote is not None
+    assert long_cote.startswith("2026-034 - 2026-11-20 - ")
+    assert "D-70" in long_cote
+    assert long_cote.endswith(".pdf")
+    assert len(long_cote) <= courrier_service.PIECE_NOM_MAX_CHARS
+
+    ok_name, err = courrier_service.nettoyer_nom_piece(
+        "Rapport <final> " + ("x" * 150) + ".pdf", "raw.PDF"
+    )
     assert err is None and ok_name is not None
     assert ok_name.endswith(".pdf") and len(ok_name) <= courrier_service.PIECE_NOM_MAX_CHARS
     assert "<" not in ok_name
@@ -449,7 +482,7 @@ def test_save_courriels_eml_pdf_txt_csv_and_zero_pii_registry(env):
                 "dossier_onedrive": "2026-001 - Tremblay c. Lavoie",
                 "eml": {"sous_dossier": "Correspondance\\Courriels", "nom": "ignore.eml"},
                 "pieces": [
-                    {"rang": 1, "id": "att-1", "sous_dossier": "Pièces", "nom": "Requete.pdf"},
+                    {"rang": 1, "id": "att-1", "sous_dossier": "Pièces"},
                     {"rang": 2, "id": "att-2", "sous_dossier": "Documents du client", "nom": "notes.txt"},
                     {"rang": 3, "id": "att-3", "sous_dossier": "", "nom": "tableau.csv"},
                 ],
@@ -461,6 +494,22 @@ def test_save_courriels_eml_pdf_txt_csv_and_zero_pii_registry(env):
     msg_out = res["messages"][0]
     assert msg_out["statut"] == "ok"
     assert [f["slot"] for f in msg_out["fichiers"]] == ["eml", "piece:1", "piece:2", "piece:3"]
+    by_slot = {f["slot"]: f for f in msg_out["fichiers"]}
+    assert by_slot["eml"]["nom"] == "2026-001 - 2026-11-20 09h30 - Jean Tremblay.eml"
+    assert (
+        by_slot["eml"]["chemin"]
+        == "2026-001 - Tremblay c. Lavoie\\Correspondance\\Courriels\\2026-001 - 2026-11-20 09h30 - Jean Tremblay.eml"
+    )
+    assert by_slot["piece:1"]["nom"] == "2026-001 - 2026-11-20 - Requete.pdf"
+    assert (
+        by_slot["piece:1"]["chemin"]
+        == "2026-001 - Tremblay c. Lavoie\\Pièces\\2026-001 - 2026-11-20 - Requete.pdf"
+    )
+    assert by_slot["piece:3"]["nom"] == "2026-001 - 2026-11-20 - tableau.csv"
+    assert (
+        by_slot["piece:3"]["chemin"]
+        == "2026-001 - Tremblay c. Lavoie\\2026-001 - 2026-11-20 - tableau.csv"
+    )
 
     # Staging objects cleaned up
     assert not any(p.startswith("staging/") for p in bucket.objects)
@@ -468,9 +517,9 @@ def test_save_courriels_eml_pdf_txt_csv_and_zero_pii_registry(env):
     # Exact bytes landed in OneDrive
     od_bytes = {f["name"]: f["bytes"] for f in drive.files.values()}
     assert od_bytes["2026-001 - 2026-11-20 09h30 - Jean Tremblay.eml"] == eml
-    assert od_bytes["Requete.pdf"] == pdf
-    assert od_bytes["notes.txt"] == txt
-    assert od_bytes["tableau.csv"] == csv_cp
+    assert od_bytes["2026-001 - 2026-11-20 - Requete.pdf"] == pdf
+    assert od_bytes["2026-001 - 2026-11-20 - notes.txt"] == txt
+    assert od_bytes["2026-001 - 2026-11-20 - tableau.csv"] == csv_cp
 
     # Exact bytes & presumed MCP categories & folders landed in Athena
     docs = db.peek_collection("documents")
@@ -485,25 +534,25 @@ def test_save_courriels_eml_pdf_txt_csv_and_zero_pii_registry(env):
     assert bucket.objects[eml_doc["storage_path"]].data == eml
     assert bucket.objects[eml_doc["storage_path"]].content_disposition == "attachment"
 
-    pdf_doc = by_orig["Requete.pdf"]
+    pdf_doc = by_orig["2026-001 - 2026-11-20 - Requete.pdf"]
     assert pdf_doc["category"] == "pièce"
     assert pdf_doc["folder_id"] == folder_model.node_folder_id(did, "pieces")
     assert bucket.objects[pdf_doc["storage_path"]].data == pdf
     assert bucket.objects[pdf_doc["storage_path"]].content_disposition != "attachment"
 
-    txt_doc = by_orig["notes.txt"]
+    txt_doc = by_orig["2026-001 - 2026-11-20 - notes.txt"]
     assert txt_doc["category"] == "autre"
     assert txt_doc["folder_id"] == folder_model.node_folder_id(did, "documents_client")
     assert bucket.objects[txt_doc["storage_path"]].data == txt
     assert bucket.objects[txt_doc["storage_path"]].content_disposition == "attachment"
 
-    csv_doc = by_orig["tableau.csv"]
+    csv_doc = by_orig["2026-001 - 2026-11-20 - tableau.csv"]
     assert csv_doc["category"] == "autre"
     assert csv_doc["folder_id"] is None
     assert bucket.objects[csv_doc["storage_path"]].data == csv_cp
     assert bucket.objects[csv_doc["storage_path"]].content_disposition == "attachment"
 
-    # Registry permanent row + zero PII in registry and idempotency
+    # Registry permanent row + zero PII in registry and idempotency (no nom/chemin persisted!)
     reg = db.peek(f"courrier_messages/{cle}")
     assert reg["etat"] == "enregistre" and reg["expire_at"] is None
     assert len(reg["fichiers"]) == 4
@@ -539,14 +588,14 @@ def test_large_streaming_upload_session_and_no_bearer_to_sharepoint(env):
                 "id": "msg-big",
                 "dossier": "2026-001",
                 "dossier_onedrive": "2026-001 - Tremblay c. Lavoie",
-                "pieces": [{"rang": 1, "id": "att-big", "sous_dossier": "Procédures", "nom": "volumineux.pdf"}],
+                "pieces": [{"rang": 1, "id": "att-big", "sous_dossier": "Procédures"}],
             }
         ],
     })
 
     assert res["traites"] == 1
     assert drive.chunk_auth_headers == []  # Pre-authenticated uploadUrl received no Graph Bearer
-    od_big = next(f for f in drive.files.values() if f["name"] == "volumineux.pdf")
+    od_big = next(f for f in drive.files.values() if f["name"] == "2026-001 - 2026-11-20 - volumineux.pdf")
     assert od_big["bytes"] == big_pdf
     assert od_big["quickXorHash"] == quickxorhash_b64(big_pdf)
     assert not any(p.startswith("staging/") for p in bucket.objects)
@@ -562,7 +611,7 @@ def test_idempotency_replay_deja_present_and_conflict_suffix(env):
     existing_diff = b"%PDF-1.7\nEXISTING-OTHER\n"
 
     od_pieces = drive.add_folder(env["od_dossier_id"], "Pièces")
-    drive.add_file(od_pieces, "contrat.pdf", existing_diff)
+    drive.add_file(od_pieces, "2026-001 - 2026-11-20 - contrat.pdf", existing_diff)
 
     cle = drive.add_email(
         "msg-conf",
@@ -573,7 +622,7 @@ def test_idempotency_replay_deja_present_and_conflict_suffix(env):
             ({"id": "att-diff", "name": "contrat.pdf", "contentType": "application/pdf", "size": len(pdf_diff), "isInline": False}, pdf_diff),
         ],
     )
-    drive.add_file(od_pieces, "identique.pdf", pdf_same)
+    drive.add_file(od_pieces, "2026-001 - 2026-11-20 - identique.pdf", pdf_same)
 
     plan = [
         {
@@ -582,8 +631,8 @@ def test_idempotency_replay_deja_present_and_conflict_suffix(env):
             "dossier": "2026-001",
             "dossier_onedrive": "2026-001 - Tremblay c. Lavoie",
             "pieces": [
-                {"rang": 1, "id": "att-same", "sous_dossier": "Pièces", "nom": "identique.pdf"},
-                {"rang": 2, "id": "att-diff", "sous_dossier": "Pièces", "nom": "contrat.pdf"},
+                {"rang": 1, "id": "att-same", "sous_dossier": "Pièces"},
+                {"rang": 2, "id": "att-diff", "sous_dossier": "Pièces"},
             ],
         }
     ]
@@ -595,11 +644,16 @@ def test_idempotency_replay_deja_present_and_conflict_suffix(env):
     assert by_slot["piece:1"]["statut_athena"] == "cree"
     assert by_slot["piece:2"]["statut_onedrive"] == "renomme"
     assert by_slot["piece:2"]["renomme_index"] == 2
+    assert by_slot["piece:2"]["nom"] == "2026-001 - 2026-11-20 - contrat (2).pdf"
+    assert (
+        by_slot["piece:2"]["chemin"]
+        == "2026-001 - Tremblay c. Lavoie\\Pièces\\2026-001 - 2026-11-20 - contrat (2).pdf"
+    )
 
-    # Existing OneDrive file intact; new file written as "contrat (2).pdf"
+    # Existing OneDrive file intact; new file written as "... contrat (2).pdf"
     od_names = {f["name"]: f["bytes"] for f in drive.files.values()}
-    assert od_names["contrat.pdf"] == existing_diff
-    assert od_names["contrat (2).pdf"] == pdf_diff
+    assert od_names["2026-001 - 2026-11-20 - contrat.pdf"] == existing_diff
+    assert od_names["2026-001 - 2026-11-20 - contrat (2).pdf"] == pdf_diff
 
     # Exact key replay
     replay = handlers.save_courriels({"idempotency_key": "k-conf-1", "messages": plan})
@@ -614,7 +668,7 @@ def test_idempotency_replay_deja_present_and_conflict_suffix(env):
     assert by_slot_2["eml"]["statut_athena"] == "deja_present"
     assert by_slot_2["piece:1"]["statut_onedrive"] == "deja_present"
     assert by_slot_2["piece:1"]["statut_athena"] == "deja_present"
-    # Note: piece:2 finds "contrat (2).pdf" after 409 on "contrat.pdf" -> deja_present at index 2!
+    # Note: piece:2 finds "... contrat (2).pdf" after 409 on "... contrat.pdf" -> deja_present at index 2!
     assert by_slot_2["piece:2"]["statut_onedrive"] == "deja_present"
     assert by_slot_2["piece:2"]["renomme_index"] == 2
     assert by_slot_2["piece:2"]["statut_athena"] == "deja_present"
@@ -665,59 +719,24 @@ def test_exotic_attachment_non_pris_en_charge_and_legacy_emails_folder(env):
     assert len(db.peek_collection("documents")) == 1  # only the .eml
 
 
-def test_dry_run_essai_writes_zero_anywhere(env):
-    drive = env["drive"]
-    db = env["db"]
-    bucket = env["bucket"]
-
-    eml = b"From: a@ex.com\r\nSubject: Essai\r\n\r\nTest essai.\r\n"
-    heic = b"\x00\x00\x00\x18ftypheicDATA"
-    od_pieces = drive.add_folder(env["od_dossier_id"], "Pièces")
-    drive.add_file(od_pieces, "conflit.pdf", b"%PDF-1.7\nOLD\n")
-    new_pdf = b"%PDF-1.7\nNEW\n"
-
-    cle = drive.add_email(
-        "msg-dry",
-        imid="<msg-dry@cabinet.example>",
-        mime_bytes=eml,
-        pieces=[
-            ({"id": "att-1", "name": "conflit.pdf", "contentType": "application/pdf", "size": len(new_pdf), "isInline": False}, new_pdf),
-            ({"id": "att-2", "name": "photo.heic", "contentType": "image/heic", "size": len(heic), "isInline": False}, heic),
-        ],
+def test_essai_rejected_at_mcp_schema_boundary():
+    assert "essai" not in tools.TOOLS["save_courriels"]["input_schema"]["properties"]
+    errs = tools.validate_args(
+        tools.TOOLS["save_courriels"]["input_schema"],
+        {
+            "idempotency_key": "k-no-dry",
+            "essai": True,
+            "messages": [
+                {
+                    "cle": "0" * 16,
+                    "id": "m1",
+                    "dossier": "2026-001",
+                    "dossier_onedrive": "2026-001 - Dossier",
+                }
+            ],
+        },
     )
-    before_files = dict(drive.files)
-
-    res = handlers.save_courriels({
-        "idempotency_key": "k-dry-only",
-        "essai": True,
-        "messages": [
-            {
-                "cle": cle,
-                "id": "msg-dry",
-                "dossier": "2026-001",
-                "dossier_onedrive": "2026-001 - Tremblay c. Lavoie",
-                "pieces": [
-                    {"rang": 1, "id": "att-1", "sous_dossier": "Pièces", "nom": "conflit.pdf"},
-                    {"rang": 2, "id": "att-2", "sous_dossier": "Pièces", "nom": "photo.heic"},
-                ],
-            }
-        ],
-    })
-
-    assert res["essai"] is True and res["idempotent_replay"] is False
-    by_slot = {f["slot"]: f for f in res["messages"][0]["fichiers"]}
-    assert by_slot["eml"]["statut_onedrive"] == "prevu_cree"
-    assert by_slot["eml"]["sha256"] == hashlib.sha256(eml).hexdigest()
-    assert by_slot["piece:1"]["statut_onedrive"] == "prevu_renomme"
-    assert by_slot["piece:1"]["renomme_index"] == 2
-    assert by_slot["piece:1"]["statut_athena"] == "prevu_cree"
-    assert by_slot["piece:2"]["statut_athena"] == "prevu_non_pris_en_charge"
-
-    assert drive.files == before_files
-    assert bucket.objects == {}
-    assert db.peek_collection("documents") == {}
-    assert db.peek_collection("courrier_messages") == {}
-    assert db.peek_collection("mcp_idempotency") == {}
+    assert errs and any("essai" in e for e in errs)
 
 
 def test_security_refusals_and_budget_deferral(env, monkeypatch):
@@ -727,12 +746,11 @@ def test_security_refusals_and_budget_deferral(env, monkeypatch):
     eml = b"From: a@ex.com\r\nSubject: Sec\r\n\r\nTexte.\r\n"
     real_cle = drive.add_email("msg-sec", imid="<msg-sec@cabinet.example>", mime_bytes=eml)
 
-    # 1. Kill switch OFF refuses even on essai=True
+    # 1. Kill switch OFF refuses cleanly
     monkeypatch.setattr(Config, "COURRIER_ACTIF", False)
     with pytest.raises(tools.ToolArgumentError, match="désactivé"):
         handlers.save_courriels({
             "idempotency_key": "k-kill-1",
-            "essai": True,
             "messages": [
                 {
                     "cle": real_cle,
