@@ -44,6 +44,11 @@ cron:
   schedule: every 15 minutes from 09:05 to 17:05
   timezone: America/Toronto
   target: default
+- description: transcriptions — capture ciblée des transcriptions et résumés Teams post-réunion (Lot 3)
+  url: /taches/transcriptions/sync
+  schedule: every 15 minutes from 09:07 to 17:07
+  timezone: America/Toronto
+  target: default
 - description: outlook — miroir des audiences vers le calendrier du juriste
   url: /taches/outlook/sync
   schedule: every 15 minutes from 09:10 to 17:10

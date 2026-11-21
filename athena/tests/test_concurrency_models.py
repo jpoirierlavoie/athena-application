@@ -74,6 +74,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import time_entry as time_entry_model
     from models import audit_event as audit_event_model
     from models import trust as trust_model
+    from models import transcription_reunion as tr_model
 
 from tests._fake_firestore import install  # noqa: E402
 
@@ -950,7 +951,8 @@ def _e2e_db(monkeypatch):
     # its model (by way of services/comptabilite).
     return install(monkeypatch, *_MODULES, protocol_model, revision_model,
                    hearing_model, folder_model, doc_template_model,
-                   invoice_model, admin_ledger_model, dav_sync, write_support)
+                   invoice_model, admin_ledger_model, tr_model,
+                   dav_sync, write_support)
 
 
 def _closed_task(db):
@@ -1082,6 +1084,17 @@ def _kyc_client(db):
     return pid, {"partie_id": pid, "check": "identity"}
 
 
+def _staged_transcript(db):
+    doc, errors = tr_model.upsert_staged_transcription(
+        "h1",
+        online_meeting_id="om-1",
+        has_insights=True,
+        copilot_markdown="## Décisions\n- Suivi.",
+    )
+    assert errors == [] and doc is not None, errors
+    return "h1"
+
+
 def _admin_entry(db):
     """An editable dépense of the administration ledger — en circulation,
     no period reconciled, linked to nothing — born through the REAL
@@ -1137,6 +1150,11 @@ _HANDLER_CASES = {
                            {"action": "confirmer", "lier_partie": False,
                             "idempotency_key": "cle-decision-e2e"},
                            ("confirmation", "")),
+    "decide_meeting_transcript": ("meeting_transcripts", _staged_transcript,
+                                  "hearing_id",
+                                  {"action": "ecarter",
+                                   "idempotency_key": "cle-transcription-e2e"},
+                                  ("status", "ecartee")),
     # Lot 2A (T7) — the document and folder edits.
     "update_document": ("documents", _document, "document_id",
                         {"display_name": "Mise en demeure"},
@@ -1199,7 +1217,8 @@ _SECOND_ARGS = {
 # Tools that DEMAND expected_etag for the change the case makes (plan rule
 # 3, D8: replacing prose). They cannot « guard their own read » without
 # one — they refuse the call instead, which the own-read test asserts.
-_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous", "update_invoice",
+_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous",
+                  "decide_meeting_transcript", "update_invoice",
                   # Lot 5b: a register entry is corrected against the
                   # version the caller READ (get_admin_ledger), or not at all.
                   "update_admin_entry"}
@@ -1207,7 +1226,7 @@ _ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous", "update_invoice",
 # A decision is taken ONCE (lot 1b, L7): the chained-edit test cannot make a
 # second, different write — confirming a confirmed request is the honest
 # no-op, refusing it is refused. Its second call proves that instead.
-_SINGLE_DECISION = {"decide_rendez_vous"}
+_SINGLE_DECISION = {"decide_rendez_vous", "decide_meeting_transcript"}
 
 # The getter the HANDLER reads its record through (the bulk reader for the
 # reclassifiers) — the seam a rival write is slipped in after.
@@ -1226,6 +1245,7 @@ _HANDLER_GETTERS = {
     "update_protocol_step": (protocol_model, "get_protocol_strict"),
     "update_hearing": (hearing_model, "get_hearing_strict"),
     "decide_rendez_vous": (hearing_model, "get_hearing_strict"),
+    "decide_meeting_transcript": (tr_model, "get_transcription_strict"),
     "update_document": (document_model, "get_document_strict"),
     "record_document_analysis": (document_model, "get_document_strict"),
     "manage_folder": (folder_model, "list_dossier_folders"),

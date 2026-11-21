@@ -153,9 +153,9 @@ FAMILIES: tuple[Family, ...] = (
             "`create_note`, `append_to_note`, `create_task`, `create_hearing`, "
             "`create_time_entries_bulk`, `create_expenses_bulk` (jusqu'à "
             "{entry_bulk_max} lignes, TOUT OU RIEN), `create_partie`, "
-            "`create_dossier` ; `complete_dossier` remplit UNIQUEMENT les "
-            "champs vides et refuse d'écraser ; `record_signification` et "
-            "`record_prescription_event` inscrivent aux registres du dossier."
+            "`create_dossier` ; `complete_dossier` remplit champs vides (refuse "
+            "d'écraser) ; `record_signification` et `record_prescription_event` "
+            "aux registres."
         ),
     ),
     Family(
@@ -173,9 +173,9 @@ FAMILIES: tuple[Family, ...] = (
         ),
         instructions_en=(
             "`update_partie`, `update_dossier`, `update_time_entry`, "
-            "`update_expense` REMPLACENT les champs nommés (une écriture "
-            "facturée est figée) ; `complete_task` clôt une tâche et ne "
-            "rouvre jamais une tâche close (utilisez `reopen_task`)."
+            "`update_expense` REMPLACENT champs nommés (facturée = figée) ; "
+            "`complete_task` clôt et ne rouvre jamais une tâche close "
+            "(utilisez `reopen_task`)."
         ),
     ),
     Family(
@@ -204,16 +204,18 @@ FAMILIES: tuple[Family, ...] = (
         key="bookings",
         label="BOOKINGS",
         scope=SCOPE_WRITE,
-        tools=("decide_rendez_vous",),
+        tools=("decide_rendez_vous", "decide_meeting_transcript"),
         title_fr="Bookings",
         consent_fr=(
-            "confirmer ou refuser une demande de rendez-vous&nbsp;; un refus "
-            "annule la réunion Outlook et <strong>en avise le client</strong>"
+            "confirmer/refuser un rendez-vous (invitation Teams&nbsp;; un "
+            "refus annule la réunion Outlook et <strong>en avise le "
+            "client</strong>)&nbsp;; verser ou écarter une transcription"
         ),
         instructions_en=(
-            "`decide_rendez_vous` confirme ou refuse une demande Bookings en "
-            "attente (refus : l'effet sortant ci-dessus) ; un rendez-vous "
-            "CONFIRMÉ ne se reporte ni ne s'annule ici (Outlook)."
+            "`decide_rendez_vous` confirme/refuse Bookings ou portail en "
+            "attente (un rendez-vous CONFIRMÉ ne se reporte ni ne s'annule "
+            "ici (Outlook)) ; `decide_meeting_transcript` verse ou écarte "
+            "notes/transcription Teams."
         ),
     ),
     Family(
@@ -297,9 +299,9 @@ FAMILIES: tuple[Family, ...] = (
         instructions_en=(
             "`update_document`, `move_documents`, `manage_folder` classent "
             "(catégorie ici = PRÉSUMÉE) ; `fill_gabarit`, `create_document` "
-            "créent de NOUVEAUX documents Word ; `begin_upload` puis "
-            "`finalize_upload` versent document, gabarit ou pièce "
-            "justificative (piece_justificative ; pièce remplacée conservée)."
+            "créent de NOUVEAUX Word ; `begin_upload` + `finalize_upload` "
+            "versent document, gabarit ou `piece_justificative` (remplacée "
+            "conservée)."
         ),
     ),
     Family(
@@ -378,9 +380,8 @@ FAMILIES: tuple[Family, ...] = (
             "`record_trust_entry`, `record_admin_entry`, "
             "`update_admin_entry`, `clear_register_entries`, "
             "`reverse_register_entry` (`get_admin_ledger` en lecture) : "
-            "mouvements RÉELLEMENT SURVENUS à la banque, à leur date, confirmés "
-            "avec l'utilisateur ; `idempotency_key` REQUISE (refus si rejeu "
-            "illisible) ; résultat incertain : relire, puis MÊME clé."
+            "mouvements RÉELLEMENT SURVENUS à la banque, à leur date, confirmés ; "
+            "`idempotency_key` REQUISE ; incertain : relire puis MÊME clé."
         ),
     ),
     Family(
@@ -396,11 +397,10 @@ FAMILIES: tuple[Family, ...] = (
         ),
         instructions_en=(
             "`save_courriels` (`list_courriels` d'abord) verse `.eml`/pièces "
-            "dans OneDrive (`4 - Dossiers`) et Athéna (sans écraser) ; "
-            "`record_courriels_temps` crée les entrées et lie le registre ; "
-            "`move_courriels` classe sous `Archive > Dossiers` après "
-            "enregistrement ou marque « à classer » ; `idempotency_key` "
-            "REQUISE ; `essai` simule."
+            "dans OneDrive (`4 - Dossiers`) et Athéna ; "
+            "`record_courriels_temps` crée temps + lien registre ; "
+            "`move_courriels` classe sous `Archive > Dossiers` ou « à "
+            "classer » ; `idempotency_key` REQUISE ; `essai` simule."
         ),
     ),
 )
@@ -1015,8 +1015,9 @@ _CORE_LEAD_EN = (
 
 # The one effect reaching outside the practice, stated with the promises.
 _CORE_OUTBOUND_EN = (
-    "UN SEUL effet joint un tiers hors du cabinet : refuser Bookings via "
-    "`decide_rendez_vous` annule la réunion Outlook du client et l'en avise."
+    "UN SEUL effet joint un tiers hors du cabinet (`decide_rendez_vous`) : "
+    "confirmer portail envoie l'invitation Teams ; refuser Bookings annule la "
+    "réunion Outlook du client et l'en avise."
 )
 
 # The write protocol: confirm, idempotency (in flight / uncertain /

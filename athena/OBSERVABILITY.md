@@ -393,6 +393,11 @@ Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confir
 | `teams_connexion_verifiee` | success / **failure** | Diagnostic probe from « Paramètres → Rendez-vous » (`POST /parametres/rendez-vous/tester`); booleans `configure`, `jeton_valide`, `utilisateur_accessible`, `online_meetings_accessible`, `politique_teams_requise`, `transcriptions_accessibles`, `onedrive_accessible`, plus `roles_manquants_count` |
 | `disponibilites_synchronisees` | success | Portal anonymized slot projection (`disponibilites/courant`) updated in `portail` DB; counts only (`horizon_jours`, `plages_occupees`, `creneaux_total`) |
 | `disponibilites_sync_echec` | **failure** | Portal availability projection sync failed (`reason` / `error_type`); zero PII |
+| `teams_transcription_preparee` | success | Post-meeting WebVTT transcript and/or Copilot insights staged for Réception review (`meeting_transcripts/{hearing_id}`); `hearing_id`, booleans `has_transcript` / `has_insights`, `cue_count` only |
+| `teams_transcription_aucune` | success | Ended Teams meeting exceeded the 24h post-meeting window with neither transcript nor insight (`transcript_status="aucune"`); `hearing_id` |
+| `teams_transcription_erreur_graph` | **failure** | Graph API poll for Teams transcripts/insights failed; `hearing_id`, `reason` (`poll_failed`) |
+| `teams_transcription_versee` | success | Staged meeting notes/transcript filed to Athena (Note + `Interne` `.docx`) and optionally OneDrive; `hearing_id`, `dossier_id`, `has_transcript`, `onedrive_statut`, `via` |
+| `teams_transcription_ecartee` | success | Staged meeting transcript discarded and staged WebVTT purged; `hearing_id`, `via` |
 
 ### `log_hearing_series_event(event, serie_id, **extra)` — logger `pallas.hearing`
 

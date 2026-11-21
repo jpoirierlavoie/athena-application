@@ -32,6 +32,9 @@
      « Détacher » refusé : ?erreur= ; série sans rien à supprimer :
      ?message=, rien n'a changé — ambre, jamais le vert d'une réussite) :
      texte libre assaini, échappé, la forme des bandeaux du calendrier. #}
+  {% if succes %}
+  <div role="status" class="mb-4 bg-green-50 border border-green-200 text-green-800 text-sm rounded-lg px-4 py-3 wrap-anywhere">{{ succes }}</div>
+  {% endif %}
   {% if message %}
   <div role="status" class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3 wrap-anywhere">{{ message }}</div>
   {% endif %}
@@ -207,6 +210,53 @@
     {% if hearing.teams_agenda %}
     <p class="text-sm text-gray-700 whitespace-pre-line">{{ hearing.teams_agenda }}</p>
     {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Transcription et notes post-réunion (Teams / Copilot) ───── #}
+  {% if hearing.online_meeting_id %}
+  {% set tx_statut = hearing.transcript_status or '' %}
+  {% set tx_labels = transcript_status_labels if transcript_status_labels is defined else {} %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-semibold text-gray-900">Transcription et notes Teams</h2>
+        <p class="text-xs text-gray-500 mt-1">
+          Statut :
+          <span class="font-medium text-gray-700">{{ tx_labels.get(tx_statut, 'En attente') if tx_statut else 'Non vérifiée' }}</span>
+          {% if transcription_reunion and transcription_reunion.transcript_cue_count %}
+            · {{ transcription_reunion.transcript_cue_count }} intervention(s)
+          {% endif %}
+        </p>
+      </div>
+      {% if tx_statut == 'a_revoir' %}
+      <a href="{{ url_for('reception.index', onglet='rdv') }}"
+         class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Examiner dans Réception
+      </a>
+      {% elif tx_statut == 'versee' and transcription_reunion and transcription_reunion.versement %}
+      {% set v = transcription_reunion.versement %}
+      <div class="flex flex-wrap items-center gap-3 text-xs">
+        {% if v.note_id %}
+        <a href="{{ url_for('notes.note_detail', note_id=v.note_id) }}"
+           class="font-medium text-indigo-600 hover:text-indigo-700">Voir la note</a>
+        {% endif %}
+        {% if v.transcript_document_id %}
+        <a href="{{ url_for('documents.document_detail', document_id=v.transcript_document_id) }}"
+           class="font-medium text-indigo-600 hover:text-indigo-700">Voir la transcription (.docx)</a>
+        {% endif %}
+      </div>
+      {% elif tx_statut in ('en_attente', 'aucune', '') %}
+      <form method="post" action="{{ url_for('hearings.hearing_verify_transcript', hearing_id=hearing.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+        <button type="submit"
+                class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+          Vérifier maintenant
+        </button>
+      </form>
+      {% endif %}
+    </div>
   </div>
   {% endif %}
 

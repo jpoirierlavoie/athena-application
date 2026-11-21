@@ -20,9 +20,9 @@ Délais en mois, calendrier d'instance C.p.c. et règles de computation complexe
 
 ## A3 Demandes Bookings
 {{GEN:charger}}
-- **Déclencheur** : « des rendez-vous à confirmer ? ».
-- **Appels** : (1) `list_hearings(bookings="pending")` ; (2) accord EXPRÈS de l'avocat pour chaque demande, puis `decide_rendez_vous(hearing_id, action, expected_etag, idempotency_key)`.
-- **Arrêt** : rappeler avant accord que `action="refuser"` annule la réunion Outlook et avise le client ; rapporter `client_notified`.
+- **Déclencheur** : « des rendez-vous à confirmer ? », « transcriptions Teams à revoir ? ».
+- **Appels** : (1) `list_hearings(bookings="pending")` et `get_meeting_transcripts()` ; (2) accord EXPRÈS de l'avocat avant `decide_rendez_vous(hearing_id, action, expected_etag, idempotency_key)` ou `decide_meeting_transcript(hearing_id, action, expected_etag, idempotency_key)`.
+- **Arrêt** : rappeler avant accord que `action="refuser"` (Bookings) annule la réunion Outlook et avise le client (`action="verser"` ou `action="ecarter"` pour les transcriptions) ; rapporter `client_notified` ou `note_id`.
 - **À éviter** : chercher une demande en attente dans la fenêtre de dates ordinaire.
 
 ## A4 Échéances

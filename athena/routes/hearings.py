@@ -11,6 +11,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 
@@ -18,8 +19,10 @@ from auth import login_required
 from config import Config
 from dav.sync import bump_ctag, collection_for, record_tombstone, relocate_resource
 from models.audit_event import record_deletion
+from models import transcription_reunion as tr_model
 from security import safe_internal_redirect, sanitize
 from services import disponibilites
+from services import transcription_reunion
 from utils import graph_teams, recurrence
 from utils.deadlines import today_mtl
 from utils.graph import GraphError, GraphNotConfigured
@@ -41,6 +44,7 @@ from models.hearing import (
     QUICK_LOCATIONS,
     REMINDER_LABELS,
     STATUS_LABELS,
+    TRANSCRIPT_STATUS_LABELS,
     VALID_HEARING_TYPES,
     VALID_HEARING_TYPES_EXTRAJUDICIAIRE,
     VALID_HEARING_TYPES_JUDICIAIRE,
@@ -823,6 +827,7 @@ def hearing_detail(hearing_id: str) -> str:
     hearing this page cannot show — gone, or its read still failing —
     forwards both to the calendar, which prints them: never dropped on the
     way (the document page's rule)."""
+    succes = sanitize(request.args.get("succes", ""), max_length=300)
     erreur = sanitize(request.args.get("erreur", ""), max_length=300)
     message = sanitize(request.args.get("message", ""), max_length=300)
     hearing = get_hearing(hearing_id)
@@ -835,9 +840,54 @@ def hearing_detail(hearing_id: str) -> str:
     ctx["hearing"] = hearing
     ctx["return_to"] = safe_internal_redirect(request.args.get("return_to"), "")
     ctx["serie_label"] = recurrence.describe(hearing.get("serie_rule"))
+    ctx["succes"] = succes
     ctx["message"] = message
     ctx["erreur"] = erreur
+    ctx["transcript_status_labels"] = TRANSCRIPT_STATUS_LABELS
+    ctx["transcription_reunion"] = (
+        tr_model.get_transcription(hearing_id)
+        if hearing.get("online_meeting_id")
+        else None
+    )
     return render_template("hearings/detail.html", **ctx)
+
+
+@hearings_bp.route("/<hearing_id>/verifier-transcription", methods=["POST"])
+@login_required
+def hearing_verify_transcript(hearing_id: str):
+    """Vérifie manuellement si une transcription/résumé Copilot Teams est disponible."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    operator_email = str(session.get("email") or Config.AUTHORIZED_USER_EMAIL or "")
+    outcome, errors, _doc = transcription_reunion.verifier_une_reunion(
+        hearing_id,
+        user_id=operator_email,
+        forcer_sans_attente=True,
+    )
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=" ".join(errors))
+    if outcome == "a_revoir":
+        return _back_to_hearing(
+            hearing_id,
+            return_to,
+            succes="Notes et/ou transcription préparées dans la Réception (onglet Rendez-vous).",
+        )
+    if outcome == "aucune":
+        return _back_to_hearing(
+            hearing_id,
+            return_to,
+            message="Délai de 24 h dépassé sans transcription ni résumé Copilot disponible.",
+        )
+    if outcome in (tr_model.STATUS_VERSEE, tr_model.STATUS_ECARTEE):
+        return _back_to_hearing(
+            hearing_id,
+            return_to,
+            message="La transcription de cette réunion a déjà été traitée.",
+        )
+    return _back_to_hearing(
+        hearing_id,
+        return_to,
+        message="Aucune transcription ni résumé Copilot n'est encore disponible sur Microsoft Teams.",
+    )
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────

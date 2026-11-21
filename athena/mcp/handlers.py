@@ -174,6 +174,7 @@ from models import protocol as protocol_model
 from models import reference
 from models import task as task_model
 from models import time_entry as time_entry_model
+from models import transcription_reunion as tr_model
 from models import trust as trust_model
 from models import upload_ticket as upload_ticket_model
 from security import TAG_RE, sanitize
@@ -192,6 +193,7 @@ from services import pieces_justificatives as pieces_service
 from services import protocoles as protocol_service
 from services import rendez_vous as rendez_vous_service
 from services import template_names
+from services import transcription_reunion as transcription_reunion_service
 from tz import MTL, mtl_to_utc
 from utils import (
     analyse_blocs, budget_math, civilite, contact_roles, cron_schedule, deadlines,
@@ -9172,10 +9174,11 @@ def _refuse_undecided_booking(hearing: dict) -> None:
 
 
 def _is_confirmed_booking(hearing: dict) -> bool:
-    """A « Bookings with me » reservation the lawyer has confirmed — the
-    one kind of event whose Outlook meeting belongs to the CLIENT."""
-    return (hearing.get("source") == "bookings"
-            and not (hearing.get("confirmation") or ""))
+    """A Bookings or portal appointment already confirmed (D10 lock applies)."""
+    return (
+        hearing.get("source") in hearing_model.RDV_SOURCES
+        and not (hearing.get("confirmation") or "")
+    )
 
 
 def _booking_locked_args(args: dict, changed: list[str]) -> list[str]:
@@ -9204,23 +9207,24 @@ def _booking_locked_args(args: dict, changed: list[str]) -> list[str]:
     return names
 
 
-def _refuse_locked_booking_change(args: dict, changed: list[str]) -> None:
-    """D10 — a confirmed Bookings rendez-vous changes here only by its
-    dossier and its notes. Refused BEFORE any write, naming the arguments,
-    and pointing to where each change CAN be made: a reschedule or a
-    cancellation in Outlook (the meeting the client holds — the Bookings
-    sync carries exactly those two back, through Réception), anything else
-    in the application, whose form is not restricted.
-
-    « Anything else » is NOT sent to Outlook: the type, the reminder, the
-    court and the judge are not on the Outlook meeting at all, and a title
-    or a location edited there is never carried back (the sync compares
-    the slot only). « Change it in Outlook » would send the user to a place
-    that cannot do it."""
+def _refuse_locked_booking_change(
+    args: dict, changed: list[str], *, source: str = "bookings"
+) -> None:
+    """D10 — a confirmed Bookings or portal rendez-vous changes here only by
+    its dossier and its notes. Refused BEFORE any write, naming the arguments."""
     names = _booking_locked_args(args, changed)
     if not names:
         return
     plural = len(names) > 1
+    if source == "portail":
+        raise ToolArgumentError(
+            f"{', '.join(f'`{n}`' for n in names)} "
+            f"{'refusés' if plural else 'refusé'} : ce rendez-vous vient du "
+            "portail client (réunion Teams), et le connecteur n'en change que "
+            "le dossier (dossier_id) et les notes (notes, notes_append). Pour "
+            "le reporter ou l'annuler, utilisez l'application Web ou Outlook. "
+            "Rien n'a été modifié."
+        )
     raise ToolArgumentError(
         f"{', '.join(f'`{n}`' for n in names)} "
         f"{'refusés' if plural else 'refusé'} : ce rendez-vous vient de "
@@ -9449,7 +9453,9 @@ def _update_hearing_impl(args: dict) -> dict:
     if detaching:
         changed.append("serie_id")
     if _is_confirmed_booking(existing):
-        _refuse_locked_booking_change(args, changed)
+        _refuse_locked_booking_change(
+            args, changed, source=str(existing.get("source") or "bookings")
+        )
     notes_pre: list[str] = []
     if args.get("detach_from_series") and not serie_id:
         notes_pre.append(
@@ -9536,7 +9542,7 @@ def _hearing_edit_payload(
         verb="updated", created=False, wrote=wrote,
         previous_dossier_id=old_dossier,
     )
-    bookings = doc.get("source") == "bookings"
+    bookings = doc.get("source") in hearing_model.RDV_SOURCES
     if not wrote:
         mirror = "unchanged"
     elif bookings:
@@ -9687,9 +9693,9 @@ def _read_rendez_vous(hearing_id: str) -> dict:
             "attente se lisent avec list_hearings (bookings « pending »). "
             "Rien n'a été écrit."
         )
-    if hearing.get("source") != "bookings":
+    if hearing.get("source") not in hearing_model.RDV_SOURCES:
         raise ToolArgumentError(
-            "Cet événement n'est pas une demande Bookings : "
+            "Cet événement n'est pas une demande de rendez-vous : "
             "decide_rendez_vous ne s'applique pas — un événement ordinaire "
             "se modifie avec update_hearing. Rien n'a été écrit."
         )
@@ -9803,6 +9809,20 @@ def _decide_payload(action: str, doc: dict, report: dict) -> dict:
         if not report.get("dav_left"):
             warnings.append(_REFUSED_OVER_A_CONFIRMATION_STALE_PHONE)
 
+    is_portail = doc.get("source") == "portail"
+    if is_portail and confirming:
+        client_notified = bool(changed and (doc.get("attendee_emails") or []))
+    elif is_portail:
+        client_notified = False
+        if changed:
+            warnings.append(
+                "Demande portail refusée (statut mis à jour sur le portail) : "
+                "aucun courriel de refus n'est envoyé par le connecteur — "
+                "prévenez le client au besoin."
+            )
+    else:
+        client_notified = graph_cancelled
+
     all_day = bool(doc.get("all_day"))
     start = _as_utc(doc.get("start_datetime"))
     return {
@@ -9827,12 +9847,231 @@ def _decide_payload(action: str, doc: dict, report: dict) -> dict:
         "local_written": local_written,
         "graph_attempted": graph_attempted,
         "graph_cancelled": graph_cancelled,
-        "client_notified": graph_cancelled,
+        "client_notified": client_notified,
         "cancellation_message": (
-            rendez_vous_service.REFUS_MOTIF if graph_cancelled else None),
+            rendez_vous_service.REFUS_MOTIF
+            if (graph_cancelled and not is_portail)
+            else None
+        ),
         "ctag_bumped": bumped,
         "dav_synced": bumped and visible,
         "warnings": warnings,
+    }
+
+
+# ── get_meeting_transcripts (READ) & decide_meeting_transcript (WRITE) ──
+
+
+def _transcript_row(item: dict) -> dict:
+    hid = str(item.get("hearing_id") or item.get("id") or "")
+    h = hearing_model.get_hearing(hid) or {}
+    start_dt = _as_utc(h.get("start_datetime"))
+    hearing_date = (
+        start_dt.astimezone(MTL).date().isoformat()
+        if isinstance(start_dt, datetime)
+        else ""
+    )
+    hearing_type = str(h.get("hearing_type") or "")
+    title = " ".join(str(h.get("title") or "").split()) or "Rencontre Teams"
+    suggested_title = f"{title} — {hearing_date}" if hearing_date else title
+    suggested_cat = "consultation" if hearing_type == "consultation" else "rencontre"
+    v = item.get("versement") if isinstance(item.get("versement"), dict) else {}
+    return {
+        "hearing_id": hid,
+        "status": str(item.get("status") or "a_revoir"),
+        "dossier_id": str(item.get("dossier_id") or ""),
+        "hearing_title": str(h.get("title") or "Réunion Teams"),
+        "hearing_date": hearing_date,
+        "hearing_type": hearing_type,
+        "client_nom": str(h.get("client_nom") or ""),
+        "has_transcript": bool(item.get("has_transcript")),
+        "has_insights": bool(item.get("has_insights")),
+        "transcript_cue_count": int(item.get("transcript_cue_count") or 0),
+        "transcript_speakers": list(item.get("transcript_speakers") or []),
+        "transcript_preview": str(item.get("transcript_preview") or ""),
+        "copilot_markdown": str(item.get("copilot_markdown") or ""),
+        "suggested_dossier_id": str(item.get("dossier_id") or h.get("dossier_id") or ""),
+        "suggested_note_category": suggested_cat,
+        "suggested_note_title": suggested_title[:200],
+        "versement": {
+            "note_id": str(v.get("note_id") or ""),
+            "transcript_document_id": str(v.get("transcript_document_id") or ""),
+            "onedrive_statut": str(v.get("onedrive_statut") or ""),
+            "dossier_id": str(v.get("dossier_id") or ""),
+            "dossier_file_number": str(v.get("dossier_file_number") or ""),
+            "note_category": str(v.get("note_category") or ""),
+            "versed_at": iso_mtl(_as_utc(v.get("versed_at"))),
+        },
+        "captured_at": iso_mtl(_as_utc(item.get("captured_at"))),
+        **_stamps(item),
+    }
+
+
+def get_meeting_transcripts(args: dict) -> dict:
+    """Read staged Teams WebVTT transcripts & Copilot notes (read-only)."""
+    limit = _limit_arg(args, 20)
+    hearing_id = (args.get("hearing_id") or "").strip()
+    status_filter = args.get("status")
+    if status_filter is not None and status_filter not in tr_model.VALID_STATUSES:
+        raise ToolArgumentError(
+            "`status` doit être « a_revoir », « versee » ou « ecartee »."
+        )
+    try:
+        if hearing_id:
+            one = tr_model.get_transcription_strict(hearing_id)
+            raw_rows = [one] if one is not None else []
+            if status_filter is not None:
+                raw_rows = [r for r in raw_rows if r.get("status") == status_filter]
+        else:
+            effective_status = (
+                str(status_filter)
+                if status_filter is not None
+                else tr_model.STATUS_A_REVOIR
+            )
+            raw_rows = tr_model.list_transcriptions_strict(status=effective_status)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture des transcriptions impossible — réessayez dans un moment."
+        )
+    truncated = len(raw_rows) > limit
+    page = raw_rows[:limit]
+    return _list_payload([_transcript_row(r) for r in page], truncated)
+
+
+def decide_meeting_transcript(args: dict) -> dict:
+    return run_write(
+        "decide_meeting_transcript",
+        args,
+        lambda: _decide_meeting_transcript_impl(args),
+    )
+
+
+def _decide_meeting_transcript_impl(args: dict) -> dict:
+    hearing_id = (args.get("hearing_id") or "").strip()
+    if not hearing_id:
+        raise ToolArgumentError("`hearing_id` est requis. Rien n'a été écrit.")
+    action = args.get("action")
+    if action not in ("verser", "ecarter"):
+        raise ToolArgumentError(
+            "« action » : « verser » ou « ecarter ». Rien n'a été écrit."
+        )
+    if "expected_etag" not in args:
+        raise ToolArgumentError(
+            "`expected_etag` est requis (prenez-le depuis get_meeting_transcripts). "
+            "Rien n'a été écrit."
+        )
+    expected = str(args.get("expected_etag") or "")
+
+    try:
+        existing = tr_model.get_transcription_strict(hearing_id)
+    except Exception:
+        raise ToolArgumentError(
+            f"{concurrency.READ_UNAVAILABLE_ERROR} Rien n'a été écrit."
+        )
+    if existing is None:
+        raise ToolArgumentError(
+            f"Transcription introuvable : {hearing_id}. Rien n'a été écrit."
+        )
+
+    pre_status = str(existing.get("status") or "")
+    verser_fields = ("dossier_id", "note_title", "note_category", "copilot_markdown")
+    warnings: list[str] = []
+
+    if action == "ecarter":
+        for bad_key in verser_fields:
+            if bad_key in args:
+                raise ToolArgumentError(
+                    f"`{bad_key}` ne s'applique qu'à « verser ». Rien n'a été écrit."
+                )
+        written, errors = transcription_reunion_service.ecarter_transcription(
+            hearing_id, expected_etag=expected
+        )
+        if not errors and pre_status == tr_model.STATUS_ECARTEE:
+            warnings.append(
+                "Cette transcription était déjà écartée : rien n'a été écrit."
+            )
+        changed = (not errors) and (pre_status != tr_model.STATUS_ECARTEE)
+        ctag_bumped = False
+    else:
+        dossier_id = (args.get("dossier_id") or "").strip()
+        note_title = (args.get("note_title") or "").strip()
+        note_category = (args.get("note_category") or "").strip()
+        if not dossier_id:
+            raise ToolArgumentError(
+                "`dossier_id` est requis pour « verser ». Rien n'a été écrit."
+            )
+        if not note_title:
+            raise ToolArgumentError(
+                "`note_title` est requis pour « verser ». Rien n'a été écrit."
+            )
+        if note_category not in ("consultation", "rencontre"):
+            raise ToolArgumentError(
+                "`note_category` doit valoir « consultation » ou « rencontre » "
+                "pour « verser ». Rien n'a été écrit."
+            )
+        markdown_content = (
+            str(args["copilot_markdown"])
+            if "copilot_markdown" in args
+            else str(existing.get("copilot_markdown") or "")
+        )
+        try:
+            uid = storage_identity.require_uid(Config.AUTHORIZED_USER_EMAIL)
+        except storage_identity.StorageIdentityUnavailable as exc:
+            raise ToolArgumentError(storage_identity.public_message(exc)) from exc
+        written, errors, warnings = transcription_reunion_service.verser_transcription(
+            hearing_id,
+            dossier_id=dossier_id,
+            note_title=note_title,
+            note_category=note_category,
+            markdown_content=markdown_content,
+            expected_etag=expected,
+            user_id=uid,
+            category_source="mcp",
+        )
+        changed = (not errors) and (pre_status != tr_model.STATUS_VERSEE)
+        ctag_bumped = changed and not any("DavX5" in w for w in warnings)
+
+    if errors:
+        _raise_if_stale(
+            errors,
+            tool="decide_meeting_transcript",
+            subject="la transcription",
+            reread=lambda: tr_model.get_transcription(hearing_id),
+        )
+        raise ToolArgumentError(" ".join(errors))
+
+    final_doc = written or existing
+    v = (
+        final_doc.get("versement")
+        if isinstance(final_doc.get("versement"), dict)
+        else {}
+    )
+    filed_dossier_id = str(v.get("dossier_id") or final_doc.get("dossier_id") or "")
+    visible = False
+    if ctag_bumped and filed_dossier_id:
+        dossier = _dossier_for(filed_dossier_id)
+        d_status = dossier.get("status", "") if dossier is not None else None
+        visible = d_status is None or d_status in ACTIVE_DOSSIER_STATUSES
+    return {
+        "decided": True,
+        "entity_type": "meeting_transcript",
+        "entity": {
+            "id": hearing_id,
+            "status": str(final_doc.get("status") or ""),
+            "dossier_id": filed_dossier_id,
+            "dossier_file_number": str(v.get("dossier_file_number") or ""),
+            "note_id": str(v.get("note_id") or ""),
+            "note_category": str(v.get("note_category") or ""),
+            "transcript_document_id": str(v.get("transcript_document_id") or ""),
+            "onedrive_statut": str(v.get("onedrive_statut") or ""),
+            "etag": concurrency.etag_of(final_doc),
+        },
+        "hearing_id": hearing_id,
+        "action": str(action),
+        "changed": changed,
+        "ctag_bumped": ctag_bumped,
+        "dav_synced": ctag_bumped and visible,
+        "warnings": list(warnings),
     }
 
 

@@ -68,6 +68,22 @@ VALID_STATUSES = (
     "annulée",
     "terminée",
 )
+VALID_TRANSCRIPT_STATUSES = (
+    "",
+    "en_attente",
+    "a_revoir",
+    "versee",
+    "ecartee",
+    "aucune",
+)
+TRANSCRIPT_STATUS_LABELS = {
+    "": "Non demandée",
+    "en_attente": "En attente de transcription",
+    "a_revoir": "À revoir dans Réception",
+    "versee": "Versée au dossier",
+    "ecartee": "Écartée",
+    "aucune": "Aucune transcription disponible",
+}
 VALID_REMINDER_MINUTES = (15, 30, 60, 120, 1440, 2880, 10080)
 
 # Display labels (French). « conférence » (extrajudiciaire) is a strict PREFIX
@@ -726,6 +742,20 @@ def list_bookings_strict(*, include_confirmed: bool = False) -> list[dict]:
 def list_rendez_vous_strict(*, include_confirmed: bool = False) -> list[dict]:
     """Bookings and portal rendez-vous awaiting decision (or confirmed) — STRICT."""
     return _list_by_source_strict(RDV_SOURCES, include_confirmed=include_confirmed)
+
+
+def list_hearings_by_transcript_status_strict(status: str) -> list[dict]:
+    """Return every hearing carrying non-blank *status* — STRICT read.
+
+    Single-field ``transcript_status`` equality -> auto-indexed (no composite
+    index required). Rejects blank status so we never scan all legacy rows.
+    """
+    if not isinstance(status, str) or not status.strip() or status not in VALID_TRANSCRIPT_STATUSES:
+        raise ValueError("transcript_status invalide ou vide.")
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("transcript_status", "==", status)
+    )
+    return [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
 
 
 _EXTRA_CONFIRMATION_FIELDS = frozenset({

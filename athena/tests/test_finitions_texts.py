@@ -187,6 +187,7 @@ _WRITES_AFTER_BULK = frozenset({
     "save_courriels",
     "move_courriels",
     "record_courriels_temps",
+    "decide_meeting_transcript",
 })
 
 # The read tools shipped AFTER the bulk creators' release (2026-11-10: the
@@ -195,7 +196,7 @@ _WRITES_AFTER_BULK = frozenset({
 # registry without them.
 _READS_AFTER_BULK = frozenset({
     "get_financial_statements", "get_admin_receipt", "get_courrier_connexion",
-    "list_courriels",
+    "list_courriels", "get_meeting_transcripts",
 })
 
 # The six tools the separate `athena:comptabilite` scope carried from lot 5b

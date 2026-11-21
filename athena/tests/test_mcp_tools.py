@@ -376,7 +376,9 @@ def test_registry_shape():
     # Courrier Phase 3 write save_courriels. 89 -> 90 (2026-11-20,
     # deliberately): Courrier Phase 4 write move_courriels. 90 -> 91
     # (2026-11-20, deliberately): Courrier Phase 5 write record_courriels_temps.
-    assert len(tools.TOOLS) == 91  # 36 lectures + 55 ecritures
+    # 91 -> 93 (2026-11-21, deliberately): Lot 3 read get_meeting_transcripts
+    # + write decide_meeting_transcript.
+    assert len(tools.TOOLS) == 93  # 37 lectures + 56 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -406,8 +408,9 @@ _IDEMPOTENT_WRITES = frozenset({
     # re-contacts the client (decide_rendez_vous). NOT here: update_hearing
     # — its notes_append appends again on an identical call — and
     # create_hearing_series, a second call without the key being a second
-    # series.
-    "decide_rendez_vous",
+    # series. Lot 3: decide_meeting_transcript (replaying already-filed
+    # « versee » or « ecartee » writes nothing).
+    "decide_rendez_vous", "decide_meeting_transcript",
     # Lot 2A (T7). Values already stored write nothing (update_document), a
     # row already filed there is « unchanged » (move_documents). NOT here:
     # manage_folder — its create refuses a second identical call rather
@@ -485,8 +488,9 @@ def test_write_tools_set_is_pinned():
         "add_protocol_step", "update_protocol_step",
         # Lot 1b, etape L7 — le calendrier : modifier un evenement, creer
         # une serie, decider d'une demande Bookings (le premier effet
-        # sortant du connecteur).
+        # sortant du connecteur), plus Lot 3 (transcriptions Teams).
         "update_hearing", "create_hearing_series", "decide_rendez_vous",
+        "decide_meeting_transcript",
         # Lot 2A, etape T7 — FICHIERS : classer un document (nom, date,
         # etiquettes, dossier de classement, categorie presumee), en
         # deplacer plusieurs, organiser les dossiers de classement.
@@ -551,8 +555,8 @@ def test_edit_tools_set_is_pinned():
         "update_task", "reopen_task", "update_note", "edit_analyse",
         "update_protocol", "update_protocol_step", "update_hearing",
         # …and the decision on a Bookings request, whose refusal is the
-        # connector's one outbound effect.
-        "decide_rendez_vous",
+        # connector's one outbound effect (+ Lot 3 transcript filing/purge).
+        "decide_rendez_vous", "decide_meeting_transcript",
         # Lot 2A (T7) — FILES: each REPLACES a stored value (a document's
         # filing fields, a row's folder, a folder's name or parent).
         "update_document", "move_documents", "manage_folder",

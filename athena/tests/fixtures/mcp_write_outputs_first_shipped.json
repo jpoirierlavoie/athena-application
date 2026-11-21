@@ -580,6 +580,29 @@
    ".warnings"
   ]
  },
+ "decide_meeting_transcript": {
+  "first_shipped_in": "rdv-lot3-transcriptions",
+  "required": [
+   ".action",
+   ".changed",
+   ".ctag_bumped",
+   ".dav_synced",
+   ".decided",
+   ".entity",
+   ".entity.dossier_file_number",
+   ".entity.dossier_id",
+   ".entity.id",
+   ".entity.note_category",
+   ".entity.note_id",
+   ".entity.onedrive_statut",
+   ".entity.status",
+   ".entity.transcript_document_id",
+   ".entity_type",
+   ".hearing_id",
+   ".idempotent_replay",
+   ".warnings"
+  ]
+ },
  "decide_rendez_vous": {
   "first_shipped_in": "mcp-ecriture-lot1",
   "required": [

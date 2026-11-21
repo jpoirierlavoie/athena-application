@@ -382,7 +382,9 @@ def test_the_key_s_description_says_what_its_policy_does():
     # (Outlook moves/categories + permanent classification state).
     # 12 → 13 (2026-11-20, deliberately): record_courriels_temps demands its
     # key (billable time entries + permanent Courrier registry links).
-    assert len(required) == 13, sorted(required)
+    # 13 → 14 (2026-11-21, deliberately): decide_meeting_transcript demands its
+    # key (permanent note/document filing + staged WebVTT purge + optional OneDrive).
+    assert len(required) == 14, sorted(required)
     for name, spec in tools.TOOLS.items():
         prop = spec["input_schema"]["properties"].get("idempotency_key")
         if prop is None:
@@ -547,6 +549,10 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "replaces a Bookings request's stored decision gate — and its "
         "refusal cancels the client's Outlook meeting, which notifies him "
         "(lot 1b, L7; plan D10)"
+    ),
+    "decide_meeting_transcript": (
+        "files staged Copilot notes + WebVTT transcript permanently into "
+        "Athéna (and optional OneDrive) or discards and purges the staged WebVTT (Lot 3)"
     ),
     "manage_folder": (
         "its rename and move REPLACE a folder's stored name or parent — "
