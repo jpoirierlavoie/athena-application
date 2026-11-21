@@ -206,6 +206,11 @@ def create_app() -> Flask:
     # its own machine blueprint like taches_portail (never a browser one).
     csrf.exempt(taches_bookings_bp)
 
+    # ── Disponibilités portail (Lot 2): cron-driven availability snapshot ──
+    from routes.taches_disponibilites import taches_disponibilites_bp
+    app.register_blueprint(taches_disponibilites_bp)
+    csrf.exempt(taches_disponibilites_bp)
+
     # ── Miroir Outlook : cron-driven push of confirmed hearings to the
     # juriste's Outlook calendar (Graph). Same machine-blueprint discipline.
     from routes.taches_outlook import taches_outlook_bp

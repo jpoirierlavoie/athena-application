@@ -10,22 +10,29 @@ exists and the juriste hands the link over manually. This keeps the feature
 usable before the Entra registration (§12.7) is done.
 """
 
+from datetime import datetime
+import json
 import logging
 from typing import Optional
 
 from firebase_admin import auth as fb_auth
+from firebase_admin import storage
 from flask import render_template
 
-from client.config import PORTAIL_HOST, PORTAIL_MAX_FILE_MB
+from client.config import PORTAIL_BUCKET, PORTAIL_HOST, PORTAIL_MAX_FILE_MB
 from config import Config
 from models import portail_invitation as inv_model
 from models.integrations import sender_display_name
+from models.rendez_vous_reglages import get_rendez_vous_reglages
+from security import sanitize
+from services import disponibilites
 from tz import to_mtl
 from utils import courriel
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_portail_event
+from utils.rendez_vous_defaults import AGENDA_MAX, DURATION_MAX, DURATION_MIN
 from utils.validators import normalize_email
 
 logger = logging.getLogger(__name__)
@@ -44,7 +51,37 @@ def _generer_lien(email: str, inv_id: str) -> str:
     return fb_auth.generate_sign_in_with_email_link(email, acs)
 
 
-# Objet + gabarit, par type d'invitation. Les deux objets se terminent par la
+def generer_lien_connexion(email: str, inv_id: str) -> str:
+    """Public alias of :func:`_generer_lien` for task handlers."""
+    return _generer_lien(email, inv_id)
+
+
+def preparer_utilisateur_portail(email_n: str) -> list[str]:
+    """Verify non-lawyer email, get/create Firebase user, and merge ``portail=True``."""
+    if not email_n:
+        return ["Adresse courriel invalide."]
+    if email_n == (Config.AUTHORIZED_USER_EMAIL or "").strip().lower():
+        return [
+            "Impossible d'inviter le courriel du juriste : la revendication "
+            "« portail » verrouillerait ce compte hors du service principal. "
+            "Utilisez un alias pour les essais."
+        ]
+    try:
+        try:
+            user = fb_auth.get_user_by_email(email_n)
+        except fb_auth.UserNotFoundError:
+            user = fb_auth.create_user(email=email_n)
+        claims = dict(user.custom_claims or {})
+        if claims.get("portail") is not True:
+            claims["portail"] = True
+            fb_auth.set_custom_user_claims(user.uid, claims)
+    except Exception:
+        logger.exception("portail invitation firebase user setup failed")
+        return ["Erreur lors de la préparation du compte client."]
+    return []
+
+
+# Objet + gabarit, par type d'invitation. Les objets se terminent par la
 # désignation vue du client (décision 2026-07-29, symétrie assumée).
 _COURRIELS = {
     "documents": (
@@ -55,44 +92,45 @@ _COURRIELS = {
         "Ouverture de votre dossier",
         "reception/_invitation_ouverture.html",
     ),
+    "rdv": (
+        "Planification de votre rendez-vous",
+        "reception/_invitation_rdv.html",
+    ),
+}
+_COURRIELS_RDV_ETAT = {
+    "en_attente_courriel": (
+        "Vérification de votre demande de rendez-vous",
+        "reception/_invitation_rdv_verification.html",
+    ),
+    "a_confirmer": (
+        "Gestion de votre rendez-vous",
+        "reception/_invitation_rdv_gestion.html",
+    ),
+    "confirme": (
+        "Gestion de votre rendez-vous",
+        "reception/_invitation_rdv_gestion.html",
+    ),
 }
 
 
 def _corps_invitation(invitation: dict, lien: str) -> tuple[str, str]:
-    """Corps de l'invitation, selon le type. Rend (objet, corps_html).
-
-    Prend l'invitation ENTIÈRE plutôt que quatre valeurs éparses : le type
-    voyage ainsi avec le reste, et les deux appelants — emettre_invitation et
-    renvoyer_invitation — l'ont déjà en main. C'est ce qui règle d'un coup les
-    quatre points d'appel de ``routes/`` : avant, le renvoi d'une invitation
-    « intake » expédiait le texte « documents », y compris lorsque c'était le
-    CLIENT qui redemandait un lien depuis le portail.
-
-    Partage des responsabilités, calqué sur ``taches_portail._corps_accuse`` :
-    le Python possède l'objet et tout ce qui se dérive (la date formatée,
-    l'URL de secours avec son ``?i=``) ; le gabarit ne possède que le libellé
-    et la mise en page, et ne reçoit que des chaînes déjà prêtes. Le juriste
-    qui retouche le texte ne peut donc casser ni la date ni le lien.
-
-    Les deux DÉROGATIONS aux annexes A.1 des specs (2026-07-27) vivent
-    désormais dans ``_invitation_pied.html``, avec le commentaire qui interdit
-    de les « corriger » : la durée du lien distinguée de celle de
-    l'invitation, et l'URL de secours.
-    """
+    """Corps de l'invitation, selon le type et l'état RDV. Rend (objet, corps_html)."""
     type_ = invitation.get("type") or "documents"
-    prefixe, gabarit = _COURRIELS.get(type_, _COURRIELS["documents"])
+    if type_ == "rdv":
+        etat_rdv = invitation.get("etat_rdv") or ""
+        prefixe, gabarit = _COURRIELS_RDV_ETAT.get(etat_rdv, _COURRIELS["rdv"])
+    else:
+        prefixe, gabarit = _COURRIELS.get(type_, _COURRIELS["documents"])
     display_label = invitation.get("display_label", "")
-    # Variante « de phrase » : le gabarit documents écrit « Dans le cadre du
-    # dossier {label} », et le libellé PAR DÉFAUT commence lui-même par
-    # « Dossier » — ce qui donnait « du dossier Dossier 2026-001 ». On retire
-    # un tel préfixe pour la phrase SEULEMENT ; l'objet du courriel, le
-    # portail et Réception gardent le libellé intégral, qui s'y lit bien.
-    # Dérivé en Python, pas dans le gabarit : la règle maison veut que le
-    # gabarit ne possède que le libellé, jamais une transformation.
     label_phrase = display_label
     if label_phrase.lower().startswith("dossier "):
         label_phrase = label_phrase[len("dossier "):].strip() or display_label
     _cab = cabinet_dict()
+    quand_rdv = ""
+    slot_debut = invitation.get("slot_debut_utc")
+    if slot_debut is not None:
+        local = to_mtl(slot_debut)
+        quand_rdv = f"{format_date_fr(local.date())} à {local.strftime('%H h %M')}"
     corps = render_template(
         gabarit,
         display_label=display_label,
@@ -100,16 +138,9 @@ def _corps_invitation(invitation: dict, lien: str) -> tuple[str, str]:
         lien=lien,
         max_file_mb=PORTAIL_MAX_FILE_MB,
         date_expiration=format_date_fr(to_mtl(invitation["expires_at"]).date()),
-        # Jamais un littéral : un environnement de développement ne doit pas
-        # pouvoir renvoyer un client vers la production. Le « ?i= » fait
-        # prendre à /api/renvoi la branche par identifiant exact plutôt que le
-        # balayage par courriel.
         url_secours=f"https://{PORTAIL_HOST}/entree?i={invitation['id']}",
-        # app.yaml documents FIRM_PHONE here as the anti-enumeration escape
-        # hatch: a client who exhausts the resend cap gets no distinct
-        # message, so a reachable number is the fallback that matters. It
-        # must never render empty — cabinet_dict fails open to the
-        # deploy-time values for exactly that reason.
+        quand_rdv=quand_rdv,
+        duree_minutes=invitation.get("duree_minutes"),
         firm_name=_cab.get("nom", ""),
         firm_phone=_cab.get("telephone", ""),
         firm_email=_cab.get("courriel", ""),
@@ -141,6 +172,75 @@ def _expedier(email: str, objet: str, corps_html: str, lien: str,
     return ""
 
 
+def expedier_courriel(
+    email: str, objet: str, corps_html: str, lien: str, invitation_id: str
+) -> str:
+    """Public alias of :func:`_expedier` for portal task handlers."""
+    return _expedier(email, objet, corps_html, lien, invitation_id)
+
+
+def envoyer_refus_rdv_portail(hearing: dict) -> tuple[bool, str]:
+    """Send polite non-mandate refusal email for a refused public portal RDV.
+
+    Lives here (not ``services/rendez_vous.py``) so MCP-reachable services
+    never import ``utils.courriel``. Returns ``(sent_ok, warning_message)``.
+    """
+    client_email = str(hearing.get("client_email") or "").strip()
+    if not (client_email and Config.graph_configured()):
+        return False, (
+            "Rendez-vous refusé dans Athéna, mais le courriel de refus "
+            "n'a pas pu être envoyé (Graph non configuré ou adresse absente)."
+        )
+    display_label = (hearing.get("title") or "Rendez-vous").strip()
+    start = hearing.get("start_datetime")
+    quand_fr = "créneau demandé"
+    if isinstance(start, datetime):
+        local = to_mtl(start)
+        quand_fr = f"{format_date_fr(local.date())} à {local.strftime('%H h %M')}"
+    cab = cabinet_dict()
+    objet = f"Suite à votre demande de rendez-vous — {display_label}"
+    corps = render_template(
+        "reception/_refus_rdv_portail.html",
+        display_label=display_label,
+        quand_fr=quand_fr,
+        firm_name=cab.get("nom", ""),
+        firm_phone=cab.get("telephone", ""),
+        firm_email=cab.get("courriel", ""),
+    )
+    hid = str(hearing.get("id") or "")
+    try:
+        courriel.envoyer(
+            client_email, objet, corps, expediteur_nom=sender_display_name()
+        )
+        return True, ""
+    except (GraphError, GraphNotConfigured):
+        logger.warning("portail rdv refusal email failed for %s", hid)
+        return False, (
+            "Rendez-vous refusé dans Athéna, mais le courriel de refus "
+            "n'a pas pu être envoyé au demandeur."
+        )
+    except Exception:
+        logger.exception("portail rdv refusal email raised unexpectedly")
+        return False, (
+            "Rendez-vous refusé dans Athéna, mais l'envoi du courriel "
+            "de refus a échoué de façon inattendue."
+        )
+
+
+def corps_invitation_pour(invitation: dict, lien: str) -> tuple[str, str]:
+    """Render `(objet, corps_html)` for *invitation* and one-time link."""
+    return _corps_invitation(invitation, lien)
+
+
+def _ecrire_agenda_rdv(inv_id: str, ordre_du_jour: str) -> None:
+    """Store lawyer-edited RDV agenda strictly in quarantine bucket (never portail DB)."""
+    blob = storage.bucket(PORTAIL_BUCKET).blob(f"submissions/{inv_id}/agenda.json")
+    blob.upload_from_string(
+        json.dumps({"ordre_du_jour": ordre_du_jour}, ensure_ascii=False),
+        content_type="application/json",
+    )
+
+
 def emettre_invitation(
     type_: str,
     email: str,
@@ -151,6 +251,9 @@ def emettre_invitation(
     display_label: str = "",
     jours: Optional[int] = None,
     prefill: Optional[dict] = None,
+    type_rdv_cle: Optional[str] = None,
+    duree_minutes: Optional[int] = None,
+    ordre_du_jour: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], str]:
     """Create + send an invitation. Returns (invitation, errors, lien_manuel).
 
@@ -161,47 +264,100 @@ def emettre_invitation(
     if not email_n:
         return None, ["Adresse courriel invalide."], ""
 
-    # Garde-fou §1.3: inviting the juriste's own email would stamp the
-    # portail claim on the authorized account and lock it out of the main
-    # service (§1.2 refuses the claim at login). Never allowed — test with
-    # an alias.
-    if email_n == (Config.AUTHORIZED_USER_EMAIL or "").strip().lower():
-        return None, [
-            "Impossible d'inviter le courriel du juriste : la revendication "
-            "« portail » verrouillerait ce compte hors du service principal. "
-            "Utilisez un alias pour les essais."
-        ], ""
+    user_errors = preparer_utilisateur_portail(email_n)
+    if user_errors:
+        return None, user_errors, ""
 
-    # Firebase user: get-or-create, then MERGE the portail claim into any
-    # existing claims (never replace the dict — a future claim would be
-    # silently wiped).
-    try:
-        try:
-            user = fb_auth.get_user_by_email(email_n)
-        except fb_auth.UserNotFoundError:
-            user = fb_auth.create_user(email=email_n)
-        claims = dict(user.custom_claims or {})
-        if claims.get("portail") is not True:
-            claims["portail"] = True
-            fb_auth.set_custom_user_claims(user.uid, claims)
-    except Exception:
-        logger.exception("portail invitation firebase user setup failed")
-        return None, ["Erreur lors de la préparation du compte client."], ""
+    extra_creer: dict = {}
+    agenda_propre = ""
+    est_rdv = type_ == "rdv"
+    if est_rdv:
+        if not Config.PORTAIL_RDV_ACTIF:
+            return None, [
+                "Les invitations de rendez-vous sur le portail sont désactivées."
+            ], ""
+        if not (Config.TEAMS_REUNIONS_ACTIF and Config.teams_configured()):
+            return None, [
+                "L'intégration Microsoft Teams n'est pas active ou complète "
+                "(vérifiez Paramètres → Rendez-vous)."
+            ], ""
+        reglages = get_rendez_vous_reglages()
+        types_par_cle = {
+            str(t.get("cle") or "").strip(): t
+            for t in (reglages.get("types_rdv") or ())
+            if isinstance(t, dict)
+        }
+        cle = (type_rdv_cle or "").strip()
+        if cle not in types_par_cle:
+            return None, ["Type de rendez-vous inconnu ou non configuré."], ""
+        cfg_type = types_par_cle[cle]
+        duree = int(
+            duree_minutes
+            if duree_minutes is not None
+            else (cfg_type.get("duree_minutes") or 30)
+        )
+        if duree < DURATION_MIN or duree > DURATION_MAX:
+            return None, [
+                f"La durée doit être comprise entre {DURATION_MIN} et {DURATION_MAX} minutes."
+            ], ""
+        agenda_src = (
+            str(ordre_du_jour)
+            if ordre_du_jour is not None and str(ordre_du_jour).strip()
+            else str(cfg_type.get("ordre_du_jour") or "")
+        )
+        agenda_propre = agenda_src.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if (
+            not agenda_propre
+            or len(agenda_propre) > AGENDA_MAX
+            or "<" in agenda_propre
+            or ">" in agenda_propre
+            or sanitize(agenda_propre, max_length=AGENDA_MAX) != agenda_propre
+        ):
+            return None, [
+                "L'ordre du jour minuté est requis, sans chevrons (< ou >), "
+                f"et d'au plus {AGENDA_MAX} caractères."
+            ], ""
+        if not (display_label or "").strip():
+            display_label = str(cfg_type.get("libelle") or "Rendez-vous")
+        if jours is None:
+            horizon = int(reglages.get("horizon_jours") or 60)
+            jours = min(max(horizon + 7, 14), 190)
+        extra_creer = {
+            "rdv_mode": "invite",
+            "type_rdv_cle": cle,
+            "type_rdv_libelle": str(cfg_type.get("libelle") or ""),
+            "duree_minutes": duree,
+            "etat_rdv": "a_choisir",
+            "preavis_modification_heures": int(
+                reglages.get("preavis_modification_heures") or 24
+            ),
+        }
 
     invitation, errors = inv_model.creer_invitation(
         type_, email_n,
         dossier_id=dossier_id, partie_id=partie_id, client_name=client_name,
         display_label=display_label, jours=jours, prefill=prefill,
+        **extra_creer,
     )
     if errors or invitation is None:
         return None, errors or ["Erreur lors de la création de l'invitation."], ""
+
+    if est_rdv:
+        try:
+            _ecrire_agenda_rdv(invitation["id"], agenda_propre)
+        except Exception:
+            logger.exception("portail rdv agenda write failed")
+            inv_model.revoquer(invitation["id"])
+            return None, [
+                "Impossible d'enregistrer l'ordre du jour en quarantaine. "
+                "Réessayez dans un moment."
+            ], ""
+        disponibilites.rafraichir_disponibilites_best_effort()
 
     try:
         lien = _generer_lien(email_n, invitation["id"])
     except Exception:
         logger.exception("portail sign-in link generation failed")
-        # The invitation exists but no usable link was ever produced —
-        # revoke it so a dead invitation never lingers as « envoyée ».
         inv_model.revoquer(invitation["id"])
         return None, [
             "Impossible de générer le lien de connexion. Vérifier que la "

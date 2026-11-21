@@ -932,6 +932,16 @@ PortailEvent = Literal[
     "intake_partie_mise_a_jour",
     "intake_adverse_cree",
     "intake_refuse",
+    # Prise de rendez-vous sur le portail (Lot 2). Identifiants et codes
+    # machine seulement — jamais le nom du demandeur, des parties adverses
+    # ni le sujet.
+    "demande_rdv_recue",
+    "demande_rdv_ignoree",
+    "rdv_creneau_retenu",
+    "rdv_creneau_pris",
+    "rdv_invite_confirme",
+    "rdv_reporte",
+    "rdv_annule_client",
 ]
 PortailOutcome = Literal["success", "failure", "refused"]
 # Bookings sync (spec L2). Same discipline as portail: IDs, opaque Graph
@@ -952,13 +962,16 @@ BookingsEvent = Literal[
     # un sujet d'événement embarque le nom d'un client, JAMAIS journalisé).
     "miroir_outlook_execute",
     "miroir_outlook_erreur_graph",
-    # Réunions Microsoft Teams (Lot 1) : identifiants opaques, drapeaux,
-    # codes HTTP et compteurs seulement — jamais un sujet ou un nom.
+    # Réunions Microsoft Teams (Lot 1) & disponibilités portail (Lot 2) :
+    # identifiants opaques, drapeaux, codes HTTP et compteurs seulement —
+    # jamais un sujet ou un nom.
     "teams_reunion_creee",
     "teams_reunion_modifiee",
     "teams_reunion_annulee",
     "teams_reunion_erreur_graph",
     "teams_connexion_verifiee",
+    "disponibilites_synchronisees",
+    "disponibilites_sync_echec",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
 # Courrier intake (Phase 5). Counts, booleans, technical `cle` keys (when single

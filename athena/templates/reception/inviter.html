@@ -11,13 +11,16 @@
   </a>
 
   <h1 class="text-2xl font-semibold text-gray-900 mb-1">
-    {{ "Demander l'ouverture d'un dossier" if type_ == 'intake' else "Demander des documents" }}
+    {{ "Demander l'ouverture d'un dossier" if type_ == 'intake'
+       else ("Inviter à planifier un rendez-vous" if type_ == 'rdv'
+             else "Demander des documents") }}
   </h1>
   <p class="text-sm text-gray-500 mb-6">
     Le client recevra un lien de connexion strictement personnel, lié à son
     adresse courriel,
     {{ "vers le formulaire d'ouverture sécurisé." if type_ == 'intake'
-       else "vers le portail sécurisé de transmission." }}
+       else ("vers le choix de créneau de visioconférence Teams." if type_ == 'rdv'
+             else "vers le portail sécurisé de transmission.") }}
   </p>
 
   {% if errors %}
@@ -34,15 +37,13 @@
     <input type="hidden" id="partie_id" name="partie_id"
            value="{{ form.get('partie_id') or (partie.id if partie else '') }}">
 
-    {# Type d'invitation (L3, déclencheur (c)) — un sélecteur ici plutôt qu'un
-       second formulaire : c'est le SEUL endroit où le type était écrit en dur
-       côté juriste. #}
+    {# Type d'invitation (documents, ouverture, rendez-vous) #}
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Type de demande</label>
       <div class="flex gap-2">
         <label class="flex-1">
           <input type="radio" name="type" value="documents" class="sr-only peer"
-                 {{ 'checked' if type_ != 'intake' }}>
+                 {{ 'checked' if type_ == 'documents' }}>
           <div class="text-center py-2.5 text-sm font-medium rounded-lg border cursor-pointer
                       peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900
                       border-gray-300 text-gray-700 hover:bg-gray-50">
@@ -58,11 +59,49 @@
             Ouverture de dossier
           </div>
         </label>
+        <label class="flex-1">
+          <input type="radio" name="type" value="rdv" class="sr-only peer"
+                 {{ 'checked' if type_ == 'rdv' }}>
+          <div class="text-center py-2.5 text-sm font-medium rounded-lg border cursor-pointer
+                      peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900
+                      border-gray-300 text-gray-700 hover:bg-gray-50">
+            Rendez-vous
+          </div>
+        </label>
       </div>
       <p class="mt-1 text-xs text-gray-400">
-        « Ouverture » envoie le formulaire de renseignements ; avec un contact
-        choisi, il lui est prérempli pour mise à jour.
+        « Rendez-vous » permet au client de choisir un créneau disponible et
+        génère automatiquement la visioconférence Microsoft Teams.
       </p>
+    </div>
+
+    <div id="bloc-rdv" class="{{ '' if type_ == 'rdv' else 'hidden' }} bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label for="type_rdv_cle" class="block text-sm font-medium text-gray-700 mb-1">Type de rendez-vous</label>
+          <select id="type_rdv_cle" name="type_rdv_cle"
+                  class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
+            {% for t in rdv_types %}
+            <option value="{{ t.cle }}" {{ 'selected' if (form.get('type_rdv_cle') or rdv_type_defaut) == t.cle }}>
+              {{ t.libelle }} ({{ t.duree_minutes }} min)
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="duree_minutes" class="block text-sm font-medium text-gray-700 mb-1">Durée (minutes)</label>
+          <input id="duree_minutes" name="duree_minutes" type="number" min="15" max="240" step="5"
+                 value="{{ form.get('duree_minutes') or rdv_duree_defaut }}"
+                 class="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
+        </div>
+      </div>
+      <details>
+        <summary class="text-xs font-medium text-indigo-600 cursor-pointer hover:text-indigo-500">
+          Ordre du jour minuté Teams (prérempli selon le type)
+        </summary>
+        <textarea id="ordre_du_jour" name="ordre_du_jour" rows="4" maxlength="2000"
+                  class="mt-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ form.get('ordre_du_jour') or rdv_agenda_defaut }}</textarea>
+      </details>
     </div>
 
     {# Sélecteur de client par recherche autocomplétée. Un contact choisi
@@ -150,6 +189,7 @@
 {% endblock %}
 
 {% block page_scripts %}
+<script id="rdv-types-data" type="application/json">{{ rdv_types|tojson }}</script>
 <script nonce="{{ csp_nonce }}">
   'use strict';
   // Sélecteur de client : remplissage par écouteur délégué (CSP — jamais de
@@ -161,48 +201,78 @@
     var champNom = document.getElementById('client_name');
     var champEmail = document.getElementById('email');
     var effacer = document.getElementById('partie-effacer');
-    if (!boite || !recherche) { return; }
+    if (boite && recherche) {
+      function afficher() {
+        if (boite.children.length) { boite.classList.remove('hidden'); }
+      }
+      function masquer() { boite.classList.add('hidden'); }
 
-    function afficher() {
-      if (boite.children.length) { boite.classList.remove('hidden'); }
+      // HTMX vient de remplir la boîte → l'afficher.
+      boite.addEventListener('htmx:afterSwap', afficher);
+      recherche.addEventListener('focus', afficher);
+
+      // Entrée dans le champ de recherche ne doit pas soumettre le formulaire.
+      recherche.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); }
+      });
+
+      // Clic sur une ligne de résultat → remplir les champs.
+      boite.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-partie-id]');
+        if (!btn) { return; }
+        champId.value = btn.getAttribute('data-partie-id') || '';
+        var nom = btn.getAttribute('data-partie-name') || '';
+        var courriel = btn.getAttribute('data-partie-email') || '';
+        if (nom) { champNom.value = nom; }
+        if (courriel) { champEmail.value = courriel; }
+        recherche.value = nom;
+        effacer.classList.remove('hidden');
+        masquer();
+      });
+
+      // Repasser en saisie manuelle.
+      effacer.addEventListener('click', function () {
+        champId.value = '';
+        recherche.value = '';
+        effacer.classList.add('hidden');
+        masquer();
+      });
+
+      // Fermer la liste au clic hors du sélecteur.
+      document.addEventListener('click', function (e) {
+        if (!e.target.closest('.relative')) { masquer(); }
+      });
     }
-    function masquer() { boite.classList.add('hidden'); }
 
-    // HTMX vient de remplir la boîte → l'afficher.
-    boite.addEventListener('htmx:afterSwap', afficher);
-    recherche.addEventListener('focus', afficher);
+    var blocRdv = document.getElementById('bloc-rdv');
+    var selTypeRdv = document.getElementById('type_rdv_cle');
+    var inputDuree = document.getElementById('duree_minutes');
+    var inputAgenda = document.getElementById('ordre_du_jour');
+    var dataEl = document.getElementById('rdv-types-data');
+    if (blocRdv && dataEl) {
+      var typesRdv = [];
+      try { typesRdv = JSON.parse(dataEl.textContent || '[]'); } catch (e) { typesRdv = []; }
+      var radios = document.querySelectorAll('input[name="type"]');
+      function syncBlocRdv() {
+        var checked = document.querySelector('input[name="type"]:checked');
+        var estRdv = checked && checked.value === 'rdv';
+        blocRdv.classList.toggle('hidden', !estRdv);
+      }
+      radios.forEach(function (r) { r.addEventListener('change', syncBlocRdv); });
+      syncBlocRdv();
 
-    // Entrée dans le champ de recherche ne doit pas soumettre le formulaire.
-    recherche.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); }
-    });
-
-    // Clic sur une ligne de résultat → remplir les champs.
-    boite.addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-partie-id]');
-      if (!btn) { return; }
-      champId.value = btn.getAttribute('data-partie-id') || '';
-      var nom = btn.getAttribute('data-partie-name') || '';
-      var courriel = btn.getAttribute('data-partie-email') || '';
-      if (nom) { champNom.value = nom; }
-      if (courriel) { champEmail.value = courriel; }
-      recherche.value = nom;
-      effacer.classList.remove('hidden');
-      masquer();
-    });
-
-    // Repasser en saisie manuelle.
-    effacer.addEventListener('click', function () {
-      champId.value = '';
-      recherche.value = '';
-      effacer.classList.add('hidden');
-      masquer();
-    });
-
-    // Fermer la liste au clic hors du sélecteur.
-    document.addEventListener('click', function (e) {
-      if (!e.target.closest('.relative')) { masquer(); }
-    });
+      if (selTypeRdv) {
+        selTypeRdv.addEventListener('change', function () {
+          var cle = selTypeRdv.value;
+          var match = typesRdv.find(function (t) { return t.cle === cle; });
+          if (!match) { return; }
+          if (inputDuree && match.duree_minutes) { inputDuree.value = match.duree_minutes; }
+          if (inputAgenda && typeof match.ordre_du_jour === 'string') {
+            inputAgenda.value = match.ordre_du_jour;
+          }
+        });
+      }
+    }
   })();
 </script>
 {% endblock %}

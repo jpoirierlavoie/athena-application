@@ -20,22 +20,27 @@ from datetime import datetime, timedelta, timezone
 from firebase_admin import storage
 from flask import Blueprint, abort, jsonify, render_template, request
 
-from client.config import PORTAIL_BUCKET, PORTAIL_QUEUE
-from client.services import taches
+from client.config import PORTAIL_BUCKET, PORTAIL_HOST, PORTAIL_QUEUE
+from client.services import disponibilites as portail_dispo
+from client.services import rdv_validation, taches
 from config import Config
+from dav.sync import bump_ctag, collection_for
+from models import hearing as hearing_model
 from models import portail_invitation as pi
 from models.dossier import get_dossier
 from models.integrations import sender_display_name
 from models.partie import display_name, get_partie
-from services import portail_emission as emission
+from models.rendez_vous_reglages import get_rendez_vous_reglages
+from services import disponibilites, portail_emission as emission
 from tz import to_mtl
-from utils import courriel
+from utils import courriel, graph_teams
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
-from utils.logging_setup import log_portail_event
+from utils.logging_setup import log_bookings_event, log_portail_event
+from utils.rendez_vous_defaults import default_agenda_for_hearing_type
 from utils.template_fields import selected_address, selected_phone, uses_work_block
-from utils.validators import format_phone_display
+from utils.validators import format_phone_display, normalize_email
 
 logger = logging.getLogger(__name__)
 
@@ -545,6 +550,673 @@ def _traiter_intake(inv_id: str, batch: str, invitation: dict) -> None:
             )
 
 
+# ── Rendez-vous portail (Lot 2) ──────────────────────────────────────────
+
+
+_MAX_RDV_DEMANDES_24H = 3
+
+
+def _read_json_blob(bucket, path: str) -> dict | None:
+    blob = bucket.blob(path)
+    if not blob.exists():
+        return None
+    try:
+        data = json.loads(blob.download_as_bytes())
+    except Exception:
+        logger.exception("portail rdv json blob unreadable")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _write_json_blob(bucket, path: str, payload: dict) -> None:
+    bucket.blob(path).upload_from_string(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        content_type="application/json",
+    )
+
+
+def _hearing_type_for_rdv_cle(cle: str, reglages: dict | None = None) -> str:
+    if reglages:
+        for item in reglages.get("types_rdv") or ():
+            if isinstance(item, dict) and str(item.get("cle") or "").strip() == cle:
+                ht = str(item.get("hearing_type") or "").strip()
+                if ht in hearing_model.VALID_HEARING_TYPES:
+                    return ht
+    if cle in hearing_model.VALID_HEARING_TYPES:
+        return cle
+    if cle.startswith("consultation"):
+        return "consultation"
+    return "conférence"
+
+
+def _corps_rdv_email(
+    gabarit: str, objet: str, inv: dict, *, slot_debut_dt: datetime | None
+) -> tuple[str, str]:
+    quand_fr = (
+        portail_dispo.formater_jour_heure_mtl(slot_debut_dt)
+        if slot_debut_dt is not None
+        else "créneau convenu"
+    )
+    cab = cabinet_dict()
+    corps = render_template(
+        gabarit,
+        display_label=inv.get("display_label") or inv.get("type_rdv_libelle") or "Rendez-vous",
+        quand_fr=quand_fr,
+        duree_minutes=inv.get("duree_minutes"),
+        preavis_h=int(inv.get("preavis_modification_heures") or 24),
+        url_secours=f"https://{PORTAIL_HOST}/entree?i={inv['id']}",
+        firm_name=cab.get("nom", ""),
+        firm_phone=cab.get("telephone", ""),
+        firm_email=cab.get("courriel", ""),
+    )
+    return objet, corps
+
+
+def _envoyer_courriel_rdv(
+    email: str, objet: str, corps_html: str, *, inv_id: str, event_tag: str
+) -> None:
+    try:
+        courriel.envoyer(
+            email, objet, corps_html, expediteur_nom=sender_display_name()
+        )
+    except GraphNotConfigured:
+        log_portail_event(
+            "courriel_echec", "refused",
+            invitation_id=inv_id, reason=f"{event_tag}_graph_not_configured",
+        )
+    except GraphError:
+        logger.exception("%s email send failed", event_tag)
+        log_portail_event(
+            "courriel_echec", "failure",
+            invitation_id=inv_id, reason=f"{event_tag}_graph_error",
+        )
+
+
+def _creer_audience_retenue_portail(
+    inv_id: str,
+    inv: dict,
+    demande: dict,
+    slot_debut_dt: datetime,
+    slot_fin_dt: datetime,
+) -> dict:
+    type_cle = str(inv.get("type_rdv_cle") or demande.get("type_rdv_cle") or "")
+    reglages = get_rendez_vous_reglages()
+    htype = _hearing_type_for_rdv_cle(type_cle, reglages)
+    default_agenda = default_agenda_for_hearing_type(reglages, htype)
+    raw_phone = str(demande.get("telephone") or "").strip()
+    phone = format_phone_display(raw_phone) or raw_phone
+    adverses = [
+        str(x).strip()
+        for x in (demande.get("parties_adverses") or [])
+        if str(x).strip()
+    ]
+    client_nom = str(demande.get("nom_complet") or inv.get("client_name") or "").strip()
+    libelle = str(inv.get("type_rdv_libelle") or inv.get("display_label") or "Consultation").strip()
+    title = f"{libelle} — {client_nom}" if client_nom else libelle
+    created, errors = hearing_model.create_hearing({
+        "title": title,
+        "hearing_type": htype,
+        "start_datetime": slot_debut_dt,
+        "end_datetime": slot_fin_dt,
+        "all_day": False,
+        "modalite": "visioconférence",
+        "status": "à_confirmer",
+        "source": "portail",
+        "confirmation": "à_confirmer",
+        "portail_invitation_id": inv_id,
+        "type_rdv_cle": type_cle,
+        "client_nom": client_nom,
+        "client_email": inv.get("email", ""),
+        "client_telephone": phone,
+        "parties_adverses": adverses,
+        "sujet_client": str(demande.get("sujet") or ""),
+        "teams_agenda": default_agenda,
+    })
+    if errors or created is None:
+        raise RuntimeError("portail rdv held hearing create failed")
+    return created
+
+
+def _traiter_rdv_demande(req_id: str, batch: str) -> None:
+    bucket = _bucket()
+    payload = _read_json_blob(bucket, f"submissions/_rdv_demande_{batch or req_id}.json")
+    if payload is None:
+        log_portail_event(
+            "demande_rdv_ignoree", "refused",
+            invitation_id=req_id, reason="blob_missing",
+        )
+        return
+
+    inv = pi.lire_invitation_strict(req_id)
+    if inv is None:
+        if not Config.PORTAIL_RDV_ACTIF:
+            log_portail_event(
+                "demande_rdv_ignoree", "refused",
+                invitation_id=req_id, reason="disabled",
+            )
+            return
+        email = normalize_email(str(payload.get("courriel") or ""))
+        if not email:
+            log_portail_event(
+                "demande_rdv_ignoree", "refused",
+                invitation_id=req_id, reason="invalid_email",
+            )
+            return
+        owner_email = normalize_email(Config.AUTHORIZED_USER_EMAIL or "")
+        if owner_email and email == owner_email:
+            log_portail_event(
+                "demande_rdv_ignoree", "refused",
+                invitation_id=req_id, reason="owner_email",
+            )
+            return
+        depuis = datetime.now(timezone.utc) - timedelta(hours=24)
+        if pi.compter_demandes_rdv_recentes_par_courriel(email, depuis) >= _MAX_RDV_DEMANDES_24H:
+            log_portail_event(
+                "demande_rdv_ignoree", "refused",
+                invitation_id=req_id, reason="rate_cap",
+            )
+            return
+
+        reglages = get_rendez_vous_reglages()
+        type_cle = str(payload.get("type_rdv_cle") or "").strip()
+        types_publics = {
+            str(t.get("cle") or "").strip(): t
+            for t in (reglages.get("types_rdv") or ())
+            if isinstance(t, dict) and t.get("public")
+        }
+        cfg_type = types_publics.get(type_cle)
+        if cfg_type is None:
+            log_portail_event(
+                "demande_rdv_ignoree", "refused",
+                invitation_id=req_id, reason="type_invalid",
+            )
+            return
+        slot_debut_dt = rdv_validation._parse_utc(payload.get("slot_debut_utc"))
+        if slot_debut_dt is None:
+            log_portail_event(
+                "demande_rdv_ignoree", "refused",
+                invitation_id=req_id, reason="slot_invalid",
+            )
+            return
+        duree = int(cfg_type.get("duree_minutes") or payload.get("duree_minutes") or 30)
+        slot_fin_dt = slot_debut_dt + timedelta(minutes=duree)
+        preavis_h = int(reglages.get("preavis_modification_heures") or 24)
+        type_libelle = str(
+            cfg_type.get("libelle") or payload.get("type_rdv_libelle") or "Consultation"
+        )
+
+        user_errors = emission.preparer_utilisateur_portail(email)
+        if user_errors:
+            raise RuntimeError("portail rdv user preparation failed")
+
+        _write_json_blob(bucket, f"submissions/{req_id}/demande.json", payload)
+        inv, errs = pi.creer_invitation(
+            "rdv",
+            email,
+            inv_id=req_id,
+            client_name=str(payload.get("nom_complet") or ""),
+            display_label=type_libelle,
+            jours=2,
+            rdv_mode="public",
+            type_rdv_cle=type_cle,
+            type_rdv_libelle=type_libelle,
+            duree_minutes=duree,
+            etat_rdv="en_attente_courriel",
+            slot_debut_utc=slot_debut_dt,
+            slot_fin_utc=slot_fin_dt,
+            preavis_modification_heures=preavis_h,
+        )
+        if errs or inv is None:
+            if "existe déjà" in "".join(errs):
+                inv = pi.lire_invitation_strict(req_id)
+            else:
+                raise RuntimeError("portail rdv invitation create failed")
+
+    if inv is not None and not (inv.get("accuses") or {}).get("verif"):
+        lien = emission.generer_lien_connexion(inv["email"], req_id)
+        objet, corps = emission.corps_invitation_pour(inv, lien)
+        lien_manuel = emission.expedier_courriel(inv["email"], objet, corps, lien, req_id)
+        if lien_manuel and Config.graph_configured():
+            raise RuntimeError("rdv verification email send failed")
+        pi.poser_accuse(req_id, "verif")
+
+
+def _traiter_rdv_retenir(inv_id: str) -> None:
+    inv = pi.lire_invitation_strict(inv_id)
+    if inv is None or inv.get("type") != "rdv" or inv.get("statut") == "révoquée":
+        return
+    pi.marquer_ouverte(inv_id)
+    if inv.get("etat_rdv") != "en_attente_courriel" or inv.get("hearing_id"):
+        return
+
+    slot_debut_dt = rdv_validation._parse_utc(inv.get("slot_debut_utc"))
+    duree = int(inv.get("duree_minutes") or 30)
+    if slot_debut_dt is None:
+        return
+    slot_fin_dt = slot_debut_dt + timedelta(minutes=duree)
+
+    libre, motif = disponibilites.verifier_creneau_libre_strict(slot_debut_dt, duree)
+    if motif == "erreur_lecture":
+        raise RuntimeError("portail rdv availability check failed")
+    now = datetime.now(timezone.utc)
+    if not libre:
+        pi.mettre_a_jour_rdv(
+            inv_id,
+            statut="ouverte",
+            etat_rdv="creneau_pris",
+            expires_at=now + timedelta(days=7),
+        )
+        log_portail_event(
+            "rdv_creneau_pris", "refused",
+            invitation_id=inv_id, reason="slot_taken",
+        )
+        return
+
+    demande = _read_json_blob(_bucket(), f"submissions/{inv_id}/demande.json") or {}
+    created = _creer_audience_retenue_portail(inv_id, inv, demande, slot_debut_dt, slot_fin_dt)
+    exp = max(slot_fin_dt + timedelta(days=1), now + timedelta(days=7))
+    if not pi.mettre_a_jour_rdv(
+        inv_id,
+        statut="ouverte",
+        etat_rdv="a_confirmer",
+        hearing_id=created["id"],
+        expires_at=exp,
+    ):
+        raise RuntimeError("portail rdv invitation hold update failed")
+
+    disponibilites.rafraichir_disponibilites_best_effort()
+    log_portail_event("rdv_creneau_retenu", invitation_id=inv_id)
+    if pi.poser_accuse(inv_id, "retenu"):
+        label = inv.get("display_label") or inv.get("type_rdv_libelle") or "Consultation"
+        objet, corps = _corps_rdv_email(
+            "reception/_accuse_rdv_public.html",
+            f"Demande de rendez-vous reçue — {label}",
+            inv,
+            slot_debut_dt=slot_debut_dt,
+        )
+        _envoyer_courriel_rdv(
+            inv.get("email", ""), objet, corps, inv_id=inv_id, event_tag="rdv_retenu"
+        )
+
+
+def _traiter_rdv_reserver(inv_id: str, batch: str) -> None:
+    inv = pi.lire_invitation_strict(inv_id)
+    if inv is None or inv.get("type") != "rdv" or inv.get("statut") == "révoquée":
+        return
+    pi.marquer_ouverte(inv_id)
+    if inv.get("etat_rdv") not in ("a_choisir", "creneau_pris") or inv.get("hearing_id"):
+        return
+
+    bucket = _bucket()
+    payload = _read_json_blob(bucket, f"submissions/{inv_id}/rdv_{batch}.json")
+    if payload is None:
+        return
+    slot_debut_dt = rdv_validation._parse_utc(payload.get("slot_debut_utc"))
+    if slot_debut_dt is None:
+        return
+    duree = int(inv.get("duree_minutes") or payload.get("duree_minutes") or 30)
+    slot_fin_dt = slot_debut_dt + timedelta(minutes=duree)
+
+    libre, motif = disponibilites.verifier_creneau_libre_strict(slot_debut_dt, duree)
+    if motif == "erreur_lecture":
+        raise RuntimeError("portail rdv availability check failed")
+    now = datetime.now(timezone.utc)
+    if not libre:
+        pi.mettre_a_jour_rdv(
+            inv_id,
+            statut="ouverte",
+            etat_rdv="creneau_pris",
+            expires_at=now + timedelta(days=7),
+        )
+        log_portail_event(
+            "rdv_creneau_pris", "refused",
+            invitation_id=inv_id, batch=batch, reason="slot_taken",
+        )
+        return
+
+    exp = max(slot_fin_dt + timedelta(days=1), now + timedelta(days=7))
+    if inv.get("rdv_mode") == "public":
+        demande = _read_json_blob(bucket, f"submissions/{inv_id}/demande.json") or {}
+        created = _creer_audience_retenue_portail(inv_id, inv, demande, slot_debut_dt, slot_fin_dt)
+        if not pi.mettre_a_jour_rdv(
+            inv_id,
+            statut="ouverte",
+            etat_rdv="a_confirmer",
+            hearing_id=created["id"],
+            slot_debut_utc=slot_debut_dt,
+            slot_fin_utc=slot_fin_dt,
+            expires_at=exp,
+        ):
+            raise RuntimeError("portail rdv invitation update failed")
+        disponibilites.rafraichir_disponibilites_best_effort()
+        log_portail_event("rdv_creneau_retenu", invitation_id=inv_id, batch=batch)
+        if pi.poser_accuse(inv_id, f"retenu_{batch}"):
+            label = inv.get("display_label") or inv.get("type_rdv_libelle") or "Consultation"
+            objet, corps = _corps_rdv_email(
+                "reception/_accuse_rdv_public.html",
+                f"Demande de rendez-vous reçue — {label}",
+                inv,
+                slot_debut_dt=slot_debut_dt,
+            )
+            _envoyer_courriel_rdv(
+                inv.get("email", ""), objet, corps, inv_id=inv_id, event_tag="rdv_reserver"
+            )
+        return
+
+    # Mode « invite » : confirmation immédiate + réunion Teams + DavX5
+    agenda_blob = _read_json_blob(bucket, f"submissions/{inv_id}/agenda.json") or {}
+    type_cle = str(inv.get("type_rdv_cle") or "")
+    reglages = get_rendez_vous_reglages()
+    htype = _hearing_type_for_rdv_cle(type_cle, reglages)
+    agenda = str(agenda_blob.get("ordre_du_jour") or "").strip() or (
+        default_agenda_for_hearing_type(reglages, htype)
+    )
+    points = str(payload.get("points_discussion") or "").strip()
+    dossier = get_dossier(inv["dossier_id"]) if inv.get("dossier_id") else None
+    partie = get_partie(inv["partie_id"]) if inv.get("partie_id") else None
+    client_nom = display_name(partie) if partie else str(inv.get("client_name") or "").strip()
+    libelle = str(inv.get("type_rdv_libelle") or inv.get("display_label") or "Rendez-vous").strip()
+    title = f"{libelle} — {client_nom}" if client_nom else libelle
+
+    join_url = ""
+    graph_event_id = ""
+    graph_ical_uid = ""
+    online_meeting_id = ""
+    options_appliquees = False
+    if Config.TEAMS_REUNIONS_ACTIF and Config.teams_configured():
+        try:
+            teams_res = graph_teams.creer_reunion_teams(
+                sujet=title,
+                debut_utc=slot_debut_dt,
+                fin_utc=slot_fin_dt,
+                ordre_du_jour=agenda,
+                courriels_invites=(inv.get("email", ""),),
+                points_discussion=points,
+                transaction_id=f"pallas-invite-{inv_id}-{batch}",
+            )
+        except (GraphError, GraphNotConfigured):
+            log_bookings_event(
+                "teams_reunion_erreur_graph",
+                "failure",
+                reason="invite_create_failed",
+            )
+            raise RuntimeError("portail rdv Teams meeting create failed")
+        join_url = teams_res["join_url"]
+        graph_event_id = teams_res["graph_event_id"]
+        graph_ical_uid = teams_res["graph_ical_uid"]
+        online_meeting_id = teams_res["online_meeting_id"]
+        options_appliquees = bool(teams_res["options_appliquees"])
+    elif Config.ENV == "production":
+        raise RuntimeError("Microsoft Teams integration required in production")
+
+    hearing_payload = {
+        "dossier_id": dossier["id"] if dossier else "",
+        "dossier_file_number": dossier.get("file_number", "") if dossier else "",
+        "dossier_title": dossier.get("title", "") if dossier else "",
+        "title": title,
+        "hearing_type": htype,
+        "start_datetime": slot_debut_dt,
+        "end_datetime": slot_fin_dt,
+        "all_day": False,
+        "modalite": "visioconférence",
+        "status": "confirmée",
+        "source": "portail",
+        "confirmation": "",
+        "conference_uri": join_url,
+        "graph_event_id": graph_event_id,
+        "graph_ical_uid": graph_ical_uid,
+        "online_meeting_id": online_meeting_id,
+        "teams_agenda": agenda,
+        "attendee_emails": [inv.get("email", "")] if inv.get("email") else [],
+        "transcript_status": "en_attente" if online_meeting_id else "",
+        "portail_invitation_id": inv_id,
+        "type_rdv_cle": type_cle,
+        "partie_id": inv.get("partie_id") or "",
+        "client_nom": client_nom,
+        "client_email": inv.get("email", ""),
+        "sujet_client": points,
+    }
+    created, errors = hearing_model.create_hearing(hearing_payload)
+    if errors or created is None:
+        raise RuntimeError("portail rdv confirmed hearing create failed")
+
+    bump_ctag(collection_for(created.get("dossier_id")))
+    if not pi.mettre_a_jour_rdv(
+        inv_id,
+        statut="ouverte",
+        etat_rdv="confirme",
+        hearing_id=created["id"],
+        slot_debut_utc=slot_debut_dt,
+        slot_fin_utc=slot_fin_dt,
+        dernier_report_echec="",
+        expires_at=exp,
+    ):
+        raise RuntimeError("portail rdv invitation confirm update failed")
+
+    disponibilites.rafraichir_disponibilites_best_effort()
+    log_bookings_event(
+        "teams_reunion_creee",
+        hearing_id=created["id"],
+        options_appliquees=options_appliquees,
+        invites_count=len(hearing_payload["attendee_emails"]),
+    )
+    log_portail_event("rdv_invite_confirme", invitation_id=inv_id, batch=batch)
+    if pi.poser_accuse(inv_id, f"conf_{batch}"):
+        objet, corps = _corps_rdv_email(
+            "reception/_confirmation_rdv_portail.html",
+            f"Rendez-vous confirmé — {libelle}",
+            inv,
+            slot_debut_dt=slot_debut_dt,
+        )
+        _envoyer_courriel_rdv(
+            inv.get("email", ""), objet, corps, inv_id=inv_id, event_tag="rdv_confirme"
+        )
+
+
+def _traiter_rdv_reporter(inv_id: str, batch: str) -> None:
+    inv = pi.lire_invitation_strict(inv_id)
+    if (
+        inv is None
+        or inv.get("type") != "rdv"
+        or inv.get("statut") == "révoquée"
+        or inv.get("etat_rdv") not in ("a_confirmer", "confirme")
+    ):
+        return
+    bucket = _bucket()
+    payload = _read_json_blob(bucket, f"submissions/{inv_id}/rdv_{batch}.json")
+    if payload is None:
+        return
+    new_debut_dt = rdv_validation._parse_utc(payload.get("slot_debut_utc"))
+    if new_debut_dt is None:
+        return
+    duree = int(inv.get("duree_minutes") or 30)
+    new_fin_dt = new_debut_dt + timedelta(minutes=duree)
+
+    hearing_id = str(inv.get("hearing_id") or "").strip()
+    hearing = hearing_model.get_hearing_strict(hearing_id) if hearing_id else None
+    if hearing is None:
+        return
+
+    cur_start = rdv_validation._parse_utc(hearing.get("start_datetime"))
+    if cur_start == new_debut_dt:
+        return
+
+    if not rdv_validation.est_modifiable_avant_preavis(inv):
+        pi.mettre_a_jour_rdv(
+            inv_id,
+            dernier_report_echec="Le délai minimal pour déplacer ce rendez-vous est dépassé.",
+        )
+        return
+
+    cur_end = rdv_validation._parse_utc(hearing.get("end_datetime"))
+    exclure_graph = (
+        (cur_start, cur_end)
+        if (hearing.get("graph_event_id") and cur_start and cur_end)
+        else None
+    )
+    libre, motif = disponibilites.verifier_creneau_libre_strict(
+        new_debut_dt,
+        duree,
+        exclure_hearing_id=hearing["id"],
+        exclure_graph_slot=exclure_graph,
+    )
+    if motif == "erreur_lecture":
+        raise RuntimeError("portail rdv availability check failed")
+    if not libre:
+        pi.mettre_a_jour_rdv(
+            inv_id,
+            dernier_report_echec=(
+                "Ce créneau vient d'être pris. Votre rendez-vous initial est maintenu."
+            ),
+        )
+        log_portail_event(
+            "rdv_creneau_pris", "refused",
+            invitation_id=inv_id, batch=batch, reason="reschedule_slot_taken",
+        )
+        return
+
+    if (
+        hearing.get("confirmation") == ""
+        and hearing.get("graph_event_id")
+        and Config.teams_configured()
+    ):
+        try:
+            graph_teams.modifier_reunion_teams(
+                hearing["graph_event_id"],
+                sujet=hearing.get("title") or "Rendez-vous",
+                debut_utc=new_debut_dt,
+                fin_utc=new_fin_dt,
+            )
+        except (GraphError, GraphNotConfigured):
+            log_bookings_event(
+                "teams_reunion_erreur_graph",
+                "failure",
+                hearing_id=hearing["id"],
+                reason="reschedule_failed",
+            )
+            raise RuntimeError("portail rdv Teams meeting update failed")
+        log_bookings_event("teams_reunion_modifiee", hearing_id=hearing["id"])
+
+    written, errs = hearing_model.update_hearing(
+        hearing["id"],
+        {"start_datetime": new_debut_dt, "end_datetime": new_fin_dt},
+    )
+    if errs or written is None:
+        raise RuntimeError("portail rdv hearing reschedule update failed")
+
+    if hearing.get("confirmation") == "":
+        bump_ctag(collection_for(written.get("dossier_id")))
+
+    exp = max(
+        new_fin_dt + timedelta(days=1),
+        datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    if not pi.mettre_a_jour_rdv(
+        inv_id,
+        slot_debut_utc=new_debut_dt,
+        slot_fin_utc=new_fin_dt,
+        dernier_report_echec="",
+        expires_at=exp,
+    ):
+        raise RuntimeError("portail rdv invitation reschedule update failed")
+
+    disponibilites.rafraichir_disponibilites_best_effort()
+    log_portail_event("rdv_reporte", invitation_id=inv_id, batch=batch)
+    if pi.poser_accuse(inv_id, f"report_{batch}"):
+        label = inv.get("display_label") or inv.get("type_rdv_libelle") or "Rendez-vous"
+        if inv.get("etat_rdv") == "confirme":
+            gabarit = "reception/_confirmation_rdv_portail.html"
+            objet = f"Rendez-vous déplacé (confirmé) — {label}"
+        else:
+            gabarit = "reception/_accuse_rdv_public.html"
+            objet = f"Créneau mis à jour (en attente de confirmation) — {label}"
+        objet, corps = _corps_rdv_email(
+            gabarit, objet, inv, slot_debut_dt=new_debut_dt
+        )
+        _envoyer_courriel_rdv(
+            inv.get("email", ""), objet, corps, inv_id=inv_id, event_tag="rdv_reporter"
+        )
+
+
+def _traiter_rdv_annuler(inv_id: str, batch: str) -> None:
+    inv = pi.lire_invitation_strict(inv_id)
+    if (
+        inv is None
+        or inv.get("type") != "rdv"
+        or inv.get("statut") == "révoquée"
+        or inv.get("etat_rdv") == "annule"
+    ):
+        return
+    if inv.get("etat_rdv") not in ("a_confirmer", "confirme"):
+        return
+    if not rdv_validation.est_modifiable_avant_preavis(inv):
+        pi.mettre_a_jour_rdv(
+            inv_id,
+            dernier_report_echec="Le délai minimal d'annulation en ligne est dépassé.",
+        )
+        return
+
+    hearing_id = str(inv.get("hearing_id") or "").strip()
+    hearing = hearing_model.get_hearing_strict(hearing_id) if hearing_id else None
+    slot_dt = rdv_validation._parse_utc(inv.get("slot_debut_utc"))
+    if slot_dt is None and hearing is not None:
+        slot_dt = rdv_validation._parse_utc(hearing.get("start_datetime"))
+
+    if hearing is not None:
+        if hearing.get("confirmation") == "":
+            if hearing.get("graph_event_id") and Config.teams_configured():
+                try:
+                    graph_teams.annuler_reunion_teams(
+                        hearing["graph_event_id"],
+                        motif="Rendez-vous annulé par le client via le portail.",
+                    )
+                except (GraphError, GraphNotConfigured):
+                    log_bookings_event(
+                        "teams_reunion_erreur_graph",
+                        "failure",
+                        hearing_id=hearing["id"],
+                        reason="cancel_failed",
+                    )
+                    raise RuntimeError("portail rdv Teams meeting cancel failed")
+                log_bookings_event("teams_reunion_annulee", hearing_id=hearing["id"])
+            written, errs = hearing_model.update_hearing(
+                hearing["id"], {"status": "annulée"}
+            )
+            if errs or written is None:
+                raise RuntimeError("portail rdv hearing cancel update failed")
+            bump_ctag(collection_for(written.get("dossier_id")))
+        else:
+            written, errs = hearing_model.update_hearing(
+                hearing["id"],
+                {"status": "annulée"},
+                server_fields={"confirmation": "annulée_client"},
+            )
+            if errs or written is None:
+                raise RuntimeError("portail rdv unconfirmed hearing cancel failed")
+
+    if not pi.mettre_a_jour_rdv(
+        inv_id,
+        statut="traitée",
+        etat_rdv="annule",
+        dernier_report_echec="",
+    ):
+        raise RuntimeError("portail rdv invitation cancel update failed")
+
+    disponibilites.rafraichir_disponibilites_best_effort()
+    log_portail_event("rdv_annule_client", invitation_id=inv_id, batch=batch)
+    if pi.poser_accuse(inv_id, f"annul_{batch or '1'}"):
+        label = inv.get("display_label") or inv.get("type_rdv_libelle") or "Rendez-vous"
+        objet, corps = _corps_rdv_email(
+            "reception/_annulation_rdv_portail.html",
+            f"Confirmation d'annulation — {label}",
+            inv,
+            slot_debut_dt=slot_dt,
+        )
+        _envoyer_courriel_rdv(
+            inv.get("email", ""), objet, corps, inv_id=inv_id, event_tag="rdv_annuler"
+        )
+
+
 # ── POST /taches/portail/evenement ───────────────────────────────────────
 
 
@@ -600,6 +1272,36 @@ def evenement():
             # (§8.3 : échec → lever, la reprise appartient à Cloud Tasks).
             # Graph non configuré : rien à réessayer, 200.
             raise RuntimeError("renvoi email send failed")
+        return jsonify({"ok": True})
+
+    if event == "rdv_demande":
+        _traiter_rdv_demande(inv_id, str(batch or inv_id))
+        return jsonify({"ok": True})
+
+    if event == "rdv_retenir":
+        _traiter_rdv_retenir(inv_id)
+        return jsonify({"ok": True})
+
+    if event == "rdv_reserver":
+        if not batch:
+            log_portail_event(
+                "tache_recue", "refused", invitation_id=inv_id, reason="no_batch",
+            )
+            return jsonify({"ok": False, "motif": "charge invalide"}), 200
+        _traiter_rdv_reserver(inv_id, str(batch))
+        return jsonify({"ok": True})
+
+    if event == "rdv_reporter":
+        if not batch:
+            log_portail_event(
+                "tache_recue", "refused", invitation_id=inv_id, reason="no_batch",
+            )
+            return jsonify({"ok": False, "motif": "charge invalide"}), 200
+        _traiter_rdv_reporter(inv_id, str(batch))
+        return jsonify({"ok": True})
+
+    if event == "rdv_annuler":
+        _traiter_rdv_annuler(inv_id, str(batch or "1"))
         return jsonify({"ok": True})
 
     # event == "soumise"

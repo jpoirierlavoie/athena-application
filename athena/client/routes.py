@@ -13,9 +13,11 @@ import json
 import logging
 import math
 import re
+import uuid
 from datetime import date, datetime, timezone
 
 from flask import (
+    current_app,
     g,
     jsonify,
     redirect,
@@ -40,9 +42,16 @@ from client.config import (
     PORTAIL_MAX_FILE_MB,
     PORTAIL_MAX_FILES,
     PORTAIL_MAX_TOTAL_MB,
+    PORTAIL_RDV_ACTIF,
     STATUTS_FERMES,
 )
-from client.services import invitations, stockage, taches
+from client.services import (
+    disponibilites,
+    invitations,
+    rdv_validation,
+    stockage,
+    taches,
+)
 from utils import occupations
 from utils.logging_setup import log_portail_event
 from utils.validators import normalize_email
@@ -69,6 +78,8 @@ _EXEMPT_ENDPOINTS = {
     "portail.creer_session",
     "portail.api_renvoi",
     "portail.sante",
+    "portail.page_rdv_public",
+    "portail.api_rdv_demander",
 }
 
 
@@ -133,6 +144,12 @@ _TYPE_REQUIS = {
     "portail.page_ouverture": "intake",
     "portail.api_intake_etape": "intake",
     "portail.api_intake_finaliser": "intake",
+    "portail.page_rendez_vous": "rdv",
+    "portail.api_rdv_etat": "rdv",
+    "portail.api_rdv_retenir": "rdv",
+    "portail.api_rdv_reserver": "rdv",
+    "portail.api_rdv_reporter": "rdv",
+    "portail.api_rdv_annuler": "rdv",
     "portail.confirmation": None,        # les deux files y aboutissent
 }
 
@@ -146,6 +163,10 @@ _ENDPOINTS_FINALISATION = (
     "portail.api_finaliser",
     "portail.api_intake_finaliser",
 )
+_ENDPOINTS_RDV_ETAT = (
+    "portail.page_rendez_vous",
+    "portail.api_rdv_etat",
+)
 
 # Page d'accueil de chaque file — après l'ouverture de session comme au retour
 # sur /entree. Un type inconnu n'a PAS de page : on rend l'écran de connexion
@@ -153,7 +174,12 @@ _ENDPOINTS_FINALISATION = (
 _PAGE_DU_TYPE = {
     "documents": "portail.page_documents",
     "intake": "portail.page_ouverture",
+    "rdv": "portail.page_rendez_vous",
 }
+
+
+def _rdv_actif() -> bool:
+    return bool(current_app.config.get("PORTAIL_RDV_ACTIF", PORTAIL_RDV_ACTIF))
 
 # Vocabulaire du formulaire d'ouverture. Volontairement en français et DISTINCT
 # des noms de champs du modèle des contacts : le portail ne connaît pas
@@ -242,6 +268,15 @@ def _garde():
     if request.endpoint in _ENDPOINTS_FINALISATION:
         if invitation.get("statut") in _STATUTS_TERMINAUX:
             return _refus("inactive")
+    elif request.endpoint in _ENDPOINTS_RDV_ETAT:
+        if (
+            invitation.get("etat_rdv") in ("annule", "refuse")
+            and invitation.get("statut") != "révoquée"
+            and not invitations.est_expiree(invitation)
+        ):
+            pass
+        elif not invitations.peut_televerser(invitation):
+            return _refus("inactive")
     elif not invitations.peut_televerser(invitation):
         return _refus("inactive")
     g.invitation = invitation
@@ -292,7 +327,11 @@ def entree():
             # — the one case where a new link IS the answer.
             if invitation.get("statut") == "soumise":
                 return redirect(url_for("portail.confirmation"))
-    return render_template("entree.html", invitation_id=demande)
+    return render_template(
+        "entree.html",
+        invitation_id=demande,
+        portail_rdv_actif=_rdv_actif(),
+    )
 
 
 @portail_bp.get("/sante")
@@ -385,7 +424,19 @@ def creer_session():
         session["batch"] = stockage.horodatage_utc_compact()
     log_portail_event("session_creee", invitation_id=inv_id)
 
-    if invitation.get("statut") == "envoyée":
+    if (
+        invitation.get("type") == "rdv"
+        and invitation.get("etat_rdv") == "en_attente_courriel"
+    ):
+        try:
+            taches.signaler("rdv_retenir", inv_id)
+        except Exception:
+            logger.exception("portal enqueue 'rdv_retenir' failed")
+            log_portail_event(
+                "tache_enfilage_echec", "failure",
+                invitation_id=inv_id, evenement="rdv_retenir",
+            )
+    elif invitation.get("statut") == "envoyée":
         try:
             taches.signaler("ouverte", inv_id)
         except Exception:
@@ -1012,3 +1063,324 @@ def api_intake_finaliser():
         adverses=len(adverses),
     )
     return jsonify({"ok": True, "suivant": url_for("portail.confirmation")})
+
+
+# ── Rendez-vous (Lot 2) ──────────────────────────────────────────────────
+
+
+def _firebase_page_config() -> dict:
+    return {
+        "siteKey": current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY", ""),
+        "apiKey": current_app.config.get("FIREBASE_API_KEY", ""),
+        "projectId": current_app.config.get("FIREBASE_PROJECT_ID", ""),
+        "appId": current_app.config.get("FIREBASE_APP_ID", ""),
+    }
+
+
+@portail_bp.get("/rdv")
+def page_rdv_public():
+    actif = _rdv_actif()
+    if not actif:
+        return render_template(
+            "rdv_public.html",
+            actif=False,
+            types_publics=[],
+            a_des_creneaux=False,
+            page_data={},
+        )
+    dispo = disponibilites.lire_disponibilites()
+    types_pub = disponibilites.types_publics(dispo)
+    durees = sorted({int(t["duree_minutes"]) for t in types_pub})
+    jours_par_duree = {
+        str(d): disponibilites.formater_creneaux_par_jour(dispo, d)
+        for d in durees
+    }
+    a_des_creneaux = any(bool(v) for v in jours_par_duree.values())
+    page_data = {
+        **_firebase_page_config(),
+        "types": types_pub,
+        "joursParDuree": jours_par_duree,
+    }
+    return render_template(
+        "rdv_public.html",
+        actif=True,
+        types_publics=types_pub,
+        a_des_creneaux=a_des_creneaux,
+        page_data=page_data,
+    )
+
+
+@portail_bp.post("/api/rdv/demander")
+@limiter.limit("5 per 15 minutes")
+def api_rdv_demander():
+    if not _rdv_actif():
+        return jsonify({
+            "erreur": "La prise de rendez-vous en ligne est momentanément désactivée."
+        }), 503
+    dispo = disponibilites.lire_disponibilites()
+    if dispo is None:
+        return jsonify({
+            "erreur": "Les disponibilités ne sont pas accessibles pour le moment."
+        }), 503
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    propre, erreur = rdv_validation.valider_demande_rdv_publique(payload, dispo)
+    if erreur or propre is None:
+        return jsonify({"erreur": erreur or "Requête invalide."}), 422
+
+    req_id = uuid.uuid4().hex
+    envelope = {
+        **propre,
+        "request_id": req_id,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        stockage.ecrire_objet_json(
+            f"submissions/_rdv_demande_{req_id}.json", envelope
+        )
+    except Exception:
+        logger.exception("portal rdv demand quarantine write failed")
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+
+    try:
+        taches.signaler("rdv_demande", req_id, batch=req_id)
+    except Exception:
+        logger.exception("portal enqueue 'rdv_demande' failed")
+        log_portail_event(
+            "tache_enfilage_echec", "failure",
+            invitation_id=req_id, batch=req_id, evenement="rdv_demande",
+        )
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+
+    log_portail_event("demande_rdv_recue", invitation_id=req_id)
+    return jsonify({"ok": True}), 202
+
+
+@portail_bp.get("/rendez-vous")
+def page_rendez_vous():
+    if not _rdv_actif():
+        return render_template(
+            "erreur.html",
+            message="La prise de rendez-vous en ligne est momentanément désactivée.",
+        ), 503
+    invitation = g.invitation
+    etat = invitation.get("etat_rdv") or ""
+    duree = int(invitation.get("duree_minutes") or 30)
+    slot_dt = rdv_validation._parse_utc(invitation.get("slot_debut_utc"))
+    slot_debut_iso = slot_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if slot_dt else ""
+    slot_label_fr = disponibilites.formater_jour_heure_mtl(slot_dt) if slot_dt else ""
+    jours: list[dict] = []
+    if etat in ("a_choisir", "creneau_pris", "a_confirmer", "confirme"):
+        dispo = disponibilites.lire_disponibilites()
+        jours = disponibilites.formater_creneaux_par_jour(dispo, duree)
+    modifiable = (
+        rdv_validation.est_modifiable_avant_preavis(invitation)
+        if etat in ("a_confirmer", "confirme")
+        else False
+    )
+    preavis_h = int(invitation.get("preavis_modification_heures") or 24)
+    page_data = {
+        **_firebase_page_config(),
+        "etat": etat,
+        "jours": jours,
+        "slotDebutUtc": slot_debut_iso,
+    }
+    return render_template(
+        "rendez_vous.html",
+        invitation=invitation,
+        jours=jours,
+        slot_label_fr=slot_label_fr,
+        modifiable=modifiable,
+        preavis_h=preavis_h,
+        page_data=page_data,
+    )
+
+
+@portail_bp.get("/api/rdv/etat")
+def api_rdv_etat():
+    invitation = g.invitation
+    slot_dt = rdv_validation._parse_utc(invitation.get("slot_debut_utc"))
+    return jsonify({
+        "etat_rdv": invitation.get("etat_rdv") or "",
+        "slot_debut_utc": slot_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if slot_dt else "",
+        "dernier_report_echec": invitation.get("dernier_report_echec") or "",
+    })
+
+
+@portail_bp.post("/api/rdv/retenir")
+def api_rdv_retenir():
+    if not _rdv_actif():
+        return jsonify({
+            "erreur": "La prise de rendez-vous en ligne est momentanément désactivée."
+        }), 503
+    invitation = g.invitation
+    inv_id = invitation["id"]
+    if invitation.get("etat_rdv") != "en_attente_courriel":
+        return jsonify({
+            "ok": True, "etat_rdv": invitation.get("etat_rdv") or ""
+        }), 200
+    try:
+        taches.signaler("rdv_retenir", inv_id)
+    except Exception:
+        logger.exception("portal enqueue 'rdv_retenir' failed")
+        log_portail_event(
+            "tache_enfilage_echec", "failure",
+            invitation_id=inv_id, evenement="rdv_retenir",
+        )
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+    return jsonify({"ok": True}), 202
+
+
+@portail_bp.post("/api/rdv/reserver")
+def api_rdv_reserver():
+    if not _rdv_actif():
+        return jsonify({
+            "erreur": "La prise de rendez-vous en ligne est momentanément désactivée."
+        }), 503
+    invitation = g.invitation
+    inv_id = invitation["id"]
+    if invitation.get("etat_rdv") not in ("a_choisir", "creneau_pris"):
+        return jsonify({"erreur": "Ce rendez-vous est déjà enregistré."}), 409
+    dispo = disponibilites.lire_disponibilites()
+    if dispo is None:
+        return jsonify({
+            "erreur": "Les disponibilités ne sont pas accessibles pour le moment."
+        }), 503
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    propre, erreur = rdv_validation.valider_reservation_rdv(payload, invitation, dispo)
+    if erreur or propre is None:
+        return jsonify({"erreur": erreur or "Requête invalide."}), 422
+
+    batch = f"{stockage.horodatage_utc_compact()}_{uuid.uuid4().hex[:8]}"
+    envelope = {
+        **propre,
+        "invitation_id": inv_id,
+        "batch": batch,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        stockage.ecrire_objet_json(
+            f"submissions/{inv_id}/rdv_{batch}.json", envelope
+        )
+    except Exception:
+        logger.exception("portal rdv reservation write failed")
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+    try:
+        taches.signaler("rdv_reserver", inv_id, batch=batch)
+    except Exception:
+        logger.exception("portal enqueue 'rdv_reserver' failed")
+        log_portail_event(
+            "tache_enfilage_echec", "failure",
+            invitation_id=inv_id, batch=batch, evenement="rdv_reserver",
+        )
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+    return jsonify({"ok": True}), 202
+
+
+@portail_bp.post("/api/rdv/reporter")
+def api_rdv_reporter():
+    if not _rdv_actif():
+        return jsonify({
+            "erreur": "La prise de rendez-vous en ligne est momentanément désactivée."
+        }), 503
+    invitation = g.invitation
+    inv_id = invitation["id"]
+    if invitation.get("etat_rdv") not in ("a_confirmer", "confirme"):
+        return jsonify({
+            "erreur": "Ce rendez-vous ne peut pas être déplacé dans son état actuel."
+        }), 409
+    if not rdv_validation.est_modifiable_avant_preavis(invitation):
+        return jsonify({
+            "erreur": "Le délai minimal pour déplacer ce rendez-vous en ligne est dépassé."
+        }), 422
+    dispo = disponibilites.lire_disponibilites()
+    if dispo is None:
+        return jsonify({
+            "erreur": "Les disponibilités ne sont pas accessibles pour le moment."
+        }), 503
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    propre, erreur = rdv_validation.valider_reservation_rdv(payload, invitation, dispo)
+    if erreur or propre is None:
+        return jsonify({"erreur": erreur or "Requête invalide."}), 422
+    ancien_dt = rdv_validation._parse_utc(invitation.get("slot_debut_utc"))
+    if ancien_dt and propre["slot_debut_utc"] == ancien_dt.strftime("%Y-%m-%dT%H:%M:%SZ"):
+        return jsonify({
+            "erreur": "Veuillez choisir un créneau différent de l'actuel."
+        }), 422
+
+    batch = f"{stockage.horodatage_utc_compact()}_{uuid.uuid4().hex[:8]}"
+    envelope = {
+        **propre,
+        "invitation_id": inv_id,
+        "batch": batch,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        stockage.ecrire_objet_json(
+            f"submissions/{inv_id}/rdv_{batch}.json", envelope
+        )
+    except Exception:
+        logger.exception("portal rdv reschedule write failed")
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+    try:
+        taches.signaler("rdv_reporter", inv_id, batch=batch)
+    except Exception:
+        logger.exception("portal enqueue 'rdv_reporter' failed")
+        log_portail_event(
+            "tache_enfilage_echec", "failure",
+            invitation_id=inv_id, batch=batch, evenement="rdv_reporter",
+        )
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+    return jsonify({"ok": True}), 202
+
+
+@portail_bp.post("/api/rdv/annuler")
+def api_rdv_annuler():
+    if not _rdv_actif():
+        return jsonify({
+            "erreur": "La prise de rendez-vous en ligne est momentanément désactivée."
+        }), 503
+    invitation = g.invitation
+    inv_id = invitation["id"]
+    if invitation.get("etat_rdv") not in ("a_confirmer", "confirme"):
+        return jsonify({
+            "erreur": "Ce rendez-vous ne peut pas être annulé dans son état actuel."
+        }), 409
+    if not rdv_validation.est_modifiable_avant_preavis(invitation):
+        return jsonify({
+            "erreur": "Le délai minimal pour annuler ce rendez-vous en ligne est dépassé."
+        }), 422
+
+    batch = f"{stockage.horodatage_utc_compact()}_{uuid.uuid4().hex[:8]}"
+    try:
+        taches.signaler("rdv_annuler", inv_id, batch=batch)
+    except Exception:
+        logger.exception("portal enqueue 'rdv_annuler' failed")
+        log_portail_event(
+            "tache_enfilage_echec", "failure",
+            invitation_id=inv_id, batch=batch, evenement="rdv_annuler",
+        )
+        return jsonify({
+            "erreur": "Service momentanément indisponible. Réessayez dans un instant."
+        }), 503
+    return jsonify({"ok": True}), 202

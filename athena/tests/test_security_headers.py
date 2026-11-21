@@ -185,7 +185,7 @@ def test_link_header_on_full_page_html():
     app = _make_app()
     resp = app.test_client().get("/")
     link = resp.headers.get("Link", "")
-    assert "</static/vendor/app.95c5ab20.css>; rel=preload; as=style" in link
+    assert "</static/vendor/app.315ce5cd.css>; rel=preload; as=style" in link
     # The font preload MUST keep `crossorigin` + its type — losing either
     # makes the browser fetch the woff2 twice (fonts are CORS-mode fetches).
     assert (

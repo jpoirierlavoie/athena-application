@@ -34,6 +34,11 @@ cron:
   schedule: every 15 minutes from 09:15 to 17:15
   timezone: America/Toronto
   target: default
+- description: disponibilites — synchronisation des créneaux vers le portail (Graph getSchedule + audiences Athéna)
+  url: /taches/disponibilites/sync
+  schedule: every 15 minutes from 09:03 to 17:03
+  timezone: America/Toronto
+  target: default
 - description: bookings — synchronisation « Bookings with me » (spec L2 §4.1)
   url: /taches/bookings/sync
   schedule: every 15 minutes from 09:05 to 17:05

@@ -282,7 +282,8 @@ def test_the_pure_modules_still_import_no_models():
     for rel in ("utils/graph.py", "utils/graph_calendrier.py",
                 "utils/graph_miroir.py", "utils/graph_teams.py",
                 "utils/courriel.py", "utils/integrations_defaults.py",
-                "utils/rendez_vous_defaults.py"):
+                "utils/rendez_vous_defaults.py",
+                "utils/disponibilites_math.py"):
         tree = ast.parse(io.open(_ROOT / rel, encoding="utf-8").read())
         for node in ast.walk(tree):
             mod = None

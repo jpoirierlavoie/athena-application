@@ -19,6 +19,7 @@ from config import Config
 from dav.sync import bump_ctag, collection_for, record_tombstone, relocate_resource
 from models.audit_event import record_deletion
 from security import safe_internal_redirect, sanitize
+from services import disponibilites
 from utils import graph_teams, recurrence
 from utils.deadlines import today_mtl
 from utils.graph import GraphError, GraphNotConfigured
@@ -755,6 +756,7 @@ def hearing_create() -> str:
             options_appliquees=bool(teams_res["options_appliquees"]),
             invites_count=len(parsed_emails),
         )
+        disponibilites.rafraichir_disponibilites_best_effort()
         if not teams_res["options_appliquees"]:
             return redirect_after_post(url_for(
                 "hearings.hearing_detail",
@@ -786,6 +788,7 @@ def hearing_create() -> str:
             frequence=frequence,
             ctag_bumped=True,
         )
+        disponibilites.rafraichir_disponibilites_best_effort()
         # Vers la chaîne elle-même : la seule façon de VOIR ce qui vient
         # d'être créé, et la vérification que le lot a fait ce qu'on a demandé.
         return redirect_after_post(url_for(
@@ -800,6 +803,7 @@ def hearing_create() -> str:
         return _reject(errors)
 
     bump_ctag(collection_for(hearing.get("dossier_id")))
+    disponibilites.rafraichir_disponibilites_best_effort()
 
     return redirect_after_post(return_to or url_for("hearings.hearing_list"))
 
@@ -913,10 +917,33 @@ def hearing_update(hearing_id: str) -> str:
         old_dossier_id=old_dossier_id,
         new_dossier_id=hearing.get("dossier_id"),
     )
+    disponibilites.rafraichir_disponibilites_best_effort()
 
     if (
         existing_hearing
-        and existing_hearing.get("source") == "athena_teams"
+        and existing_hearing.get("source") == "portail"
+        and existing_hearing.get("portail_invitation_id")
+    ):
+        from models import portail_invitation
+
+        inv_id = existing_hearing["portail_invitation_id"]
+        if hearing.get("status") == "annulée":
+            portail_invitation.mettre_a_jour_rdv(
+                inv_id, etat_rdv="annule", statut="révoquée"
+            )
+        elif (
+            hearing.get("start_datetime") != existing_hearing.get("start_datetime")
+            or hearing.get("end_datetime") != existing_hearing.get("end_datetime")
+        ):
+            portail_invitation.mettre_a_jour_rdv(
+                inv_id,
+                slot_debut_utc=hearing.get("start_datetime"),
+                slot_fin_utc=hearing.get("end_datetime"),
+            )
+
+    if (
+        existing_hearing
+        and existing_hearing.get("source") in ("athena_teams", "portail")
         and existing_hearing.get("graph_event_id")
         and Config.TEAMS_REUNIONS_ACTIF
         and Config.teams_configured()
@@ -1050,6 +1077,7 @@ def _delete_chain_from(hearing_id: str, hearing: dict, return_to: str) -> str:
         dossier_id=rows[0].get("dossier_id", ""),
         ctag_bumped=True,
     )
+    disponibilites.rafraichir_disponibilites_best_effort()
 
     return redirect_after_post(with_query(
         return_to or url_for("hearings.hearing_list"),
@@ -1148,17 +1176,34 @@ def hearing_delete(hearing_id: str) -> str:
             title=(existing_hearing or {}).get("title", ""),
             status=(existing_hearing or {}).get("status", ""),
         )
+        disponibilites.rafraichir_disponibilites_best_effort()
         if (
-            existing_hearing.get("source") == "athena_teams"
+            existing_hearing.get("source") == "portail"
+            and existing_hearing.get("portail_invitation_id")
+        ):
+            from models import portail_invitation
+
+            portail_invitation.mettre_a_jour_rdv(
+                existing_hearing["portail_invitation_id"],
+                etat_rdv="annule",
+                statut="révoquée",
+            )
+        if (
+            existing_hearing.get("source") in ("athena_teams", "portail")
             and existing_hearing.get("graph_event_id")
             and existing_hearing.get("status") != "annulée"
             and Config.TEAMS_REUNIONS_ACTIF
             and Config.teams_configured()
         ):
             try:
-                graph_teams.supprimer_reunion_teams(
-                    existing_hearing["graph_event_id"]
-                )
+                if existing_hearing.get("source") == "portail":
+                    graph_teams.annuler_reunion_teams(
+                        existing_hearing["graph_event_id"]
+                    )
+                else:
+                    graph_teams.supprimer_reunion_teams(
+                        existing_hearing["graph_event_id"]
+                    )
                 log_bookings_event(
                     "teams_reunion_annulee", hearing_id=hearing_id
                 )

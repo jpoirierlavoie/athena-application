@@ -1,0 +1,26 @@
+{# Confirmation ou report confirmé d'un rendez-vous Teams (portail Lot 2). #}
+<p>Bonjour,</p>
+
+<p>Votre rendez-vous est confirmé en visioconférence Microsoft Teams&nbsp;:</p>
+
+<p><strong>{{ display_label }}</strong><br>
+Date et heure&nbsp;: {{ quand_fr }}{% if duree_minutes %} ({{ duree_minutes }} minutes){% endif %}</p>
+
+<p>L'invitation calendrier contenant votre lien de connexion Teams et
+l'ordre du jour vous est transmise séparément par courriel.</p>
+
+<p><em>Avis : la transcription et la prise de notes assistée par
+intelligence artificielle (Microsoft Teams) peuvent être utilisées lors de
+cette rencontre, sous réserve de votre confirmation en début d'appel.</em></p>
+
+<p>Si vous devez déplacer ou annuler ce rendez-vous (au moins {{ preavis_h }}&nbsp;h
+avant la rencontre), utilisez le lien sécurisé&nbsp;:
+<a href="{{ url_secours }}">{{ url_secours }}</a>.</p>
+
+{% if firm_name or firm_phone or firm_email %}
+<p>
+  {%- if firm_name %}{{ firm_name }}{% endif %}
+  {%- if firm_phone %}{% if firm_name %}<br>{% endif %}{{ firm_phone }}{% endif %}
+  {%- if firm_email %}{% if firm_name or firm_phone %}<br>{% endif %}{{ firm_email }}{% endif %}
+</p>
+{% endif %}

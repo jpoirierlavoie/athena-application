@@ -37,6 +37,12 @@
          la durée avant l'envoi. #}
       {% set courriel_invitation = partie.email or partie.email_work %}
       {% if courriel_invitation %}
+      <a href="{{ url_for('reception.inviter_form', type='rdv', partie_id=partie.id) }}"
+         title="Inviter à planifier un rendez-vous"
+         aria-label="Inviter à planifier un rendez-vous"
+         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('calendar_month', 20) }}
+      </a>
       <a href="{{ url_for('reception.inviter_form', type='intake', partie_id=partie.id) }}"
          title="Inviter à compléter le dossier client"
          aria-label="Inviter à compléter le dossier client"

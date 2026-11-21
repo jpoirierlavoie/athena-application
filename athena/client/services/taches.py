@@ -27,7 +27,16 @@ from utils.logging_setup import log_portail_event
 
 logger = logging.getLogger(__name__)
 
-EVENEMENTS = ("ouverte", "soumise", "renvoi")
+EVENEMENTS = (
+    "ouverte",
+    "soumise",
+    "renvoi",
+    "rdv_demande",
+    "rdv_retenir",
+    "rdv_reserver",
+    "rdv_reporter",
+    "rdv_annuler",
+)
 
 
 @lru_cache(maxsize=1)

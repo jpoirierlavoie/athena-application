@@ -1,0 +1,18 @@
+{# Invitation à choisir un créneau de rendez-vous (portail RDV Lot 2). #}
+<p>Bonjour,</p>
+
+<p>Nous vous invitons à choisir le moment qui vous convient pour votre
+rencontre (<strong>{{ display_label }}</strong>{% if duree_minutes %}, {{ duree_minutes }} minutes{% endif %})
+en ouvrant le lien sécurisé suivant&nbsp;:
+<a href="{{ lien }}">choisir un créneau</a>.</p>
+
+<p>La rencontre se tiendra en visioconférence sur Microsoft Teams. Une fois
+le créneau sélectionné, vous recevrez l'invitation calendrier avec le lien
+de connexion Teams ainsi que la possibilité de reporter ou d'annuler le
+rendez-vous en ligne selon le préavis indiqué.</p>
+
+<p><em>Avis : la transcription et la prise de notes assistée par
+intelligence artificielle (Microsoft Teams) peuvent être utilisées lors de
+cette rencontre, sous réserve de votre confirmation en début d'appel.</em></p>
+
+{% include "reception/_invitation_pied.html" %}

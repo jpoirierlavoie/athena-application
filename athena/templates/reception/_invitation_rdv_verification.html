@@ -1,0 +1,15 @@
+{# Vérification de courriel pour une demande publique sur /rdv (portail Lot 2). #}
+<p>Bonjour,</p>
+
+<p>Vous avez effectué une demande de rendez-vous sur notre portail
+(<strong>{{ display_label }}</strong>{% if quand_rdv %}, créneau souhaité le {{ quand_rdv }}{% endif %}).</p>
+
+<p>Pour confirmer votre adresse courriel et retenir ce créneau auprès du
+cabinet, cliquez sur le lien sécurisé suivant&nbsp;:
+<a href="{{ lien }}">vérifier mon courriel et retenir le créneau</a>.</p>
+
+<p>Tant que cette vérification n'est pas effectuée, le créneau demeure libre.
+Le dépôt d'une demande ne crée aucune relation avocat-client avant
+vérification des conflits d'intérêts et confirmation écrite du cabinet.</p>
+
+{% include "reception/_invitation_pied.html" %}

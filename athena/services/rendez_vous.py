@@ -30,8 +30,9 @@ make it two ways:
   a SUCCESS carrying a warning (``graph_cancelled`` True), never an error.
   A refusal bumps no CTag: a pending import was never in DAV.
 
-The intake-invitation email (L3's trigger (a)) is NOT here: it stays in
-``routes/reception.rdv_confirmer``, which alone sends it.
+The intake-invitation email (L3's trigger (a)) and the portal refusal email
+(Lot 2) stay OUT of this service (``routes/reception.rdv_confirmer`` /
+``rdv_refuser``), so no MCP-reachable service ever imports ``utils.courriel``.
 
 Provenance (``updated_via``) comes from the writer's context
 (``models.provenance``) — the request's blueprint or the connector's
@@ -55,9 +56,14 @@ from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombsto
 from models import concurrency, provenance
 from models import hearing as hearing_model
 from models import partie as partie_model
-from utils import cron_schedule, graph_calendrier
+from models import portail_invitation
+from models.rendez_vous_reglages import get_rendez_vous_reglages
+from security import sanitize
+from services import disponibilites
+from utils import cron_schedule, graph_calendrier, graph_teams
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_bookings_event, log_unexpected
+from utils.rendez_vous_defaults import AGENDA_MAX, default_agenda_for_hearing_type
 
 # The text Graph carries into the cancellation the CLIENT receives. Fixed:
 # the connector's first message to a third party is a sentence the lawyer
@@ -170,6 +176,14 @@ def _bookings(*, include_confirmed: bool) -> list[dict]:
         raise LectureImpossible() from exc
 
 
+def _rendez_vous_en_attente() -> list[dict]:
+    try:
+        return hearing_model.list_rendez_vous_strict(include_confirmed=False)
+    except Exception as exc:
+        log_unexpected("rendez-vous: strict read failed")
+        raise LectureImpossible() from exc
+
+
 def _chronologique(rows: list[dict]) -> list[dict]:
     """Oldest start first — the order the tab always showed (the reader is
     unordered; ``list_hearings`` used to sort for it)."""
@@ -179,10 +193,10 @@ def _chronologique(rows: list[dict]) -> list[dict]:
 
 
 def lister_en_attente() -> list[dict]:
-    """The imports awaiting a decision — ``à_confirmer`` and
+    """The imports/requests awaiting a decision — ``à_confirmer`` and
     ``annulée_client`` — chronological, each carrying the contact
     :func:`confirmer` would link. Raises :class:`LectureImpossible`."""
-    rows = _chronologique(_bookings(include_confirmed=False))
+    rows = _chronologique(_rendez_vous_en_attente())
     if rows:
         lier_parties(rows, index_parties_par_courriel())
     return rows
@@ -204,15 +218,15 @@ def lister_divergences() -> list[dict]:
 
 
 def _read(hid: str) -> tuple[Optional[dict], list[str]]:
-    """The stored import, read strictly. ``get_hearing`` is fail-open: a
-    blip would have answered « introuvable » to a decision about a live
+    """The stored import/request, read strictly. ``get_hearing`` is fail-open:
+    a blip would have answered « introuvable » to a decision about a live
     reservation."""
     try:
         hearing = hearing_model.get_hearing_strict(hid)
     except Exception:
         log_unexpected("rendez-vous: hearing read failed")
         return None, [hearing_model.CONFIRMATION_READ_ERROR]
-    if not hearing or hearing.get("source") != "bookings":
+    if not hearing or hearing.get("source") not in hearing_model.RDV_SOURCES:
         return None, ["Rendez-vous introuvable."]
     return hearing, []
 
@@ -228,9 +242,7 @@ def _guard(hearing: dict, expected_etag: Optional[str]) -> str:
 
 def _enter_dav(hearing: dict, hid: str) -> bool:
     """The confirmed event enters its DAV collection (``""`` → « Général »
-    for a Bookings import): drop any stale tombstone, bump. After the
-    commit, so never raised — a raise would report a committed
-    confirmation as a failure."""
+    for a Bookings/portail import): drop any stale tombstone, bump."""
     try:
         name = collection_for(hearing.get("dossier_id"))
         remove_tombstone(name, hid)
@@ -256,24 +268,30 @@ def _leave_dav(hearing: dict, hid: str) -> bool:
         return False
 
 
+def _maj_portail_rdv(hearing: dict, **fields) -> None:
+    inv_id = (hearing.get("portail_invitation_id") or "").strip()
+    if not inv_id:
+        return
+    try:
+        portail_invitation.mettre_a_jour_rdv(inv_id, **fields)
+    except Exception:
+        log_unexpected("rendez-vous: portail invitation status sync failed",
+                       invitation_id=inv_id)
+
+
 def confirmer(
     hid: str,
     *,
     lier_partie: bool,
     expected_etag: Optional[str] = None,
+    teams_agenda: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], dict]:
-    """Confirm a pending import: it enters the calendar and DAV.
+    """Confirm a pending Bookings or portal request: enters Calendar + DAV.
 
-    ``lier_partie``: link the contact whose address is the requester's,
-    EXACTLY — matched here, on a strict read. Asked for but impossible (no
-    address, no such contact, contacts unreadable) → refused, nothing
-    written: linking the wrong contact, or silently none, is worse than
-    asking the lawyer to reload. ``expected_etag``: the version the caller
-    was shown (the sync may since have moved the slot — confirming would
-    then confirm a time nobody saw).
-
-    Report: ``changed`` (False when already confirmed — a replay writes
-    nothing), ``partie_liee``, ``partie_id``, ``dav_synced``, ``warning``.
+    For ``source == "portail"``, validates/normalizes *teams_agenda*, creates
+    the Graph Teams meeting (sending the invite to ``client_email``), commits
+    the confirmed status/URLs, syncs the portal invitation and availability
+    snapshot, and bumps DavX5 CTag.
     """
     report = {"changed": False, "partie_liee": False, "partie_id": "",
               "dav_synced": False, "warning": ""}
@@ -282,9 +300,6 @@ def confirmer(
         return None, errors, report
     etat = hearing.get("confirmation") or ""
     if etat == "":
-        # Already confirmed: answered BEFORE the version check, whatever
-        # etag is given — there is no decision to lose, and a double click
-        # (or a replay) must read « déjà confirmé », not « a changé ».
         report["dav_synced"] = True
         return hearing, [], report
     if not concurrency.matches(hearing, expected_etag):
@@ -306,22 +321,119 @@ def confirmer(
             return None, [AUCUN_CONTACT], report
         partie_id = partie["id"]
 
-    # Without a caller version, compare-and-set against the one read HERE:
-    # the transition rules above were judged on it, and the sync may flip
-    # the import to annulée_client in between.
+    is_portail = hearing.get("source") == "portail"
+    extra_fields: Optional[dict] = None
+    commit_etag: Optional[str] = _guard(hearing, expected_etag)
+    warnings: list[str] = []
+
+    if is_portail:
+        if not (Config.TEAMS_REUNIONS_ACTIF and Config.teams_configured()):
+            return None, [
+                "La création automatique de réunions Microsoft Teams est "
+                "désactivée ou incomplète (vérifiez Paramètres → Rendez-vous). "
+                "Rien n'a été confirmé."
+            ], report
+        raw_agenda = (
+            teams_agenda if teams_agenda is not None
+            else (hearing.get("teams_agenda") or "")
+        )
+        agenda = raw_agenda.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not agenda:
+            agenda = default_agenda_for_hearing_type(
+                get_rendez_vous_reglages(), hearing.get("hearing_type", "")
+            )
+        if (
+            len(agenda) > AGENDA_MAX
+            or "<" in agenda
+            or ">" in agenda
+            or sanitize(agenda, max_length=AGENDA_MAX) != agenda
+        ):
+            return None, [
+                "L'ordre du jour minuté contient des chevrons (< ou >) ou "
+                f"dépasse {AGENDA_MAX} caractères."
+            ], report
+
+        client_email = str(hearing.get("client_email") or "").strip()
+        invites = (client_email,) if client_email else ()
+        try:
+            teams_res = graph_teams.creer_reunion_teams(
+                sujet=hearing.get("title") or "Consultation",
+                debut_utc=hearing["start_datetime"],
+                fin_utc=hearing["end_datetime"],
+                ordre_du_jour=agenda,
+                courriels_invites=invites,
+                points_discussion=hearing.get("sujet_client", ""),
+                transaction_id=f"pallas-confirm-{hid}",
+            )
+        except (GraphError, GraphNotConfigured):
+            log_bookings_event(
+                "teams_reunion_erreur_graph",
+                "failure",
+                hearing_id=hid,
+                reason="create_failed",
+            )
+            return None, [
+                "Impossible de créer la réunion Microsoft Teams auprès de "
+                "Microsoft Graph (vérifiez Paramètres → Rendez-vous). "
+                "Rien n'a été confirmé."
+            ], report
+
+        extra_fields = {
+            "status": "confirmée",
+            "conference_uri": teams_res["join_url"],
+            "graph_event_id": teams_res["graph_event_id"],
+            "graph_ical_uid": teams_res["graph_ical_uid"],
+            "online_meeting_id": teams_res["online_meeting_id"],
+            "teams_agenda": agenda,
+            "attendee_emails": list(invites),
+            "transcript_status": (
+                "en_attente" if teams_res["online_meeting_id"] else ""
+            ),
+        }
+        commit_etag = None  # Teams invite already committed externally
+        if not teams_res["options_appliquees"]:
+            warnings.append(
+                "Les options de transcription et de salle d'attente n'ont "
+                "pas pu être appliquées (vérifiez la politique Teams)."
+            )
+
     written, errors, _previous = hearing_model.set_bookings_confirmation(
-        hid, "", partie_id=partie_id, expected_etag=_guard(hearing, expected_etag),
+        hid,
+        "",
+        partie_id=partie_id,
+        expected_etag=commit_etag,
+        extra_fields=extra_fields,
     )
     if errors:
         return None, errors, report
-    report.update(changed=True, partie_liee=partie_id is not None,
-                  partie_id=partie_id or "")
+
+    report.update(
+        changed=True,
+        partie_liee=partie_id is not None,
+        partie_id=partie_id or "",
+    )
     report["dav_synced"] = _enter_dav(written, hid)
     if not report["dav_synced"]:
-        report["warning"] = SYNCHRO_NON_AVERTIE
-    log_bookings_event("reception_rdv_confirme", hearing_id=hid,
-                       partie_liee=report["partie_liee"],
-                       via=provenance.current_via())
+        warnings.append(SYNCHRO_NON_AVERTIE)
+    if warnings:
+        report["warning"] = " ".join(warnings)
+    if is_portail:
+        log_bookings_event(
+            "teams_reunion_creee",
+            hearing_id=hid,
+            options_appliquees=bool(
+                extra_fields and not any("transcription" in w for w in warnings)
+            ),
+            invites_count=len(extra_fields.get("attendee_emails") or []) if extra_fields else 0,
+        )
+        _maj_portail_rdv(written, etat_rdv="confirme")
+        disponibilites.rafraichir_disponibilites_best_effort()
+    log_bookings_event(
+        "reception_rdv_confirme",
+        hearing_id=hid,
+        partie_liee=report["partie_liee"],
+        via=provenance.current_via(),
+    )
     return written, [], report
 
 
@@ -330,76 +442,42 @@ def refuser(
     *,
     expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], dict]:
-    """Refuse a pending import (or remove one the client cancelled).
-
-    Order, and why:
-
-    1. read strictly; an import already refused is answered at once (no
-       write, never a second Graph call); otherwise the caller's version is
-       compared FIRST — a stale page is refused before anything leaves the
-       building;
-    2. for a still-active ``à_confirmer`` import with a Graph event, the
-       Outlook meeting is cancelled with :data:`REFUS_MOTIF` (the client is
-       notified). An ``annulée_client`` import is already cancelled on the
-       client's side: Graph is not called (it would 404). A still-active
-       import Outlook CANNOT be asked about (Graph unconfigured, no event
-       id) is refused locally with :data:`ANNULATION_OUTLOOK_NON_TENTEE` —
-       its client is still booked, and a bare « refusé » would hide that;
-    3. the refusal is written. After a Graph call it is UNCONDITIONAL (no
-       etag): the external effect happened, and the refusal is the truth
-       whatever landed meanwhile — if another tab confirmed the import in
-       between, the confirmed event is tombstoned out of DAV. Without a
-       Graph call the write is guarded — by ``expected_etag``, or by the
-       version read in step 1.
-
-    A local failure after a SUCCESSFUL cancellation is retried once, then
-    reported as success with :data:`REFUS_NON_INSCRIT` — never an error a
-    caller would retry into a second Graph call.
-
-    Report: ``changed``, ``graph_attempted``, ``graph_cancelled``,
-    ``local_written``, ``warning``, and the two keys of the race in step 3
-    — ``confirmed_meanwhile`` (the write replaced a confirmation another
-    tab made during the Graph call) and ``dav_left`` (its tombstone and
-    bump both succeeded, so the phone drops the event). A caller that
-    reports « no collection concerned » for a refusal would otherwise say
-    so about the one refusal that DID touch one (lot 1b, L7 review).
-    """
+    """Refuse a pending Bookings or portal import (or retire cancelled card)."""
     report = {"changed": False, "graph_attempted": False,
               "graph_cancelled": False, "local_written": False,
               "confirmed_meanwhile": False, "dav_left": False,
-              "warning": ""}
+              "envoyer_refus_portail": False, "warning": ""}
     hearing, errors = _read(hid)
     if errors:
         return None, errors, report
     etat = hearing.get("confirmation") or ""
     if etat == "refusée":
-        # Already refused: answered before the version check (see
-        # confirmer) — and, above all, never a second Graph call.
         return hearing, [], report
     if not concurrency.matches(hearing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR], report
     if etat == "":
         return None, [DEJA_CONFIRME_NE_SE_REFUSE_PLUS], report
 
+    is_portail = hearing.get("source") == "portail"
     gid = hearing.get("graph_event_id")
-    # Why Outlook was NOT asked about a live import that needed it — None
-    # when it was asked, or did not need to be (annulée_client).
     non_tente: Optional[str] = None
-    if etat == "à_confirmer" and not (gid and Config.bookings_configured()):
-        non_tente = "not_configured" if gid else "sans_evenement"
-        report["warning"] = ANNULATION_OUTLOOK_NON_TENTEE
-    elif etat == "à_confirmer":
-        report["graph_attempted"] = True
-        try:
-            graph_calendrier.annuler_reservation(gid, REFUS_MOTIF)
-            report["graph_cancelled"] = True
-        except (GraphError, GraphNotConfigured):
-            log_unexpected("rendez-vous: graph cancel failed", hearing_id=hid)
-            report["warning"] = ANNULATION_OUTLOOK_ECHOUEE
-        except Exception:
-            log_unexpected("rendez-vous: graph cancel raised unexpectedly",
-                           hearing_id=hid)
-            report["warning"] = ANNULATION_OUTLOOK_INCERTAINE
+
+    if not is_portail:
+        if etat == "à_confirmer" and not (gid and Config.bookings_configured()):
+            non_tente = "not_configured" if gid else "sans_evenement"
+            report["warning"] = ANNULATION_OUTLOOK_NON_TENTEE
+        elif etat == "à_confirmer":
+            report["graph_attempted"] = True
+            try:
+                graph_calendrier.annuler_reservation(gid, REFUS_MOTIF)
+                report["graph_cancelled"] = True
+            except (GraphError, GraphNotConfigured):
+                log_unexpected("rendez-vous: graph cancel failed", hearing_id=hid)
+                report["warning"] = ANNULATION_OUTLOOK_ECHOUEE
+            except Exception:
+                log_unexpected("rendez-vous: graph cancel raised unexpectedly",
+                               hearing_id=hid)
+                report["warning"] = ANNULATION_OUTLOOK_INCERTAINE
 
     guard = None if report["graph_attempted"] else _guard(hearing, expected_etag)
     written, errors, previous = hearing_model.set_bookings_confirmation(
@@ -422,10 +500,12 @@ def refuser(
 
     report.update(changed=True, local_written=True)
     if previous == "":
-        # Confirmed by another tab between our read and the cancellation:
-        # it had entered DAV, and must leave it.
         report["confirmed_meanwhile"] = True
         report["dav_left"] = _leave_dav(written, hid)
+    if is_portail:
+        report["envoyer_refus_portail"] = previous == "à_confirmer"
+        _maj_portail_rdv(written, etat_rdv="refuse", statut="refusée")
+        disponibilites.rafraichir_disponibilites_best_effort()
     failed = report["graph_attempted"] and not report["graph_cancelled"]
     reason = "graph_error" if failed else non_tente
     log_bookings_event(

@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+{% block title %}Prendre rendez-vous — Portail sécurisé{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+  <h2 class="text-base font-semibold text-gray-900">Demander un rendez-vous</h2>
+  <p class="mt-1 text-sm text-gray-500">
+    Rencontre en visioconférence Microsoft Teams. La confirmation finale a lieu
+    après vérification de votre adresse courriel et contrôle des conflits
+    d'intérêts.
+  </p>
+
+  {% if not actif %}
+  <div class="mt-5 px-4 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    La prise de rendez-vous en ligne est momentanément désactivée.
+    {% if firm_phone %}Joignez-nous au {{ firm_phone }}.{% endif %}
+  </div>
+  {% elif not types_publics or not a_des_creneaux %}
+  <div class="mt-5 px-4 py-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg">
+    Aucune disponibilité en ligne n'est affichée pour le moment.
+    {% if firm_phone %}Veuillez communiquer avec le cabinet au {{ firm_phone }}.{% endif %}
+  </div>
+  {% else %}
+  <div id="rdv-formulaire" class="mt-5 space-y-5">
+    <p id="rdv-erreur" class="hidden px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg" role="alert"></p>
+
+    <div>
+      <label for="type-rdv" class="block text-sm font-medium text-gray-700 mb-1">Type de rendez-vous</label>
+      <select id="type-rdv"
+              class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        {% for t in types_publics %}
+        <option value="{{ t.cle }}">{{ t.libelle }} ({{ t.duree_minutes }} minutes)</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label for="jour-rdv" class="block text-sm font-medium text-gray-700 mb-1">Date souhaitée</label>
+      <select id="jour-rdv"
+              class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"></select>
+    </div>
+
+    <div>
+      <span class="block text-sm font-medium text-gray-700 mb-2">Heure (heure de Montréal) <span class="text-red-500">*</span></span>
+      <div id="liste-creneaux" class="grid grid-cols-2 sm:grid-cols-3 gap-2"></div>
+      <p id="aucun-creneau" class="hidden text-xs text-gray-500">Aucun créneau disponible pour ce type.</p>
+    </div>
+
+    <div class="space-y-4 pt-2 border-t border-gray-100">
+      <div>
+        <label for="nom-complet" class="block text-sm font-medium text-gray-700 mb-1">Nom complet <span class="text-red-500">*</span></label>
+        <input id="nom-complet" type="text" maxlength="150" autocomplete="name"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="courriel" class="block text-sm font-medium text-gray-700 mb-1">Adresse courriel <span class="text-red-500">*</span></label>
+        <input id="courriel" type="email" maxlength="254" autocomplete="email"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="telephone" class="block text-sm font-medium text-gray-700 mb-1">Téléphone <span class="text-red-500">*</span></label>
+        <input id="telephone" type="tel" maxlength="40" autocomplete="tel"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="parties-adverses" class="block text-sm font-medium text-gray-700 mb-1">Nom de l'autre partie concernée</label>
+        <textarea id="parties-adverses" rows="2" maxlength="1500"
+                  placeholder="Un nom ou une entreprise par ligne"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+        <label class="mt-2 inline-flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+          <input id="aucune-adverse" type="checkbox" class="rounded border-gray-300">
+          Aucune partie adverse (p. ex. conseil préventif ou révision de contrat)
+        </label>
+      </div>
+      <div>
+        <label for="sujet" class="block text-sm font-medium text-gray-700 mb-1">Sujet général <span class="text-red-500">*</span></label>
+        <textarea id="sujet" rows="2" maxlength="300"
+                  placeholder="p. ex. Litige commercial, vice caché, révision de bail"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+        <p class="mt-1 text-xs text-gray-500">
+          N'inscrivez aucun fait détaillé ni renseignement confidentiel dans ce formulaire.
+        </p>
+      </div>
+    </div>
+
+    <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 space-y-1">
+      <p>
+        La soumission de cette demande ne crée aucune relation avocat-client avant
+        vérification des conflits d'intérêts et confirmation écrite du cabinet.
+      </p>
+      <p>
+        La transcription et la prise de notes assistée par intelligence
+        artificielle (Microsoft Teams) peuvent être utilisées lors de la rencontre,
+        sous réserve de votre accord en début d'appel.
+      </p>
+    </div>
+
+    <button id="btn-soumettre" type="button"
+            class="w-full min-h-[44px] bg-gray-900 text-white rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-gray-800 disabled:opacity-50">
+      Vérifier mon courriel pour réserver
+    </button>
+  </div>
+
+  <div id="rdv-succes" class="hidden mt-5 space-y-3 text-center">
+    <p class="text-sm font-semibold text-green-800 bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+      Demande reçue — vérifiez votre boîte de réception.
+    </p>
+    <p class="text-sm text-gray-600">
+      Si la demande est recevable, un courriel contenant votre lien de
+      vérification vient d'être envoyé. Cliquez sur ce lien pour retenir le
+      créneau choisi.
+    </p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if actif and types_publics and a_des_creneaux %}
+{% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+<script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
+{% endif %}
+{% if config.ENV == 'development' %}
+<script nonce="{{ csp_nonce }}">
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ (config.APPCHECK_DEBUG_TOKEN or true)|tojson }};
+</script>
+{% endif %}
+<script id="rdv-public-data" type="application/json">{{ page_data|tojson }}</script>
+<script nonce="{{ csp_nonce }}">
+  'use strict';
+  (function () {
+    var dataEl = document.getElementById('rdv-public-data');
+    if (!dataEl) { return; }
+    var cfg = JSON.parse(dataEl.textContent || '{}');
+    var jetonCsrf = document.querySelector('meta[name="csrf-token"]').content;
+    if (cfg.siteKey && window.firebase) {
+      firebase.initializeApp({
+        apiKey: cfg.apiKey || '',
+        projectId: cfg.projectId || '',
+        appId: cfg.appId || ''
+      });
+      firebase.appCheck().activate(
+        new firebase.appCheck.ReCaptchaEnterpriseProvider(cfg.siteKey), true
+      );
+    }
+
+    async function enTetesFetch() {
+      var h = { 'Content-Type': 'application/json', 'X-CSRFToken': jetonCsrf };
+      if (cfg.siteKey && window.firebase) {
+        try {
+          var t = await firebase.appCheck().getToken(false);
+          h['X-Firebase-AppCheck'] = t.token;
+        } catch (e) { /* le serveur tranchera */ }
+      }
+      return h;
+    }
+
+    var selType = document.getElementById('type-rdv');
+    var selJour = document.getElementById('jour-rdv');
+    var grille = document.getElementById('liste-creneaux');
+    var aucun = document.getElementById('aucun-creneau');
+    var errEl = document.getElementById('rdv-erreur');
+    var btn = document.getElementById('btn-soumettre');
+    var slotChoisi = '';
+
+    function montrerErreur(msg) {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+    }
+
+    function joursPourType() {
+      var t = (cfg.types || []).find(function (x) { return x.cle === selType.value; });
+      if (!t) { return []; }
+      return (cfg.joursParDuree || {})[String(t.duree_minutes)] || [];
+    }
+
+    function remplirCreneaux() {
+      grille.textContent = '';
+      slotChoisi = '';
+      var jours = joursPourType();
+      var jour = jours.find(function (j) { return j.jour_iso === selJour.value; }) || jours[0];
+      if (!jour || !jour.creneaux.length) {
+        aucun.classList.remove('hidden');
+        return;
+      }
+      aucun.classList.add('hidden');
+      jour.creneaux.forEach(function (c) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = c.heure_label;
+        b.dataset.utc = c.utc;
+        b.className = 'min-h-[44px] px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50';
+        b.addEventListener('click', function () {
+          slotChoisi = c.utc;
+          grille.querySelectorAll('button').forEach(function (other) {
+            var actif = other.dataset.utc === slotChoisi;
+            other.classList.toggle('bg-gray-900', actif);
+            other.classList.toggle('text-white', actif);
+            other.classList.toggle('border-gray-900', actif);
+            other.classList.toggle('text-gray-700', !actif);
+          });
+        });
+        grille.appendChild(b);
+      });
+    }
+
+    function remplirJours() {
+      selJour.textContent = '';
+      var jours = joursPourType();
+      jours.forEach(function (j) {
+        var opt = document.createElement('option');
+        opt.value = j.jour_iso;
+        opt.textContent = j.jour_label;
+        selJour.appendChild(opt);
+      });
+      remplirCreneaux();
+    }
+
+    selType.addEventListener('change', remplirJours);
+    selJour.addEventListener('change', remplirCreneaux);
+    document.getElementById('aucune-adverse').addEventListener('change', function (e) {
+      var ta = document.getElementById('parties-adverses');
+      ta.disabled = e.target.checked;
+      if (e.target.checked) { ta.value = ''; }
+    });
+
+    btn.addEventListener('click', async function () {
+      errEl.classList.add('hidden');
+      if (!slotChoisi) {
+        montrerErreur('Veuillez choisir une heure de rendez-vous.');
+        return;
+      }
+      btn.disabled = true;
+      var payload = {
+        type_rdv_cle: selType.value,
+        slot_debut_utc: slotChoisi,
+        nom_complet: document.getElementById('nom-complet').value,
+        courriel: document.getElementById('courriel').value,
+        telephone: document.getElementById('telephone').value,
+        aucune_partie_adverse: document.getElementById('aucune-adverse').checked,
+        parties_adverses: document.getElementById('parties-adverses').value,
+        sujet: document.getElementById('sujet').value
+      };
+      try {
+        var rep = await fetch('/api/rdv/demander', {
+          method: 'POST',
+          headers: await enTetesFetch(),
+          body: JSON.stringify(payload)
+        });
+        var donnees = await rep.json().catch(function () { return {}; });
+        if (rep.ok) {
+          document.getElementById('rdv-formulaire').classList.add('hidden');
+          document.getElementById('rdv-succes').classList.remove('hidden');
+          return;
+        }
+        montrerErreur(donnees.erreur || 'Une erreur est survenue. Réessayez.');
+      } catch (e) {
+        montrerErreur('Erreur de réseau. Veuillez réessayer dans un instant.');
+      }
+      btn.disabled = false;
+    });
+
+    remplirJours();
+  })();
+</script>
+{% endif %}
+{% endblock %}

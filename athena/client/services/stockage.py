@@ -81,3 +81,26 @@ def ecrire_enveloppe(inv_id: str, batch: str, envelope: dict) -> None:
         content_type="application/json",
         if_generation_match=0,
     )
+
+
+def ecrire_objet_json(chemin: str, payload: dict) -> None:
+    """Write a create-only JSON payload under ``submissions/`` (<= 1 level deep).
+
+    Keeping RDV envelopes at 0- or 1-level depth under ``submissions/`` ensures
+    the 90-day quarantine lifecycle applies while ``reconciliation()``'s 2-level
+    walk never treats them as abandoned document uploads.
+    """
+    if (
+        not isinstance(chemin, str)
+        or not chemin.startswith("submissions/")
+        or ".." in chemin
+        or chemin.count("/") > 2
+        or chemin.endswith("/envelope.json")
+    ):
+        raise ValueError("Chemin de quarantaine invalide.")
+    blob = _bucket().blob(chemin)
+    blob.upload_from_string(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        content_type="application/json",
+        if_generation_match=0,
+    )

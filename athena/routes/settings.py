@@ -61,6 +61,7 @@ from models.settings import (
     update_cabinet,
 )
 from security import limiter, sanitize
+from services import disponibilites
 from utils import config_checks, graph_teams
 from utils.deployment_inventory import gcloud_recipe, secret_by_id
 from utils.integrations_defaults import (
@@ -518,6 +519,7 @@ def rendez_vous_update():
         "rendez_vous_reglages_updated",
         fields_changed=rendez_vous_changed(before, doc or {}),
     )
+    disponibilites.rafraichir_disponibilites_best_effort()
     return redirect(url_for("settings.rendez_vous", ok="1"))
 
 

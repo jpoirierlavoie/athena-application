@@ -122,7 +122,9 @@ env_variables:
   BOOKINGS_JURISTE_UPN: "jason@poirierlavoie.ca"
   BOOKINGS_JURISTE_OBJECT_ID: "1f98a3fb-bb35-4a7e-8de0-7e99eb69079c"
   BOOKINGS_SUBJECT_KEYWORDS: "Consultation,Rencontre"
-  BOOKINGS_SYNC_ACTIVE: "true"
+  # Retired in Lot 2 (native portal RDV replaces « Bookings with me » polling;
+  # route/cron_schedule remain in place until MCP is updated in Lot 3).
+  BOOKINGS_SYNC_ACTIVE: "false"
   # Miroir Outlook — pousse les audiences confirmées d'Athéna dans le
   # calendrier PRINCIPAL du juriste (elles bloquent alors les créneaux
   # « Bookings with me »). Unidirectionnel, Athéna fait autorité ; anti-boucle
@@ -133,6 +135,9 @@ env_variables:
   # jour minuté et transcription. Permissions Entra et politiques Teams
   # appliquées le 2026-11-20 ; activer/désactiver au besoin via ce coupe-circuit.
   TEAMS_REUNIONS_ACTIF: "true"
+  # Portail rendez-vous (Lot 2) — projection des disponibilités Graph/Athéna
+  # vers le portail client, prise de rendez-vous et report/annulation autonome.
+  PORTAIL_RDV_ACTIF: "true"
   # Factures échues (2026-11-11) — chaque jour à 9 h, heure de Montréal
   # (cron.yaml), le balayage routes/taches_factures marque « en retard »
   # chaque facture envoyée dont l'échéance, reportée au jour ouvrable suivant

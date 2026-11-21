@@ -68,6 +68,12 @@
               class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('draft', 20) }}
       </button>
+      <a href="{{ url_for('reception.inviter_form', type='rdv', dossier_id=dossier.id) }}"
+         title="Inviter à planifier un rendez-vous"
+         aria-label="Inviter à planifier un rendez-vous"
+         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('calendar_month', 20) }}
+      </a>
       <a href="{{ url_for('reception.inviter_form', dossier_id=dossier.id) }}"
          title="Demander des documents"
          aria-label="Demander des documents"

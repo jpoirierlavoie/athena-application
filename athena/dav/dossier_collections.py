@@ -98,6 +98,7 @@ from utils.logging_setup import (
     log_unexpected,
     sanitize_log_value,
 )
+from services import disponibilites
 from utils.tracing_setup import add_attributes, firestore_span, span
 
 logger = logging.getLogger(__name__)
@@ -1111,6 +1112,7 @@ def _put_hearing(
             old_dossier_id=existing.get("dossier_id"),
             new_dossier_id=dossier_id,
         )
+        disponibilites.rafraichir_disponibilites_best_effort()
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
         return _finish(resp)
@@ -1139,6 +1141,7 @@ def _put_hearing(
     # Resource (re)enters the collection — drop any stale tombstone
     remove_tombstone(sync_name, resource_id)
     bump_ctag(sync_name)
+    disponibilites.rafraichir_disponibilites_best_effort()
     resp = Response("", status=201)
     resp.headers["ETag"] = f'"{created.get("etag", "")}"'
     return _finish(resp)
@@ -1523,6 +1526,7 @@ def _delete_resource(dossier_id: str, resource_id: str) -> Response:
             title=existing_hearing.get("title", ""),
             status=existing_hearing.get("status", ""),
         )
+        disponibilites.rafraichir_disponibilites_best_effort()
         return Response("", status=204)
 
     return Response("Not Found", status=404)
