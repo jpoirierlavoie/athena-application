@@ -201,6 +201,7 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `GRAPH_SENDER_NAME` | ○ | `""` | Display name on those messages |
 | `GRAPH_CLIENT_SECRET` → secret `graph-client-secret` | ○ | `""` | Resolved with `required=False`, which **swallows a PERMISSION_DENIED into `""`** — a missing accessor binding therefore turns outbound email off in silence. §6.4's grant loop covers it |
 | `BOOKINGS_JURISTE_UPN` | ○ | `""` | The mailbox whose calendar is polled. **Empty short-circuits the sync** |
+| `BOOKINGS_JURISTE_OBJECT_ID` | ○ | `""` | Entra user object GUID (`az ad user show --id <UPN> --query id -o tsv`) of `BOOKINGS_JURISTE_UPN` — required by Graph `onlineMeetings` and `getAllTranscripts` so the app never needs directory-wide `User.Read.All` |
 | `BOOKINGS_SYNC_ACTIVE` | ○ | `true` | Kill switch for the 10-minute Bookings import |
 | `BOOKINGS_SUBJECT_KEYWORDS` | ○ | `Consultation` | Comma-separated. A subject matches when it **ends** with « {separator} {keyword} », case- and accent-folded — Bookings names the event `{Customer} - {Service}`, so the service name is a suffix. ⚠ An **empty** value is a total, silent outage: nothing matches, and the absence loop then flags every already-imported reservation `annulée_client`. The sync refuses to run rather than proceed |
 | `BOOKINGS_SYNC_LOOKAHEAD_DAYS` | ○ | `90` | Forward window of the poll |
@@ -1351,13 +1352,16 @@ resource below by its id — `sa-portail`, `firestore-portail`,
 
 Before setting `TEAMS_REUNIONS_ACTIF: "true"` in `athena/app.yaml`, complete
 these two one-time Microsoft 365 steps on the main Entra app registration
-(`GRAPH_CLIENT_ID`):
+(`GRAPH_CLIENT_ID`) and record `BOOKINGS_JURISTE_OBJECT_ID`:
 
 1. **Entra ID application permissions (with Admin Consent):** in addition to
    `Calendars.ReadWrite` and `Mail.Send`, grant:
    - `OnlineMeetings.ReadWrite.All`
    - `OnlineMeetingTranscript.Read.All`
    - `OnlineMeetingAiInsight.Read.All` (requires a Microsoft 365 Copilot license on `BOOKINGS_JURISTE_UPN`)
+   And set `BOOKINGS_JURISTE_OBJECT_ID` in `athena/app.yaml` to the Entra user
+   object GUID (`az ad user show --id <BOOKINGS_JURISTE_UPN> --query id -o tsv`)
+   so Graph never needs directory-wide `User.Read.All`.
 2. **Microsoft Teams Admin PowerShell (`Connect-MicrosoftTeams`):** allow
    app-only Graph access to transcripts and grant the application access policy
    to `BOOKINGS_JURISTE_UPN`:

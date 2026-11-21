@@ -222,6 +222,12 @@ class Config:
     # The mailbox whose calendar is queried (the juriste's Bookings mailbox).
     # Empty → the sync short-circuits (nothing to query).
     BOOKINGS_JURISTE_UPN: str = os.environ.get("BOOKINGS_JURISTE_UPN", "")
+    # Entra user object GUID (`az ad user show --id <UPN> --query id -o tsv`)
+    # required by Graph Cloud Communications endpoints (/onlineMeetings and
+    # /getAllTranscripts) so the app never needs directory-wide User.Read.All.
+    BOOKINGS_JURISTE_OBJECT_ID: str = os.environ.get(
+        "BOOKINGS_JURISTE_OBJECT_ID", ""
+    ).strip()
     # §4.4 predicate tuning: log the first detected + first undetected event
     # (predicate booleans + attendee DOMAINS only — never the subject, which
     # embeds the client's name). Emitted at INFO, not DEBUG: the root logger
@@ -246,8 +252,12 @@ class Config:
 
     @classmethod
     def teams_configured(cls) -> bool:
-        """True when Graph Teams creation/diagnostics can run for the lawyer's UPN."""
-        return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
+        """True when Graph Teams creation/diagnostics can run for the lawyer."""
+        return bool(
+            cls.graph_configured()
+            and cls.BOOKINGS_JURISTE_UPN
+            and cls.BOOKINGS_JURISTE_OBJECT_ID
+        )
 
     # Miroir Outlook (2026-07-29). Pushes confirmed Athéna hearings into the
     # juriste's DEFAULT Outlook calendar during office hours (they then count toward

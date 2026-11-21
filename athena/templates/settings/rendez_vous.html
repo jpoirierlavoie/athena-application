@@ -84,7 +84,7 @@
         {% endif %}
       </p>
       <p class="{% if diagnostic.utilisateur_accessible %}text-green-700{% else %}text-red-700{% endif %}">
-        Utilisateur Graph : {{ 'accessible' if diagnostic.utilisateur_accessible else 'inaccessible' }}
+        Calendrier Graph du juriste : {{ 'accessible' if diagnostic.utilisateur_accessible else 'inaccessible' }}
       </p>
       <p class="{% if diagnostic.online_meetings_accessible %}text-green-700{% else %}text-red-700{% endif %}">
         API onlineMeetings (Teams) : {{ 'accessible' if diagnostic.online_meetings_accessible else 'refusée' }}
@@ -92,9 +92,15 @@
       <p class="{% if diagnostic.transcriptions_accessibles %}text-green-700{% else %}text-red-700{% endif %}">
         API transcriptions Graph : {{ 'accessible' if diagnostic.transcriptions_accessibles else 'refusée' }}
       </p>
+      {% if diagnostic.onedrive_configure %}
       <p class="{% if diagnostic.onedrive_accessible %}text-green-700{% else %}text-amber-800{% endif %}">
         OneDrive (module Courrier) : {{ 'accessible' if diagnostic.onedrive_accessible else 'indisponible' }}
       </p>
+      {% else %}
+      <p class="text-gray-500">
+        OneDrive (module Courrier) : non configuré (optionnel au lot 1)
+      </p>
+      {% endif %}
       {% if diagnostic.erreurs %}
       <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-2">
         <ul class="text-xs text-amber-800 space-y-1">

@@ -137,7 +137,7 @@ def test_every_field_maps_to_a_real_config_attribute():
 
 
 def test_the_nine_four_line_is_exhaustive_and_disjoint():
-    """Les seize valeurs de la couche A (9 modifiables + 7 fixées au
+    """Les dix-sept valeurs de la couche A (9 modifiables + 8 fixées au
     déploiement), plus les quatre coupe-circuits, et aucun chevauchement —
     un champ dans les deux listes serait rendu deux fois, une fois
     modifiable et une fois non."""
@@ -145,7 +145,7 @@ def test_the_nine_four_line_is_exhaustive_and_disjoint():
     deploy = set(D.DEPLOY_ONLY_FIELDS)
     kill = set(D.KILL_SWITCHES)
     assert len(editable) == 9
-    assert len(deploy) == 7
+    assert len(deploy) == 8
     assert not editable & deploy
     assert not editable & kill
     assert not deploy & kill
@@ -158,15 +158,17 @@ def test_the_two_classmethod_inputs_are_all_deploy_only():
     plutôt que simplement plus petite.
 
     `graph_configured()` lit TENANT_ID + CLIENT_ID + CLIENT_SECRET +
-    SENDER_UPN ; `bookings_configured()` ajoute BOOKINGS_JURISTE_UPN. Si
-    l'une de ces cinq passait du côté modifiable, il faudrait un accesseur
-    sur `Config` — or `Config` n'est JAMAIS instancié, donc un `@property`
-    lu sur la classe rend l'OBJET property, qui est VRAI, et
-    `graph_configured()` répondrait True sans aucun identifiant. Fail-open,
-    en silence. Ce test est ce qui garde ce chemin inexistant."""
+    SENDER_UPN ; `bookings_configured()` ajoute BOOKINGS_JURISTE_UPN ;
+    `teams_configured()` ajoute BOOKINGS_JURISTE_OBJECT_ID. Si l'une de ces
+    six passait du côté modifiable, il faudrait un accesseur sur `Config` — or
+    `Config` n'est JAMAIS instancié, donc un `@property` lu sur la classe rend
+    l'OBJET property, qui est VRAI, et `graph_configured()` répondrait True
+    sans aucun identifiant. Fail-open, en silence. Ce test est ce qui garde
+    ce chemin inexistant."""
     inputs = {
         "graph_tenant_id", "graph_client_id", "graph_client_secret",
         "graph_sender_upn", "bookings_juriste_upn",
+        "bookings_juriste_object_id",
     }
     assert not inputs & set(D.EDITABLE_FIELDS)
 

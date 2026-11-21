@@ -261,6 +261,12 @@ _DEPLOY_ONLY_FR: dict[str, tuple[str, str]] = {
         "Même portée Exchange que la boîte expéditrice. Une migration de "
         "boîte est de toute façon une opération Exchange.",
     ),
+    "bookings_juriste_object_id": (
+        "Identifiant objet Entra du juriste (Teams)",
+        "GUID immuable de l'utilisateur dans Entra ID (`az ad user show`), "
+        "requis par les API Teams et transcriptions de Microsoft Graph sans "
+        "accorder la permission annuaire `User.Read.All`.",
+    ),
     "courrier_graph_client_id": (
         "Identifiant d'application Entra (Courrier)",
         "Inscription dédiée au module Courrier (sans permission d'envoi "

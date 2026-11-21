@@ -69,6 +69,7 @@ DEPLOY_ONLY_FIELDS: tuple[str, ...] = (
     "graph_client_id",
     "graph_sender_upn",
     "bookings_juriste_upn",
+    "bookings_juriste_object_id",
     "courrier_graph_client_id",
     "courrier_upn",
     "courrier_onedrive_root",

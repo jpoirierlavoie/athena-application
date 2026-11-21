@@ -111,6 +111,7 @@ def teams_on(monkeypatch):
         ("GRAPH_CLIENT_SECRET", "secret-1"),
         ("GRAPH_SENDER_UPN", "reception@example.com"),
         ("BOOKINGS_JURISTE_UPN", "juriste@example.com"),
+        ("BOOKINGS_JURISTE_OBJECT_ID", "entra-uid-1"),
     ):
         monkeypatch.setattr(Config, key, val)
     monkeypatch.setattr(Config, "TEAMS_REUNIONS_ACTIF", True)

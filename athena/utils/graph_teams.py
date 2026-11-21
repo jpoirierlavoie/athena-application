@@ -28,7 +28,17 @@ REQUIRED_GRAPH_ROLES: tuple[str, ...] = (
     "OnlineMeetingAiInsight.Read.All",
 )
 
-_PROBE_JOIN_URL = "https://teams.microsoft.com/l/meetup-join/pallas-probe"
+def _probe_join_url(tenant_id: str, user_id: str) -> str:
+    """Build a syntactically valid Teams meetup-join URL for policy probing."""
+    ctx = quote(
+        json.dumps({"Tid": tenant_id, "Oid": user_id}, separators=(",", ":")),
+        safe="",
+    )
+    return (
+        "https://teams.microsoft.com/l/meetup-join/"
+        "19%3ameeting_00000000-0000-0000-0000-000000000000%40thread.v2/"
+        f"0?context={ctx}"
+    )
 
 
 def powershell_setup_commands(
@@ -92,16 +102,6 @@ def _utc_graph_dt(dt: datetime) -> dict[str, str]:
         "dateTime": utc_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         "timeZone": "UTC",
     }
-
-
-def _resoudre_user_id(upn: str) -> str:
-    """Resolve the Entra user object ID for *upn* (raises GraphError when absent)."""
-    encoded_upn = quote((upn or "").strip(), safe="")
-    res = graph.graph_get(f"/users/{encoded_upn}", params={"$select": "id"})
-    user_id = str((res or {}).get("id") or "").strip()
-    if not user_id:
-        raise GraphError("Identifiant utilisateur Graph manquant.")
-    return user_id
 
 
 def _is_not_found(exc: GraphError) -> bool:
@@ -168,7 +168,7 @@ def creer_reunion_teams(
     online_meeting_id = ""
     options_appliquees = False
     try:
-        user_id = _resoudre_user_id(upn)
+        user_id = Config.BOOKINGS_JURISTE_OBJECT_ID.strip()
         escaped_join = join_url.replace("'", "''")
         om_list = graph.graph_get(
             f"/users/{quote(user_id, safe='')}/onlineMeetings",
@@ -297,12 +297,14 @@ def verifier_connexion_teams() -> dict[str, Any]:
         "online_meetings_accessible": False,
         "politique_teams_requise": False,
         "transcriptions_accessibles": False,
+        "onedrive_configure": False,
         "onedrive_accessible": False,
         "erreurs": [],
     }
     if not configure:
         result["erreurs"].append(
-            "Les variables Microsoft Graph ou BOOKINGS_JURISTE_UPN ne sont pas configurées."
+            "Les variables Microsoft Graph, BOOKINGS_JURISTE_UPN ou "
+            "BOOKINGS_JURISTE_OBJECT_ID ne sont pas configurées."
         )
         return result
 
@@ -325,49 +327,58 @@ def verifier_connexion_teams() -> dict[str, Any]:
             + "."
         )
 
-    user_id = ""
+    encoded_upn = quote(Config.BOOKINGS_JURISTE_UPN.strip(), safe="")
     try:
-        user_id = _resoudre_user_id(Config.BOOKINGS_JURISTE_UPN)
+        graph.graph_get(
+            f"/users/{encoded_upn}/calendar",
+            params={"$select": "id"},
+        )
         result["utilisateur_accessible"] = True
     except GraphError as exc:
-        result["erreurs"].append(f"Lecture de l'utilisateur Graph : {exc}")
+        result["erreurs"].append(f"Lecture du calendrier Graph : {exc}")
 
-    if user_id:
-        encoded_uid = quote(user_id, safe="")
-        try:
-            graph.graph_get(
-                f"/users/{encoded_uid}/onlineMeetings",
-                params={"$filter": f"JoinWebUrl eq '{_PROBE_JOIN_URL}'"},
-            )
+    user_id = Config.BOOKINGS_JURISTE_OBJECT_ID.strip()
+    encoded_uid = quote(user_id, safe="")
+    probe_url = _probe_join_url(Config.GRAPH_TENANT_ID.strip(), user_id)
+    try:
+        graph.graph_get(
+            f"/users/{encoded_uid}/onlineMeetings",
+            params={"$filter": f"JoinWebUrl eq '{probe_url}'"},
+            follow_next=False,
+        )
+        result["online_meetings_accessible"] = True
+    except GraphError as exc:
+        msg = str(exc)
+        if _is_not_found(exc):
+            # HTTP 404 (meeting not found) proves Entra + CsApplicationAccessPolicy passed.
             result["online_meetings_accessible"] = True
-        except GraphError as exc:
-            msg = str(exc)
-            if "HTTP 403" in msg or "HTTP 404" in msg:
-                result["politique_teams_requise"] = True
-                result["erreurs"].append(
-                    "Accès aux réunions Teams refusé : appliquez la politique "
-                    "CsApplicationAccessPolicy dans PowerShell (la propagation "
-                    "Microsoft prend de 30 min à 2 h)."
-                )
-            else:
-                result["erreurs"].append(f"Sonde onlineMeetings : {msg}")
-
-        try:
-            graph.graph_get(
-                f"/users/{encoded_uid}/onlineMeetings/"
-                f"getAllTranscripts(meetingOrganizerUserId='{encoded_uid}')",
-                params={"$top": 1},
-                follow_next=False,
-            )
-            result["transcriptions_accessibles"] = True
-        except GraphError as exc:
+        elif "HTTP 403" in msg:
+            result["politique_teams_requise"] = True
             result["erreurs"].append(
-                f"Accès aux transcriptions Graph ({exc}) : vérifiez "
-                "EnableGraphTranscriptAccess et la politique d'application Teams."
+                "Accès aux réunions Teams refusé : appliquez la politique "
+                "CsApplicationAccessPolicy dans PowerShell (la propagation "
+                "Microsoft prend de 30 min à 2 h)."
             )
+        else:
+            result["erreurs"].append(f"Sonde onlineMeetings : {msg}")
+
+    try:
+        graph.graph_get(
+            f"/users/{encoded_uid}/onlineMeetings/"
+            f"getAllTranscripts(meetingOrganizerUserId='{encoded_uid}')",
+            params={"$top": 1},
+            follow_next=False,
+        )
+        result["transcriptions_accessibles"] = True
+    except GraphError as exc:
+        result["erreurs"].append(
+            f"Accès aux transcriptions Graph ({exc}) : vérifiez "
+            "EnableGraphTranscriptAccess et la politique d'application Teams."
+        )
 
     courrier_fn = getattr(Config, "courrier_configured", None)
     if callable(courrier_fn) and courrier_fn():
+        result["onedrive_configure"] = True
         try:
             from utils import graph_courrier
 
@@ -383,10 +394,6 @@ def verifier_connexion_teams() -> dict[str, Any]:
             result["erreurs"].append(
                 f"Vérification OneDrive impossible ({type(exc).__name__})."
             )
-    else:
-        result["erreurs"].append(
-            "Le module Courrier (OneDrive) n'est pas configuré."
-        )
 
     return result
 
