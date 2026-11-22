@@ -32,6 +32,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.write_support as write_support
     import mcp.output_schemas as output_schemas
     OUTPUT_SCHEMAS = output_schemas.OUTPUT_SCHEMAS
+    import models
     import models.concurrency as concurrency
 
 
@@ -1280,8 +1281,6 @@ def test_get_reference_vocabulary_conforms_filtered():
 
 
 def test_partie_writes_conform(monkeypatch):
-    import models
-
     monkeypatch.setattr(handlers, "bump_ctag", lambda n: None)
     monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
     monkeypatch.setattr(handlers.partie_model, "create_partie",
@@ -1313,8 +1312,6 @@ def test_partie_writes_conform(monkeypatch):
 def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
     """The write landed; only the sync did not. The payload must stay valid
     so the warning actually reaches the caller."""
-    import models
-
     def _boom(*_args):
         raise RuntimeError("firestore down")
 
@@ -1337,8 +1334,6 @@ def test_import_invoice_conforms(monkeypatch):
     TYPES it (optional, never required), which is why the payload stays
     valid — and why this assertion is kept: it is the only thing saying
     out loud that the key is now dead surface."""
-    import models
-
     entry = {"id": "e1", "dossier_id": "d1", "amount": 45000,
              "invoiced": False, "description": "Rédaction", "taxable": True}
     monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
@@ -1526,8 +1521,6 @@ def test_phase_bulk_conforms_across_every_outcome(monkeypatch):
 
 
 def test_dossier_writes_conform(monkeypatch):
-    import models
-
     parties = {"p1": {"id": "p1", "type": "individual", "last_name": "T"}}
     existing = {"id": "d1", "file_number": "2019-014", "title": "T",
                 "status": "actif", "clients": []}
@@ -1629,8 +1622,6 @@ def test_get_import_audit_conforms_with_unreadable_line_items(monkeypatch):
 
 
 def test_find_imported_conforms_found_and_empty(monkeypatch):
-    import models
-
     rows = {
         "parties": [{"id": "p1", "type": "individual", "last_name": "Tremblay"}],
         "invoices": [{"id": "i1", "invoice_number": "2019-F014",
@@ -2645,8 +2636,8 @@ def test_list_hearings_conforms_in_its_two_selection_modes(monkeypatch):
 def test_meeting_transcripts_and_portal_rdv_conform_to_output_schemas(monkeypatch):
     from datetime import datetime, timezone
     from config import Config
-    from models import document as document_model
-    from models import transcription_reunion as tr_model
+    import models.document as document_model
+    import models.transcription_reunion as tr_model
     from utils import graph_teams
 
     fake = _calendar_world(monkeypatch)
@@ -3451,7 +3442,7 @@ def test_list_courriels_conforms(monkeypatch):
     import io
     import zipfile
     from config import Config
-    from models import courrier as courrier_model
+    import models.courrier as courrier_model
     from tests._fake_firestore import install
     from utils import graph_courrier
 
@@ -3624,10 +3615,10 @@ def test_list_courriels_conforms(monkeypatch):
 def test_save_courriels_conforms(monkeypatch):
     from contextlib import contextmanager
     from config import Config
-    from models import courrier as courrier_model
-    from models import document as document_model
-    from models import dossier as dossier_model
-    from models import folder as folder_model
+    import models.courrier as courrier_model
+    import models.document as document_model
+    import models.dossier as dossier_model
+    import models.folder as folder_model
     from tests._fake_firestore import install
     from tests._fake_gcs import FakeBucket
     from utils import graph_courrier, storage_identity
@@ -3781,7 +3772,7 @@ def test_save_courriels_conforms(monkeypatch):
 
 def test_move_courriels_conforms(monkeypatch):
     from config import Config
-    from models import courrier as courrier_model
+    import models.courrier as courrier_model
     from tests._fake_firestore import install
     from utils import graph_courrier
 
