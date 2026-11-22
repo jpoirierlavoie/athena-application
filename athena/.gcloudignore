@@ -38,5 +38,6 @@ tests/
 # Firebase rules/index files live at the repo root now, so they no longer
 # ride along in this bundle.)
 requirements.in
+requirements-dev.in
 requirements-dev.txt
 OBSERVABILITY.md

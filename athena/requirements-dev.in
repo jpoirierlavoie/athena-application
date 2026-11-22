@@ -1,0 +1,9 @@
+# Development / CI-only dependencies — never deployed to App Engine
+# (excluded by .gcloudignore; consumed by CI, cloudbuild.yaml, and local dev).
+# Exact pins (== X.Y.Z), like athena/requirements.in: requirements-dev.txt beside
+# this file is the GENERATED universal hash-locked lockfile, installed with
+# --require-hashes --no-deps. Re-lock from athena/ with:
+#   uv pip compile requirements-dev.in -c requirements.txt --python-version 3.13 --universal --generate-hashes -o requirements-dev.txt
+pytest==9.2.0
+pytest-xdist==3.8.0
+execnet==2.1.2
