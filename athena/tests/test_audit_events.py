@@ -192,6 +192,7 @@ def test_the_hidden_types_are_journal_types_the_connector_cannot_name():
     )
 
     assert "piece_identite" in CONNECTOR_HIDDEN_ENTITY_TYPES
+    assert "register_pair_purge" in CONNECTOR_HIDDEN_ENTITY_TYPES
     assert isinstance(CONNECTOR_HIDDEN_ENTITY_TYPES, frozenset)
     assert CONNECTOR_HIDDEN_ENTITY_TYPES <= set(VALID_ENTITY_TYPES)
     assert CONNECTOR_HIDDEN_ENTITY_TYPES.isdisjoint(_connector_enum())
