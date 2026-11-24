@@ -127,7 +127,7 @@ def env(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "courrier-secret")
     monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tenant-id")
     monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
 
     gm = _FakeGraphMail()
     encoded_upn = quote(Config.COURRIER_UPN, safe="")

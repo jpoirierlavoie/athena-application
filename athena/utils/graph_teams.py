@@ -66,8 +66,11 @@ def powershell_setup_commands(
         ),
         (
             "Set-CsTeamsMeetingPolicy -Identity Global "
-            "-Copilot EnabledWithTranscriptDefaultOn "
-            "-AutomaticallyStartCopilot Enabled"
+            "-AllowCloudRecording $true "
+            "-AllowTranscription $true "
+            "-AutoRecording Enabled "
+            "-NewMeetingRecordingExpirationDays 1 "
+            "-Copilot EnabledWithTranscriptDefaultOn"
         ),
     ]
 
@@ -93,10 +96,10 @@ def construire_corps_html_reunion(
         parts.append("<p><strong>Points à aborder</strong></p>")
         parts.append(f"<p>{points_html}</p>")
     parts.append(
-        "<hr><p><em>Avis : la transcription et la prise de notes assistée par "
-        "intelligence artificielle (Microsoft Teams) peuvent être utilisées lors "
-        "de cette rencontre, sous réserve de votre confirmation en début "
-        "d'appel.</em></p>"
+        "<hr><p><em>Avis : l'enregistrement, la transcription et la prise de notes "
+        "assistée par intelligence artificielle (Microsoft Teams) démarrent "
+        "automatiquement lors de cette rencontre ; vous pouvez demander d'y mettre "
+        "fin en tout temps en début d'appel.</em></p>"
     )
     parts.append("</div>")
     return "".join(parts)
@@ -318,9 +321,9 @@ def creer_reunion_teams(
                 f"/users/{quote(user_id, safe='')}/onlineMeetings/"
                 f"{quote(online_meeting_id, safe='')}",
                 {
-                    "allowRecording": False,
+                    "allowRecording": True,
                     "allowTranscription": True,
-                    "recordAutomatically": False,
+                    "recordAutomatically": True,
                     "meetingSpokenLanguageTag": "fr-ca",
                     "lobbyBypassSettings": {
                         "scope": "organizer",

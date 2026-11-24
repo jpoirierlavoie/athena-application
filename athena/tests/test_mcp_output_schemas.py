@@ -3403,7 +3403,7 @@ def test_get_courrier_connexion_conforms_unconfigured_and_healthy(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "")
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "")
     monkeypatch.setattr(Config, "COURRIER_UPN", "")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
     graph_courrier.detect_execution_region.cache_clear()
 
     unconfigured = handlers.get_courrier_connexion({})
@@ -3418,7 +3418,7 @@ def test_get_courrier_connexion_conforms_unconfigured_and_healthy(monkeypatch):
             "interrupteur_actif": True,
             "configure": True,
             "compte": "avocat@cabinet.example",
-            "racine_onedrive": "4 - Dossiers",
+            "racine_onedrive": "Dossiers",
             "region": "northamerica-northeast1",
             "mode_auth": "application",
             "jeton_valide": True,
@@ -3451,7 +3451,7 @@ def test_list_courriels_conforms(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "sec")
     monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tid")
     monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
 
     cle_saved = courrier_model.compute_cle("<msg-1@cabinet.example>")
     fake.seed(
@@ -3640,7 +3640,7 @@ def test_save_courriels_conforms(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "sec")
     monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tid")
     monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
 
     did = "a0000000-0000-4000-8000-000000000001"
     fake.seed(
@@ -3662,9 +3662,9 @@ def test_save_courriels_conforms(monkeypatch):
     cle = courrier_model.compute_cle(imid)
 
     def fake_get(path, *, params=None, immutable_id=True, prefer=(), follow_next=True):
-        if path.endswith("/drive/root:/4%20-%20Dossiers"):
+        if path.endswith("/drive/root:/Dossiers"):
             return {"id": "od-root", "folder": {"childCount": 1}}
-        if path.endswith("/drive/root:/4%20-%20Dossiers:/children"):
+        if path.endswith("/drive/root:/Dossiers:/children"):
             return {
                 "value": [
                     {"id": "od-d1", "name": "2026-001 - Dossier A", "folder": {"childCount": 0}}

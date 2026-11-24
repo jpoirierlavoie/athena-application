@@ -67,7 +67,7 @@ class _FakeResponse:
 class _FakeGraphDrive:
     """In-memory Microsoft Graph + OneDrive + SharePoint upload session harness."""
 
-    def __init__(self, *, root_name: str = "4 - Dossiers") -> None:
+    def __init__(self, *, root_name: str = "Dossiers") -> None:
         self.root_id = "od-root"
         self.root_name = root_name
         # {folder_id: {"id", "name", "parent_id", "children_names": dict[name, id]}}
@@ -315,7 +315,7 @@ def env(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "sec")
     monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "tid")
     monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
     graph_courrier._reset_token_cache_for_tests()
 
     class _SessionProxy:

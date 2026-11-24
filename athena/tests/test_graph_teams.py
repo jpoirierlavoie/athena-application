@@ -55,8 +55,11 @@ def test_powershell_setup_commands_use_placeholders_or_supplied_values():
     assert "Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true" in default_cmds
     assert (
         "Set-CsTeamsMeetingPolicy -Identity Global "
-        "-Copilot EnabledWithTranscriptDefaultOn "
-        "-AutomaticallyStartCopilot Enabled"
+        "-AllowCloudRecording $true "
+        "-AllowTranscription $true "
+        "-AutoRecording Enabled "
+        "-NewMeetingRecordingExpirationDays 1 "
+        "-Copilot EnabledWithTranscriptDefaultOn"
     ) in default_cmds
     assert "<GRAPH_CLIENT_ID>" in default_cmds[2]
     assert "<BOOKINGS_JURISTE_UPN>" in default_cmds[3]
@@ -77,6 +80,7 @@ def test_construire_corps_html_reunion_escapes_html_and_adds_ai_notice():
     assert "&lt;script&gt;alert(1)&lt;/script&gt;<br>2. Suite" in html_body
     assert "<strong>Points à aborder</strong>" in html_body
     assert "Verifier &lt;dossier&gt;" in html_body
+    assert "enregistrement" in html_body
     assert "transcription et la prise de notes assistée" in html_body
 
     no_points = gt.construire_corps_html_reunion("1. Point unique")
@@ -176,9 +180,9 @@ def test_creer_reunion_teams_happy_path_sets_options_and_escapes_odata_quote(
     patch_path, om_payload = patches[0]
     assert patch_path == f"/users/{UID}/onlineMeetings/OM-900"
     assert om_payload == {
-        "allowRecording": False,
+        "allowRecording": True,
         "allowTranscription": True,
-        "recordAutomatically": False,
+        "recordAutomatically": True,
         "meetingSpokenLanguageTag": "fr-ca",
         "lobbyBypassSettings": {
             "scope": "organizer",

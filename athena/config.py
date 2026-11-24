@@ -308,7 +308,7 @@ class Config:
     )
     COURRIER_UPN: str = os.environ.get("COURRIER_UPN", "")
     COURRIER_ONEDRIVE_ROOT: str = (
-        os.environ.get("COURRIER_ONEDRIVE_ROOT", "4 - Dossiers").strip().strip("/")
+        os.environ.get("COURRIER_ONEDRIVE_ROOT", "Dossiers").strip().strip("/")
     )
 
     @classmethod

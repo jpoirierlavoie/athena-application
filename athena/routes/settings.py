@@ -282,7 +282,7 @@ _DEPLOY_ONLY_FR: dict[str, tuple[str, str]] = {
     "courrier_onedrive_root": (
         "Dossier racine OneDrive (Courrier)",
         "Sous-dossier à la racine du OneDrive cible (par défaut "
-        "`4 - Dossiers`) hors duquel toute écriture est refusée.",
+        "`Dossiers`) hors duquel toute écriture est refusée.",
     ),
 }
 

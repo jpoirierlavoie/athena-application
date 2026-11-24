@@ -663,6 +663,12 @@ def verser_transcription(
     # Étape C : Dépôt OneDrive facultatif dans {racine}/{dossier}/Interne
     od_note_id = str(progress.get("onedrive_note_item_id") or "")
     od_tx_id = str(progress.get("onedrive_transcript_item_id") or "")
+
+    def _od_status_suffix(exc: Exception) -> str:
+        if isinstance(exc, graph_courrier.CourrierGraphError) and exc.status_code is not None:
+            return f" (HTTP {exc.status_code})"
+        return ""
+
     if Config.courrier_configured():
         if not od_note_id:
             note_bytes = _note_docx_bytes(
@@ -677,12 +683,12 @@ def verser_transcription(
                     nom_fichier=note_filename,
                     contenu_docx=note_bytes,
                 )
-            except (graph_courrier.CourrierGraphError, graph_courrier.CourrierNotConfigured):
+            except (graph_courrier.CourrierGraphError, graph_courrier.CourrierNotConfigured) as exc:
                 log_unexpected("transcription: OneDrive note upload failed", hearing_id=hearing_id)
                 return (
                     working_tr,
                     [
-                        "Versement Athéna enregistré, mais le dépôt des notes dans OneDrive a échoué — réessayez pour compléter OneDrive sans doublon."
+                        f"Versement Athéna enregistré, mais le dépôt des notes dans OneDrive a échoué{_od_status_suffix(exc)} — réessayez pour compléter OneDrive sans doublon."
                     ],
                     warnings,
                 )
@@ -708,7 +714,7 @@ def verser_transcription(
                     nom_fichier=transcript_filename,
                     contenu_docx=transcript_docx_bytes,
                 )
-            except (graph_courrier.CourrierGraphError, graph_courrier.CourrierNotConfigured):
+            except (graph_courrier.CourrierGraphError, graph_courrier.CourrierNotConfigured) as exc:
                 log_unexpected(
                     "transcription: OneDrive transcript upload failed",
                     hearing_id=hearing_id,
@@ -716,7 +722,7 @@ def verser_transcription(
                 return (
                     working_tr,
                     [
-                        "Versement Athéna et notes OneDrive enregistrés, mais le dépôt de la transcription dans OneDrive a échoué — réessayez pour compléter OneDrive sans doublon."
+                        f"Versement Athéna et notes OneDrive enregistrés, mais le dépôt de la transcription dans OneDrive a échoué{_od_status_suffix(exc)} — réessayez pour compléter OneDrive sans doublon."
                     ],
                     warnings,
                 )
