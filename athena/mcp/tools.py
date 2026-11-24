@@ -6599,10 +6599,10 @@ TOOLS: dict[str, dict] = {
                             },
                             "dossier_onedrive": {
                                 "type": "string",
-                                "minLength": 10,
+                                "minLength": 8,
                                 "maxLength": 150,
                                 "description": (
-                                    "Nom du dossier OneDrive (`AAAA-NNN ...`)."
+                                    "Nom du dossier OneDrive (`AAAA-NNN` ou `AAAA-NNN ...`)."
                                 ),
                             },
                             "creer_dossier_onedrive": {
@@ -6759,7 +6759,7 @@ TOOLS: dict[str, dict] = {
                                     },
                                     "nom": {
                                         "type": "string",
-                                        "minLength": 10,
+                                        "minLength": 8,
                                         "maxLength": 150,
                                     },
                                 },

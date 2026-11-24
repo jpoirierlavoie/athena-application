@@ -880,7 +880,7 @@ def _clean_dossier_onedrive_name(nom: str, numero: str) -> Optional[str]:
         return None
     if raw.upper() in _WINDOWS_RESERVED_STEMS:
         return None
-    if not raw.startswith(f"{numero} "):
+    if not numero or extraire_prefixe_dossier(raw) != numero:
         return None
     return raw
 
@@ -1611,7 +1611,7 @@ def _clean_dossier_outlook_name(nom: Any, numero: str) -> Optional[str]:
         return None
     if any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in raw):
         return None
-    if not raw.startswith(f"{numero} "):
+    if not numero or extraire_prefixe_dossier(raw) != numero:
         return None
     return raw
 
@@ -2132,14 +2132,8 @@ def deposer_docx_interne_onedrive(
     if not clean_name.lower().endswith(".docx"):
         clean_name = f"{clean_name[:PIECE_NOM_MAX_CHARS - 5].rstrip(' .')}.docx"
 
-    cleaned_title = _sanitize_component_text(str(dossier_titre or ""))
-    candidate_folder = (
-        f"{dossier_num} {cleaned_title}" if cleaned_title else f"{dossier_num} Dossier"
-    )[:140].rstrip(" .")
-    cleaned_od_name = (
-        _clean_dossier_onedrive_name(candidate_folder, dossier_num)
-        or f"{dossier_num} Dossier"
-    )
+    del dossier_titre  # New OneDrive dossier folders use number-only names (AAAA-NNN).
+    cleaned_od_name = dossier_num
 
     encoded_upn = quote(Config.COURRIER_UPN, safe="")
     racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "Dossiers"
