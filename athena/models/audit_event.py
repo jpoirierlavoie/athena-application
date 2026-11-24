@@ -25,7 +25,8 @@ ever updates one):
                                      # folder | doc_template | dossier |
                                      # admin_transaction | hearing_series |
                                      # dossier_party | mandataire |
-                                     # piece_identite (never read by the
+                                     # piece_identite | register_pair_purge
+                                     # (the last two hidden from the
                                      # connector: CONNECTOR_HIDDEN_ENTITY_TYPES)
         "entity_id": str,
         "dossier_id": str,           # "" when the entity had none
@@ -116,15 +117,19 @@ VALID_ENTITY_TYPES = (
     # « Preuve d'identité » (piece_identite.NEUTRAL_NAME) — never the
     # display name, so nothing the lawyer typed outlives the erase in this
     # write-once trail —, status = the file type. Hidden from the connector
-    # (D7): CONNECTOR_HIDDEN_ENTITY_TYPES below.
+    # Hidden from the connector (D7): CONNECTOR_HIDDEN_ENTITY_TYPES below.
     "piece_identite",
+    # One-shot server-side migration purge of an annulled accounting register
+    # pair (one row per purged pair, written inside the pair's atomic
+    # transaction). Hidden from the connector like piece_identite.
+    "register_pair_purge",
 )
 
 # Rows the connector never reads (D7): list_deletions filters them, its
 # entity_type enum omits them. A subset of VALID_ENTITY_TYPES; filtered
 # BEFORE list_deletions' date filter and its truncation count, so the
 # connector's « truncated » never counts a row it cannot see.
-CONNECTOR_HIDDEN_ENTITY_TYPES = frozenset({"piece_identite"})
+CONNECTOR_HIDDEN_ENTITY_TYPES = frozenset({"piece_identite", "register_pair_purge"})
 
 _FETCH_CAP = 200
 
