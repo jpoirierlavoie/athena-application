@@ -4,7 +4,6 @@ All IDs, amounts, account numbers, dossier numbers, invoice numbers and
 descriptions are fictional (the repository is public).
 """
 
-import copy
 import hashlib
 import json
 import os
@@ -12,8 +11,6 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 from unittest import mock
-
-import pytest
 
 _ATHENA = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ATHENA))
@@ -622,7 +619,6 @@ def _build_bench(monkeypatch):
             "result": {"id": P1_REV},
         },
     )
-    k2 = "record_admin_entry-general-20311123-synth-9"
     doc_k2 = hashlib.sha256("record_admin_entry:general-20311123-synth-9".encode("utf-8")).hexdigest()
     fake.seed(
         f"mcp_idempotency/{doc_k2}",

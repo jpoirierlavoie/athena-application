@@ -69,7 +69,6 @@ documented trust numbering gaps.
 
 from __future__ import annotations
 
-import argparse
 import copy
 import hashlib
 import json
@@ -103,7 +102,7 @@ def _load_env() -> str:
     return path or ""
 
 
-_ENV_PATH = _load_env()
+_load_env()
 
 from mcp import tools as mcp_tools  # noqa: E402
 from models import admin_ledger as al  # noqa: E402
@@ -118,7 +117,6 @@ from scripts import reclassify_as_invoice_receipt as rx  # noqa: E402
 from scripts import verify_trust_integrity as vti  # noqa: E402
 from scripts.rectify_registers import _addressable  # noqa: E402
 from security import sanitize  # noqa: E402
-from tz import to_mtl  # noqa: E402
 from utils import deadlines  # noqa: E402
 from utils import periods  # noqa: E402
 
@@ -2630,19 +2628,31 @@ def _render_report(
             for rid, reg, ok, msg in run.replacements
         ],
     )
-    out += ["", "## 3. Architecture des soldes, paiements et trace", "",
+    out += [
+        "",
+        "## 3. Architecture des soldes, paiements et trace",
+        "",
+        (
             "- **Soldes courants :** stockés au fidéicommis (`balance_after_account`, recalculés "
             "atomiquement sur les écritures postérieures à 130) ; calculés à la lecture en "
-            "administration (`admin_ledger.running_balances`).",
+            "administration (`admin_ledger.running_balances`)."
+        ),
+        (
             "- **Paiements de facture :** stockés sur `admin_transactions` (`encaissement_facture`) "
             "et projetés sur la facture (`amount_paid`, `paid_date`, `status`) par "
-            "`invoice.payment_updates` ; aucune table de paiements séparée.",
-            "- **Trace d'audit :** 1 document par paire dans `audit_events` (`entity_type = "
-            f"`{ENTITY_TYPE}``, masqué du connecteur MCP), écrit dans la même transaction "
-            "que la suppression, avec provenance `script` et référence à la sauvegarde JSON.",
+            "`invoice.payment_updates` ; aucune table de paiements séparée."
+        ),
+        (
+            "- **Trace d'audit :** 1 document par paire dans `audit_events` (`entity_type` = "
+            f"`{ENTITY_TYPE}`, masqué du connecteur MCP), écrit dans la même transaction "
+            "que la suppression, avec provenance `script` et référence à la sauvegarde JSON."
+        ),
+        (
             "- **Emplacement prévu de la sauvegarde :** dossier externe passé par `--sauvegarde` "
             f"(fichier `purge-paires-annulees-<UTC>-{run.fingerprint}.json`, vérifié par "
-            "relecture et `fsync` avant toute écriture)."]
+            "relecture et `fsync` avant toute écriture)."
+        ),
+    ]
     if audit_ids:
         out += ["", "Identifiants `audit_events` créés : " + ", ".join(
             f"{k}: `{v}`" for k, v in sorted(audit_ids.items())
