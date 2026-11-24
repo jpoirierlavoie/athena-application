@@ -487,7 +487,7 @@ def inventorier_courriels(
 
     started = clock()
     encoded_upn = quote(Config.COURRIER_UPN, safe="")
-    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "4 - Dossiers"
+    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "Dossiers"
     graph_folder = _PROVENANCE_FOLDERS[provenance]
     source_label = "boite" if provenance == "recus" else "envoyes"
 
@@ -1497,7 +1497,7 @@ def enregistrer_courriels(
     uid = storage_identity.require_uid(user_id)
     started = clock()
     encoded_upn = quote(Config.COURRIER_UPN, safe="")
-    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "4 - Dossiers"
+    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "Dossiers"
 
     od_carte = _lire_carte_onedrive(encoded_upn, racine_onedrive)
     racine_id = str(od_carte.get("racine_id") or "")
@@ -2142,7 +2142,7 @@ def deposer_docx_interne_onedrive(
     )
 
     encoded_upn = quote(Config.COURRIER_UPN, safe="")
-    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "4 - Dossiers"
+    racine_onedrive = Config.COURRIER_ONEDRIVE_ROOT or "Dossiers"
 
     od_carte = _lire_carte_onedrive(encoded_upn, racine_onedrive)
     racine_id = str(od_carte.get("racine_id") or "")

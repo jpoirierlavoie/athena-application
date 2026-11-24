@@ -6558,7 +6558,7 @@ TOOLS: dict[str, dict] = {
         "title": "Enregistrer des courriels dans OneDrive et Athéna",
         "description": (
             "ÉCRITURE — Enregistre des courriels Outlook et pièces dans "
-            "OneDrive (`4 - Dossiers`) et Athéna (`category_source=\"mcp\"`, "
+            "OneDrive (`Dossiers`) et Athéna (`category_source=\"mcp\"`, "
             "catégorie présumée), sans jamais écraser ni déplacer dans "
             "Outlook. Vérifie le dossier (`AAAA-NNN`), `cle` <-> "
             "`internetMessageId` et le dossier OneDrive. Noms imposés : "

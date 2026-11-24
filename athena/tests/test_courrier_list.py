@@ -92,7 +92,7 @@ def _courrier_env(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "client-id")
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "client-secret")
     monkeypatch.setattr(Config, "COURRIER_UPN", "juriste@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
     yield
     graph_courrier._reset_token_cache_for_tests()
 

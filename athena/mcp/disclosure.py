@@ -397,7 +397,7 @@ FAMILIES: tuple[Family, ...] = (
         ),
         instructions_en=(
             "`save_courriels` (`list_courriels` d'abord) verse `.eml`/pièces "
-            "dans OneDrive (`4 - Dossiers`) et Athéna ; "
+            "dans OneDrive (`Dossiers`) et Athéna ; "
             "`move_courriels` classe sous `Archive > Dossiers` ou « à "
             "classer » ; `idempotency_key` REQUISE."
         ),

@@ -4786,7 +4786,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         ),
         "compte": _str("Configured mailbox/OneDrive UPN; '' when unset."),
         "racine_onedrive": _str(
-            "Configured OneDrive root folder name (e.g. '4 - Dossiers')."
+            "Configured OneDrive root folder name (e.g. 'Dossiers')."
         ),
         "region": _str(
             "Execution region ('northamerica-northeast1' on App Engine, 'local' in dev)."

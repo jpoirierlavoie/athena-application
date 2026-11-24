@@ -58,7 +58,7 @@ def _reset_courrier_state(monkeypatch):
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "courrier-client-id")
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "courrier-secret")
     monkeypatch.setattr(Config, "COURRIER_UPN", "juriste@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
     monkeypatch.setattr(Config, "COURRIER_ACTIF", False)
     yield
     graph_courrier._reset_token_cache_for_tests()
@@ -246,13 +246,13 @@ def test_no_retry_on_client_or_auth_errors_and_no_pii_leak(monkeypatch, status_c
         attempts.append(url)
         return _FakeResponse(
             status_code,
-            text="Sensitive body juriste@cabinet.example /4 - Dossiers/Client SecretBody",
+            text="Sensitive body juriste@cabinet.example /Dossiers/Client SecretBody",
         )
 
     monkeypatch.setattr(graph_courrier._session, "get", fake_get)
 
     with pytest.raises(graph_courrier.CourrierGraphError) as exc_info:
-        graph_courrier.courrier_get("/users/juriste%40cabinet.example/drive/root:/4%20-%20Dossiers")
+        graph_courrier.courrier_get("/users/juriste%40cabinet.example/drive/root:/Dossiers")
 
     assert len(attempts) == 1
     assert sleeps == []

@@ -216,7 +216,7 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `COURRIER_GRAPH_CLIENT_ID` | ○ | `""` | Dedicated Entra app registration for Courrier (Application mode, zero `Mail.Send`) |
 | `COURRIER_GRAPH_CLIENT_SECRET` → secret `courrier-graph-client-secret` | ○ | `""` | Client secret for Courrier's Entra app registration (Secret Manager in prod, `required=False`) |
 | `COURRIER_UPN` | ○ | `""` | Target mailbox and OneDrive UPN for Courrier (scoped via Exchange RBAC) |
-| `COURRIER_ONEDRIVE_ROOT` | ○ | `4 - Dossiers` | Top-level OneDrive folder under which Courrier files emails and attachments |
+| `COURRIER_ONEDRIVE_ROOT` | ○ | `Dossiers` | Top-level OneDrive folder under which Courrier files emails and attachments |
 | `FEATURE_INTAKE` | ○ | `false` | Offers the portal's intake (dossier-opening) form when confirming a Bookings rendez-vous whose email matches no contact |
 
 ⚠ **Two Bookings settings have no environment variable at all.**
@@ -1372,10 +1372,10 @@ these two one-time Microsoft 365 steps on the main Entra app registration
    Set-CsTeamsMeetingConfiguration -EnableGraphTranscriptAccess $true
    New-CsApplicationAccessPolicy -Identity "PallasAthenaTeamsAccess" -AppIds "<GRAPH_CLIENT_ID>" -Description "Pallas Athena Teams meetings, transcripts and Copilot insights"
    Grant-CsApplicationAccessPolicy -PolicyName "PallasAthenaTeamsAccess" -Identity "<BOOKINGS_JURISTE_UPN>"
-   Set-CsTeamsMeetingPolicy -Identity Global -Copilot EnabledWithTranscriptDefaultOn -AutomaticallyStartCopilot Enabled
+   Set-CsTeamsMeetingPolicy -Identity Global -AllowCloudRecording $true -AllowTranscription $true -AutoRecording Enabled -NewMeetingRecordingExpirationDays 1 -Copilot EnabledWithTranscriptDefaultOn
    ```
 
-   Microsoft Graph `onlineMeeting` exposes no `transcribeAutomatically` property (Teams' « Transcription uniquement » dropdown stays internal to the Teams UI). Athena therefore disables cloud recording (`allowRecording: false`, `recordAutomatically: false`), enables `fr-ca` transcription (`allowTranscription: true`, `meetingSpokenLanguageTag: "fr-ca"`), and relies on `CsTeamsMeetingPolicy` (`-Copilot EnabledWithTranscriptDefaultOn -AutomaticallyStartCopilot Enabled`) so Copilot/Facilitator starts automatically with saved transcription without recording video.
+   Microsoft Graph `onlineMeeting` exposes no standalone `transcribeAutomatically` property (`-AutomaticallyStartCopilot` currently has no effect in Teams policies, and setting `recordAutomatically: true` with `allowRecording: false` puts meetings in an unsupported state that drops the transcript). Athena therefore enables cloud recording and automatic start (`allowRecording: true`, `allowTranscription: true`, `recordAutomatically: true`, `meetingSpokenLanguageTag: "fr-ca"`) so recording and transcription start automatically on join, paired with `-AutoRecording Enabled` and `-NewMeetingRecordingExpirationDays 1` in `CsTeamsMeetingPolicy` so cloud recordings expire after 24 hours once Athena captures the transcript.
 
    ⚠ Microsoft policy propagation can take **30 minutes to 2 hours**. Use the
    « Tester la connexion Microsoft Teams » button in **Paramètres → Rendez-vous**

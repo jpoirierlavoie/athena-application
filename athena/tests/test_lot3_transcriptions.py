@@ -410,7 +410,7 @@ def test_verser_without_onedrive_and_with_onedrive_partial_retry_idempotency(
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "cg-id")
     monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "cg-sec")
     monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
-    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "4 - Dossiers")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
 
     od_calls = []
 
@@ -432,7 +432,7 @@ def test_verser_without_onedrive_and_with_onedrive_partial_retry_idempotency(
         expected_etag=tr_h2["etag"],
         user_id="avocat@cabinet.example",
     )
-    assert errs_b1 and "OneDrive" in errs_b1[0]
+    assert errs_b1 and "OneDrive" in errs_b1[0] and "HTTP" not in errs_b1[0]
     assert partial_tr["status"] == "a_revoir"
     assert len(fake.peek_collection("notes")) == notes_before + 1
     assert partial_tr["versement"]["onedrive_note_item_id"] == "od-item-1"
@@ -454,6 +454,47 @@ def test_verser_without_onedrive_and_with_onedrive_partial_retry_idempotency(
     assert len(ingested) == 2  # +1 pour h2 uniquement au 1er essai
     assert len(od_calls) == 3  # uniquement le .docx transcription réessayé!
     assert final_tr["versement"]["onedrive_transcript_item_id"] == "od-item-3"
+
+
+def test_verser_onedrive_error_surfaces_http_status_code_without_pii(
+    fake_world, monkeypatch
+):
+    fake, _bucket = fake_world
+    _seed_hearing(fake, "h-404")
+    tr_doc, _ = tr_model.upsert_staged_transcription(
+        "h-404",
+        online_meeting_id="om-404",
+        dossier_id="d1",
+        has_transcript=False,
+        has_insights=True,
+        copilot_markdown="## Synthèse\n\n- Point confidentiel",
+    )
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_ID", "cg-id")
+    monkeypatch.setattr(Config, "COURRIER_GRAPH_CLIENT_SECRET", "cg-sec")
+    monkeypatch.setattr(Config, "COURRIER_UPN", "avocat@cabinet.example")
+    monkeypatch.setattr(Config, "COURRIER_ONEDRIVE_ROOT", "Dossiers")
+
+    def fail_404(**_kw):
+        raise graph_courrier.CourrierGraphError(
+            "Échec d'un GET Graph Courrier (HTTP 404).",
+            status_code=404,
+        )
+
+    monkeypatch.setattr(courrier_service, "deposer_docx_interne_onedrive", fail_404)
+
+    partial_tr, errs, _ = tx_service.verser_transcription(
+        "h-404",
+        dossier_id="d1",
+        note_title="Consultation — Dr. Test",
+        note_category="consultation",
+        markdown_content="## Synthèse\n\n- Point confidentiel",
+        expected_etag=tr_doc["etag"],
+        user_id="avocat@cabinet.example",
+    )
+    assert partial_tr is not None and partial_tr["status"] == "a_revoir"
+    assert errs == [
+        "Versement Athéna enregistré, mais le dépôt des notes dans OneDrive a échoué (HTTP 404) — réessayez pour compléter OneDrive sans doublon."
+    ]
 
 
 def test_ecarter_purges_staged_vtt_and_refuses_if_already_versee(fake_world):

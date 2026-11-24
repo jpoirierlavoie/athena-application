@@ -153,7 +153,7 @@ env_variables:
   COURRIER_ACTIF: "true"
   COURRIER_GRAPH_CLIENT_ID: "32925bdd-6028-4f4a-8a91-5f951bd205d7"
   COURRIER_UPN: "jason@poirierlavoie.ca"
-  COURRIER_ONEDRIVE_ROOT: "4 - Dossiers"
+  COURRIER_ONEDRIVE_ROOT: "Dossiers"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
