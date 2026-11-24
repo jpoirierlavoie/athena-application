@@ -914,3 +914,143 @@ def test_streaming_digest_reader_satisfies_real_gcs_resumable_upload(total):
     assert reader.tell() == reader.size == len(data)
     assert reader.sha256.hexdigest() == hashlib.sha256(data).hexdigest()
     assert reader.quickxorhash.b64digest() == quickxorhash_b64(data)
+
+
+def test_number_only_onedrive_dossier_names_supported(env):
+    drive = env["drive"]
+    db = env["db"]
+
+    # MCP schema accepts 8-char number-only dossier_onedrive and rejects 7-char strings
+    assert (
+        tools.validate_args(
+            tools.TOOLS["save_courriels"]["input_schema"],
+            {
+                "idempotency_key": "k-num-schema-ok",
+                "messages": [
+                    {
+                        "cle": "0" * 16,
+                        "id": "m1",
+                        "dossier": "2026-010",
+                        "dossier_onedrive": "2026-010",
+                    }
+                ],
+            },
+        )
+        == []
+    )
+    errs_short = tools.validate_args(
+        tools.TOOLS["save_courriels"]["input_schema"],
+        {
+            "idempotency_key": "k-num-schema-bad",
+            "messages": [
+                {
+                    "cle": "0" * 16,
+                    "id": "m1",
+                    "dossier": "2026-010",
+                    "dossier_onedrive": "2026-00",
+                }
+            ],
+        },
+    )
+    assert errs_short
+
+    # _clean_dossier_onedrive_name accepts number-only & prefixed, rejects invalid
+    assert courrier_service._clean_dossier_onedrive_name("2026-010", "2026-010") == "2026-010"
+    assert (
+        courrier_service._clean_dossier_onedrive_name("2026-010 - Client", "2026-010")
+        == "2026-010 - Client"
+    )
+    for bad in ("2026-002", "2026-0100", "2026-010abc", "2026-010/sub", "2026-010 .."):
+        assert courrier_service._clean_dossier_onedrive_name(bad, "2026-010") is None
+    assert courrier_service._clean_dossier_onedrive_name("2026-010", "") is None
+
+    # Save into existing number-only OneDrive folder ("2026-010")
+    db.seed(
+        "dossiers/a0000000-0000-4000-8000-000000000010",
+        {
+            "id": "a0000000-0000-4000-8000-000000000010",
+            "file_number": "2026-010",
+            "title": "Dossier Dix",
+            "status": "actif",
+            "clients": [],
+            "opposing_parties": [],
+            "other_parties": [],
+        },
+    )
+    od_10 = drive.add_folder(drive.root_id, "2026-010", fid="od-d10")
+    eml_10 = b"From: client@ex.com\r\nSubject: Dix\r\n\r\nBonjour.\r\n"
+    cle_10 = drive.add_email(
+        "msg-num-10", imid="<num-10@cabinet.example>", mime_bytes=eml_10
+    )
+    res_10 = handlers.save_courriels({
+        "idempotency_key": "k-num-save-10",
+        "messages": [
+            {
+                "cle": cle_10,
+                "id": "msg-num-10",
+                "dossier": "2026-010",
+                "dossier_onedrive": "2026-010",
+                "creer_dossier_onedrive": False,
+            }
+        ],
+    })
+    assert res_10["traites"] == 1 and res_10["echecs"] == 0
+    assert res_10["messages"][0]["dossier_onedrive_cree"] is False
+    assert res_10["messages"][0]["fichiers"][0]["chemin"].startswith("2026-010\\")
+
+    # Create a new number-only OneDrive folder ("2026-011", creer_dossier_onedrive=True)
+    db.seed(
+        "dossiers/a0000000-0000-4000-8000-000000000011",
+        {
+            "id": "a0000000-0000-4000-8000-000000000011",
+            "file_number": "2026-011",
+            "title": "Dossier Onze",
+            "status": "actif",
+            "clients": [],
+            "opposing_parties": [],
+            "other_parties": [],
+        },
+    )
+    eml_11 = b"From: client@ex.com\r\nSubject: Onze\r\n\r\nBonjour.\r\n"
+    cle_11 = drive.add_email(
+        "msg-num-11", imid="<num-11@cabinet.example>", mime_bytes=eml_11
+    )
+    res_11 = handlers.save_courriels({
+        "idempotency_key": "k-num-save-11",
+        "messages": [
+            {
+                "cle": cle_11,
+                "id": "msg-num-11",
+                "dossier": "2026-011",
+                "dossier_onedrive": "2026-011",
+                "creer_dossier_onedrive": True,
+            }
+        ],
+    })
+    assert res_11["traites"] == 1 and res_11["echecs"] == 0
+    assert res_11["messages"][0]["dossier_onedrive_cree"] is True
+    assert res_11["messages"][0]["fichiers"][0]["chemin"].startswith("2026-011\\")
+    assert "2026-011" in drive.folders[drive.root_id]["children"]
+
+    # deposer_docx_interne_onedrive reuses existing number-only folder & creates number-only when absent
+    reused = courrier_service.deposer_docx_interne_onedrive(
+        user_id="u1",
+        dossier_numero="2026-010",
+        dossier_titre="Dossier Dix",
+        nom_fichier="Notes 2026-11-24.docx",
+        contenu_docx=b"PK\x03\x04fake-docx-10",
+    )
+    assert reused["statut"] == "cree"
+    od_10_interne = drive.folders[od_10]["children"]["interne"]
+    assert drive.folders[od_10_interne]["parent_id"] == od_10
+
+    created = courrier_service.deposer_docx_interne_onedrive(
+        user_id="u1",
+        dossier_numero="2026-012",
+        dossier_titre="Nouveau Dossier Avec Titre",
+        nom_fichier="Notes 2026-11-24.docx",
+        contenu_docx=b"PK\x03\x04fake-docx-12",
+    )
+    assert created["statut"] == "cree"
+    od_12 = drive.folders[drive.root_id]["children"]["2026-012"]
+    assert drive.folders[od_12]["name"] == "2026-012"

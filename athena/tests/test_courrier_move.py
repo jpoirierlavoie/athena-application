@@ -764,3 +764,91 @@ def test_tool_descriptor_and_schema_wiring():
     assert "move_courriels" in tools.WRITE_TOOLS
     assert "move_courriels" in tools.EDIT_TOOLS
     assert tools.idempotency_policy("move_courriels") == tools.IDEMPOTENCY_REQUIRED
+
+
+def test_number_only_outlook_dossier_names_supported(env):
+    fake, gm = env
+
+    # MCP schema accepts 8-char number-only outlook_creer.nom and rejects 7-char strings
+    assert (
+        tools.validate_args(
+            tools.TOOLS["move_courriels"]["input_schema"],
+            {
+                "idempotency_key": "k-outlook-num-ok",
+                "messages": [
+                    {
+                        "cle": "0" * 16,
+                        "id": "imm-1",
+                        "action": "classer",
+                        "dossier": "2026-016",
+                        "outlook_creer": {"statut": "Actifs", "nom": "2026-016"},
+                    }
+                ],
+            },
+        )
+        == []
+    )
+    errs_short = tools.validate_args(
+        tools.TOOLS["move_courriels"]["input_schema"],
+        {
+            "idempotency_key": "k-outlook-num-bad",
+            "messages": [
+                {
+                    "cle": "0" * 16,
+                    "id": "imm-1",
+                    "action": "classer",
+                    "dossier": "2026-016",
+                    "outlook_creer": {"statut": "Actifs", "nom": "2026-01"},
+                }
+            ],
+        },
+    )
+    assert errs_short
+
+    # _clean_dossier_outlook_name accepts number-only & prefixed, rejects invalid
+    assert courrier_service._clean_dossier_outlook_name("2026-016", "2026-016") == "2026-016"
+    assert (
+        courrier_service._clean_dossier_outlook_name("2026-016 - Client", "2026-016")
+        == "2026-016 - Client"
+    )
+    for bad in ("2026-017", "2026-0160", "2026-016/sub"):
+        assert courrier_service._clean_dossier_outlook_name(bad, "2026-016") is None
+    assert courrier_service._clean_dossier_outlook_name("2026-016", "") is None
+
+    # Classify into existing number-only Outlook subfolder ("2026-010")
+    fid_10 = gm.add_dossier_folder("Actifs", "2026-010", fid="fld-2026-010")
+    cle_10 = gm.add_message(msg_id="imm-num-10", internet_message_id="<out10@cabinet.example>")
+    _seed_enregistre(fake, cle_10, "imm-num-10", numero="2026-010")
+
+    res_existing = handlers.move_courriels({
+        "idempotency_key": "move-num-10",
+        "messages": [
+            {"cle": cle_10, "id": "imm-num-10", "action": "classer", "dossier": "2026-010"}
+        ],
+    })
+    assert res_existing["classes"] == 1 and res_existing["echecs"] == 0
+    assert res_existing["messages"][0]["outlook_folder_id"] == fid_10
+    assert res_existing["messages"][0]["dossier_outlook_cree"] is False
+    assert gm.messages["imm-num-10"]["parentFolderId"] == fid_10
+
+    # Create and classify into new number-only Outlook subfolder ("2026-016")
+    cle_16 = gm.add_message(msg_id="imm-num-16", internet_message_id="<out16@cabinet.example>")
+    _seed_enregistre(fake, cle_16, "imm-num-16", numero="2026-016")
+
+    res_create = handlers.move_courriels({
+        "idempotency_key": "move-num-16",
+        "messages": [
+            {
+                "cle": cle_16,
+                "id": "imm-num-16",
+                "action": "classer",
+                "dossier": "2026-016",
+                "outlook_creer": {"statut": "Actifs", "nom": "2026-016"},
+            }
+        ],
+    })
+    assert res_create["classes"] == 1 and res_create["echecs"] == 0
+    created_fid = res_create["messages"][0]["outlook_folder_id"]
+    assert res_create["messages"][0]["dossier_outlook_cree"] is True
+    assert gm.folders[created_fid]["displayName"] == "2026-016"
+    assert gm.messages["imm-num-16"]["parentFolderId"] == created_fid
