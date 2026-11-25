@@ -66,9 +66,7 @@ from models.admin_ledger import (
     KIND_LABELS,
     MAX_RECEIPT_SIZE,
     METHOD_LABELS,
-    RECEIPT_ACCEPT,
     RECEIPT_EXTENSIONS,
-    RECEIPT_HINT_FR,
     RECEIPT_MIME_TYPES,
     RECEIPT_SIZE_REFUSED_FR,
     RECEIPT_TYPE_REFUSED_FR,
@@ -80,6 +78,7 @@ from models.admin_ledger import (
     VALID_TX_STATUSES,
     direction_labels_for,
 )
+from utils.receipts import RECEIPT_ACCEPT, RECEIPT_HINT_FR
 from models.audit_event import record_deletion
 from services import comptabilite
 from services import pieces_justificatives

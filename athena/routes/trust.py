@@ -45,9 +45,7 @@ from models.trust import (
     MAX_RECEIPT_SIZE,
     METHOD_LABELS,
     PURPOSE_LABELS,
-    RECEIPT_ACCEPT,
     RECEIPT_EXTENSIONS,
-    RECEIPT_HINT_FR,
     RECEIPT_MIME_TYPES,
     RECEIPT_SIZE_REFUSED_FR,
     RECEIPT_TYPE_REFUSED_FR,
@@ -59,6 +57,7 @@ from models.trust import (
     VALID_PURPOSES,
     VALID_TX_STATUSES,
 )
+from utils.receipts import RECEIPT_ACCEPT, RECEIPT_HINT_FR
 from pagination import (
     PAGE_SIZE,
     cursor_pagination,

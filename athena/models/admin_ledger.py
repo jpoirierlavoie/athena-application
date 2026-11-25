@@ -117,10 +117,8 @@ from utils.logging_setup import (
 )
 from utils.receipts import (
     MAX_RECEIPT_SIZE,
-    RECEIPT_ACCEPT,
     RECEIPT_CONTENT_MISMATCH_FR,
     RECEIPT_EXTENSIONS,
-    RECEIPT_HINT_FR,
     RECEIPT_MD5_MAX as _RECEIPT_MD5_MAX,
     RECEIPT_MIME_TYPES,
     RECEIPT_SIZE_REFUSED_FR,

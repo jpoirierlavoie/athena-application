@@ -1742,13 +1742,6 @@ def _update_dossier(
     # AFTER the commit, best-effort: a journal failure never fails the save
     # (the audit_events doctrine — the write already happened).
     journaled = _journal_party_detaches(dossier_id, existing, merged)
-    if kyc.FIELD_CONFLICT in clean_data:
-        try:
-            from models import protocol as protocol_model
-            protocol_model.sync_ouverture_conflict_step(dossier_id, merged)
-        except Exception:
-            log_unexpected("ouverture conflict step sync failed",
-                           dossier_id=dossier_id)
     if merged.get("file_number") != existing.get("file_number"):
         _dispatch_onedrive("sync_dossier_tree", dossier_id=dossier_id)
     return merged, [], journaled
@@ -1834,12 +1827,6 @@ def confirm_dossier_conflict_check(
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, dossier_id)
     saved = {**existing, **fields}
-    try:
-        from models import protocol as protocol_model
-        protocol_model.sync_ouverture_conflict_step(dossier_id, saved)
-    except Exception:
-        log_unexpected("ouverture conflict step sync failed",
-                       dossier_id=dossier_id)
     return saved, []
 
 

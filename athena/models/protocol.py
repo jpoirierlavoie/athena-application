@@ -871,12 +871,29 @@ def regime_mismatch(protocol_type: str, dossier: Optional[dict]) -> bool:
     return bool(tribunal) and tribunal != expected
 
 
+def _read_dossier_strict(dossier_id: str) -> Optional[dict]:
+    """Read dossier document strictly without importing models.dossier."""
+    if not is_addressable_id(dossier_id):
+        return None
+    snap = db.collection("dossiers").document(dossier_id).get()
+    if not snap.exists:
+        return None
+    return dict(snap.to_dict() or {})
+
+
+def _read_dossier(dossier_id: str) -> Optional[dict]:
+    """Read dossier document fail-open without importing models.dossier."""
+    try:
+        return _read_dossier_strict(dossier_id)
+    except Exception:
+        return None
+
+
 def _regime_errors(dossier_id: str, protocol_type: str) -> list[str]:
     """French, actionable refusal when the template regime is incoherent."""
     if protocol_type == "ouverture":
         return []
-    from models.dossier import get_dossier
-    dossier = get_dossier(dossier_id)
+    dossier = _read_dossier(dossier_id)
     if protocol_type == "prejudiciaire":
         if not regime_mismatch(protocol_type, dossier):
             return []
@@ -1280,9 +1297,8 @@ def ensure_ouverture_protocol(
     if not is_addressable_id(dossier_id):
         return None, ["Identifiant de dossier invalide."]
     if dossier is None:
-        from models.dossier import get_dossier_strict
         try:
-            dossier = get_dossier_strict(dossier_id)
+            dossier = _read_dossier_strict(dossier_id)
         except Exception:
             log_unexpected("ouverture protocol: dossier read failed",
                            dossier_id=dossier_id)

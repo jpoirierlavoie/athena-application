@@ -47,10 +47,13 @@ from config import Config
 from firebase_admin import storage
 from google.cloud.firestore_v1 import FieldFilter
 from models import db
-from models.document import _zip_component, _zip_entry_basename
-from services.courrier import extraire_prefixe_dossier
 from utils import graph_courrier
 from utils.logging_setup import log_onedrive_mirror_event, sanitize_log_value
+from utils.noms_fichiers import (
+    extraire_prefixe_dossier,
+    zip_component as _zip_component,
+    zip_entry_basename as _zip_entry_basename,
+)
 from utils.quickxorhash import quickxorhash_b64
 
 logger = logging.getLogger(__name__)

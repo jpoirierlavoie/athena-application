@@ -28,6 +28,12 @@ from security import sanitize
 from tz import to_mtl
 from utils import storage_identity
 from utils.logging_setup import log_unexpected, sanitize_log_value
+from utils.noms_fichiers import (
+    DOWNLOAD_EXTENSIONS as _DOWNLOAD_EXTENSIONS,
+    EXTENSION_MIME_TYPES,
+    zip_component as _zip_component,
+    zip_entry_basename as _zip_entry_basename,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,26 +77,6 @@ ALLOWED_MIME_TYPES = {
 ALLOWED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
     ".zip", ".eml", ".msg", ".xls", ".xlsx", ".txt", ".csv",
-}
-
-# Expected MIME type for each allowed extension (used to detect a
-# mismatch between the sniffed content and the client-supplied name)
-EXTENSION_MIME_TYPES = {
-    ".pdf": "application/pdf",
-    ".doc": "application/msword",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".tiff": "image/tiff",
-    ".tif": "image/tiff",
-    ".zip": "application/zip",
-    ".eml": "message/rfc822",
-    ".msg": "application/vnd.ms-outlook",
-    ".xls": "application/vnd.ms-excel",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".txt": "text/plain",
-    ".csv": "text/csv",
 }
 
 # Max document size: 200 MB (user decision 2026-08-12 — was 25 MB; the
@@ -220,20 +206,6 @@ _ATTACHMENT_ONLY_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "text/plain",
     "text/csv",
-}
-
-# Download-filename extensions, deterministic across platforms —
-# mimetypes reads OS registries and may return ".jpe" for JPEG,
-# ".mht"/None for rfc822/ms-outlook depending on the host.
-_DOWNLOAD_EXTENSIONS = {
-    "image/jpeg": ".jpg",
-    "application/zip": ".zip",
-    "message/rfc822": ".eml",
-    "application/vnd.ms-outlook": ".msg",
-    "application/vnd.ms-excel": ".xls",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-    "text/plain": ".txt",
-    "text/csv": ".csv",
 }
 
 
@@ -2610,76 +2582,12 @@ MAX_ZIP_TOTAL_BYTES = 400 * 1024 * 1024
 MAX_ZIP_FILES = 150
 _ZIP_CHUNK = 8 * 1024 * 1024   # multiple obligatoire de 256 Kio (BlobWriter)
 
-# Caractères que l'extraction Windows refuse — un zip que l'Explorateur ne
-# peut extraire dénature le dossier autant qu'un fichier manquant.
-_WINDOWS_HOSTILES = '<>:"/\\|?*'
-_DOS_RESERVES = (
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{i}" for i in range(1, 10)}
-    | {f"LPT{i}" for i in range(1, 10)}
-)
-
 
 class _ZipEntry(NamedTuple):
     arcname: str
     storage_path: str
     file_size: int
     created_at: object
-
-
-def _zip_component(name: str) -> str:
-    """Assainit UN segment de chemin d'archive (nom de dossier ou de
-    fichier) pour une extraction Windows propre. Balayages linéaires,
-    aucun regex (doctrine CWE-1333)."""
-    propre = "".join(
-        ch for ch in str(name or "") if ord(ch) >= 32 and ord(ch) != 127
-    )
-    propre = "".join(
-        "-" if ch in _WINDOWS_HOSTILES else ch for ch in propre
-    )
-    sortie: list[str] = []
-    for ch in propre:
-        if ch.isspace():
-            if sortie and sortie[-1] == " ":
-                continue
-            sortie.append(" ")
-        elif ch == "-" and sortie and sortie[-1] == "-":
-            continue
-        else:
-            sortie.append(ch)
-    propre = "".join(sortie).strip().rstrip(". ")
-    if propre and propre.split(".", 1)[0].upper() in _DOS_RESERVES:
-        propre = "_" + propre
-    if not propre:
-        return "sans-titre"
-    if len(propre) > 150:
-        base, ext = os.path.splitext(propre)
-        garde = ext if len(ext) <= 10 else ""
-        propre = base[: 150 - len(garde)] + garde
-    return propre
-
-
-def _zip_entry_basename(doc: dict) -> str:
-    """Nom de fichier d'une entrée d'archive, avec garantie d'extension.
-
-    Précédent get_signed_url (display_name → original_filename → filename),
-    resserré à dessein : le test n'est pas « un point quelque part » mais
-    « se termine par une extension CONNUE du type » — « Pièce P-1.2 » doit
-    devenir « Pièce P-1.2.pdf » (sur disque l'extension choisit l'ouvreur)
-    sans doubler « photo.jpeg » en « photo.jpeg.jpg »."""
-    file_type = doc.get("file_type", "")
-    nom = _zip_component(
-        doc.get("display_name") or doc.get("original_filename")
-        or doc.get("filename") or "document"
-    )
-    connues = [e for e, m in EXTENSION_MIME_TYPES.items() if m == file_type]
-    if not any(nom.lower().endswith(e) for e in connues):
-        nom += (
-            _DOWNLOAD_EXTENSIONS.get(file_type)
-            or (connues[0] if connues else "")
-            or (mimetypes.guess_extension(file_type) or "")
-        )
-    return nom
 
 
 def _zip_dedupe(nom: str, used: set, is_dir: bool) -> str:

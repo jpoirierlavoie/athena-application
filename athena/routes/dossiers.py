@@ -74,6 +74,7 @@ from models.protocol import (
     list_protocols_for_dossier,
     pretrial_headings_for,
     resolve_step_actor_badge,
+    sync_ouverture_conflict_step,
     track_of,
 )
 from models.document import (
@@ -1261,6 +1262,9 @@ def dossier_update(dossier_id: str) -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
+    if "conflict_check" in data and dossier:
+        sync_ouverture_conflict_step(dossier_id, dossier)
+
     # The status is written. When its DavX5 drain or restore could not
     # finish, the detail page says so and offers the resync — a success
     # banner would hide a phone left out of step, and a refusal would lie
@@ -1280,7 +1284,7 @@ def dossier_confirm_conflict(dossier_id: str) -> Response:
     if not dossier_id.strip():
         return redirect(url_for("dossiers.dossier_list"))
     expected = edit_conflict.submitted_etag()
-    _doc, errors = confirm_dossier_conflict_check(
+    doc, errors = confirm_dossier_conflict_check(
         dossier_id, par=kyc.SOURCE_JURISTE, expected_etag=expected,
     )
     if errors:
@@ -1295,6 +1299,7 @@ def dossier_confirm_conflict(dossier_id: str) -> Response:
         return redirect_after_post(url_for(
             "dossiers.dossier_detail", dossier_id=dossier_id, erreur=code,
         ))
+    sync_ouverture_conflict_step(dossier_id, doc)
     log_dossier_event("dossier_conflict_confirmed", dossier_id)
     return redirect_after_post(url_for(
         "dossiers.dossier_detail", dossier_id=dossier_id,
