@@ -1088,7 +1088,7 @@ def test_1f_dynamic_folder_endpoint_and_bulk_verser_refuser_actions_lot(app_ctx,
         )
         assert unreadable_d.status_code == 302 and "erreur=" in unreadable_d.headers["Location"]
     with monkeypatch.context() as mp:
-        mp.setattr(reception_routes.concurrency, "is_outcome_uncertain", lambda errs: bool(errs))
+        mp.setattr(reception_routes.concurrency, "is_outcome_uncertain", bool)
         mp.setattr(
             reception_routes,
             "ingest_blob_as_document",

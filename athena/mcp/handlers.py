@@ -6086,7 +6086,7 @@ def _billing_edit(
             and stored_dossier
             and not set(args) - {id_key, "dossier_id", "expected_etag",
                                  "idempotency_key"}):
-        return _billing_unmoved(existing, kind, entity_type, entity_builder)
+        return _entry_unmoved(existing, kind, entity_type, entity_builder)
     expected = _expected_etag(args, existing, tool=tool, subject=stale_subject)
     _refuse_if_invoiced(existing, kind)
 
@@ -6164,7 +6164,7 @@ def _billing_edit(
     if target is not None and not moved:
         # The model found the row already in the target (a concurrent move
         # to the same dossier): it wrote nothing, and says so.
-        return _billing_unmoved(row, kind, entity_type, entity_builder)
+        return _entry_unmoved(row, kind, entity_type, entity_builder)
     return {
         "updated": True,
         "entity_type": entity_type,
@@ -6179,7 +6179,7 @@ def _billing_edit(
     }
 
 
-def _billing_unmoved(row: dict, kind: str, entity_type: str,
+def _entry_unmoved(row: dict, kind: str, entity_type: str,
                      entity_builder) -> dict:
     """The row is already filed in the dossier asked for — nothing written."""
     return {
