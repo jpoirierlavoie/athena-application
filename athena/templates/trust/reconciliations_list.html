@@ -4,10 +4,14 @@
 <div class="max-w-3xl mx-auto px-4 py-6">
   <div class="flex items-center justify-between mb-6">
     <div class="flex items-center gap-2">
-      <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+      <a href="{{ url_for('trust.journal') }}"
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+         aria-label="Retour au journal" title="Retour au journal">{{ ms('arrow_back', 20) }}</a>
       <h1 class="text-xl font-semibold text-gray-900">Conciliations bancaires</h1>
     </div>
-    <a href="{{ url_for('trust.reconciliation_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouvelle</a>
+    <a href="{{ url_for('trust.reconciliation_new') }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800"
+       aria-label="Nouvelle conciliation" title="Nouvelle conciliation">{{ ms('add', 20) }}<span class="sr-only">Nouvelle</span></a>
   </div>
 
   {# Un abandon refusé dont la feuille n'a pas pu être relue

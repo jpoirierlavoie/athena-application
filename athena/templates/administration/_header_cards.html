@@ -4,6 +4,27 @@
    COMPTE laisserait sinon les chiffres de l'ancien compte au-dessus du
    registre du nouveau (la classe de bogue des liens d'export, 2026-08-11).
    Args : account, header. #}
+{% if is_all_accounts %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+  {% for item in account_headers %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between gap-3">
+    <div>
+      <p class="font-medium text-gray-900">{{ item.account.name }}
+        <span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 ml-1">{{ account_type_labels.get(item.account.account_type, item.account.account_type) }}</span>
+      </p>
+      <p class="text-xs text-gray-500 mt-0.5">Dernière conciliation : {{ item.header.last_reconciliation_date.strftime('%Y-%m-%d') if item.header.last_reconciliation_date else '—' }}</p>
+      {% if item.header.reconciliation_overdue %}
+      <p class="text-xs text-amber-700 mt-1">Conciliation en retard</p>
+      {% endif %}
+    </div>
+    <div class="text-right">
+      <p class="text-xs text-gray-500">{{ item.header.balance_label }}</p>
+      <p class="text-lg font-semibold text-gray-900">{{ item.header.display_balance | cents_fr }}</p>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
 <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
   <div class="bg-white rounded-xl border border-gray-200 p-4">
     <p class="text-xs text-gray-500">{{ header.balance_label }}</p>
@@ -28,4 +49,5 @@
 <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
   Conciliation en retard — plus de 30 jours depuis la dernière fin de mois conciliée.
 </div>
+{% endif %}
 {% endif %}

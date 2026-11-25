@@ -83,6 +83,7 @@ KILL_SWITCHES: tuple[str, ...] = (
     "bookings_sync_active",
     "miroir_outlook_actif",
     "courrier_actif",
+    "miroir_onedrive_actif",
     "teams_reunions_actif",
 )
 

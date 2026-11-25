@@ -27,10 +27,18 @@
       {% endif %}
 
       {% if invitation %}
-      <p class="text-xs text-gray-500">
-        {{ invitation.email }}
-        {% if invitation.statut %} · <span class="font-medium">{{ invitation.statut }}</span>{% endif %}
-      </p>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-xs text-gray-500">
+          {{ invitation.email }}
+          {% if invitation.statut %} · <span class="font-medium">{{ invitation.statut }}</span>{% endif %}
+        </p>
+        {% if invitation.type in ('documents', 'intake') %}
+        <a href="{{ url_for('reception.invitation_accuse_pdf', inv_id=invitation.id) }}"
+           class="inline-flex items-center gap-1 min-h-[44px] px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+          {{ ms('picture_as_pdf', 16) }}<span>Télécharger l'accusé PDF</span>
+        </a>
+        {% endif %}
+      </div>
       {% endif %}
 
       {% if not lots %}

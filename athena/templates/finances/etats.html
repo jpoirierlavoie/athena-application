@@ -32,10 +32,10 @@
     <button type="submit" class="inline-flex items-center px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Afficher</button>
     {% if nav %}
     {% if nav.previous %}
-    <a href="{{ url_for('etats_financiers.index', periode=nav.previous) }}" class="inline-flex items-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50" aria-label="Période précédente" title="Période précédente">{{ ms('chevron_left', 20) }}</a>
+    <a href="{{ url_for('etats_financiers.index', periode=nav.previous) }}" class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50" aria-label="Période précédente" title="Période précédente">{{ ms('chevron_left', 20) }}</a>
     {% endif %}
     {% if nav.next %}
-    <a href="{{ url_for('etats_financiers.index', periode=nav.next) }}" class="inline-flex items-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50" aria-label="Période suivante" title="Période suivante">{{ ms('chevron_right', 20) }}</a>
+    <a href="{{ url_for('etats_financiers.index', periode=nav.next) }}" class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50" aria-label="Période suivante" title="Période suivante">{{ ms('chevron_right', 20) }}</a>
     {% endif %}
     {% endif %}
   </form>
@@ -50,7 +50,12 @@
   {% if view %}
   <div class="flex items-center justify-between mb-3">
     <p class="text-xs text-gray-500">{{ view.computed_line }}</p>
-    <a href="{{ url_for('etats_financiers.pdf', periode=nav.slug) }}" class="inline-flex items-center gap-1 py-3 text-sm font-medium text-indigo-600 hover:text-indigo-700">{{ ms('picture_as_pdf', 16) }} Télécharger le PDF</a>
+    <a href="{{ url_for('etats_financiers.pdf', periode=nav.slug) }}"
+       aria-label="Télécharger le PDF"
+       title="Télécharger le PDF"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-indigo-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 hover:text-indigo-700">
+      {{ ms('picture_as_pdf', 20) }}<span class="sr-only">Télécharger le PDF</span>
+    </a>
   </div>
 
   <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">

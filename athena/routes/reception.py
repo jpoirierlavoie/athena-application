@@ -16,12 +16,14 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from firebase_admin import storage
 from flask import (
     Blueprint,
+    Response,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -53,15 +55,27 @@ from models.document import (
     sign_blob_url,
 )
 from routes.documents import DOSSIER_READ_FAILED
-from routes.taches_portail import sha512_flux
-from models.dossier import get_dossier, get_dossier_strict, list_dossiers
+from routes.taches_portail import _client_expediteur, _composer_cabinet, sha512_flux
+from models.dossier import (
+    create_dossier,
+    get_dossier,
+    get_dossier_strict,
+    list_dossiers,
+    suggest_file_number,
+)
 from models.folder import (
     PORTAL_FOLDER_NAME,
     SYSTEM_FOLDER_NAMES,
     SYSTEM_ROLE_AUTRES,
     SYSTEM_ROLE_PORTAIL,
+    build_folder_tree,
+    ensure_default_tree,
     ensure_system_folder,
+    get_folder_strict,
+    list_dossier_folders,
 )
+from models.protocol import ensure_ouverture_protocol
+from utils import kyc
 from models import concurrency
 from models import transcription_reunion as tr_model
 from models.hearing import (
@@ -76,6 +90,7 @@ from models.partie import (
     create_partie,
     display_name,
     get_partie,
+    get_partie_strict,
     list_parties,
     update_partie,
 )
@@ -93,13 +108,14 @@ from utils import (
     rapprochement,
     storage_identity,
 )
-from utils.logging_setup import log_bookings_event, log_portail_event
+from utils.accuse_reception_pdf import build_accuse_reception_pdf
+from utils.logging_setup import log_bookings_event, log_portail_event, log_unexpected
 
 logger = logging.getLogger(__name__)
 
 reception_bp = Blueprint("reception", __name__, url_prefix="/reception")
 
-_ONGLETS = ("documents", "rdv", "ouvertures")
+_ONGLETS = ("tout", "documents", "rdv", "ouvertures", "archives")
 _JOURS_CHOIX = (14, 30, 60, 90)
 
 # D18 : la catégorie que le sélecteur du VERSEMENT présélectionne
@@ -249,15 +265,87 @@ def _versable(entree: dict) -> bool:
     )
 
 
+_EPOCH_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _parse_sort_dt(raw: object) -> datetime:
+    """Normalize a UTC timestamp or ISO string for descending chronological sort."""
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        text = raw.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return _EPOCH_MIN
+    return _EPOCH_MIN
+
+
 def _rediriger(message: str = "", erreur: str = "", onglet: str = ""):
+    posted = (request.form.get("onglet") or "").strip() if request.method == "POST" else ""
+    cible = posted if posted in _ONGLETS else (onglet if onglet in _ONGLETS else "")
     args = {}
-    if onglet:
-        args["onglet"] = onglet
+    if cible:
+        args["onglet"] = cible
     if message:
         args["message"] = message
     if erreur:
         args["erreur"] = erreur
     return redirect(url_for("reception.index", **args))
+
+
+def _onglet_soumis(defaut: str = "") -> str:
+    raw = (request.form.get("onglet") or "").strip()
+    return raw if raw in _ONGLETS else defaut
+
+
+def _folder_options_for_dossier(dossier_id: str) -> tuple[list[tuple[str, str]], bool]:
+    """Return ``([(folder_id, breadcrumb_label), ...], readable)`` for *dossier_id*."""
+    if not is_addressable_id(dossier_id):
+        return [], True
+    try:
+        folders = list_dossier_folders(dossier_id)
+    except Exception as exc:
+        logger.warning("reception: dossier folder list failed: %s", type(exc).__name__)
+        return [], False
+    roots = build_folder_tree(folders)
+    options: list[tuple[str, str]] = []
+
+    def _walk(nodes: list[dict], prefix: str) -> None:
+        for node in nodes:
+            name = (node.get("name") or "").strip() or "Sans nom"
+            label = f"{prefix} › {name}" if prefix else name
+            options.append((node["id"], label))
+            _walk(node.get("children") or [], label)
+
+    _walk(roots, "")
+    return options, True
+
+
+def _dossier_folder_breadcrumb(dossier_id: str, folder: dict) -> str:
+    """Best-effort human-readable path label for an already-validated *folder*."""
+    name = (folder.get("name") or "").strip() or PORTAL_FOLDER_NAME
+    if not folder.get("parent_folder_id"):
+        return name
+    if folder.get("system_role") == SYSTEM_ROLE_PORTAIL:
+        return _chemin_recus(folder)
+    try:
+        folders = list_dossier_folders(dossier_id)
+    except Exception:
+        return name
+    by_id = {f.get("id"): f for f in folders if f.get("id")}
+    parts = [name]
+    cur_parent = folder.get("parent_folder_id")
+    seen = {folder.get("id")}
+    while cur_parent and cur_parent in by_id and cur_parent not in seen:
+        seen.add(cur_parent)
+        pnode = by_id[cur_parent]
+        parts.append((pnode.get("name") or "").strip() or "Dossier")
+        cur_parent = pnode.get("parent_folder_id")
+    return " › ".join(reversed(parts))
 
 
 # ── Onglet « Rendez-vous » (Bookings L2 §5) ──────────────────────────────
@@ -581,18 +669,116 @@ def _contexte_ouvertures() -> dict:
             "consentement": (enveloppe or {}).get("consentement") or {},
             "versions": len(lots),
         })
+    if contexte["ouvertures"]:
+        try:
+            contexte["numero_dossier_suggere"] = suggest_file_number()
+        except Exception:
+            contexte["numero_dossier_suggere"] = ""
     return contexte
 
 
 # ── Page principale ──────────────────────────────────────────────────────
 
 
+def _construire_lots_documents(invitations: list[dict]) -> tuple[list[dict], bool]:
+    """Read submitted manifests for *invitations* (documents). Fails open per lot."""
+    lots: list[dict] = []
+    erreur_bucket = False
+    folder_cache: dict[str, list[tuple[str, str]]] = {}
+    for inv in (i for i in invitations if i.get("statut") == "soumise"):
+        dossier_id = (inv.get("dossier_id") or "").strip()
+        if dossier_id and dossier_id not in folder_cache:
+            opts, readable = _folder_options_for_dossier(dossier_id)
+            folder_cache[dossier_id] = opts if readable else []
+        for soumission in inv.get("soumissions") or []:
+            batch = soumission.get("batch") or ""
+            manifeste = None
+            try:
+                manifeste = _lire_manifeste(inv["id"], batch)
+            except Exception:
+                logger.exception("reception: manifest read failed")
+                erreur_bucket = True
+            fichiers = []
+            if manifeste:
+                for seq, entree in enumerate(manifeste.get("files") or []):
+                    fichiers.append(
+                        {**entree, "seq": seq, "versable": _versable(entree)}
+                    )
+            lots.append({
+                "invitation": inv,
+                "batch": batch,
+                "soumission": soumission,
+                "manifeste": manifeste,
+                "fichiers": fichiers,
+                "default_folder_options": folder_cache.get(dossier_id, []),
+            })
+    return lots, erreur_bucket
+
+
+def _construire_flux_unifie(contexte: dict) -> list[dict]:
+    """Merge pending lots, RDVs, divergences, transcripts, and openings chronologically."""
+    items: list[dict] = []
+    for lot in contexte.get("lots") or []:
+        inv = lot["invitation"]
+        submitted = (
+            (lot.get("manifeste") or {}).get("submitted_at")
+            or (lot.get("soumission") or {}).get("submitted_at")
+            or inv.get("updated_at")
+            or inv.get("created_at")
+        )
+        items.append({
+            "kind": "lot",
+            "id": f"{inv['id']}:{lot['batch']}",
+            "sort_dt": _parse_sort_dt(submitted),
+            "lot": lot,
+        })
+    for h in contexte.get("divergences") or []:
+        dt = h.get("updated_at") or h.get("start_datetime") or h.get("created_at")
+        items.append({
+            "kind": "divergence",
+            "id": h["id"],
+            "sort_dt": _parse_sort_dt(dt),
+            "h": h,
+        })
+    for h in contexte.get("rdvs") or []:
+        dt = h.get("created_at") or h.get("updated_at") or h.get("start_datetime")
+        items.append({
+            "kind": "rdv",
+            "id": h["id"],
+            "sort_dt": _parse_sort_dt(dt),
+            "h": h,
+        })
+    for tx in contexte.get("rdv_transcriptions") or []:
+        dt = tx.get("updated_at") or tx.get("hearing_start_at") or tx.get("created_at")
+        items.append({
+            "kind": "transcription",
+            "id": tx["hearing_id"],
+            "sort_dt": _parse_sort_dt(dt),
+            "tx": tx,
+        })
+    for o in contexte.get("ouvertures") or []:
+        inv = o["invitation"]
+        dt = (
+            (o.get("enveloppe") or {}).get("submitted_at")
+            or inv.get("updated_at")
+            or inv.get("created_at")
+        )
+        items.append({
+            "kind": "ouverture",
+            "id": f"{inv['id']}:{o['batch']}",
+            "sort_dt": _parse_sort_dt(dt),
+            "o": o,
+        })
+    items.sort(key=lambda it: (it["sort_dt"], it["kind"], it["id"]), reverse=True)
+    return items
+
+
 @reception_bp.get("/")
 @login_required
 def index():
-    onglet = request.args.get("onglet", "documents")
+    onglet = request.args.get("onglet", "tout")
     if onglet not in _ONGLETS:
-        onglet = "documents"
+        onglet = "tout"
     contexte = {
         "onglet": onglet,
         "message": sanitize(request.args.get("message", ""), max_length=300),
@@ -602,7 +788,10 @@ def index():
         "traitees": [],
         "rdvs": [],
         "divergences": [],
+        "rdv_invites_attente": [],
+        "rdv_transcriptions": [],
         "erreur_rdv": False,
+        "erreur_transcriptions": False,
         "ouvertures": [],
         "intake_actives": [],
         "intake_traitees": [],
@@ -610,45 +799,67 @@ def index():
         "feature_intake": Config.FEATURE_INTAKE,
         "erreur_bucket": False,
         "est_expiree": pi.est_expiree,
+        "feed_items": [],
+        "pending_counts": {},
     }
-    if onglet == "rdv":
-        contexte.update(_contexte_rdv())
-    if onglet == "ouvertures":
-        contexte.update(_contexte_ouvertures())
-    if onglet == "documents":
-        toutes = pi.lister_invitations(type_="documents")
+    toutes_invitations: Optional[list[dict]] = None
+    if onglet in ("tout", "archives"):
+        toutes_invitations = pi.lister_invitations(limit=200)
+        doc_invs = [i for i in toutes_invitations if i.get("type") == "documents"]
+    elif onglet == "documents":
+        doc_invs = pi.lister_invitations(type_="documents")
+    else:
+        doc_invs = []
+
+    if onglet in ("tout", "documents", "archives"):
+        inv_source = (
+            toutes_invitations
+            if onglet in ("tout", "archives") and toutes_invitations is not None
+            else doc_invs
+        )
         contexte["actives"] = [
-            i for i in toutes if i.get("statut") in ("envoyée", "ouverte")
+            i for i in inv_source if i.get("statut") in ("envoyée", "ouverte")
         ]
         contexte["traitees"] = [
-            i for i in toutes
+            i for i in inv_source
             if i.get("statut") in ("traitée", "refusée", "révoquée")
-        ][:20]
-        for inv in (i for i in toutes if i.get("statut") == "soumise"):
-            for soumission in inv.get("soumissions") or []:
-                batch = soumission.get("batch") or ""
-                manifeste = None
-                try:
-                    manifeste = _lire_manifeste(inv["id"], batch)
-                except Exception:
-                    logger.exception("reception: manifest read failed")
-                    contexte["erreur_bucket"] = True
-                fichiers = []
-                if manifeste:
-                    for seq, entree in enumerate(manifeste.get("files") or []):
-                        fichiers.append(
-                            {**entree, "seq": seq, "versable": _versable(entree)}
-                        )
-                contexte["lots"].append({
-                    "invitation": inv,
-                    "batch": batch,
-                    "soumission": soumission,
-                    "manifeste": manifeste,
-                    "fichiers": fichiers,
-                })
+        ][:30]
+    if onglet in ("tout", "documents"):
+        lots, erreur_bucket = _construire_lots_documents(doc_invs)
+        contexte["lots"] = lots
+        contexte["erreur_bucket"] = erreur_bucket
+
+    if onglet in ("tout", "rdv"):
+        contexte.update(_contexte_rdv())
+    if onglet in ("tout", "ouvertures"):
+        contexte.update(_contexte_ouvertures())
+
+    if onglet == "tout":
+        feed_items = _construire_flux_unifie(contexte)
+        contexte["feed_items"] = feed_items
+        n_docs = len(contexte["lots"])
+        n_rdv = (
+            len(contexte["rdvs"])
+            + len(contexte["divergences"])
+            + len(contexte["rdv_transcriptions"])
+        )
+        n_ouv = len(contexte["ouvertures"])
+        contexte["pending_counts"] = {
+            "tout": len(feed_items),
+            "documents": n_docs,
+            "rdv": n_rdv,
+            "ouvertures": n_ouv,
+            "archives": len(contexte["actives"]) + len(contexte["traitees"]),
+        }
+
+    needs_dossiers = onglet in ("tout", "documents") or bool(contexte.get("rdv_transcriptions"))
+    dossiers = list_dossiers(status_filter="actif") if needs_dossiers else []
+    if dossiers and not contexte.get("dossiers_actifs"):
+        contexte["dossiers_actifs"] = dossiers
+
     return render_template(
         "reception/index.html",
-        dossiers=list_dossiers(status_filter="actif") if onglet == "documents" else [],
+        dossiers=dossiers,
         # The versement select is an INPUT: CHOICES, not LABELS.
         category_choices=CATEGORY_CHOICES,
         # Its pre-selected value — the one D18 counts as « not chosen ».
@@ -842,12 +1053,138 @@ def renvoyer(inv_id: str):
 @reception_bp.post("/invitations/<inv_id>/revoquer")
 @login_required
 def revoquer(inv_id: str):
+    onglet = _onglet_soumis()
     if not pi.revoquer(inv_id):
-        return _rediriger(erreur="Révocation impossible.")
+        return _rediriger(erreur="Révocation impossible.", onglet=onglet)
     log_portail_event("invitation_revoquee", invitation_id=inv_id)
     return _rediriger(
-        message="Invitation révoquée — le lien du client est immédiatement inopérant."
+        message="Invitation révoquée — le lien du client est immédiatement inopérant.",
+        onglet=onglet,
     )
+
+
+@reception_bp.get("/invitations/<inv_id>/accuse.pdf")
+@login_required
+def invitation_accuse_pdf(inv_id: str):
+    """Téléchargement direct du bordereau d'accusé de réception en PDF."""
+    if not is_addressable_id(inv_id):
+        return render_template("errors/404.html"), 404
+    try:
+        invitation = pi.lire_invitation_strict(inv_id)
+    except Exception as exc:
+        logger.error("reception: invite pdf read failed: %s", type(exc).__name__)
+        return Response(
+            "Lecture de l'invitation impossible.",
+            status=503,
+            mimetype="text/plain; charset=utf-8",
+        )
+    if invitation is None or invitation.get("type") not in ("documents", "intake"):
+        return render_template("errors/404.html"), 404
+
+    dossier = None
+    if invitation.get("dossier_id"):
+        try:
+            dossier = get_dossier_strict(invitation["dossier_id"])
+        except Exception as exc:
+            logger.error("reception: pdf dossier read failed: %s", type(exc).__name__)
+            return Response(
+                "Lecture du dossier impossible.",
+                status=503,
+                mimetype="text/plain; charset=utf-8",
+            )
+
+    partie = None
+    if invitation.get("partie_id"):
+        try:
+            partie = get_partie_strict(invitation["partie_id"])
+        except Exception as exc:
+            logger.error("reception: pdf partie read failed: %s", type(exc).__name__)
+            return Response(
+                "Lecture de la fiche client impossible.",
+                status=503,
+                mimetype="text/plain; charset=utf-8",
+            )
+
+    est_intake = invitation.get("type") == "intake"
+    lots: list[dict] = []
+    for soumission in invitation.get("soumissions") or []:
+        batch = soumission.get("batch") or ""
+        try:
+            if est_intake:
+                enveloppe = _lire_enveloppe_archive(inv_id, batch) or {}
+                donnees = enveloppe.get("donnees") or {}
+                lots.append({
+                    "batch": batch,
+                    "soumis_le": enveloppe.get("submitted_at") or soumission.get("submitted_at") or "",
+                    "http": enveloppe.get("http") or {},
+                    "consentement": enveloppe.get("consentement") or {},
+                    "statut_affiche": invitation.get("statut") or "soumise",
+                    "lignes": _comparaison(donnees, None) if donnees else [],
+                    "adverses": [
+                        {
+                            "nom": (a.get("nom") or "").strip(),
+                            "precision": (a.get("precision") or "").strip(),
+                        }
+                        for a in (enveloppe.get("parties_adverses") or [])
+                        if (a.get("nom") or "").strip()
+                    ],
+                })
+            else:
+                manifeste = _lire_manifeste_archive(inv_id, batch)
+                lots.append({
+                    "batch": batch,
+                    "submitted_at": (manifeste or {}).get("submitted_at") or soumission.get("submitted_at") or "",
+                    "http": (manifeste or {}).get("http") or {},
+                    "fichiers": (manifeste or {}).get("files") or [],
+                })
+        except Exception as exc:
+            logger.error("reception: pdf archive read failed: %s", type(exc).__name__)
+            return Response(
+                "Lecture des données d'archive impossible.",
+                status=503,
+                mimetype="text/plain; charset=utf-8",
+            )
+
+    pdf_bytes = build_accuse_reception_pdf(
+        invitation,
+        lots,
+        cabinet=_composer_cabinet(),
+        client=_client_expediteur(invitation, partie),
+        dossier=dossier,
+    )
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": build_attachment_disposition(
+                f"accuse-reception-{inv_id}.pdf"
+            ),
+        },
+    )
+
+
+@reception_bp.get("/dossiers/<dossier_id>/dossiers")
+@login_required
+def dossier_folders(dossier_id: str):
+    """Sous-dossiers d'un dossier pour le sélecteur de versement (JSON ou HTML)."""
+    options, readable = _folder_options_for_dossier(dossier_id)
+    wants_json = (
+        request.args.get("format") == "json"
+        or "application/json" in (request.headers.get("Accept") or "")
+    )
+    if wants_json:
+        if not readable:
+            return jsonify({"options": [], "unreadable": True}), 503
+        return jsonify({
+            "options": [{"id": fid, "label": flabel} for fid, flabel in options],
+            "unreadable": False,
+        })
+    if not readable:
+        return (
+            render_template("reception/_dossier_options.html", options=[], unreadable=True),
+            503,
+        )
+    return render_template("reception/_dossier_options.html", options=options, unreadable=False)
 
 
 def _lire_manifeste_archive(inv_id: str, batch: str) -> Optional[dict]:
@@ -991,78 +1328,90 @@ def _categorie_choisie(soumise: object) -> bool:
             and soumise.strip() != VERSEMENT_DEFAULT_CATEGORY)
 
 
+def _resoudre_dossier_cible_folder(
+    dossier_reel: str, chosen_folder_id: str
+) -> tuple[Optional[dict], str, Optional[str]]:
+    """Resolve destination folder (strictly when chosen, else SYSTEM_ROLE_PORTAIL)."""
+    if chosen_folder_id:
+        try:
+            folder = get_folder_strict(dossier_reel, chosen_folder_id)
+        except Exception as exc:
+            logger.error("reception: target folder read failed: %s", type(exc).__name__)
+            return None, "", (
+                "Lecture du sous-dossier cible impossible. Le fichier reste en quarantaine."
+            )
+        if folder is None:
+            return None, "", (
+                "Sous-dossier introuvable dans ce dossier. Le fichier reste en quarantaine."
+            )
+        return folder, _dossier_folder_breadcrumb(dossier_reel, folder), None
+    folder, folder_errors = ensure_system_folder(dossier_reel, SYSTEM_ROLE_PORTAIL)
+    if folder is None:
+        return None, "", (
+            (folder_errors[0] if folder_errors else
+             f"Le dossier « {PORTAL_FOLDER_NAME} » est indisponible.")
+            + " Le fichier reste en quarantaine."
+        )
+    return folder, _chemin_recus(folder), None
+
+
 @reception_bp.post("/lots/<inv_id>/<batch>/fichiers/<int:seq>/verser")
 @login_required
 def verser(inv_id: str, batch: str, seq: int):
+    onglet = _onglet_soumis()
     manifeste, entree = _entree_ou_none(inv_id, batch, seq)
     if entree is None:
-        return _rediriger(erreur="Fichier introuvable.")
+        return _rediriger(erreur="Fichier introuvable.", onglet=onglet)
     if entree.get("etat") != "reçu":
-        return _rediriger(erreur="Ce fichier a déjà été traité.")
+        return _rediriger(erreur="Ce fichier a déjà été traité.", onglet=onglet)
     if not _versable(entree):
-        return _rediriger(erreur=(
-            "Ce fichier ne peut pas être versé tel quel : seuls les PDF, "
-            "Word (doc/docx), Excel (xls/xlsx), JPEG, PNG, TIFF, ZIP et "
-            "courriels (.eml/.msg) de 200 Mo ou moins sont admis au "
-            "dossier. Téléchargez-le et traitez-le hors application."
-        ))
+        return _rediriger(
+            erreur=(
+                "Ce fichier ne peut pas être versé tel quel : seuls les PDF, "
+                "Word (doc/docx), Excel (xls/xlsx), JPEG, PNG, TIFF, ZIP et "
+                "courriels (.eml/.msg) de 200 Mo ou moins sont admis au "
+                "dossier. Téléchargez-le et traitez-le hors application."
+            ),
+            onglet=onglet,
+        )
 
     dossier_id = request.form.get("dossier_id", "").strip()
-    # Lecture STRICTE (lot « incertain », 2026-11-06) : le lecteur qui avale
-    # la panne la changeait en « Choisissez le dossier de destination. » —
-    # au sujet d'un dossier que le juriste venait de choisir. Un identifiant
-    # vide, ou qu'aucun dossier ne peut porter, est une absence ; une
-    # lecture ratée n'en est pas une : rien n'est versé, le fichier reste en
-    # quarantaine. La classe de l'erreur seulement, jamais sa trace.
     if not is_addressable_id(dossier_id):
-        return _rediriger(erreur="Choisissez le dossier de destination.")
+        return _rediriger(erreur="Choisissez le dossier de destination.", onglet=onglet)
     try:
         dossier = get_dossier_strict(dossier_id)
     except Exception as exc:
         logger.error("reception: dossier read failed: %s", type(exc).__name__)
-        return _rediriger(erreur=DOSSIER_READ_FAILED)
+        return _rediriger(erreur=DOSSIER_READ_FAILED, onglet=onglet)
     if dossier is None:
-        return _rediriger(erreur="Choisissez le dossier de destination.")
+        return _rediriger(erreur="Choisissez le dossier de destination.", onglet=onglet)
 
-    # The uid the document is filed under (users/{uid}/dossiers/…), resolved
-    # before the quarantine blob is opened and before any WRITE — in
-    # particular ensure_system_folder below. Plan rule 8: through
-    # utils.storage_identity, never a raw session read (the model re-checks
-    # the uid, but only once the folder exists).
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
-        return _rediriger(erreur=storage_identity.public_message(exc))
+        return _rediriger(erreur=storage_identity.public_message(exc), onglet=onglet)
 
-    # Fraîcheur (revue 2026-08-11) : _versable a jugé la taille du
-    # MANIFESTE, figée au traitement du lot — le blob VIVANT peut différer.
-    # Relire ses métadonnées AVANT toute lecture.
-    # Les échecs de « Verser » se journalisent par leur CLASSE seulement,
-    # jamais par une trace (lot « incertain », 2026-11-06) : le texte d'une
-    # erreur Storage nomme l'objet, et l'objet en quarantaine porte le nom
-    # du fichier du client (submissions/{inv}/{lot}/files/{seq}_{nom}).
     try:
         blob = _bucket().blob(entree["objet"])
         blob.reload()
     except Exception as exc:
         logger.error("reception: quarantine blob reload failed: %s",
                      type(exc).__name__)
-        return _rediriger(erreur="Lecture du fichier en quarantaine impossible.")
+        return _rediriger(erreur="Lecture du fichier en quarantaine impossible.", onglet=onglet)
     if int(blob.size or 0) > MAX_FILE_SIZE:
         log_portail_event(
             "versement_divergence", "failure",
             invitation_id=inv_id, batch=batch, seq=seq, reason="taille",
         )
-        return _rediriger(erreur=(
-            "Le fichier en quarantaine ne correspond plus au manifeste "
-            "(taille modifiée depuis la réception). Versement refusé — "
-            "vérifiez le lot avant toute décision."
-        ))
+        return _rediriger(
+            erreur=(
+                "Le fichier en quarantaine ne correspond plus au manifeste "
+                "(taille modifiée depuis la réception). Versement refusé — "
+                "vérifiez le lot avant toute décision."
+            ),
+            onglet=onglet,
+        )
 
-    # Intégrité probante : la description du document au dossier citera
-    # l'empreinte du manifeste — ne verser que des octets qui la confirment.
-    # Recalcul EN FLUX (tranches de 8 Mio) : l'objet peut faire 200 Mo et
-    # n'entre jamais entier en RAM (2026-08-12 — le versement par copie).
     sha_manifeste = entree.get("sha512") or ""
     if sha_manifeste:
         try:
@@ -1072,58 +1421,43 @@ def verser(inv_id: str, batch: str, seq: int):
             logger.error("reception: quarantine hash failed: %s",
                          type(exc).__name__)
             return _rediriger(
-                erreur="Lecture du fichier en quarantaine impossible."
+                erreur="Lecture du fichier en quarantaine impossible.",
+                onglet=onglet,
             )
         if calcule != sha_manifeste:
             log_portail_event(
                 "versement_divergence", "failure",
                 invitation_id=inv_id, batch=batch, seq=seq, reason="sha512",
             )
-            return _rediriger(erreur=(
-                "Le fichier en quarantaine ne correspond plus à l'empreinte "
-                "SHA-512 calculée à la réception. Versement refusé — "
-                "retéléchargez le fichier et vérifiez le lot."
-            ))
+            return _rediriger(
+                erreur=(
+                    "Le fichier en quarantaine ne correspond plus à l'empreinte "
+                    "SHA-512 calculée à la réception. Versement refusé — "
+                    "retéléchargez le fichier et vérifiez le lot."
+                ),
+                onglet=onglet,
+            )
 
     dossier_reel = dossier["id"]
-    # Found by its ROLE, at its deterministic id (lot 2A, T2). A failure
-    # REFUSES, the file staying in quarantine: the old get_or_create_folder
-    # answered None and the document was filed at the dossier root instead.
-    folder, folder_errors = ensure_system_folder(dossier_reel, SYSTEM_ROLE_PORTAIL)
+    chosen_folder_id = (request.form.get("folder_id") or "").strip()
+    folder, chemin_cible, folder_err = _resoudre_dossier_cible_folder(
+        dossier_reel, chosen_folder_id
+    )
     if folder is None:
-        return _rediriger(erreur=(
-            (folder_errors[0] if folder_errors else
-             f"Le dossier « {PORTAL_FOLDER_NAME} » est indisponible.")
-            + " Le fichier reste en quarantaine."
-        ))
+        return _rediriger(erreur=folder_err or "Dossier cible indisponible.", onglet=onglet)
+
     metadata = {
         "category": request.form.get("category", "autre"),
-        # What the LAWYER typed goes to the model as typed: it refuses
-        # (never mangles) a name over its ceiling or carrying « < … > »
-        # (lot 2A), and the refusal comes back on the banner with the file
-        # still in quarantine. Pre-sanitizing it here stripped and cut it in
-        # silence (revue de T1). The CLIENT's own file name is only a
-        # derived default, so it is made acceptable instead (_nom_par_defaut).
         "display_name": (request.form.get("display_name") or "").strip()
         or _nom_par_defaut(entree.get("name") or ""),
         "tags": ["portail"],
         "folder_id": folder["id"],
     }
-    # Provenance dans des champs DÉDIÉS (2026-08-27, renversant la
-    # décision de 2026-07-25 « aucun champ nouveau »). Elle squattait
-    # `description` — le SEUL champ de texte libre que le formulaire
-    # d'édition offre au juriste —, si bien qu'il ne pouvait décrire un
-    # document reçu sans effacer sa traçabilité, ou l'inverse. Depuis le
-    # lot 2A elle voyage par son PROPRE mot-clé : le modèle ne lit plus
-    # dans les métadonnées que ce qu'un appelant peut choisir.
     portail = {
         "portail_invitation_id": inv_id,
         "portail_lot": batch,
         "portail_sha512": entree.get("sha512") or "",
     }
-    # Copie côté serveur (GCS→GCS, 2026-08-12) : les octets ne transitent
-    # JAMAIS par l'application — App Engine plafonne requêtes ET réponses
-    # à 32 Mo, et l'objet peut faire 200 Mo.
     document, errors = ingest_blob_as_document(
         blob,
         dossier_reel,
@@ -1132,39 +1466,23 @@ def verser(inv_id: str, batch: str, seq: int):
         metadata,
         user_id,
         portail=portail,
-        # D18 : une catégorie que le juriste a choisie au versement — une
-        # valeur SOUMISE qui quitte celle que le sélecteur présélectionne
-        # (VERSEMENT_DEFAULT_CATEGORY, « pièce ») — est la sienne : le
-        # connecteur ne la remplace jamais. Un champ absent (un POST sans
-        # sélecteur) n'est le choix de personne.
         lawyer_set_category=_categorie_choisie(request.form.get("category")),
     )
     if document is None and concurrency.is_outcome_uncertain(errors):
-        # Issue INCONNUE : le modèle n'a pu relire si le document a été
-        # versé — il l'est peut-être. Jamais « réessayez » : un second
-        # « Verser » frapperait un identifiant NEUF, donc un second
-        # document. Une bannière honnête seulement (option a) : le fichier
-        # reste « reçu », en quarantaine, intouché, et le manifeste n'est pas
-        # réécrit ; la copie canonique gardée, versée ou orpheline, est
-        # nommée par la ligne « document ingest: filing uncertain » du
-        # modèle. Le juriste qui l'y trouve le REFUSE pour clore le lot :
-        # traiter_lot n'archive rien tant qu'un fichier est « reçu », comme
-        # le dit la bannière d'un manifeste qui n'a pu être réécrit.
-        # ≤ 300 caractères et sans chevron : index() passe ?erreur= par
-        # sanitize(max_length=300).
-        return _rediriger(erreur=(
-            "Le versement n'a pas pu être confirmé : le fichier est "
-            f"peut-être déjà au dossier {dossier.get('file_number', '')}, "
-            f"sous « {_chemin_recus(folder)} ». Vérifiez-le avant de le "
-            "verser de nouveau ; il reste en quarantaine. S'il y figure, "
-            "refusez-le pour clore le lot."
-        ))
+        return _rediriger(
+            erreur=(
+                "Le versement n'a pas pu être confirmé : le fichier est "
+                f"peut-être déjà au dossier {dossier.get('file_number', '')}, "
+                f"sous « {chemin_cible} ». Vérifiez-le avant de le "
+                "verser de nouveau ; il reste en quarantaine. S'il y figure, "
+                "refusez-le pour clore le lot."
+            ),
+            onglet=onglet,
+        )
     if errors or document is None:
-        return _rediriger(erreur=" ".join(errors) or "Versement impossible.")
+        return _rediriger(erreur=" ".join(errors) or "Versement impossible.", onglet=onglet)
 
     entree["etat"] = "versé"
-    # Trace du choix de l'avocat dans le manifeste (visible plus tard dans
-    # la fenêtre d'archive) : le dossier de destination + le nom au dossier.
     entree["verse_dossier"] = dossier.get("file_number", "")
     entree["verse_nom"] = metadata["display_name"]
     log_portail_event(
@@ -1175,21 +1493,22 @@ def verser(inv_id: str, batch: str, seq: int):
     try:
         _ecrire_manifeste(inv_id, batch, manifeste)
     except Exception as exc:
-        # Le document EST au dossier, mais l'état de quarantaine ne le
-        # reflète pas : un succès silencieux inviterait à re-verser le même
-        # fichier (le garde etat == « reçu » repasserait). Avertir.
         logger.error("reception: manifest update failed after ingest: %s",
                      type(exc).__name__)
-        return _rediriger(erreur=(
-            f"Le fichier a bien été versé au dossier "
-            f"{dossier.get('file_number', '')}, mais l'état de quarantaine "
-            "n'a pas pu être mis à jour : il apparaîtra encore comme "
-            "« reçu ». Ne le versez pas une seconde fois — refusez-le pour "
-            "clore le lot."
-        ))
+        return _rediriger(
+            erreur=(
+                f"Le fichier a bien été versé au dossier "
+                f"{dossier.get('file_number', '')}, mais l'état de quarantaine "
+                "n'a pas pu être mis à jour : il apparaîtra encore comme "
+                "« reçu ». Ne le versez pas une seconde fois — refusez-le pour "
+                "clore le lot."
+            ),
+            onglet=onglet,
+        )
     return _rediriger(
         message=f"Fichier versé au dossier {dossier.get('file_number', '')} "
-                f"(dossier « {_chemin_recus(folder)} »)."
+                f"(dossier « {chemin_cible} »).",
+        onglet=onglet,
     )
 
 
@@ -1209,24 +1528,27 @@ def _chemin_recus(folder: dict) -> str:
 @reception_bp.post("/lots/<inv_id>/<batch>/fichiers/<int:seq>/refuser")
 @login_required
 def refuser(inv_id: str, batch: str, seq: int):
+    onglet = _onglet_soumis()
     manifeste, entree = _entree_ou_none(inv_id, batch, seq)
     if entree is None:
-        return _rediriger(erreur="Fichier introuvable.")
+        return _rediriger(erreur="Fichier introuvable.", onglet=onglet)
     if entree.get("etat") not in ("reçu", "manquant"):
-        return _rediriger(erreur="Ce fichier a déjà été traité.")
+        return _rediriger(erreur="Ce fichier a déjà été traité.", onglet=onglet)
     entree["etat"] = "refusé"
     try:
         _ecrire_manifeste(inv_id, batch, manifeste)
     except Exception:
         logger.exception("reception: manifest update failed")
-        return _rediriger(erreur="Mise à jour du manifeste impossible.")
+        return _rediriger(erreur="Mise à jour du manifeste impossible.", onglet=onglet)
     log_portail_event("document_refuse", invitation_id=inv_id, batch=batch)
-    return _rediriger(message="Fichier refusé.")
+    return _rediriger(message="Fichier refusé.", onglet=onglet)
 
 
-@reception_bp.post("/lots/<inv_id>/<batch>/traiter")
-@login_required
-def traiter_lot(inv_id: str, batch: str):
+def _archiver_un_lot(inv_id: str, batch: str) -> tuple[bool, str]:
+    """Archive one submitted documents lot if every file was decided.
+
+    Returns ``(ok, french_message_or_error)``.
+    """
     bucket = _bucket()
     prefix = _prefix(inv_id, batch)
     archive = f"archive/{inv_id}/{batch}/"
@@ -1235,35 +1557,22 @@ def traiter_lot(inv_id: str, batch: str):
     try:
         manifeste = _lire_manifeste(inv_id, batch)
         if manifeste is None:
-            # Peut-être archivé lors d'un essai précédent qui a échoué APRÈS
-            # l'archivage (p. ex. mise à jour du statut) : reprendre depuis
-            # archive/ pour que l'opération soit rejouable de bout en bout.
             src = bucket.blob(archive + "manifeste.json")
             if src.exists():
                 manifeste = json.loads(src.download_as_bytes())
                 deja_archive = True
     except Exception:
         logger.exception("reception: manifest read failed")
-        return _rediriger(erreur="Lecture du lot impossible. Réessayez.")
+        return False, "Lecture du lot impossible. Réessayez."
     if manifeste is None:
-        return _rediriger(erreur="Lot introuvable.")
+        return False, "Lot introuvable."
 
     if not deja_archive:
-        # Chaque fichier reçu exige une décision EXPLICITE avant la purge —
-        # marquer traité supprime les objets de quarantaine (revue humaine
-        # systématique, jamais de suppression d'un fichier non examiné).
         if any(f.get("etat") == "reçu" for f in manifeste.get("files") or []):
-            return _rediriger(erreur=(
-                "Chaque fichier du lot doit d'abord être versé ou refusé."
-            ))
+            return False, "Chaque fichier du lot doit d'abord être versé ou refusé."
         manifeste["etat_lot"] = "traité"
         try:
             _ecrire_manifeste(inv_id, batch, manifeste)
-            # Purge des objets files/ D'ABORD, l'enveloppe puis le manifeste
-            # en DERNIER : le manifeste sous submissions/ est la clé de
-            # relecture d'un nouvel essai — le retirer en premier rendrait
-            # un échec partiel non rejouable (« Lot introuvable »). Les
-            # gardes exists() rendent chaque étape idempotente.
             for blob in list(bucket.list_blobs(prefix=prefix + "files/")):
                 blob.delete()
             for nom in ("envelope.json", "manifeste.json"):
@@ -1272,21 +1581,10 @@ def traiter_lot(inv_id: str, batch: str):
                     bucket.copy_blob(src, bucket, archive + nom)
                     src.delete()
         except Exception as exc:
-            # La classe seulement, jamais la trace (lot « incertain »,
-            # 2026-11-06) : le texte d'une erreur Storage nomme l'objet, et
-            # un objet files/{seq}_{nom} porte le nom du fichier du client.
-            logger.error("reception: lot archive failed: %s",
-                         type(exc).__name__)
-            return _rediriger(erreur="Archivage du lot impossible. Réessayez.")
+            logger.error("reception: lot archive failed: %s", type(exc).__name__)
+            return False, "Archivage du lot impossible. Réessayez."
         log_portail_event("lot_traite", invitation_id=inv_id, batch=batch)
 
-    # Ne fermer l'invitation que si AUCUN autre lot vivant ne subsiste :
-    # l'enveloppe de CE lot vient d'être déplacée vers archive/, donc toute
-    # envelope.json encore sous submissions/{inv}/ est un lot FRÈRE (y
-    # compris un lot soumis dont la tâche n'a pas encore été traitée) — le
-    # statut « traitée » le rendrait invisible en Réception et la
-    # réconciliation ne le rejouerait jamais. Échec du balayage → fail
-    # closed (statut inchangé, le lot frère reste listé).
     try:
         freres = [
             b for b in bucket.list_blobs(prefix=f"submissions/{inv_id}/")
@@ -1296,17 +1594,425 @@ def traiter_lot(inv_id: str, batch: str):
         logger.exception("reception: sibling-lot scan failed")
         freres = [batch]
     if freres:
-        return _rediriger(message=(
+        return True, (
             "Lot traité et archivé — un autre lot de cette invitation "
             "reste à examiner."
-        ))
+        )
     if not pi.maj_statut(inv_id, "traitée"):
-        return _rediriger(erreur=(
+        return False, (
             "Lot archivé, mais mise à jour du statut impossible. Cliquez de "
             "nouveau « Marquer le lot traité » pour réessayer."
-        ))
-    return _rediriger(message="Lot traité — fichiers de quarantaine purgés, "
-                              "enveloppe et manifeste archivés.")
+        )
+    return True, "Lot traité — fichiers de quarantaine purgés, enveloppe et manifeste archivés."
+
+
+@reception_bp.post("/lots/<inv_id>/<batch>/traiter")
+@login_required
+def traiter_lot(inv_id: str, batch: str):
+    onglet = _onglet_soumis()
+    ok, msg = _archiver_un_lot(inv_id, batch)
+    if ok:
+        return _rediriger(message=msg, onglet=onglet)
+    return _rediriger(erreur=msg, onglet=onglet)
+
+
+def _parse_file_keys(raw_keys: list[str]) -> tuple[list[tuple[str, str, int]], int]:
+    """Parse ``<inv_id>:<batch>:<seq>`` checkboxes preserving order and deduplicating."""
+    parsed: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, str, int]] = set()
+    invalid = 0
+    for raw in raw_keys:
+        parts = (raw or "").strip().split(":")
+        if len(parts) != 3:
+            invalid += 1
+            continue
+        inv_id, batch, seq_raw = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if not is_addressable_id(inv_id) or not batch or "/" in batch:
+            invalid += 1
+            continue
+        try:
+            seq = int(seq_raw)
+        except ValueError:
+            invalid += 1
+            continue
+        if seq < 0:
+            invalid += 1
+            continue
+        key = (inv_id, batch, seq)
+        if key not in seen:
+            seen.add(key)
+            parsed.append(key)
+    return parsed, invalid
+
+
+@reception_bp.post("/lots/verser-lot")
+@login_required
+def verser_lot():
+    """Versement groupé des fichiers cochés vers un dossier et sous-dossier choisis."""
+    onglet = _onglet_soumis()
+    parsed, invalides = _parse_file_keys(request.form.getlist("file_keys"))
+    if not parsed and invalides == 0:
+        return _rediriger(erreur="Sélectionnez au moins un fichier à verser.", onglet=onglet)
+    if not parsed:
+        return _rediriger(erreur="Sélection de fichiers invalide.", onglet=onglet)
+
+    dossier_id = (request.form.get("dossier_id") or "").strip()
+    if not is_addressable_id(dossier_id):
+        return _rediriger(erreur="Choisissez le dossier de destination.", onglet=onglet)
+    try:
+        dossier = get_dossier_strict(dossier_id)
+    except Exception as exc:
+        logger.error("reception: bulk dossier read failed: %s", type(exc).__name__)
+        return _rediriger(erreur=DOSSIER_READ_FAILED, onglet=onglet)
+    if dossier is None:
+        return _rediriger(erreur="Choisissez le dossier de destination.", onglet=onglet)
+
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return _rediriger(erreur=storage_identity.public_message(exc), onglet=onglet)
+
+    dossier_reel = dossier["id"]
+    chosen_folder_id = (request.form.get("folder_id") or "").strip()
+    folder, chemin_cible, folder_err = _resoudre_dossier_cible_folder(
+        dossier_reel, chosen_folder_id
+    )
+    if folder is None:
+        return _rediriger(erreur=folder_err or "Dossier cible indisponible.", onglet=onglet)
+
+    category_raw = request.form.get("category", "autre")
+    lawyer_set_cat = _categorie_choisie(category_raw)
+    bucket = _bucket()
+    manifest_cache: dict[tuple[str, str], Optional[dict]] = {}
+    manifest_err_lots: set[tuple[str, str]] = set()
+    dirty_lots: set[tuple[str, str]] = set()
+
+    ok_count = 0
+    uncertain_count = 0
+    fail_reasons: list[str] = []
+    if invalides:
+        fail_reasons.append(f"{invalides} sélection(s) invalide(s)")
+
+    for inv_id, batch, seq in parsed:
+        lot_key = (inv_id, batch)
+        if lot_key not in manifest_cache and lot_key not in manifest_err_lots:
+            try:
+                manifest_cache[lot_key] = _lire_manifeste(inv_id, batch)
+            except Exception as exc:
+                logger.error("reception: bulk manifest read failed: %s", type(exc).__name__)
+                manifest_err_lots.add(lot_key)
+                fail_reasons.append("lecture d'un manifeste impossible")
+                continue
+        if lot_key in manifest_err_lots:
+            fail_reasons.append("manifeste illisible")
+            continue
+        manifeste = manifest_cache.get(lot_key)
+        fichiers = (manifeste or {}).get("files") or []
+        if manifeste is None or seq >= len(fichiers):
+            fail_reasons.append("fichier introuvable")
+            continue
+        entree = fichiers[seq]
+        if entree.get("etat") != "reçu":
+            fail_reasons.append("déjà traité")
+            continue
+        if not _versable(entree):
+            fail_reasons.append("format ou taille non versable")
+            continue
+
+        try:
+            blob = bucket.blob(entree["objet"])
+            blob.reload()
+        except Exception as exc:
+            logger.error("reception: bulk quarantine blob reload failed: %s", type(exc).__name__)
+            fail_reasons.append("fichier en quarantaine illisible")
+            continue
+        if int(blob.size or 0) > MAX_FILE_SIZE:
+            log_portail_event(
+                "versement_divergence", "failure",
+                invitation_id=inv_id, batch=batch, seq=seq, reason="taille",
+            )
+            fail_reasons.append("taille modifiée en quarantaine")
+            continue
+
+        sha_manifeste = entree.get("sha512") or ""
+        if sha_manifeste:
+            try:
+                with blob.open("rb") as flux:
+                    calcule = sha512_flux(flux)
+            except Exception as exc:
+                logger.error("reception: bulk quarantine hash failed: %s", type(exc).__name__)
+                fail_reasons.append("vérification d'empreinte impossible")
+                continue
+            if calcule != sha_manifeste:
+                log_portail_event(
+                    "versement_divergence", "failure",
+                    invitation_id=inv_id, batch=batch, seq=seq, reason="sha512",
+                )
+                fail_reasons.append("empreinte SHA-512 divergente")
+                continue
+
+        display_name = _nom_par_defaut(entree.get("name") or "")
+        metadata = {
+            "category": category_raw,
+            "display_name": display_name,
+            "tags": ["portail"],
+            "folder_id": folder["id"],
+        }
+        portail = {
+            "portail_invitation_id": inv_id,
+            "portail_lot": batch,
+            "portail_sha512": sha_manifeste,
+        }
+        document, errors = ingest_blob_as_document(
+            blob,
+            dossier_reel,
+            dossier.get("file_number", ""),
+            entree.get("name") or "document",
+            metadata,
+            user_id,
+            portail=portail,
+            lawyer_set_category=lawyer_set_cat,
+        )
+        if document is None and concurrency.is_outcome_uncertain(errors):
+            uncertain_count += 1
+            fail_reasons.append("confirmation de versement incertaine")
+            continue
+        if errors or document is None:
+            fail_reasons.append(errors[0] if errors else "versement refusé")
+            continue
+
+        entree["etat"] = "versé"
+        entree["verse_dossier"] = dossier.get("file_number", "")
+        entree["verse_nom"] = display_name
+        dirty_lots.add(lot_key)
+        ok_count += 1
+        log_portail_event(
+            "document_verse",
+            invitation_id=inv_id, batch=batch,
+            dossier_id=dossier_reel, document_id=document["id"],
+        )
+
+    manifest_write_failures = 0
+    for inv_id, batch in dirty_lots:
+        try:
+            _ecrire_manifeste(inv_id, batch, manifest_cache[(inv_id, batch)])
+        except Exception as exc:
+            manifest_write_failures += 1
+            logger.error("reception: bulk manifest update failed after ingest: %s", type(exc).__name__)
+
+    if fail_reasons or manifest_write_failures or uncertain_count:
+        parts = []
+        if ok_count:
+            parts.append(f"{ok_count} fichier(s) versé(s) vers « {chemin_cible} »")
+        if uncertain_count:
+            parts.append(f"{uncertain_count} à vérifier au dossier (issue incertaine, ne pas re-verser)")
+        if manifest_write_failures:
+            parts.append(f"{manifest_write_failures} lot(s) dont l'état de quarantaine n'a pas été enregistré")
+        other_fails = len(fail_reasons) - uncertain_count
+        if other_fails > 0:
+            unique_reasons = list(dict.fromkeys(r for r in fail_reasons if r != "confirmation de versement incertaine"))[:3]
+            parts.append(f"{other_fails} non versé(s) ({', '.join(unique_reasons)})")
+        return _rediriger(erreur=" ; ".join(parts) + ".", onglet=onglet)
+
+    return _rediriger(
+        message=(
+            f"{ok_count} fichier(s) versé(s) au dossier {dossier.get('file_number', '')} "
+            f"(dossier « {chemin_cible} »)."
+        ),
+        onglet=onglet,
+    )
+
+
+@reception_bp.post("/lots/refuser-lot")
+@login_required
+def refuser_lot():
+    """Refus groupé des fichiers sélectionnés."""
+    onglet = _onglet_soumis()
+    parsed, invalides = _parse_file_keys(request.form.getlist("file_keys"))
+    if not parsed and invalides == 0:
+        return _rediriger(erreur="Sélectionnez au moins un fichier à refuser.", onglet=onglet)
+    if not parsed:
+        return _rediriger(erreur="Sélection de fichiers invalide.", onglet=onglet)
+
+    manifest_cache: dict[tuple[str, str], Optional[dict]] = {}
+    manifest_err_lots: set[tuple[str, str]] = set()
+    dirty_lots: set[tuple[str, str]] = set()
+    refused_by_lot: dict[tuple[str, str], int] = {}
+    ok_count = 0
+    skipped = invalides
+
+    for inv_id, batch, seq in parsed:
+        lot_key = (inv_id, batch)
+        if lot_key not in manifest_cache and lot_key not in manifest_err_lots:
+            try:
+                manifest_cache[lot_key] = _lire_manifeste(inv_id, batch)
+            except Exception as exc:
+                logger.error("reception: bulk refuse manifest read failed: %s", type(exc).__name__)
+                manifest_err_lots.add(lot_key)
+                skipped += 1
+                continue
+        if lot_key in manifest_err_lots:
+            skipped += 1
+            continue
+        manifeste = manifest_cache.get(lot_key)
+        fichiers = (manifeste or {}).get("files") or []
+        if manifeste is None or seq >= len(fichiers):
+            skipped += 1
+            continue
+        entree = fichiers[seq]
+        if entree.get("etat") not in ("reçu", "manquant"):
+            skipped += 1
+            continue
+        entree["etat"] = "refusé"
+        dirty_lots.add(lot_key)
+        refused_by_lot[lot_key] = refused_by_lot.get(lot_key, 0) + 1
+
+    write_errors = 0
+    for inv_id, batch in dirty_lots:
+        try:
+            _ecrire_manifeste(inv_id, batch, manifest_cache[(inv_id, batch)])
+            ok_count += refused_by_lot[(inv_id, batch)]
+            log_portail_event("document_refuse", invitation_id=inv_id, batch=batch)
+        except Exception as exc:
+            write_errors += 1
+            logger.error("reception: bulk refuse manifest write failed: %s", type(exc).__name__)
+
+    if write_errors or skipped or not ok_count:
+        msg_parts = []
+        if ok_count:
+            msg_parts.append(f"{ok_count} fichier(s) refusé(s)")
+        if skipped:
+            msg_parts.append(f"{skipped} introuvable(s) ou déjà traité(s)")
+        if write_errors:
+            msg_parts.append(f"{write_errors} lot(s) non mis à jour")
+        return _rediriger(erreur=" ; ".join(msg_parts) + ".", onglet=onglet)
+
+    return _rediriger(message=f"{ok_count} fichier(s) refusé(s).", onglet=onglet)
+
+
+@reception_bp.post("/actions-lot")
+@login_required
+def actions_lot():
+    """Actions groupées sur le fil unifié et les invitations (archiver / écarter / révoquer / refuser)."""
+    onglet = _onglet_soumis()
+    action = (request.form.get("bulk_action") or "").strip()
+    raw_keys = request.form.getlist("feed_keys")
+    if action not in ("archiver_lot", "ecarter", "revoquer", "refuser_ouverture"):
+        return _rediriger(erreur="Action groupée non reconnue.", onglet=onglet)
+    if not raw_keys:
+        return _rediriger(erreur="Sélectionnez au moins un élément.", onglet=onglet)
+
+    seen: set[str] = set()
+    keys = []
+    for k in raw_keys:
+        cleaned = (k or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            keys.append(cleaned)
+
+    ok_count = 0
+    fail_messages: list[str] = []
+
+    if action == "archiver_lot":
+        for k in keys:
+            parts = k.split(":")
+            if len(parts) != 3 or parts[0] != "lot" or not is_addressable_id(parts[1]) or not parts[2]:
+                fail_messages.append("élément non compatible avec l'archivage de lot")
+                continue
+            ok, msg = _archiver_un_lot(parts[1], parts[2])
+            if ok:
+                ok_count += 1
+            else:
+                fail_messages.append(msg)
+    elif action == "ecarter":
+        for k in keys:
+            parts = k.split(":")
+            if len(parts) not in (2, 3) or parts[0] != "transcription" or not is_addressable_id(parts[1]):
+                fail_messages.append("élément non compatible avec l'écartement")
+                continue
+            hid = parts[1]
+            etag = parts[2] if len(parts) == 3 else ""
+            _doc, errs = transcription_reunion.ecarter_transcription(
+                hid, expected_etag=etag
+            )
+            if errs:
+                fail_messages.append(errs[0])
+            else:
+                ok_count += 1
+        _invalidater_pastille()
+    elif action == "revoquer":
+        for k in keys:
+            parts = k.split(":")
+            inv_id = parts[1] if len(parts) >= 2 and parts[0] in ("inv", "lot", "ouverture") else ""
+            if not is_addressable_id(inv_id):
+                fail_messages.append("invitation invalide")
+                continue
+            try:
+                inv = pi.lire_invitation_strict(inv_id)
+            except Exception as exc:
+                logger.error("reception: bulk revoke read failed: %s", type(exc).__name__)
+                fail_messages.append("lecture d'une invitation impossible")
+                continue
+            if inv is None:
+                fail_messages.append("invitation introuvable")
+                continue
+            if inv.get("statut") in ("traitée", "refusée", "révoquée"):
+                fail_messages.append("invitation déjà close")
+                continue
+            if pi.revoquer(inv_id):
+                log_portail_event("invitation_revoquee", invitation_id=inv_id)
+                ok_count += 1
+            else:
+                fail_messages.append("révocation impossible")
+    elif action == "refuser_ouverture":
+        for k in keys:
+            parts = k.split(":")
+            if len(parts) != 3 or parts[0] != "ouverture" or not is_addressable_id(parts[1]) or not parts[2]:
+                fail_messages.append("élément non compatible avec le refus d'ouverture")
+                continue
+            try:
+                strict_inv = pi.lire_invitation_strict(parts[1])
+            except Exception:
+                log_unexpected("batch ouverture read failed", invitation_id=parts[1])
+                fail_messages.append("ouverture inaccessible (erreur de lecture)")
+                continue
+            if strict_inv is None or strict_inv.get("type") != "intake":
+                fail_messages.append("ouverture introuvable")
+                continue
+            if strict_inv.get("statut") in ("traitée", "refusée", "révoquée"):
+                fail_messages.append("ouverture déjà close")
+                continue
+            try:
+                env = _lire_enveloppe(parts[1], parts[2])
+            except Exception:
+                log_unexpected("batch ouverture envelope read failed", invitation_id=parts[1], batch=parts[2])
+                fail_messages.append("enveloppe d'ouverture inaccessible (erreur de lecture)")
+                continue
+            if env is None:
+                fail_messages.append("ouverture introuvable ou déjà close")
+                continue
+            _cloturer(strict_inv, parts[2], "refusée")
+            log_portail_event("intake_refuse", "refused", invitation_id=parts[1], batch=parts[2])
+            ok_count += 1
+        if ok_count:
+            _invalidater_pastille()
+
+    label_ok = {
+        "archiver_lot": "lot(s) archivé(s)",
+        "ecarter": "transcription(s) écartée(s)",
+        "revoquer": "invitation(s) révoquée(s)",
+        "refuser_ouverture": "ouverture(s) refusée(s)",
+    }[action]
+
+    if fail_messages or not ok_count:
+        parts_msg = []
+        if ok_count:
+            parts_msg.append(f"{ok_count} {label_ok}")
+        uniq_fails = list(dict.fromkeys(fail_messages))[:3]
+        parts_msg.append(f"{len(fail_messages)} refus/échec(s) ({', '.join(uniq_fails)})")
+        return _rediriger(erreur=" ; ".join(parts_msg) + ".", onglet=onglet)
+
+    return _rediriger(message=f"{ok_count} {label_ok}.", onglet=onglet)
 
 
 # ── Actions « Rendez-vous » (Bookings L2 §5.2-5.4) ───────────────────────
@@ -1534,7 +2240,12 @@ def _valeurs_choisies(donnees: dict) -> dict:
     return valeurs
 
 
-def _creer_adverses_coches(adverses: list[dict], inv_id: str) -> int:
+def _creer_adverses_coches(
+    adverses: list[dict],
+    inv_id: str,
+    *,
+    collect: Optional[list[dict]] = None,
+) -> int:
     """Créer les contacts « partie adverse » dont la case reste cochée (D-L3-2).
 
     Chaque création bumpe le CTag du carnet — le compteur retourné sert au
@@ -1546,7 +2257,7 @@ def _creer_adverses_coches(adverses: list[dict], inv_id: str) -> int:
         nom = (ligne.get("nom") or "").strip()
         if not nom or nom not in coches:
             continue
-        _partie, erreurs = create_partie({
+        partie_adv, erreurs = create_partie({
             "type": "individual",
             "contact_role": "partie_adverse",
             "last_name": nom,
@@ -1554,12 +2265,64 @@ def _creer_adverses_coches(adverses: list[dict], inv_id: str) -> int:
             # et le juriste voit d'où vient la fiche.
             "notes": f"Déclaré par le client via le portail, invitation {inv_id}.",
         })
-        if erreurs:
+        if erreurs or partie_adv is None:
             logger.warning("reception: adverse contact refused: %s", erreurs)
             continue
+        if collect is not None:
+            collect.append(partie_adv)
         crees += 1
         log_portail_event("intake_adverse_cree", invitation_id=inv_id)
     return crees
+
+
+def _creer_dossier_depuis_ouverture(
+    client_partie: dict,
+    adverses: list[dict],
+    inv_id: str,
+) -> tuple[Optional[dict], list[str]]:
+    """Create a dossier when Réception intake approves with ``ouvrir_dossier``."""
+    client_nom = display_name(client_partie) or "Client"
+    adv_nom = display_name(adverses[0]) if adverses else ""
+    titre_defaut = f"{client_nom} c. {adv_nom}" if adv_nom else client_nom
+    numero = (
+        request.form.get("dossier_file_number", "").strip()
+        or suggest_file_number()
+    )
+    titre = request.form.get("dossier_title", "").strip() or titre_defaut
+    payload = {
+        "file_number": numero,
+        "title": titre,
+        "forum_type": "prejudiciaire",
+        "court_file_number": "Préjudiciaire",
+        "clients": [{
+            "id": client_partie["id"],
+            "name": client_nom,
+            "roles": [],
+            "avocat_id": "",
+            "avocat_name": "",
+        }],
+        "opposing_parties": [{
+            "id": p["id"],
+            "name": display_name(p),
+            "roles": [],
+            "avocat_id": "",
+            "avocat_name": "",
+        } for p in adverses if p.get("id")],
+    }
+    dossier_doc, errors = create_dossier(payload, kyc_source=kyc.SOURCE_JURISTE)
+    if errors or dossier_doc is None:
+        return None, errors or ["Impossible de créer le dossier."]
+    new_id = dossier_doc["id"]
+    try:
+        ensure_default_tree(new_id)
+    except Exception:
+        logger.exception("reception: default tree failed for dossier %s", new_id)
+    try:
+        ensure_ouverture_protocol(new_id, dossier=dossier_doc)
+    except Exception:
+        logger.exception("reception: ouverture protocol failed for dossier %s", new_id)
+    log_portail_event("intake_dossier_cree", invitation_id=inv_id, dossier_id=new_id)
+    return dossier_doc, []
 
 
 def _cloturer(invitation: dict, batch: str, statut: str) -> None:
@@ -1627,13 +2390,25 @@ def ouverture_creer(inv_id: str, batch: str):
             onglet="ouvertures",
         )
 
-    crees = _creer_adverses_coches(enveloppe.get("parties_adverses") or [],
-                                   inv_id)
+    adverses_crees: list[dict] = []
+    crees = _creer_adverses_coches(
+        enveloppe.get("parties_adverses") or [], inv_id, collect=adverses_crees,
+    )
     # ⚠️ Le carnet DavX5 suit la ROUTE, jamais le modèle : une création de
     # partie qui l'oublie n'atteint JAMAIS le téléphone, en silence. Une
     # seule porte (services/carnet.py) couvre la fiche cliente et les
     # parties adverses, toutes au carnet.
     apres_ecriture_contact(partie)
+
+    nouveau_dossier = None
+    dossier_erreur = ""
+    if request.form.get("ouvrir_dossier") == "on":
+        nouveau_dossier, d_erreurs = _creer_dossier_depuis_ouverture(
+            partie, adverses_crees, inv_id,
+        )
+        if d_erreurs:
+            dossier_erreur = " ".join(d_erreurs)
+
     _cloturer(invitation, batch, "traitée")
     log_portail_event("intake_partie_creee", invitation_id=inv_id, batch=batch,
                       adverses_crees=crees)
@@ -1643,6 +2418,18 @@ def ouverture_creer(inv_id: str, batch: str):
                     "choisissez-la sur la fiche.")
     if crees:
         message += f" {crees} contact(s) « partie adverse » créé(s)."
+    if dossier_erreur:
+        return redirect(url_for(
+            "parties.partie_detail",
+            partie_id=partie["id"],
+            message=message,
+            erreur=f"Dossier non créé : {dossier_erreur}",
+        ))
+    if nouveau_dossier is not None:
+        return redirect(url_for(
+            "dossiers.dossier_detail", dossier_id=nouveau_dossier["id"],
+            tab="protocole",
+        ))
     # url_for encode le message ; une concaténation le casserait au premier
     # « & » ou accent.
     return redirect(url_for("parties.partie_detail",
@@ -1656,22 +2443,36 @@ def ouverture_appliquer(inv_id: str, batch: str):
     if invitation is None or not enveloppe:
         return _rediriger(erreur="Soumission introuvable.", onglet="ouvertures")
     partie_id = invitation.get("partie_id") or ""
-    if not partie_id or not get_partie(partie_id):
+    partie_courante = get_partie(partie_id) if partie_id else None
+    if not partie_id or not partie_courante:
         return _rediriger(
             erreur="Le contact lié à cette invitation est introuvable.",
             onglet="ouvertures",
         )
 
     valeurs = _valeurs_choisies(enveloppe.get("donnees") or {})
+    _maj = None
     if valeurs:
         _maj, erreurs = update_partie(partie_id, valeurs)
         if erreurs:
             return _rediriger(erreur=" ".join(erreurs), onglet="ouvertures")
 
-    crees = _creer_adverses_coches(enveloppe.get("parties_adverses") or [],
-                                   inv_id)
+    adverses_crees: list[dict] = []
+    crees = _creer_adverses_coches(
+        enveloppe.get("parties_adverses") or [], inv_id, collect=adverses_crees,
+    )
     if valeurs or crees:
         apres_ecriture_contact(_maj if valeurs else None)
+
+    nouveau_dossier = None
+    dossier_erreur = ""
+    if request.form.get("ouvrir_dossier") == "on":
+        nouveau_dossier, d_erreurs = _creer_dossier_depuis_ouverture(
+            _maj or partie_courante, adverses_crees, inv_id,
+        )
+        if d_erreurs:
+            dossier_erreur = " ".join(d_erreurs)
+
     _cloturer(invitation, batch, "traitée")
     log_portail_event("intake_partie_mise_a_jour", invitation_id=inv_id,
                       batch=batch, champs=len(valeurs), adverses_crees=crees)
@@ -1681,6 +2482,18 @@ def ouverture_appliquer(inv_id: str, batch: str):
     )
     if crees:
         message += f" {crees} contact(s) « partie adverse » créé(s)."
+    if dossier_erreur:
+        return redirect(url_for(
+            "parties.partie_detail",
+            partie_id=partie_id,
+            message=message,
+            erreur=f"Dossier non créé : {dossier_erreur}",
+        ))
+    if nouveau_dossier is not None:
+        return redirect(url_for(
+            "dossiers.dossier_detail", dossier_id=nouveau_dossier["id"],
+            tab="protocole",
+        ))
     return redirect(url_for("parties.partie_detail",
                             partie_id=partie_id, message=message))
 

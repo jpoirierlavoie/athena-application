@@ -1,4 +1,4 @@
-"""Construit le greffon claude.ai « athena » (compétence 2.0.3)
+"""Construit le greffon claude.ai « athena » (compétence 2.0.4)
 depuis sa source manuscrite et le registre des outils du connecteur.
 
     python -m scripts.exporter_plugin_athena [--sortie CHEMIN.plugin]
@@ -76,7 +76,7 @@ DIST = RACINE / "dist"
 sys.path.insert(0, str(ATHENA))
 
 NOM = "athena"
-VERSION = "2.0.3"
+VERSION = "2.0.4"
 
 SKILL = "skills/athena/SKILL.md"
 INDEX = "skills/athena/references/index-outils.md"

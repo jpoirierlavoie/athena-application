@@ -932,7 +932,9 @@ def _observability_md() -> str:
      "CourrierEvent",
      # Lot 2 portal RDV + availability events.
      "PortailEvent",
-     "BookingsEvent"],
+     "BookingsEvent",
+     # Lot F (2b) OneDrive mirror events.
+     "MiroirOneDriveEvent"],
 )
 def test_every_event_name_is_documented(nom_du_type):
     """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding

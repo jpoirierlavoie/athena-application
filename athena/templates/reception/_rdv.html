@@ -1,14 +1,6 @@
 {# Onglet « Rendez-vous » — imports « Bookings with me » à confirmer (L2 §5).
-   Toutes les valeurs client (client_nom, title, location) sont autoéchappées
-   par Jinja. Les formulaires portent le jeton CSRF (reception_bp, non exempt).
-
-   Lot 1a (L4) : « Confirmer » et « Refuser » portent l'etag de la version
-   affichée (etag_field) — la synchronisation Bookings déplace en silence le
-   créneau d'un import à confirmer, et refuser annule la réunion Outlook ;
-   une page périmée est refusée AVANT tout appel à Outlook. La liaison du
-   contact se calcule côté serveur (services/rendez_vous.py) : le formulaire
-   n'envoie plus de partie_id. #}
-{% from "components/_edit_conflict.html" import etag_field %}
+   Les cartes individuelles vivent dans _divergence_carte.html, _rdv_carte.html
+   et _transcription_carte.html afin d'être partagées avec le fil unifié. #}
 
 {% if erreur_rdv %}
 <div class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
@@ -21,50 +13,13 @@
 <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Divergences à traiter</h2>
 <div class="space-y-3 mb-8">
   {% for h in divergences %}
-  {% set d = h.bookings_divergence or {} %}
-  <div class="bg-amber-50 rounded-xl border border-amber-200 p-4">
-    <div class="flex items-start justify-between gap-3 mb-2">
-      <div>
-        <p class="text-sm font-semibold text-gray-900">{{ h.title }}</p>
-        <p class="text-xs text-amber-800">
-          {% if d.motif == "modifié_côté_client" %}Modifié côté client&nbsp;: {{ d.detail }}
-          {% elif d.motif == "annulé_côté_client" %}Annulé côté client
-          {% else %}{{ d.detail }}{% endif %}
-        </p>
-      </div>
-      <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 flex-shrink-0">Confirmé</span>
-    </div>
-    <div class="flex flex-wrap items-center gap-2">
-      {% if d.motif == "modifié_côté_client" %}
-      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='appliquer') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Appliquer la modification</button>
-      </form>
-      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='ignorer') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Ignorer</button>
-      </form>
-      {% elif d.motif == "annulé_côté_client" %}
-      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='annuler') }}"
-            data-confirm="Retirer ce rendez-vous de l'agenda et des appareils synchronisés ?">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">Annuler dans Athéna</button>
-      </form>
-      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='conserver') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conserver</button>
-      </form>
-      {% endif %}
-    </div>
-  </div>
+  {% include "reception/_divergence_carte.html" %}
   {% endfor %}
 </div>
 {% endif %}
 
 {# ── Rendez-vous à confirmer ──────────────────────────────────────────── #}
 <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Rendez-vous à confirmer</h2>
-{# Jamais sous le bandeau d'erreur : une lecture ratée n'est pas « rien en
-   attente ». #}
 {% if not rdvs and not erreur_rdv %}
 <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
   Aucun rendez-vous à confirmer.
@@ -73,126 +28,7 @@
 
 <div class="space-y-4">
   {% for h in rdvs %}
-  {% set annule = h.confirmation == "annulée_client" %}
-  <div class="bg-white rounded-xl border border-gray-200 p-4 {{ 'opacity-70' if annule }}">
-    <div class="flex items-start justify-between gap-3 mb-2">
-      <div class="min-w-0">
-        <p class="text-sm font-semibold text-gray-900">{{ h.title }}</p>
-        <p class="text-xs text-gray-500 mt-0.5">
-          {% if h.start_datetime and h.start_datetime.strftime is defined %}
-            {{ (h.start_datetime|to_mtl).strftime('%Y-%m-%d à %H:%M') }}
-            {% if h.end_datetime and h.end_datetime.strftime is defined %}– {{ (h.end_datetime|to_mtl).strftime('%H:%M') }}{% endif %}
-          {% endif %}
-        </p>
-      </div>
-      <span class="flex items-center gap-1.5 flex-shrink-0">
-        {% if h.source == "portail" %}
-        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">Portail</span>
-        {% endif %}
-        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium
-                     {{ 'bg-gray-200 text-gray-500' if annule else 'bg-amber-100 text-amber-700' }}">
-          {{ "Annulé par le client" if annule else "À confirmer" }}
-        </span>
-      </span>
-    </div>
-
-    {# Client + modalité #}
-    <div class="flex flex-wrap items-center gap-3 text-xs text-gray-600 mb-3">
-      {% if h.client_nom %}<span class="font-medium text-gray-800">{{ h.client_nom }}</span>{% endif %}
-      {% if h.client_email %}<span>{{ h.client_email }}</span>{% endif %}
-      {% if h.client_telephone %}<span>{{ h.client_telephone }}</span>{% endif %}
-      {% if h.modalite == "visioconférence" and h.conference_uri and h.conference_uri.startswith("http") %}
-      <a href="{{ h.conference_uri }}" target="_blank" rel="noopener noreferrer"
-         class="text-indigo-600 hover:text-indigo-500 font-medium">Lien Teams</a>
-      {% elif h.modalite == "visioconférence" %}
-      <span class="text-indigo-600">Visioconférence Teams (créée à la confirmation)</span>
-      {% elif h.location %}
-      <span class="truncate max-w-xs">{{ h.location }}</span>
-      {% endif %}
-    </div>
-
-    {% if h.sujet_client %}
-    <p class="text-xs text-gray-700 mb-2 wrap-anywhere"><span class="text-gray-500">Sujet&nbsp;:</span> {{ h.sujet_client }}</p>
-    {% endif %}
-
-    {% if h.parties_adverses %}
-    <p class="text-xs text-gray-700 mb-2 wrap-anywhere"><span class="text-gray-500">Partie(s) adverse(s)&nbsp;:</span> {{ h.parties_adverses|join(', ') }}</p>
-    {% endif %}
-
-    {% if h._conflit_horaire %}
-    <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-2">
-      Chevauchement détecté avec un autre événement du calendrier.
-    </p>
-    {% endif %}
-
-    {% if h._conflits_candidats %}
-    <div class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-2 space-y-1">
-      <p class="font-medium">Rapprochement visuel (vérification de conflit)&nbsp;:</p>
-      {% for item in h._conflits_candidats %}
-      <p class="wrap-anywhere">
-        {{ item.nom }} →
-        {% for c in item.candidats %}
-        <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}" class="underline font-medium">{{ c.nom }}</a> ({{ c.motif }}{% if c.en_dossier %} · lié à un dossier{% endif %}){% if not loop.last %}, {% endif %}
-        {% endfor %}
-      </p>
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {# Liaison partie #}
-    <div class="text-xs mb-3">
-      {% if h._partie_id %}
-      <span class="inline-flex items-center gap-1 text-green-700">
-        {{ ms('check', 14) }}
-        Partie reconnue&nbsp;: {{ h._partie_nom }}
-      </span>
-      {% else %}
-      <span class="text-gray-400">Aucune partie au dossier pour ce courriel.</span>
-      {% endif %}
-    </div>
-
-    {# Actions #}
-    <div class="space-y-3">
-      {% if not annule %}
-      <form method="post" action="{{ url_for('reception.rdv_confirmer', hid=h.id) }}"
-            class="space-y-2">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        {{ etag_field(h) }}
-        {% if h.source == "portail" %}
-        <details class="text-xs text-gray-600">
-          <summary class="cursor-pointer font-medium text-indigo-600 hover:text-indigo-500">Ordre du jour minuté Teams (facultatif)</summary>
-          <textarea name="teams_agenda" rows="3" maxlength="2000"
-                    class="mt-2 w-full rounded-lg border border-gray-300 px-2.5 py-2 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ h.teams_agenda }}</textarea>
-        </details>
-        {% endif %}
-        <div class="flex flex-wrap items-center gap-3">
-        {% if h._partie_id %}
-        <label class="flex items-center gap-1.5 text-xs text-gray-600">
-          <input type="checkbox" name="lier" checked class="rounded border-gray-300">
-          Lier à {{ h._partie_nom }}
-        </label>
-        {% elif feature_intake and h.client_email %}
-        {# Déclencheur (a) : aucune partie ne correspond au courriel — c'est
-           un nouveau client. Cochée par défaut (§2). #}
-        <label class="flex items-center gap-1.5 text-xs text-gray-600">
-          <input type="checkbox" name="intake" checked class="rounded border-gray-300">
-          Envoyer le formulaire d'ouverture
-        </label>
-        {% endif %}
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Confirmer</button>
-        </div>
-      </form>
-      {% endif %}
-      <form method="post" action="{{ url_for('reception.rdv_refuser', hid=h.id) }}"
-            data-confirm="{{ 'Retirer ce rendez-vous de la réception ?' if annule else 'Refuser ce rendez-vous ? Le client sera prévenu.' }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        {{ etag_field(h) }}
-        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">
-          {{ "Retirer" if annule else "Refuser" }}
-        </button>
-      </form>
-    </div>
-  </div>
+  {% include "reception/_rdv_carte.html" %}
   {% endfor %}
 </div>
 
@@ -201,21 +37,37 @@
 <div class="space-y-3">
   {% for inv in rdv_invites_attente %}
   <div class="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-3">
-    <div class="min-w-0">
-      <p class="text-sm font-medium text-gray-900">{{ inv.display_label }}</p>
-      <p class="text-xs text-gray-500">
-        {% if inv.client_name %}{{ inv.client_name }} · {% endif %}{{ inv.email }}
-        {% if inv.duree_minutes %} · {{ inv.duree_minutes }} min{% endif %}
-      </p>
+    <div class="flex items-start gap-2 min-w-0">
+      {% if allow_bulk is defined and allow_bulk %}
+      <label class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] cursor-pointer flex-shrink-0"
+             aria-label="Sélectionner l'invitation {{ inv.display_label }}">
+        <input type="checkbox"
+               data-feed-item-cb="1"
+               class="h-4 w-4 rounded border-gray-300 text-indigo-600"
+               data-kind="inv"
+               value="inv:{{ inv.id }}">
+      </label>
+      {% endif %}
+      <div class="min-w-0">
+        <p class="text-sm font-medium text-gray-900">{{ inv.display_label }}</p>
+        <p class="text-xs text-gray-500">
+          {% if inv.client_name %}{{ inv.client_name }} · {% endif %}{{ inv.email }}
+          {% if inv.duree_minutes %} · {{ inv.duree_minutes }} min{% endif %}
+        </p>
+      </div>
     </div>
     <div class="flex items-center gap-2">
       <form method="post" action="{{ url_for('reception.renvoyer', inv_id=inv.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Renvoyer</button>
+        {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+        <button type="submit"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                aria-label="Renvoyer le lien" title="Renvoyer le lien">{{ ms('send', 20) }}<span class="sr-only">Renvoyer</span></button>
       </form>
       <form method="post" action="{{ url_for('reception.revoquer', inv_id=inv.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">Révoquer</button>
+        {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+        <button type="submit" class="inline-flex items-center min-h-[44px] px-2.5 text-xs font-medium text-red-600 hover:text-red-500 rounded-lg hover:bg-red-50">Révoquer</button>
       </form>
     </div>
   </div>
@@ -230,6 +82,7 @@
     {% if teams_reunions_actif is not defined or teams_reunions_actif %}
     <form method="post" action="{{ url_for('reception.transcriptions_verifier') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
       <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Vérifier les réunions terminées
       </button>
@@ -246,95 +99,7 @@
   {% if rdv_transcriptions %}
   <div class="space-y-4">
     {% for tx in rdv_transcriptions %}
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
-      <div class="flex flex-wrap items-start justify-between gap-2 mb-3">
-        <div>
-          <p class="text-sm font-semibold text-gray-900">{{ tx.hearing_title }}</p>
-          <p class="text-xs text-gray-500">
-            {% if tx.hearing_start_label %}{{ tx.hearing_start_label }}{% endif %}
-            {% if tx.client_nom %} · {{ tx.client_nom }}{% endif %}
-            {% if tx.transcript_speakers %} · {{ tx.transcript_speakers|join(', ') }}{% endif %}
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          {% if tx.has_insights %}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">Copilot</span>
-          {% endif %}
-          {% if tx.has_transcript %}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-green-100 text-green-700">{{ tx.transcript_cue_count }} intervention(s)</span>
-          {% else %}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-gray-100 text-gray-700">Sans transcription</span>
-          {% endif %}
-        </div>
-      </div>
-
-      {% if tx.transcript_preview %}
-      <details class="mb-3">
-        <summary class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
-          Aperçu de la transcription
-        </summary>
-        <pre class="mt-2 bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-700 whitespace-pre-line">{{ tx.transcript_preview }}</pre>
-      </details>
-      {% endif %}
-
-      <form method="post" action="{{ url_for('reception.transcription_verser', hid=tx.hearing_id) }}" class="space-y-3">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        {{ etag_field(tx) }}
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label class="block text-xs font-medium text-gray-700 mb-1">Dossier de destination</label>
-            <select name="dossier_id" required class="w-full px-3 py-1.5 text-xs text-gray-900 bg-white border border-gray-300 rounded-lg">
-              <option value="">Choisir un dossier…</option>
-              {% for d in dossiers_actifs or [] %}
-              <option value="{{ d.id }}" {{ 'selected' if d.id == tx.suggested_dossier_id else '' }}>
-                {{ d.file_number }} — {{ d.title }}
-              </option>
-              {% endfor %}
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-gray-700 mb-1">Catégorie de note</label>
-            <select name="note_category" class="w-full px-3 py-1.5 text-xs text-gray-900 bg-white border border-gray-300 rounded-lg">
-              <option value="consultation" {{ 'selected' if tx.suggested_note_category == 'consultation' else '' }}>Consultation</option>
-              <option value="rencontre" {{ 'selected' if tx.suggested_note_category == 'rencontre' else '' }}>Rencontre</option>
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <label class="block text-xs font-medium text-gray-700 mb-1">Titre de la note</label>
-          <input type="text" name="note_title" required maxlength="200"
-                 value="{{ tx.suggested_note_title }}"
-                 class="w-full px-3 py-1.5 text-xs text-gray-900 bg-white border border-gray-300 rounded-lg">
-        </div>
-
-        <div>
-          <label class="block text-xs font-medium text-gray-700 mb-1">Notes structurées (Markdown)</label>
-          <textarea name="copilot_markdown" rows="6" required
-                    class="w-full px-3 py-2 text-xs text-gray-900 bg-white border border-gray-300 rounded-lg">{{ tx.copilot_markdown }}</textarea>
-        </div>
-
-        {% if onedrive_configure is defined and not onedrive_configure %}
-        <p class="text-xs text-gray-500">Module Courrier (OneDrive) non configuré : le versement créera la Note et le document « Interne » dans Athéna uniquement.</p>
-        {% endif %}
-
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-            Verser au dossier
-          </button>
-        </div>
-      </form>
-
-      <div class="mt-2 flex items-center justify-end">
-        <form method="post" action="{{ url_for('reception.transcription_ecarter', hid=tx.hearing_id) }}"
-              data-confirm="Écarter ces notes et purger la transcription temporaire ?">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          {{ etag_field(tx) }}
-          <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">Écarter</button>
-        </form>
-      </div>
-    </div>
+    {% include "reception/_transcription_carte.html" %}
     {% endfor %}
   </div>
   {% elif not erreur_transcriptions %}

@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Facturer des intérêts {{ invoice.invoice_number }} — Pallas Athena{% endblock %}
+
+{% block content %}
+{% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('invoices.invoice_detail', invoice_id=invoice.id) }}"
+     aria-label="Facture {{ invoice.invoice_number }}"
+     title="Facture {{ invoice.invoice_number }}"
+     class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg mb-4">
+    {{ ms('arrow_back', 20) }}<span class="sr-only">Facture {{ invoice.invoice_number }}</span>
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Facturer des intérêts de retard — {{ invoice.invoice_number }}</h1>
+  <p class="text-sm text-gray-500 mb-6">{{ invoice.client_name }}</p>
+
+  {{ conflict_banner(conflict) }}
+
+  {% if errors %}
+  <div role="alert" class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    {% for err in errors %}
+    <p class="text-red-600 text-sm wrap-anywhere">{{ err }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if rate_bps <= 0 %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 text-sm text-amber-800">
+    Aucun taux d'intérêt de retard n'est configuré. Définissez-le d'abord dans
+    <a href="{{ url_for('settings.index') }}" class="font-medium underline">Paramètres → Profil du cabinet</a>.
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('invoices.invoice_interest_charge', invoice_id=invoice.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(form) }}
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <label for="interest-date" class="block text-xs font-medium text-gray-700 mb-1">Date de l'avis d'intérêts (fin de période)</label>
+      <input id="interest-date" type="date" name="notice_date" required max="{{ today }}" value="{{ form.notice_date }}"
+             hx-get="{{ url_for('invoices.invoice_interest_form', invoice_id=invoice.id) }}"
+             hx-trigger="change"
+             hx-include="#interest-date"
+             hx-select="#interest-preview"
+             hx-target="#interest-preview"
+             hx-swap="outerHTML"
+             class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2.5">
+    </div>
+
+    <div id="interest-preview" class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Calcul d'intérêts simples (exonérés TPS/TVQ)</h2>
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Capital impayé</dt>
+          <dd class="text-gray-900 text-right">{{ principal | cents_fr }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Taux annuel (Profil du cabinet)</dt>
+          <dd class="text-gray-900 text-right">{{ rate_text or 'Non configuré' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Période</dt>
+          <dd class="text-gray-900 text-right">{{ period_start }} → {{ notice_date }} ({{ days }} jour{{ 's' if days != 1 else '' }})</dd>
+        </div>
+        <div class="flex justify-between gap-4 border-t border-gray-100 pt-2">
+          <dt class="text-gray-900 font-medium flex-shrink-0">Intérêts à facturer (exonérés TPS/TVQ)</dt>
+          <dd class="text-gray-900 text-right font-bold text-base">{{ estimated_amount | cents_fr }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Avis d'intérêts</dt>
+          <dd class="text-gray-900 text-right">numéro attribué à l'enregistrement : série {{ interest_series }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <label for="interest-reason" class="block text-xs font-medium text-gray-700 mb-1">Note / référence (facultatif, {{ reason_max }} caractères au plus)</label>
+      <textarea id="interest-reason" name="reason" rows="3"
+                class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{{ form.reason }}</textarea>
+    </div>
+
+    <p class="text-xs text-gray-500 mb-6">
+      Calcul en intérêts simples sur le capital impayé (art. 1571 C.c.Q., sans capitalisation des intérêts ni TPS/TVQ).
+      L'avis s'ajoute au solde dû de la facture ; son numéro ({{ interest_series }}###) n'est jamais réutilisé.
+    </p>
+
+    <div class="flex flex-wrap justify-end gap-3">
+      <a href="{{ url_for('invoices.invoice_detail', invoice_id=invoice.id) }}"
+         class="px-4 py-3 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+        Abandonner
+      </a>
+      <button type="submit"
+              class="px-6 py-3 text-sm font-medium rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-colors">
+        Facturer des intérêts
+      </button>
+    </div>
+  </form>
+
+</div>
+{% endblock %}

@@ -1,0 +1,188 @@
+{# Carte d'un lot de documents soumis via le portail.
+   Utilisée à la fois par le fil unifié (« Tout ») et par l'onglet « Documents ». #}
+<div class="bg-white rounded-xl border border-gray-200 mb-6">
+  <div class="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2">
+    <div class="flex items-start gap-2 min-w-0">
+      {% if allow_bulk is defined and allow_bulk %}
+      <label class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] cursor-pointer flex-shrink-0"
+             aria-label="Sélectionner le lot {{ lot.batch }}">
+        <input type="checkbox"
+               data-feed-item-cb="1"
+               class="h-4 w-4 rounded border-gray-300 text-indigo-600"
+               data-kind="lot"
+               value="lot:{{ lot.invitation.id }}:{{ lot.batch }}">
+      </label>
+      {% endif %}
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <p class="text-sm font-semibold text-gray-900">{{ lot.invitation.display_label }}</p>
+          {% if onglet == 'tout' %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">Documents</span>
+          {% endif %}
+        </div>
+        <p class="text-xs text-gray-500">
+          Lot {{ lot.batch }}
+          {% if lot.manifeste and lot.manifeste.submitted_at %} · soumis le {{ lot.manifeste.submitted_at[:16].replace("T", " à ") }} (UTC){% endif %}
+          {% if lot.manifeste and lot.manifeste.http %} · IP {{ lot.manifeste.http.ip }}{% endif %}
+        </p>
+        {% if lot.manifeste and lot.manifeste.http and lot.manifeste.http.user_agent %}
+        <p class="text-xs text-gray-400 truncate max-w-md" title="{{ lot.manifeste.http.user_agent }}">{{ lot.manifeste.http.user_agent }}</p>
+        {% endif %}
+      </div>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <a href="{{ url_for('reception.invitation_accuse_pdf', inv_id=lot.invitation.id) }}"
+         title="Télécharger l'accusé de réception (PDF)"
+         aria-label="Télécharger l'accusé de réception (PDF)"
+         class="inline-flex items-center gap-1 min-h-[44px] px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('picture_as_pdf', 16) }}<span>Accusé PDF</span>
+      </a>
+      <form method="post" action="{{ url_for('reception.traiter_lot', inv_id=lot.invitation.id, batch=lot.batch) }}"
+            data-confirm="Marquer le lot traité ? Les fichiers de quarantaine seront supprimés ; l'enveloppe et le manifeste seront archivés.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+        <button type="submit" class="inline-flex items-center min-h-[44px] px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+          Marquer le lot traité
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {% if not lot.manifeste %}
+  <div class="px-4 py-6 text-sm text-gray-500">
+    Traitement en cours — empreintes et accusé en préparation. Revenez dans quelques minutes.
+  </div>
+  {% else %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+          {% if allow_bulk is defined and allow_bulk %}
+          <th class="px-3 py-2 font-medium w-10">
+            <span class="sr-only">Sélection</span>
+          </th>
+          {% endif %}
+          <th class="px-4 py-2 font-medium">Fichier</th>
+          <th class="px-4 py-2 font-medium">Taille</th>
+          <th class="px-4 py-2 font-medium">Type</th>
+          <th class="px-4 py-2 font-medium">SHA-512</th>
+          <th class="px-4 py-2 font-medium">État</th>
+          <th class="px-4 py-2 font-medium text-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in lot.fichiers %}
+        {% set folder_sel_id = 'folder-' ~ lot.invitation.id ~ '-' ~ lot.batch ~ '-' ~ f.seq %}
+        <tr class="border-b border-gray-50 align-top">
+          {% if allow_bulk is defined and allow_bulk %}
+          <td class="px-3 py-2">
+            {% if f.etat in ("reçu", "manquant") %}
+            <label class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] cursor-pointer"
+                   aria-label="Sélectionner {{ f.name }}">
+              <input type="checkbox"
+                     data-lot-file-cb="1"
+                     class="h-4 w-4 rounded border-gray-300 text-indigo-600"
+                     value="{{ lot.invitation.id }}:{{ lot.batch }}:{{ f.seq }}">
+            </label>
+            {% endif %}
+          </td>
+          {% endif %}
+          <td class="px-4 py-2 text-gray-900">{{ f.name }}
+            {% if f.divergence %}<p class="text-xs text-amber-700">{{ f.divergence }}</p>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-gray-600 whitespace-nowrap">
+            {% if f.size_gcs >= 1048576 %}{{ (f.size_gcs / 1048576)|round(1) }} Mo{% else %}{{ (f.size_gcs / 1024)|round|int }} ko{% endif %}
+          </td>
+          <td class="px-4 py-2 text-gray-600">{{ f.content_type or "—" }}</td>
+          <td class="px-4 py-2 text-gray-500 font-mono text-xs" title="{{ f.sha512 or '' }}">
+            {{ (f.sha512 or "—")[:16] }}{% if f.sha512 %}…{% endif %}
+          </td>
+          <td class="px-4 py-2">
+            <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full
+              {{ 'bg-green-100 text-green-700' if f.etat == 'versé'
+                 else 'bg-red-100 text-red-700' if f.etat in ('refusé', 'manquant')
+                 else 'bg-gray-100 text-gray-700' }}">{{ f.etat }}</span>
+          </td>
+          <td class="px-4 py-2 text-right whitespace-nowrap">
+            <div class="inline-flex items-center justify-end gap-1">
+              {% if f.etat != "manquant" %}
+              <a href="{{ url_for('reception.telecharger', inv_id=lot.invitation.id, batch=lot.batch, seq=f.seq) }}"
+                 class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-indigo-600 hover:text-indigo-500 hover:bg-gray-50"
+                 aria-label="Télécharger {{ f.name }}" title="Télécharger">{{ ms('download', 20) }}<span class="sr-only">Télécharger</span></a>
+              {% endif %}
+              {% if f.etat in ("reçu", "manquant") %}
+              <form method="post" class="inline"
+                    action="{{ url_for('reception.refuser', inv_id=lot.invitation.id, batch=lot.batch, seq=f.seq) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+                <button type="submit" class="inline-flex items-center min-h-[44px] px-2.5 text-xs font-medium text-red-600 hover:text-red-500 rounded-lg hover:bg-red-50">Refuser</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% if f.versable %}
+        <tr class="border-b border-gray-50">
+          <td colspan="{{ 7 if (allow_bulk is defined and allow_bulk) else 6 }}" class="px-4 pb-3">
+            <details>
+              <summary class="text-xs font-medium text-indigo-600 cursor-pointer">Verser au dossier…</summary>
+              <form method="post" class="mt-2 flex flex-wrap items-end gap-3"
+                    action="{{ url_for('reception.verser', inv_id=lot.invitation.id, batch=lot.batch, seq=f.seq) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">Dossier</label>
+                  <select name="dossier_id"
+                          data-folder-select="{{ folder_sel_id }}"
+                          class="rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                    {% for d in dossiers %}
+                    <option value="{{ d.id }}" {% if d.id == lot.invitation.dossier_id %}selected{% endif %}>
+                      {{ d.file_number }} — {{ d.title }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">Sous-dossier</label>
+                  <select id="{{ folder_sel_id }}" name="folder_id"
+                          class="rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                    <option value="">Autres › Reçus du portail (par défaut)</option>
+                    {% for fid, flabel in lot.default_folder_options or [] %}
+                    <option value="{{ fid }}">{{ flabel }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">Catégorie</label>
+                  <select name="category" class="rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                    {% for cle, libelle in category_choices.items() %}
+                    <option value="{{ cle }}" {% if cle == versement_default_category %}selected{% endif %}>{{ libelle }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="flex-1 min-w-[12rem]">
+                  <label class="block text-xs text-gray-500 mb-1">Nom au dossier</label>
+                  <input type="text" name="display_name" value="{{ f.name }}"
+                         class="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                </div>
+                <button type="submit"
+                        class="inline-flex items-center min-h-[44px] px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+                  Verser
+                </button>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {% elif f.etat == "reçu" %}
+        <tr class="border-b border-gray-50">
+          <td colspan="{{ 7 if (allow_bulk is defined and allow_bulk) else 6 }}" class="px-4 pb-3 text-xs text-gray-400">
+            Non versable tel quel (formats admis au dossier : PDF, Word, Excel, JPEG, PNG, TIFF, ZIP, courriels .eml/.msg ≤ 200 Mo) — télécharger et traiter hors application.
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>

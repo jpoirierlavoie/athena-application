@@ -946,7 +946,7 @@ _DOCUMENT_CATEGORIES = [
 # documents one above. tests/test_mcp_template_reads.py pins both pairs; a
 # literal, not an import, because importing models.* runs firestore.Client()
 # at load.
-_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note_credit", "note", "modele"]
+_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note_credit", "avis_interets", "note", "modele"]
 _TEMPLATE_CATEGORIES = ["procédure", "correspondance", "autre"]
 # How many folders list_documents(include_folders) returns — a dossier holds
 # tens; the cap only bounds a pathological tree (folders_truncated says so).
@@ -1123,45 +1123,58 @@ def _partie_identity_props() -> dict:
                    "description": "Suffixe honorifique (Ad. E., j.c.s.)."},
         "organization_name": {
             "type": "string", "maxLength": 300,
-            "description": (
-                "Raison sociale — REQUISE pour organization (sert à "
-                "display_name, jamais le nom commercial)."
-            ),
+            "description": "Raison sociale — REQUISE pour organization.",
         },
         "trade_name": {"type": "string", "maxLength": 300,
-                       "description": "Nom commercial / « faisant affaires sous »."},
+                       "description": "Nom commercial."},
         "governing_law": {"type": "string", "maxLength": 300,
                           "description": "Loi constitutive."},
         "language": {"type": "string", "enum": _PARTIE_LANGUAGES,
-                     "description": "Langue de correspondance (vCard LANG)."},
+                     "description": "Langue (vCard LANG)."},
         "gender": {"type": "string", "enum": _PARTIE_GENDERS,
                    "description": "Genre (vCard GENDER)."},
         "pronouns": {"type": "string", "enum": _PARTIE_PRONOUNS,
-                     "description": "Pronoms (vCard PRONOUNS)."},
+                     "description": "Pronoms."},
         "occupation": {"type": "string", "enum": _PARTIE_OCCUPATIONS,
-                       "description": "Profession/statut (art. 14, hors vCard)."},
+                       "description": "Profession/statut."},
         "job_title": {"type": "string", "maxLength": 200,
-                      "description": "Poste ou fonction (vCard TITLE)."},
+                      "description": "Fonction (vCard TITLE)."},
         "organization": {"type": "string", "maxLength": 300,
-                         "description": "Employeur ou organisme (vCard ORG)."},
+                         "description": "Employeur (vCard ORG)."},
         "email": {"type": "string", "maxLength": 254,
-                  "description": "Courriel personnel (normalisé en minuscules)."},
+                  "description": "Courriel personnel."},
         "email_work": {"type": "string", "maxLength": 254,
-                       "description": "Courriel professionnel."},
+                       "description": "Courriel pro."},
         "phone_home": {"type": "string", "maxLength": 40,
-                       "description": "Téléphone domicile (format E.164)."},
+                       "description": "Tél. domicile (E.164)."},
         "phone_cell": {"type": "string", "maxLength": 40,
-                       "description": "Cellulaire (format E.164)."},
+                       "description": "Cellulaire (E.164)."},
         "phone_work": {"type": "string", "maxLength": 40,
-                       "description": "Téléphone travail (format E.164)."},
+                       "description": "Tél. travail (E.164)."},
         "fax": {"type": "string", "maxLength": 40,
-                "description": "Télécopieur (format E.164)."},
+                "description": "Télécopieur (E.164)."},
         "bar_number": {"type": "string", "maxLength": 60,
-                       "description": "Numéro du Barreau (avocat)."},
+                       "description": "N° du Barreau."},
         "company_neq": {"type": "string", "maxLength": 60,
-                        "description": "NEQ du Québec (personne morale)."},
+                        "description": "NEQ du Québec."},
         "notes": {"type": "string", "maxLength": 2000,
-                  "description": "Notes libres sur le contact."},
+                  "description": "Notes."},
+        "numero_tps": {
+            "type": "string", "maxLength": 30,
+            "description": "TPS (PAYEE_ROLES ; ex. 123456789 RT 0001 ; `` efface).",
+        },
+        "numero_tvq": {
+            "type": "string", "maxLength": 30,
+            "description": "TVQ (PAYEE_ROLES ; ex. 1234567890 TQ 0001 ; `` efface).",
+        },
+        "categorie_depense_defaut": {
+            "type": "string", "enum": ["", *_ADMIN_CATEGORIES],
+            "description": "Catégorie usuelle (PAYEE_ROLES ; `` efface).",
+        },
+        "numero_compte_fournisseur": {
+            "type": "string", "maxLength": 100,
+            "description": "N° compte fournisseur (PAYEE_ROLES ; `` efface).",
+        },
         **_address_props("address", "personnelle"),
         **_address_props("work_address", "professionnelle"),
     }
@@ -1307,8 +1320,14 @@ _EXPENSE_CATEGORIES = [
 # (VALID_PROTOCOL_TYPES, VALID_STATUSES, STEP_STATUS_TARGETS) for the same
 # firestore-at-import reason; pinned against it by
 # tests/test_mcp_protocol_writes.py.
-_PROTOCOL_TYPES = ["cq_simplifié", "cs_ordinaire", "conventionnel"]
-_PROTOCOL_STATUSES = ["actif", "suspendu", "complété"]
+_PROTOCOL_TYPES = [
+    "cq_simplifié",
+    "cs_ordinaire",
+    "conventionnel",
+    "prejudiciaire",
+    "ouverture",
+]
+_PROTOCOL_STATUSES = ["brouillon", "actif", "complété", "suspendu"]
 _STEP_STATUS_TARGETS = ["complété", "à_venir"]
 
 # Lot 1b (L7) — the calendar vocabularies, copied from models.hearing
@@ -2316,7 +2335,9 @@ TOOLS: dict[str, dict] = {
         "description": (
             (
             "Fiche complète d'un contact : coordonnées personnelles et "
-            "professionnelles, identifiants légaux, statuts KYC / conflit "
+            "professionnelles, identifiants légaux, fiche fournisseur "
+            "(TPS/TVQ, catégorie habituelle, n° de compte pour les rôles "
+            "payés), statuts KYC / conflit "
             "d'intérêts (avec `*_source` et `*_presumed` si inscrit par ce "
             "connecteur en attente de confirmation), mandataires et dossiers "
             "liés. Les notes KYC/conflit peuvent être sensibles."
@@ -3355,14 +3376,16 @@ TOOLS: dict[str, dict] = {
         "title": "Créer un protocole",
         "description": (
             (
-            "ÉCRITURE — crée le protocole d'instance d'un dossier : "
+            "ÉCRITURE — crée le protocole d'un dossier : "
             "`cq_simplifié` (Cour du Québec : délais C.p.c. verrouillés), "
-            "`cs_ordinaire` (Cour supérieure : dates suggérées à confirmer) "
-            "ou `conventionnel` (ajouter étapes via `add_protocol_step`). Au "
-            "plus un protocole `actif` par dossier ; refusé si régime "
-            "incompatible avec le tribunal. Échéances calculées depuis "
-            "`start_date` (art. 83 C.p.c.). `create_linked_tasks: true` crée "
-            "les tâches liées au téléphone. Retourne étapes, échéances, "
+            "`cs_ordinaire` (Cour supérieure : dates suggérées à confirmer), "
+            "`conventionnel` (ajouter étapes via `add_protocol_step`), "
+            "`prejudiciaire` (créé en `brouillon` avec rubriques modifiables) "
+            "ou `ouverture` (piste d'ouverture distincte, auto-créée à "
+            "l'ouverture du dossier). Au plus un protocole `actif` par piste ; "
+            "refusé si régime incompatible avec le tribunal. Échéances calculées "
+            "depuis `start_date` (art. 83 C.p.c.). `create_linked_tasks: true` "
+            "crée les tâches liées au téléphone. Retourne étapes, échéances, "
             "phases et `etag`."
         )
         ),
@@ -3415,8 +3438,8 @@ TOOLS: dict[str, dict] = {
             "l'avocat (`recompute`) ; tâches liées non modifiées à la main "
             "suivent (`linked_tasks`). `status` `suspendu`/`complété` retire "
             "les étapes de `get_agenda` et arrête la cascade ; `actif` "
-            "refusé si autre protocole actif. `notes` remplace sans "
-            "historique."
+            "refusé si autre protocole actif sur la même piste. `notes` "
+            "remplace sans historique."
         )
         ),
         "input_schema": {
@@ -4835,30 +4858,21 @@ TOOLS: dict[str, dict] = {
     "create_partie": {
         "title": "Créer un contact",
         "description": (
-            (
-            "ÉCRITURE — crée un contact (client, partie adverse, avocat, "
-            "expert, huissier, sténographe, `fournisseur`…). Vérifier "
-            "`find_imported` et passer `legacy_ref` en reprise (aucune "
-            "suppression ici). `individual` exige `last_name` ; "
-            "`organization` exige `organization_name` (ne pas mêler). "
-            "ADRESSE EN BLOC : envoyer les 6 clés ensemble (`street`, "
-            "`unit`, `city`, `province`, `postal_code`, `country`), sinon "
-            "les absentes prennent Montréal / Québec / Canada par défaut. "
-            "KYC/conflit : utiliser `record_kyc_status` (inscrit PRÉSUMÉ)."
-        )
+            "ÉCRITURE — crée un contact (`individual` -> `last_name` ; "
+            "`organization` -> `organization_name`). Passer `legacy_ref` "
+            "après `find_imported`. Adresse à 6 clés ensemble ; KYC via "
+            "`record_kyc_status`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "type": {
                     "type": "string", "enum": _PARTIE_TYPES,
-                    "description": "individual (personne physique) ou organization (personne morale).",
+                    "description": "individual ou organization.",
                 },
                 "contact_role": {
                     "type": "string", "enum": _CONTACT_ROLES,
-                    "description": (
-                        "Rôle du contact. Défaut « client ». Un « fournisseur » ne synchronise pas au téléphone."
-                    ),
+                    "description": "Rôle (défaut client ; fournisseur hors téléphone).",
                 },
                 **_partie_identity_props(),
                 **_legacy_ref_prop(),
@@ -4874,25 +4888,18 @@ TOOLS: dict[str, dict] = {
     "update_partie": {
         "title": "Corriger un contact",
         "description": (
-            (
-            "ÉCRITURE — REMPLACE les champs nommés : envoyer SEULEMENT ce "
-            "qui change (omis = intact ; vide `` = EFFACÉ ; ne jamais "
-            "renvoyer toute la fiche `get_partie`). Même règle du BLOC "
-            "ADRESSE à 6 clés : relire `get_partie` et renvoyer complet. "
-            "`type` est immuable ; KYC via `record_kyc_status` ; mandataires "
-            "via `update_partie_mandataire`. Le modèle revalide toute la "
-            "fiche fusionnée (corriger d'abord un vieux téléphone invalide)."
-        )
+            "ÉCRITURE — remplace les champs nommés (omis = intact ; `` = "
+            "efface). Adresse à 6 clés complète via `get_partie`. `type` "
+            "immuable ; KYC via `record_kyc_status` ; mandataires via "
+            "`update_partie_mandataire`. Revalide toute la fiche."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "partie_id": _id("UUIDv4 du contact à corriger. Requis."),
+                "partie_id": _id("UUIDv4 du contact. Requis."),
                 "contact_role": {
                     "type": "string", "enum": _CONTACT_ROLES,
-                    "description": (
-                        "Changer le rôle : « fournisseur » retire du téléphone, tout autre l'y remet."
-                    ),
+                    "description": "Rôle (`fournisseur` retire du téléphone).",
                 },
                 **_partie_identity_props(),
                 **_legacy_ref_prop(),

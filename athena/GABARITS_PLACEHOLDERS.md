@@ -478,8 +478,41 @@ Une lettre qui n'est pas encore dans Athena est d'abord **versée comme document
 
 ---
 
+## 10. Avis d'intérêts seulement (type « Avis d'intérêts »)
+
+L'avis d'intérêts d'une facture en retard documente des intérêts simples contractuels exonérés de TPS et de TVQ, numérotés à l'inscription (« 2026-AI001 », série annuelle jamais réutilisée). Sur la fiche de la facture, chaque avis d'intérêts en vigueur offre « Générer l'avis d'intérêts » : il remplit le gabarit de type « Avis d'intérêts » désigné **actif** et le verse dans « Mandat › Factures » (avec réutilisation si rien n'a changé). Un avis annulé ne génère plus de document Word.
+
+Un gabarit d'avis d'intérêts peut utiliser l'en-tête commun (`dossier.*`, `destinataire.*`, `cabinet.*`, `date.*` et leurs alias courts — `destinataire.*` désigne le client de la facture), plus les champs qui suivent.
+
+### Champs `ai.*`
+
+| Champ | Valeur |
+|---|---|
+| `{{ai.numero}}` | Numéro de l'avis d'intérêts (« 2026-AI001 ») |
+| `{{ai.date}}` | Date de l'avis d'intérêts (date au long) |
+| `{{ai.periode_debut}}` | Date de début de la période d'intérêts (date au long) |
+| `{{ai.periode_fin}}` | Date de fin de la période d'intérêts (date au long) |
+| `{{ai.jours}}` | Nombre de jours de la période |
+| `{{ai.capital}}` | Capital impayé sur lequel courent les intérêts simples |
+| `{{ai.taux}}` | Taux annuel appliqué (selon le profil du cabinet au moment de l'émission) |
+| `{{ai.montant}}` | Montant des intérêts facturés (exonérés de TPS et de TVQ) |
+| `{{ai.motif}}` | Note ou référence facultative inscrite à l'avis (vide si aucune) |
+
+### Champs de la facture (avis d'intérêts)
+
+| Champ | Valeur |
+|---|---|
+| `{{facture.numero}}` | Numéro de la facture concernée |
+| `{{facture.date}}` | Date de la facture (date au long) |
+| `{{facture.date_echeance}}` | Date d'échéance de la facture (date au long) |
+| `{{facture.tps_numero}}` / `{{facture.tvq_numero}}` | Numéros d'inscription à la TPS et à la TVQ de la facture |
+| `{{facture.solde_restant}}` | Solde total actuel de la facture après l'avis d'intérêts |
+
+---
+
 ## En bref
 
+- **Gabarits bilingues FR / EN** : chaque gabarit ou modèle conserve un fichier principal en français (`FR`) et peut recevoir une version anglaise facultative (`EN`) avec les mêmes noms de champs (`{{champ}}`). Lorsque la version anglaise est présente, les boutons **FR** et **EN** s'affichent côte à côte (sur les gabarits, modèles, factures, notes de crédit et avis d'intérêts), et la langue anglaise est présélectionnée par défaut lorsque la langue du client est l'anglais (`en`). En génération `EN`, les dates (`November 24, 2026`), montants (`$1,500.00`), taux (`5%`), rôles judiciaires (`Plaintiff` / `Defendant`), titres de civilité (`Mr.`, `Ms.`, `Mtre`, `Dr.`, `Prof.`, `The Hon.`) et noms de tribunaux (`Superior Court`, `Court of Québec`, `Court of Appeal`) sont automatiquement mis en forme en anglais. Chaque langue garde son propre numéro de version et sa propre empreinte de réutilisation.
 - Les noms de personnes s'impriment **sans civilité par défaut**; employez la variante `…_avec_civilite` pour obtenir la civilité (dans le bloc d'adresse d'une lettre, pas dans l'intitulé d'un acte de procédure).
 - Les noms de champs sont reconnus **sans égard aux majuscules**; un nom EN MAJUSCULES **met la valeur en majuscules**.
 - Les champs inconnus sont **sans risque** : ils restent tels quels, et la génération n'échoue jamais.

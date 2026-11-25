@@ -54,7 +54,10 @@ deletions on ``fenetre_pleine``, while leaving creation armed.
 the page) or the lot would ship a bootstrap freeze of both syncs.
 """
 
+import hashlib
+import hmac
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -76,6 +79,13 @@ logger = logging.getLogger(__name__)
 
 COLLECTION = "settings"
 DOC_ID = "integrations"
+
+SHARED_CALENDAR_TOKEN_HASH_KEY = "calendrier_partage_token_hash"
+SHARED_CALENDAR_CREATED_AT_KEY = "calendrier_partage_cree_at"
+_SHARED_CALENDAR_KEYS = (
+    SHARED_CALENDAR_TOKEN_HASH_KEY,
+    SHARED_CALENDAR_CREATED_AT_KEY,
+)
 
 _FIELDS: tuple[str, ...] = EDITABLE_FIELDS
 
@@ -402,6 +412,9 @@ def update_integrations(data: dict) -> tuple[Optional[dict], list[str]]:
     )
     stored["id"] = DOC_ID
     stored["created_at"] = (existing or {}).get("created_at") or now
+    for sc_key in _SHARED_CALENDAR_KEYS:
+        if isinstance(existing, dict) and sc_key in existing:
+            stored[sc_key] = existing[sc_key]
     provenance.stamp_update(stored, now)
 
     try:
@@ -411,6 +424,100 @@ def update_integrations(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     return merged, []
+
+
+def get_shared_calendar_state() -> tuple[str, Optional[datetime], str]:
+    """Return ``(sha256_hex, created_at, provenance)`` for the shared .ics feed.
+
+    Provenance is ``store`` | ``absent`` | ``unreadable``. Fails closed: an
+    unreadable store never reports disabled/absent to the feed verifier.
+    """
+    stored, state = _read_state()
+    if state != "ok" or stored is None:
+        return "", None, state
+    raw_hash = stored.get(SHARED_CALENDAR_TOKEN_HASH_KEY)
+    token_hash = str(raw_hash).strip().lower() if isinstance(raw_hash, str) else ""
+    cree_at = stored.get(SHARED_CALENDAR_CREATED_AT_KEY)
+    if not isinstance(cree_at, datetime):
+        cree_at = None
+    return token_hash, cree_at, "store"
+
+
+def _set_shared_calendar_fields(
+    token_hash: str,
+    created_at: Optional[datetime],
+) -> tuple[bool, list[str]]:
+    stored, state = _read_state()
+    if state == "unreadable":
+        return False, [
+            "Le magasin de réglages est illisible ; opération refusée pour "
+            "protéger votre configuration. Réessayez dans un moment."
+        ]
+    now = datetime.now(timezone.utc)
+    if stored is None:
+        seed = _seed_from_config()
+        payload = {**seed}
+        payload["bookings_subject_keywords"] = list(seed["bookings_subject_keywords"])
+        payload["id"] = DOC_ID
+        payload["created_at"] = now
+    else:
+        payload = dict(stored)
+        payload["id"] = DOC_ID
+        payload["created_at"] = payload.get("created_at") or now
+    payload[SHARED_CALENDAR_TOKEN_HASH_KEY] = token_hash
+    payload[SHARED_CALENDAR_CREATED_AT_KEY] = created_at
+    provenance.stamp_update(payload, now)
+
+    try:
+        db.collection(COLLECTION).document(DOC_ID).set(payload)
+    except Exception:
+        log_unexpected("shared calendar token write failed")
+        return False, ["Erreur lors de la sauvegarde du jeton. Veuillez réessayer."]
+    return True, []
+
+
+def generate_shared_calendar_token() -> tuple[Optional[str], Optional[datetime], list[str]]:
+    """Generate/rotate the shared .ics feed token; stores SHA-256 hash only."""
+    plaintext = secrets.token_urlsafe(32)
+    digest_hex = hashlib.sha256(plaintext.encode("ascii")).hexdigest()
+    now = datetime.now(timezone.utc)
+    ok, errors = _set_shared_calendar_fields(digest_hex, now)
+    if not ok:
+        return None, None, errors
+    return plaintext, now, []
+
+
+def revoke_shared_calendar_token() -> tuple[bool, list[str]]:
+    """Disable the shared .ics feed by clearing the stored SHA-256 hash."""
+    return _set_shared_calendar_fields("", None)
+
+
+def verify_shared_calendar_token(candidate: str) -> tuple[bool, str]:
+    """Constant-time check of a bearer token against ``settings/integrations``."""
+    if not isinstance(candidate, str) or not candidate.isascii():
+        return False, "bad_format"
+    if len(candidate) < 20 or len(candidate) > 128 or not all(
+        ch.isalnum() or ch in "-_" for ch in candidate
+    ):
+        return False, "bad_format"
+    candidate_digest = hashlib.sha256(candidate.encode("ascii")).digest()
+    token_hash, _cree_at, prov = get_shared_calendar_state()
+    if prov == "unreadable":
+        return False, "store_unreadable"
+    if prov != "store" or not token_hash or len(token_hash) != 64:
+        hmac.compare_digest(candidate_digest, b"\x00" * 32)
+        return False, "unconfigured"
+    try:
+        expected_digest = bytes.fromhex(token_hash)
+    except ValueError:
+        hmac.compare_digest(candidate_digest, b"\x00" * 32)
+        return False, "unconfigured"
+    if len(expected_digest) != 32:
+        hmac.compare_digest(candidate_digest, b"\x00" * 32)
+        return False, "unconfigured"
+    if hmac.compare_digest(candidate_digest, expected_digest):
+        return True, "ok"
+    return False, "invalid_token"
 
 
 def changed_field_names(before: dict, after: dict) -> list[str]:

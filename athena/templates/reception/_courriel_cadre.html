@@ -1,0 +1,23 @@
+{# Gabarit cadre commun pour tous les courriels sortants du portail client.
+   Utilisé par les 11 modèles HTML de réception / RDV / accusés via
+   {% extends "reception/_courriel_cadre.html" %}. Styles EN LIGNE uniquement :
+   les clients de messagerie ignorent les classes CSS et les balises <style>. #}
+{% set _cab_titre = firm_name if (firm_name is defined and firm_name) else (cabinet.organisation or cabinet.nom if (cabinet is defined and cabinet) else '') %}
+<div style="background-color: #F3F4F6; padding: 20px 12px; font-family: Arial, sans-serif; color: #111827;">
+  <div style="max-width: 650px; margin: 0 auto; background-color: #FFFFFF; border: 1px solid #E5E7EB; border-top: 4px solid #4F46E5; border-radius: 8px; overflow: hidden;">
+    <div style="padding: 16px 24px 12px 24px; border-bottom: 1px solid #E5E7EB; background-color: #FAFAFA;">
+      <div style="font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #4F46E5; margin: 0 0 2px 0;">
+        {% block email_kicker %}Portail client sécurisé{% endblock %}
+      </div>
+      {% if _cab_titre %}
+      <div style="font-size: 15px; font-weight: 700; color: #111827; margin: 0;">{{ _cab_titre }}</div>
+      {% endif %}
+    </div>
+    <div style="padding: 20px 24px; font-size: 14px; line-height: 1.55; color: #1F2937;">
+      {% block email_body %}{% endblock %}
+    </div>
+    <div style="padding: 12px 24px; background-color: #F9FAFB; border-top: 1px solid #E5E7EB; font-size: 11px; line-height: 1.45; color: #6B7280;">
+      {% block email_footer %}Ce message confidentiel provient du portail client sécurisé et s'adresse uniquement à son destinataire.{% endblock %}
+    </div>
+  </div>
+</div>

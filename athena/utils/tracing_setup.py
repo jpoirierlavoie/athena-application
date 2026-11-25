@@ -240,7 +240,8 @@ _UNSANITIZABLE: str = "<unsanitizable>"
 
 def _strip_query(value: str) -> str:
     """Drop the query string (and fragment) from a URL or request target."""
-    return value.split("?", 1)[0].split("#", 1)[0]
+    stripped = value.split("?", 1)[0].split("#", 1)[0]
+    return _REDACTION.SHARED_FEED_RE.sub("/calendrier-partage/<redacted>", stripped)
 
 
 def _scrub_string(value: str) -> str:

@@ -46,6 +46,16 @@ from tz import to_mtl
 from utils import contreparties as cp
 from utils.deadlines import today_mtl
 from utils.logging_setup import log_trust_event, log_unexpected, sanitize_log_value
+from utils.receipts import (
+    MAX_RECEIPT_SIZE,
+    RECEIPT_CONTENT_MISMATCH_FR,
+    RECEIPT_EXTENSIONS,
+    RECEIPT_MD5_MAX as _RECEIPT_MD5_MAX,
+    RECEIPT_MIME_TYPES,
+    RECEIPT_SIZE_REFUSED_FR,
+    RECEIPT_TYPE_REFUSED_FR,
+    receipt_extension,
+)
 from utils.tracing_setup import span
 
 logger = logging.getLogger(__name__)
@@ -271,7 +281,7 @@ BARREAU_COLUMNS = (
     ("objet", "Objet de la recette ou du débours"),
     ("mode", "Mode du retrait"),
     ("recette", "Recette"),
-    ("credit", "Crédit"),
+    ("credit", "Déboursé"),
     ("solde", "Solde"),
 )
 
@@ -683,6 +693,15 @@ _ABORT_MESSAGES = {
         "Impossible de compenser : écriture déjà compensée ou annulée, "
         "date de compensation antérieure à l'écriture, ou future."
     ),
+    "virement_avances_composite": (
+        "Cette avance provient d'un virement du compte d'opérations — "
+        "contre-passez-la par la porte de virement d'avances pour que les "
+        "deux registres suivent ensemble."
+    ),
+    "lien_administration_réservé": (
+        "Le lien avec une écriture d'administration ne s'inscrit pas ici : "
+        "il est posé uniquement par le virement d'avances."
+    ),
     "conciliation_introuvable": RECONCILIATION_NOT_FOUND,
     "conciliation_non_brouillon": "Cette conciliation est déjà complétée.",
     # 2026-11-10 — art. 32: no completion without the bank statement.
@@ -1071,6 +1090,7 @@ def _build_transaction_doc(
     reverses_id: Optional[str] = None,
     reversed_by_id: Optional[str] = None,
     related_transaction_id: Optional[str] = None,
+    admin_transaction_id: Optional[str] = None,
 ) -> dict:
     """Assemble a full trust_transactions doc, snapshotting the dossier/client
     labels off the read dossier (spec §3.2). ``date`` is stored midnight UTC."""
@@ -1085,7 +1105,7 @@ def _build_transaction_doc(
                 if c.get("id") == client_id:
                     client_name = c.get("name", "")
                     break
-    return {
+    doc = {
         "id": tx_id,
         "account_id": account_id,
         "sequence": sequence,
@@ -1120,8 +1140,16 @@ def _build_transaction_doc(
         "reverses_id": reverses_id,
         "reversed_by_id": reversed_by_id,
         "related_transaction_id": related_transaction_id,
+        "receipt_storage_path": None,
+        "receipt_filename": "",
+        "receipt_file_type": "",
+        "receipt_file_size": 0,
+        "receipt_md5": "",
         **provenance.create_fields(now),
     }
+    if admin_transaction_id:
+        doc["admin_transaction_id"] = admin_transaction_id
+    return doc
 
 
 def _cash_receipt_id(clean: dict) -> str:
@@ -1233,12 +1261,15 @@ def _precheck_reason(clean: dict, *, reserved_ok: tuple = ()) -> Optional[str]:
 
 def _prepare_create(
     data: dict, *, reserved_ok: tuple = (),
+    cleared_date=None, admin_transaction_id: Optional[str] = None,
 ) -> tuple[Optional[dict], Optional[str], dict]:
     """``(ctx, None, clean)`` or ``(None, reason, clean)`` — no read.
 
     ``clean`` is returned in both cases so the caller can log the ids the
     refusal concerns."""
     clean = _sanitize_data(data)
+    if "admin_transaction_id" in clean:
+        return None, "lien_administration_réservé", clean
     reason = _precheck_reason(clean, reserved_ok=reserved_ok)
     if reason:
         return None, reason, clean
@@ -1263,6 +1294,13 @@ def _prepare_create(
     cash_receipt_id = _cash_receipt_id(clean)
     if not (direction == "déboursé" and method == CASH_METHOD):
         cash_receipt_id = ""
+    cd = None
+    if cleared_date is not None:
+        cd = _midnight_utc(cleared_date)
+        tx_day = _as_utc(clean.get("date"))
+        if (cd is None or cd.date() > today_mtl()
+                or (tx_day is not None and cd.date() < tx_day.date())):
+            return None, "compensation_invalide", clean
     tx_id = str(uuid.uuid4())
     ctx = {
         "clean": clean,
@@ -1276,6 +1314,8 @@ def _prepare_create(
         "invoice_id": invoice_id,
         "invoice_external_ref": invoice_external_ref,
         "cash_receipt_id": cash_receipt_id,
+        "cleared_date": cd,
+        "admin_transaction_id": admin_transaction_id or None,
         "amount": int(clean["amount"]),
         "tx_date": clean.get("date"),
         "account_ref": db.collection(ACCOUNTS_COLLECTION).document(account_id),
@@ -1383,6 +1423,11 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
             if lock_floor.date() >= today_mtl() else "période_verrouillée",
             detail=_floor_label(lock_floor),
         )
+    cd = ctx.get("cleared_date")
+    if cd is not None and lock_floor is not None and cd.date() <= lock_floor.date():
+        raise _TxnAbort(
+            "compensation_période_verrouillée", detail=_floor_label(lock_floor)
+        )
     if dossier_id is not None and client_id not in (dossier.get("client_ids") or []):
         raise _TxnAbort("client_hors_dossier")
     if last_tx is not None:
@@ -1475,10 +1520,14 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
         if not ok:
             raise _TxnAbort("solde_compensé_insuffisant")
 
-    # 4. COMPUTE (a create is always en_circulation)
+    # 4. COMPUTE (a create is en_circulation unless cleared_date is passed
+    # internally by an immediate-compensée bridge)
     seq = reads["seq_current"] + 1
-    deltas = compute_deltas(direction, amount, "en_circulation")
+    cd = ctx.get("cleared_date")
+    status_val = "compensée" if cd is not None else "en_circulation"
+    deltas = compute_deltas(direction, amount, status_val)
     book_after_account = int(account.get("book_balance", 0)) + deltas["book"]
+    bank_after_account = int(account.get("bank_balance", 0)) + deltas["bank"]
     book_after_client = int(book_map.get(client_id, 0)) + deltas["book"] if client_id else 0
     cleared_after_client = current_cleared + deltas["cleared"] if client_id else 0
 
@@ -1492,15 +1541,20 @@ def _stage_create(txn, ctx: dict, reads: dict, now: datetime) -> dict:
         cash_receipt_id=ctx["cash_receipt_id"],
         balance_after_account=book_after_account,
         balance_after_client=book_after_client, now=now,
+        status=status_val, cleared_date=cd,
+        admin_transaction_id=ctx.get("admin_transaction_id"),
     )
 
     # 5. WRITES (single commit)
     txn.set(ctx["tx_ref"], entry)
     txn.set(ctx["counter_ref"], {"seq": seq, "updated_at": now})
-    txn.update(ctx["account_ref"], {
+    account_updates = {
         "book_balance": book_after_account,
         **provenance.update_fields(now),
-    })
+    }
+    if deltas["bank"]:
+        account_updates["bank_balance"] = bank_after_account
+    txn.update(ctx["account_ref"], account_updates)
     if ctx["dossier_ref"] is not None and client_id:
         book_map[client_id] = book_after_client
         cleared_map[client_id] = cleared_after_client
@@ -1906,6 +1960,8 @@ def _read_reverse(
         raise _TxnAbort("correction_non_contre_passable")
     if original.get("purpose") == FEE_PAYMENT_PURPOSE and not fee_payment_ok:
         raise _TxnAbort("paiement_honoraires_contre_passation")
+    if original.get("admin_transaction_id") and not fee_payment_ok:
+        raise _TxnAbort("virement_avances_composite")
 
     pair = None
     if is_transfer_pair_leg(original):
@@ -3086,6 +3142,7 @@ def complete_reconciliation(
         "trust_reconciliation_completed", reconciliation_id=rec_id,
         account_id=account_id, cleared_count=result["cleared_count"],
     )
+    _dispatch_onedrive("sync_reconciliation", register="trust", reconciliation_id=rec_id)
     return result["reconciliation"], []
 
 
@@ -3616,3 +3673,82 @@ def list_dossiers_with_trust(limit: int = 200) -> list[dict]:
         return []
     rows.sort(key=lambda r: r.get("file_number", ""), reverse=True)
     return rows
+
+
+# ── Supporting receipts (pièces justificatives) ───────────────────────────
+
+
+def receipt_content_type(
+    filename: str, size: int, header: bytes,
+) -> tuple[Optional[str], str]:
+    """Validate receipt extension, size and 512-byte header via document_model."""
+    from models import document as document_model
+
+    ext = receipt_extension(filename)
+    if ext not in RECEIPT_EXTENSIONS:
+        return None, RECEIPT_TYPE_REFUSED_FR
+    if isinstance(size, bool) or not isinstance(size, int) or not (
+            1 <= size <= MAX_RECEIPT_SIZE):
+        return None, RECEIPT_SIZE_REFUSED_FR
+    if document_model._sniff_header(header, ext) != RECEIPT_MIME_TYPES[ext]:
+        return None, RECEIPT_CONTENT_MISMATCH_FR
+    return RECEIPT_MIME_TYPES[ext], ""
+
+
+def attach_receipt(
+    tx_id: str, storage_path: str, filename: str, content_type: str, size: int,
+    *, md5: str = "",
+) -> tuple[Optional[dict], list[str]]:
+    """Attach non-monetary supporting receipt metadata on a trust entry.
+
+    Mirrors ``admin_ledger.attach_receipt``: only receipt metadata +
+    provenance fields are updated (no monetary, status, balance or lock
+    field is touched), returning ``_previous_receipt_path`` so the route can
+    delete a replaced blob.
+    """
+    try:
+        existing = get_transaction_strict(tx_id)
+    except Exception:
+        log_unexpected("trust receipt entry read failed", tx_id=tx_id)
+        return None, ["Erreur lors de la lecture de l'écriture. Veuillez réessayer."]
+    if existing is None:
+        return None, [_ABORT_MESSAGES["écriture_introuvable"]]
+    now = datetime.now(timezone.utc)
+    receipt_md5 = (
+        md5 if isinstance(md5, str) and len(md5) <= _RECEIPT_MD5_MAX else ""
+    )
+    updates = {
+        "receipt_storage_path": storage_path,
+        "receipt_filename": sanitize(filename or "", max_length=300),
+        "receipt_file_type": sanitize(content_type or "", max_length=100),
+        "receipt_file_size": int(size or 0),
+        "receipt_md5": receipt_md5,
+        **provenance.update_fields(now),
+    }
+    try:
+        db.collection(TRANSACTIONS_COLLECTION).document(tx_id).update(updates)
+    except Exception:
+        log_unexpected("trust receipt attach failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    log_trust_event(
+        "trust_receipt_attached", transaction_id=tx_id,
+        account_id=existing.get("account_id"), size=int(size or 0),
+    )
+    _dispatch_onedrive("sync_receipt", register="trust", tx_id=tx_id)
+    merged = {**existing, **updates}
+    merged["_previous_receipt_path"] = existing.get("receipt_storage_path")
+    return merged, []
+
+
+def _dispatch_onedrive(action: str, **payload) -> None:
+    """Best-effort post-commit async mirror dispatch (never raises)."""
+    try:
+        from services import miroir_onedrive
+
+        miroir_onedrive.enqueue_event(action, **payload)
+    except Exception as exc:
+        logger.warning(
+            "trust onedrive dispatch failed (%s): %s",
+            action,
+            type(exc).__name__,
+        )

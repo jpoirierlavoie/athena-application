@@ -54,6 +54,11 @@ cron:
   schedule: every 15 minutes from 09:10 to 17:10
   timezone: America/Toronto
   target: default
+- description: onedrive — rattrapage miroir OneDrive (Athéna -> OneDrive)
+  url: /taches/onedrive/sync
+  schedule: every 15 minutes from 09:12 to 17:12
+  timezone: America/Toronto
+  target: default
 # Livrée avec FACTURES_RETARD_ACTIF à "false" (app.yaml) : tant qu'il l'est,
 # la tâche répond {"actif": false} sans rien lire ni écrire. Une fois par
 # jour, au premier passage, à 9 h, heure de Montréal (décision de l'avocat

@@ -1200,19 +1200,21 @@ def test_the_file_input_takes_the_models_formats(web_rendu, store):
     """One mapping decides the type, the input's accept and the words — the
     email that carried a supplier's invoice is a pièce justificative too
     (.eml, .msg: 2026-11-10)."""
+    from utils import receipts
+
     db, _bucket = store
     db.seed(f"{al.TRANSACTIONS_COLLECTION}/{TX}",
             _entry(receipt_storage_path=None, receipt_md5=None,
                    receipt_filename=""))
     html = web_rendu.get(f"/administration/{TX}").get_data(as_text=True)
     (file_input,) = re.findall(r'<input type="file"[^>]*>', _widget(html))
-    assert f'accept="{al.RECEIPT_ACCEPT}"' in file_input
-    assert f"Aucune — {al.RECEIPT_HINT_FR}" in _card(html)
+    assert f'accept="{receipts.RECEIPT_ACCEPT}"' in file_input
+    assert f"Aucune — {receipts.RECEIPT_HINT_FR}" in _card(html)
     assert al.RECEIPT_EXTENSIONS == tuple(al.RECEIPT_MIME_TYPES)
     assert al.RECEIPT_MIME_TYPES[".eml"] == "message/rfc822"
     assert al.RECEIPT_MIME_TYPES[".msg"] == "application/vnd.ms-outlook"
-    assert al.RECEIPT_HINT_FR == "PDF, JPG, PNG, TIFF, EML ou MSG, 10 Mo max."
-    assert al.RECEIPT_ACCEPT.startswith(
+    assert receipts.RECEIPT_HINT_FR == "PDF, JPG, PNG, TIFF, EML ou MSG, 10 Mo max."
+    assert receipts.RECEIPT_ACCEPT.startswith(
         ".pdf,.jpg,.jpeg,.png,.tiff,.tif,.eml,.msg,")
 
 

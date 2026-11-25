@@ -9,6 +9,18 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 MTL = ZoneInfo("America/Montreal")
+TORONTO = ZoneInfo("America/Toronto")
+
+
+def to_toronto(dt: datetime | None) -> datetime | None:
+    """Convert a UTC (or naive) datetime to America/Toronto."""
+    if dt is None:
+        return None
+    if not isinstance(dt, datetime):
+        return dt
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TORONTO)
 
 
 def to_mtl(dt: datetime | None) -> datetime | None:

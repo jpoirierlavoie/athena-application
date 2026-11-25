@@ -1,0 +1,191 @@
+{# Carte d'un formulaire d'ouverture de dossier soumis via le portail. #}
+{% set inv = o.invitation %}
+<div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+
+  <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+    <div class="flex items-start gap-2 min-w-0">
+      {% if allow_bulk is defined and allow_bulk %}
+      <label class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] cursor-pointer flex-shrink-0"
+             aria-label="Sélectionner l'ouverture {{ inv.display_label }}">
+        <input type="checkbox"
+               data-feed-item-cb="1"
+               class="h-4 w-4 rounded border-gray-300 text-indigo-600"
+               data-kind="ouverture"
+               value="ouverture:{{ inv.id }}:{{ o.batch }}">
+      </label>
+      {% endif %}
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <h3 class="text-sm font-semibold text-gray-900">{{ inv.display_label }}</h3>
+          {% if onglet is defined and onglet == 'tout' %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">Ouverture</span>
+          {% endif %}
+        </div>
+        <p class="mt-0.5 text-xs text-gray-500">
+          {{ inv.email }}
+          {% if o.versions > 1 %}
+          · <span class="text-amber-700">{{ o.versions }}e version — la plus récente est affichée</span>
+          {% endif %}
+        </p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <a href="{{ url_for('reception.invitation_accuse_pdf', inv_id=inv.id) }}"
+         title="Télécharger l'accusé de réception (PDF)"
+         aria-label="Télécharger l'accusé de réception (PDF)"
+         class="inline-flex items-center gap-1 min-h-[44px] px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('picture_as_pdf', 16) }}<span>Accusé PDF</span>
+      </a>
+      <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full
+                   {{ 'bg-blue-100 text-blue-700' if o.partie else 'bg-green-100 text-green-700' }}">
+        {{ "Mise à jour d’un contact" if o.partie else "Nouveau client" }}
+      </span>
+    </div>
+  </div>
+
+  {% if not o.lisible %}
+  <div class="mb-4 px-3 py-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    Cette soumission est illisible (enveloppe absente ou malformée). Rien ne
+    peut en être versé — vous pouvez la refuser et redemander le formulaire.
+  </div>
+  {% else %}
+
+  {# ── Corps : nouveau contact, ou vue côte à côte ───────────────── #}
+  <form method="post" id="ouverture-{{ inv.id }}"
+        action="{{ url_for('reception.ouverture_appliquer', inv_id=inv.id, batch=o.batch)
+                  if o.partie else
+                  url_for('reception.ouverture_creer', inv_id=inv.id, batch=o.batch) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+
+    {% if o.partie %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-xs text-gray-500 uppercase tracking-wider">
+            <th class="text-left font-medium pb-1">Champ</th>
+            <th class="text-left font-medium pb-1">Au dossier</th>
+            <th class="text-left font-medium pb-1">Transmis</th>
+            <th class="text-center font-medium pb-1">Appliquer</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for l in o.lignes %}
+          <tr class="{{ 'bg-amber-50' if l.differe }}">
+            <td class="py-2 px-2 text-gray-500">{{ l.libelle }}</td>
+            <td class="py-2 px-2 text-gray-700">{{ l.actuel_affiche or "—" }}</td>
+            <td class="py-2 px-2 text-gray-900">{{ l.soumis_affiche or "—" }}</td>
+            <td class="py-2 text-center">
+              {% if l.applicable %}
+              <input type="checkbox" name="appliquer" value="{{ l.champ }}" checked
+                     class="rounded border-gray-300">
+              {% elif l.non_reconnu %}
+              <span class="text-xs text-amber-700">non reconnue</span>
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <dl class="text-sm divide-y divide-gray-100">
+      {% for l in o.lignes %}
+      <div class="flex justify-between gap-4 py-1.5">
+        <dt class="text-gray-500">{{ l.libelle }}</dt>
+        <dd class="text-gray-900 text-right">
+          {{ l.soumis_affiche or "—" }}{% if l.non_reconnu %} <span class="text-xs text-amber-700">(non reconnue, non versée)</span>{% endif %}
+        </dd>
+      </div>
+      {% endfor %}
+    </dl>
+    <p class="mt-3 text-xs text-gray-400">
+      La section Conformité n'est pas touchée : la fiche sera créée avec
+      l'identité et les conflits « À faire ».
+    </p>
+    {% endif %}
+
+    {% if o.adverses %}
+    <div class="mt-4 pt-4 border-t border-gray-100">
+      <p class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+        Autres personnes ou entreprises concernées
+      </p>
+      {% for a in o.adverses %}
+      <div class="mb-3 p-3 bg-gray-50 rounded-lg">
+        <p class="text-sm font-medium text-gray-900">
+          {{ a.nom }}
+          {% if a.precision %}<span class="text-gray-500">— {{ a.precision }}</span>{% endif %}
+        </p>
+        {% if a.candidats %}
+        <p class="mt-1 text-xs text-amber-800">
+          Correspondance(s) possible(s) dans le carnet :
+          {% for c in a.candidats %}
+          <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
+             class="underline font-medium">{{ c.nom }}</a>
+          <span class="text-gray-400">({{ c.motif }})</span>{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </p>
+        {% endif %}
+        <label class="flex items-center gap-1.5 mt-2 text-xs text-gray-600">
+          <input type="checkbox" name="creer_adverse" value="{{ a.nom }}" checked
+                 class="rounded border-gray-300">
+          Créer comme contact (rôle : partie adverse)
+        </label>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if o.consentement.horodatage %}
+    <p class="mt-4 text-xs text-gray-400">
+      Consentement recueilli (version {{ o.consentement.version_texte or "1" }})
+      le {{ o.consentement.horodatage[:10] }}.
+    </p>
+    {% endif %}
+
+    <div class="mt-4 pt-4 border-t border-gray-100" x-data="{ openDossier: false }">
+      <label class="flex items-center gap-2 text-xs font-medium text-gray-700 cursor-pointer">
+        <input type="checkbox" name="ouvrir_dossier" value="on" x-model="openDossier"
+               class="rounded border-gray-300 text-indigo-600">
+        Ouvrir aussi un dossier (crée l'arborescence et le protocole d'ouverture)
+      </label>
+      <div x-show="openDossier" x-cloak class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">N° de dossier</label>
+          <input type="text" name="dossier_file_number"
+                 value="{{ numero_dossier_suggere if numero_dossier_suggere is defined else '' }}"
+                 placeholder="2026-001"
+                 class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Titre du dossier (optionnel)</label>
+          <input type="text" name="dossier_title"
+                 placeholder="Ex. Client c. Partie adverse"
+                 class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+        </div>
+      </div>
+    </div>
+  </form>
+  {% endif %}
+
+  {# ── Actions ───────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3 mt-5 pt-4 border-t border-gray-100">
+    {% if o.lisible %}
+    <button type="submit" form="ouverture-{{ inv.id }}"
+            class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ "Appliquer la sélection" if o.partie else "Créer la partie" }}
+    </button>
+    {% endif %}
+    <form method="post"
+          action="{{ url_for('reception.ouverture_refuser', inv_id=inv.id, batch=o.batch) }}"
+          data-confirm="Refuser cette ouverture ? Aucun courriel ne sera transmis au client.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">
+        Refuser
+      </button>
+    </form>
+  </div>
+</div>

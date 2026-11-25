@@ -346,10 +346,22 @@ def document_detail(document_id: str) -> str:
     # un historique d'affichage, jamais une garde.
     analyses = document_model.list_analyses(document_id)
 
+    linked_hearing = None
+    if doc.get("hearing_id"):
+        from models.hearing import get_hearing
+        cand_hearing = get_hearing(doc["hearing_id"])
+        if (
+            cand_hearing
+            and dossier_id
+            and (cand_hearing.get("dossier_id") or "") == dossier_id
+        ):
+            linked_hearing = cand_hearing
+
     return render_template(
         "documents/detail.html",
         analyses=analyses,
         document=doc,
+        linked_hearing=linked_hearing,
         # D25 : la catégorie que l'analyse dérive, quand la catégorie du
         # juriste — gardée — en diffère ; "" sinon (la note ambre).
         categorie_suggeree=document_model.analysis_category_divergence(doc),
@@ -481,7 +493,32 @@ def _upload_metadata(donnees: dict) -> dict:
         # The document's OWN date (PV, jugement…) — optional, distinct
         # from the upload instant.
         "document_date": str(donnees.get("document_date") or "").strip(),
+        "hearing_id": str(donnees.get("hearing_id") or "").strip() or None,
     }
+
+
+def _check_upload_hearing(hearing_id: Optional[str], dossier_id: str) -> Optional[tuple[dict, int]]:
+    """Validate optional *hearing_id* against *dossier_id* using a strict read."""
+    if not hearing_id:
+        return None
+    if not document_model.is_addressable_id(hearing_id):
+        return {"erreur": "Événement du calendrier invalide."}, 422
+    from models.hearing import get_hearing_strict
+    try:
+        hearing = get_hearing_strict(hearing_id)
+    except Exception as exc:
+        log_unexpected(
+            "documents: hearing unreadable",
+            exc_info=False,
+            hearing_id=sanitize_log_value(hearing_id),
+            error_type=type(exc).__name__,
+        )
+        return {"erreur": "Lecture de l'événement du calendrier impossible. Réessayez."}, 503
+    if hearing is None:
+        return {"erreur": "Événement du calendrier introuvable."}, 422
+    if not dossier_id or (hearing.get("dossier_id") or "") != dossier_id:
+        return {"erreur": "Ce document n'appartient pas au même dossier que l'événement."}, 422
+    return None
 
 
 @documents_bp.route("/api/televersement", methods=["POST"])
@@ -525,6 +562,14 @@ def api_televersement():
     )
     if erreurs_meta:
         return jsonify({"erreur": " ".join(erreurs_meta)}), 422
+
+    hearing_err = _check_upload_hearing(
+        str(donnees.get("hearing_id") or "").strip() or None,
+        str(donnees.get("dossier_id") or "").strip(),
+    )
+    if hearing_err:
+        payload, code = hearing_err
+        return jsonify(payload), code
 
     # Type déclaré par le navigateur — indicatif seulement (l'ingestion
     # re-sniffe les octets) ; réduit à l'ASCII imprimable.
@@ -626,6 +671,14 @@ def api_finaliser():
     if dossier is None:
         return jsonify({"erreur": "Veuillez sélectionner un dossier."}), 422
 
+    hearing_err = _check_upload_hearing(
+        str(donnees.get("hearing_id") or "").strip() or None,
+        dossier_id,
+    )
+    if hearing_err:
+        payload, code = hearing_err
+        return jsonify(payload), code
+
     try:
         blob = storage.bucket().blob(objet)
         blob.reload()
@@ -701,6 +754,8 @@ def api_finaliser():
         # canonical copy stays). A page that never re-posts leaves the
         # staging to the bucket's staging/ 7-day rule.
         return jsonify({"erreur": UPLOAD_UNCERTAIN, "incertain": True}), 503
+    if document is None and concurrency.READ_UNAVAILABLE_ERROR in errors:
+        return jsonify({"erreur": concurrency.READ_UNAVAILABLE_ERROR}), 503
     try:
         blob.delete()
     except Exception:

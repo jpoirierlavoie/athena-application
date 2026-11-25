@@ -203,7 +203,7 @@ def test_every_balance_field_has_its_french_name():
         invoice_model._BALANCE_FIELDS)
     assert invoice_model.BALANCE_FIELD_LABELS == {
         "amount_due": "montant dû", "amount_paid": "montant payé",
-        "write_offs": "radiations"}
+        "write_offs": "radiations", "interest_charges": "avis d'intérêts"}
 
 
 def test_the_sentence_names_the_invoice_and_the_field_never_the_value():

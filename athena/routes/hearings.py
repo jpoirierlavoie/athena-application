@@ -1,5 +1,6 @@
 """Hearing / calendar routes — list, detail, create, edit, delete."""
 
+import unicodedata
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -14,6 +15,7 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.routing import BuildError
 
 from auth import login_required
 from config import Config
@@ -23,7 +25,7 @@ from models import transcription_reunion as tr_model
 from security import safe_internal_redirect, sanitize
 from services import disponibilites
 from services import transcription_reunion
-from utils import graph_teams, recurrence
+from utils import dav_classification, graph_teams, recurrence
 from utils.deadlines import today_mtl
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import (
@@ -76,6 +78,11 @@ from models.dossier import (
     get_dossier,
     VALID_COURTS,
 )
+from models import document as document_model
+from models import folder as folder_model
+from models import note as note_model
+from models import task as task_model
+from utils import deadlines as deadlines_util
 from models.partie import get_partie
 from models.rendez_vous_reglages import get_rendez_vous_reglages
 from routes import edit_conflict
@@ -190,6 +197,9 @@ def _template_context() -> dict:
         "valid_modalites": VALID_MODALITES,
         "valid_statuses": VALID_STATUSES,
         "valid_reminder_minutes": VALID_REMINDER_MINUTES,
+        "valid_classifications": dav_classification.VALID_CLASSIFICATIONS,
+        "classification_labels": dav_classification.CLASSIFICATION_LABELS_FR,
+        "effective_classification": dav_classification.effective_classification,
         "valid_courts": VALID_COURTS,
         "quick_locations": QUICK_LOCATIONS,
         # Séries récurrentes. FREQUENCY_LABELS porte "" en tête (« Ne se
@@ -252,22 +262,29 @@ def _form_data() -> dict:
         start_dt = _parse_datetime(f.get("start_date", ""), f.get("start_time", ""))
         end_dt = _parse_datetime(f.get("start_date", ""), f.get("end_time", ""))
 
-    return {
+    hearing_type = f.get("hearing_type", "audience")
+    is_judiciaire = forum_of(hearing_type) == "judiciaire"
+
+    out = {
         "dossier_id": f.get("dossier_id", "").strip(),
         "title": f.get("title", "").strip(),
-        "hearing_type": f.get("hearing_type", "audience"),
+        "hearing_type": hearing_type,
         "start_datetime": start_dt,
         "end_datetime": end_dt,
         "all_day": all_day,
         "location": f.get("location", "").strip(),
-        "court": f.get("court", "").strip(),
-        "judge": f.get("judge", "").strip(),
+        "court": f.get("court", "").strip() if is_judiciaire else "",
+        "judge": f.get("judge", "").strip() if is_judiciaire else "",
         "notes": f.get("notes", "").strip(),
         "reminder_minutes": _parse_int(f.get("reminder_minutes", ""), 1440),
         "status": f.get("status", "à_confirmer"),
         "modalite": f.get("modalite", "présentiel"),
         "conference_uri": f.get("conference_uri", "").strip(),
     }
+    raw_cls = f.get("classification", "").strip()
+    if raw_cls:
+        out["classification"] = raw_cls
+    return out
 
 
 def _parse_day(value: str) -> "date | None":
@@ -607,7 +624,7 @@ def hearing_new() -> str:
                 "dossier_id": dossier["id"],
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
-                "court": dossier.get("court", ""),
+                "court": dossier.get("tribunal", ""),
             }
             teams_attendee_emails = _collect_client_emails(dossier)
     ctx.update(
@@ -849,7 +866,371 @@ def hearing_detail(hearing_id: str) -> str:
         if hearing.get("online_meeting_id")
         else None
     )
+
+    dossier_id = hearing.get("dossier_id") or ""
+    is_judiciaire = forum_of(hearing.get("hearing_type", "")) == "judiciaire"
+    hearing_self_url = url_for("hearings.hearing_detail", hearing_id=hearing_id)
+
+    def _optional_url(endpoint: str, **values) -> str:
+        try:
+            return url_for(endpoint, **values)
+        except BuildError:
+            return ""
+
+    # Connected documents (dossier-linked events only)
+    linked_docs: list[dict] = []
+    docs_unavailable = False
+    if dossier_id:
+        try:
+            linked_docs = [
+                d for d in document_model.list_documents_for_hearing_strict(hearing_id)
+                if (d.get("dossier_id") or "") == dossier_id
+            ]
+        except Exception:
+            docs_unavailable = True
+            linked_docs = []
+        for d in linked_docs:
+            d["_file_size_fmt"] = document_model.format_file_size(d.get("file_size", 0))
+            d["_file_icon"] = document_model.get_file_icon(d.get("file_type", ""))
+            d["_detail_url"] = _optional_url(
+                "documents.document_detail", document_id=d["id"], return_to=hearing_self_url
+            )
+            d["_download_url"] = _optional_url(
+                "documents.document_download", document_id=d["id"]
+            )
+        linked_doc_ids = {d["id"] for d in linked_docs}
+        all_dossier_docs = document_model.list_documents(dossier_id=dossier_id)
+        linkable_docs = [d for d in all_dossier_docs if d["id"] not in linked_doc_ids]
+        folder_tree = folder_model.get_folder_tree(dossier_id)
+        folder_options, default_upload_folder_id = _hearing_folder_options(
+            folder_tree, dossier_id, is_judiciaire=is_judiciaire
+        )
+    else:
+        linkable_docs = []
+        folder_options = []
+        default_upload_folder_id = ""
+
+    # Connected notes (all events)
+    notes_unavailable = False
+    try:
+        raw_notes = note_model.list_notes_for_hearing_strict(
+            hearing_id, include_analyse=False
+        )
+        linked_notes = (
+            [n for n in raw_notes if (n.get("dossier_id") or "") == dossier_id]
+            if dossier_id
+            else raw_notes
+        )
+    except Exception:
+        notes_unavailable = True
+        linked_notes = []
+    for n in linked_notes:
+        n["_detail_url"] = _optional_url(
+            "notes.note_detail", note_id=n["id"], return_to=hearing_self_url
+        )
+    linked_note_ids = {n["id"] for n in linked_notes}
+    candidate_notes = (
+        note_model.list_notes(dossier_id=dossier_id, include_analyse=False)
+        if dossier_id
+        else note_model.list_notes_recent(dossier_id=None, include_analyse=False)
+    )
+    linkable_notes = [n for n in candidate_notes if n["id"] not in linked_note_ids]
+
+    # Connected tasks (all events)
+    tasks_unavailable = False
+    try:
+        raw_tasks = task_model.list_tasks_for_hearing_strict(hearing_id)
+        linked_tasks = (
+            [t for t in raw_tasks if (t.get("dossier_id") or "") == dossier_id]
+            if dossier_id
+            else raw_tasks
+        )
+    except Exception:
+        tasks_unavailable = True
+        linked_tasks = []
+    today = deadlines_util.today_mtl()
+    for t in linked_tasks:
+        t["_overdue"] = t.get("status") not in (
+            "terminée", "annulée"
+        ) and deadlines_util.is_past_due(t.get("due_date"), today=today)
+        t["_detail_url"] = _optional_url(
+            "tasks.task_detail", task_id=t["id"], return_to=hearing_self_url
+        )
+    linked_task_ids = {t["id"] for t in linked_tasks}
+    candidate_tasks = (
+        task_model.list_tasks(dossier_id=dossier_id)
+        if dossier_id
+        else task_model.sort_tasks_for_display(
+            task_model.list_tasks_by_status("à_faire")
+            + task_model.list_tasks_by_status("en_cours")
+        )
+    )
+    linkable_tasks = [t for t in candidate_tasks if t["id"] not in linked_task_ids]
+
+    from routes.documents import UPLOAD_UNCERTAIN
+
+    ctx.update(
+        is_judiciaire=is_judiciaire,
+        hearing_self_url=hearing_self_url,
+        linked_docs=linked_docs,
+        docs_unavailable=docs_unavailable,
+        linkable_docs=linkable_docs,
+        folder_options=folder_options,
+        default_upload_folder_id=default_upload_folder_id,
+        default_upload_category=(
+            "procès_verbal_audience"
+            if is_judiciaire
+            else document_model.UPLOAD_DEFAULT_CATEGORY
+        ),
+        doc_category_choices=document_model.CATEGORY_CHOICES,
+        doc_category_labels=document_model.CATEGORY_LABELS,
+        televersement_config={"incertain": UPLOAD_UNCERTAIN},
+        upload_open_url=_optional_url("documents.api_televersement"),
+        upload_finalize_url=_optional_url("documents.api_finaliser"),
+        new_note_url=_optional_url(
+            "notes.note_new", hearing_id=hearing_id, return_to=hearing_self_url
+        ),
+        new_task_url=_optional_url(
+            "tasks.task_new", hearing_id=hearing_id, return_to=hearing_self_url
+        ),
+        linked_notes=linked_notes,
+        notes_unavailable=notes_unavailable,
+        linkable_notes=linkable_notes,
+        note_category_labels=note_model.CATEGORY_LABELS,
+        linked_tasks=linked_tasks,
+        tasks_unavailable=tasks_unavailable,
+        linkable_tasks=linkable_tasks,
+        task_status_labels=task_model.STATUS_LABELS,
+        task_priority_colors=task_model.PRIORITY_COLORS,
+    )
     return render_template("hearings/detail.html", **ctx)
+
+
+def _hearing_folder_options(
+    tree: list[dict], dossier_id: str, *, is_judiciaire: bool
+) -> tuple[list[tuple[str, str]], str]:
+    """Flatten *tree* into ``(id, indented_label)`` choices and locate Procès-verbaux."""
+    options: list[tuple[str, str]] = []
+    target_id = folder_model.node_folder_id(dossier_id, "proces_verbaux")
+    pv_folder_id = ""
+    fallback_pv_id = ""
+
+    def _walk(nodes: list[dict], depth: int) -> None:
+        nonlocal pv_folder_id, fallback_pv_id
+        prefix = "— " * depth
+        for node in nodes:
+            fid = node.get("id", "")
+            name = node.get("name", "")
+            if fid:
+                options.append((fid, f"{prefix}{name}"))
+                if fid == target_id:
+                    pv_folder_id = fid
+                elif (
+                    not fallback_pv_id
+                    and unicodedata.normalize("NFC", name).strip().casefold()
+                    == "procès-verbaux"
+                ):
+                    fallback_pv_id = fid
+            _walk(node.get("children") or [], depth + 1)
+
+    _walk(tree, 0)
+    default_id = (pv_folder_id or fallback_pv_id) if is_judiciaire else ""
+    return options, default_id
+
+
+def _detach_cross_dossier_links_best_effort(
+    hearing_id: str, new_dossier_id: str
+) -> None:
+    """Post-commit cleanup when a hearing moves dossiers: detach now-mismatched links."""
+    try:
+        for doc in document_model.list_documents_for_hearing_strict(hearing_id):
+            if not new_dossier_id or (doc.get("dossier_id") or "") != new_dossier_id:
+                document_model.set_document_hearing(doc["id"], None)
+    except Exception:
+        log_unexpected("hearing move: document unlink failed", hearing_id=hearing_id)
+    if new_dossier_id:
+        bumped: set[str] = set()
+        try:
+            for n in note_model.list_notes_for_hearing_strict(
+                hearing_id, include_analyse=False
+            ):
+                if (n.get("dossier_id") or "") != new_dossier_id:
+                    updated_n, _errs, changed = note_model.set_note_hearing(n["id"], None)
+                    if changed and updated_n is not None:
+                        col = collection_for(updated_n.get("dossier_id"))
+                        if col not in bumped:
+                            bump_ctag(col)
+                            bumped.add(col)
+        except Exception:
+            log_unexpected("hearing move: note unlink failed", hearing_id=hearing_id)
+        try:
+            for t in task_model.list_tasks_for_hearing_strict(hearing_id):
+                if (t.get("dossier_id") or "") != new_dossier_id:
+                    updated_t, _errs, changed = task_model.set_task_hearing(t["id"], None)
+                    if changed and updated_t is not None:
+                        col = collection_for(updated_t.get("dossier_id"))
+                        if col not in bumped:
+                            bump_ctag(col)
+                            bumped.add(col)
+        except Exception:
+            log_unexpected("hearing move: task unlink failed", hearing_id=hearing_id)
+
+
+@hearings_bp.route("/<hearing_id>/documents/lier", methods=["POST"])
+@login_required
+def hearing_link_document(hearing_id: str):
+    """Link an existing dossier document to this hearing."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    document_id = request.form.get("document_id", "").strip()
+    if not document_id:
+        return _back_to_hearing(
+            hearing_id, return_to, erreur="Veuillez sélectionner un document."
+        )
+    try:
+        hearing = get_hearing_strict(hearing_id)
+    except Exception:
+        return _back_to_hearing(hearing_id, return_to, erreur=READ_UNAVAILABLE_ERROR)
+    if not hearing:
+        return redirect_after_post(
+            url_for("hearings.hearing_list", erreur=HEARING_NOT_FOUND)
+        )
+    _doc, errors, _changed = document_model.set_document_hearing(
+        document_id, hearing_id
+    )
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    return _back_to_hearing(
+        hearing_id, return_to, succes="Document lié à l'événement."
+    )
+
+
+@hearings_bp.route("/<hearing_id>/documents/<document_id>/delier", methods=["POST"])
+@login_required
+def hearing_unlink_document(hearing_id: str, document_id: str):
+    """Unlink a document from this hearing without deleting it."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    try:
+        existing = document_model.get_document_strict(document_id)
+    except Exception:
+        return _back_to_hearing(hearing_id, return_to, erreur=READ_UNAVAILABLE_ERROR)
+    if existing and (existing.get("hearing_id") or "") != hearing_id:
+        return _back_to_hearing(
+            hearing_id, return_to, erreur="Ce document n'est pas lié à cet événement."
+        )
+    _doc, errors, _changed = document_model.set_document_hearing(
+        document_id, None, expected_etag=edit_conflict.submitted_etag()
+    )
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    return _back_to_hearing(
+        hearing_id, return_to, succes="Document dissocié de l'événement."
+    )
+
+
+@hearings_bp.route("/<hearing_id>/notes/lier", methods=["POST"])
+@login_required
+def hearing_link_note(hearing_id: str):
+    """Link an existing note to this hearing."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    note_id = request.form.get("note_id", "").strip()
+    if not note_id:
+        return _back_to_hearing(
+            hearing_id, return_to, erreur="Veuillez sélectionner une note."
+        )
+    try:
+        hearing = get_hearing_strict(hearing_id)
+    except Exception:
+        return _back_to_hearing(hearing_id, return_to, erreur=READ_UNAVAILABLE_ERROR)
+    if not hearing:
+        return redirect_after_post(
+            url_for("hearings.hearing_list", erreur=HEARING_NOT_FOUND)
+        )
+    note, errors, changed = note_model.set_note_hearing(note_id, hearing_id)
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    if changed and note is not None:
+        bump_ctag(collection_for(note.get("dossier_id")))
+    return _back_to_hearing(
+        hearing_id, return_to, succes="Note liée à l'événement."
+    )
+
+
+@hearings_bp.route("/<hearing_id>/notes/<note_id>/delier", methods=["POST"])
+@login_required
+def hearing_unlink_note(hearing_id: str, note_id: str):
+    """Unlink a note from this hearing without deleting it."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    try:
+        existing = note_model.get_note_strict(note_id)
+    except Exception:
+        return _back_to_hearing(hearing_id, return_to, erreur=READ_UNAVAILABLE_ERROR)
+    if existing and (existing.get("hearing_id") or "") != hearing_id:
+        return _back_to_hearing(
+            hearing_id, return_to, erreur="Cette note n'est pas liée à cet événement."
+        )
+    note, errors, changed = note_model.set_note_hearing(
+        note_id, None, expected_etag=edit_conflict.submitted_etag()
+    )
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    if changed and note is not None:
+        bump_ctag(collection_for(note.get("dossier_id")))
+    return _back_to_hearing(
+        hearing_id, return_to, succes="Note dissociée de l'événement."
+    )
+
+
+@hearings_bp.route("/<hearing_id>/taches/lier", methods=["POST"])
+@login_required
+def hearing_link_task(hearing_id: str):
+    """Link an existing task to this hearing."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    task_id = request.form.get("task_id", "").strip()
+    if not task_id:
+        return _back_to_hearing(
+            hearing_id, return_to, erreur="Veuillez sélectionner une tâche."
+        )
+    try:
+        hearing = get_hearing_strict(hearing_id)
+    except Exception:
+        return _back_to_hearing(hearing_id, return_to, erreur=READ_UNAVAILABLE_ERROR)
+    if not hearing:
+        return redirect_after_post(
+            url_for("hearings.hearing_list", erreur=HEARING_NOT_FOUND)
+        )
+    task, errors, changed = task_model.set_task_hearing(task_id, hearing_id)
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    if changed and task is not None:
+        bump_ctag(collection_for(task.get("dossier_id")))
+    return _back_to_hearing(
+        hearing_id, return_to, succes="Tâche liée à l'événement."
+    )
+
+
+@hearings_bp.route("/<hearing_id>/taches/<task_id>/delier", methods=["POST"])
+@login_required
+def hearing_unlink_task(hearing_id: str, task_id: str):
+    """Unlink a task from this hearing without deleting it."""
+    return_to = safe_internal_redirect(request.form.get("return_to"), "")
+    try:
+        existing = task_model.get_task_strict(task_id)
+    except Exception:
+        return _back_to_hearing(hearing_id, return_to, erreur=READ_UNAVAILABLE_ERROR)
+    if existing and (existing.get("hearing_id") or "") != hearing_id:
+        return _back_to_hearing(
+            hearing_id, return_to, erreur="Cette tâche n'est pas liée à cet événement."
+        )
+    task, errors, changed = task_model.set_task_hearing(
+        task_id, None, expected_etag=edit_conflict.submitted_etag()
+    )
+    if errors:
+        return _back_to_hearing(hearing_id, return_to, erreur=errors[0])
+    if changed and task is not None:
+        bump_ctag(collection_for(task.get("dossier_id")))
+    return _back_to_hearing(
+        hearing_id, return_to, succes="Tâche dissociée de l'événement."
+    )
 
 
 @hearings_bp.route("/<hearing_id>/verifier-transcription", methods=["POST"])
@@ -962,11 +1343,14 @@ def hearing_update(hearing_id: str) -> str:
     # (relocation_plan). This route used to compare the RAW ids, so None
     # and "" — both « Général » — read as a move: a tombstone recorded
     # then removed in the same collection, and two bumps.
+    new_dossier_id = hearing.get("dossier_id") or ""
     relocate_resource(
         hearing_id,
         old_dossier_id=old_dossier_id,
-        new_dossier_id=hearing.get("dossier_id"),
+        new_dossier_id=new_dossier_id,
     )
+    if (old_dossier_id or "") != new_dossier_id:
+        _detach_cross_dossier_links_best_effort(hearing_id, new_dossier_id)
     disponibilites.rafraichir_disponibilites_best_effort()
 
     if (

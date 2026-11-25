@@ -1,19 +1,25 @@
 {# Invitation à choisir un créneau de rendez-vous (portail RDV Lot 2). #}
-<p>Bonjour,</p>
+{% extends "reception/_courriel_cadre.html" %}
+{% block email_kicker %}Prise de rendez-vous{% endblock %}
+{% block email_body %}
+<p style="margin: 0 0 12px 0;">Bonjour,</p>
 
-<p>Nous vous invitons à choisir le moment qui vous convient pour votre
-rencontre (<strong>{{ display_label }}</strong>{% if duree_minutes %}, {{ duree_minutes }} minutes{% endif %})
-en ouvrant le lien sécurisé suivant&nbsp;:
-<a href="{{ lien }}">choisir un créneau</a>.</p>
+<p style="margin: 0 0 14px 0;">Nous vous invitons à choisir le moment qui vous convient pour votre
+rencontre (<strong>{{ display_label }}</strong>{% if duree_minutes %}, {{ duree_minutes }} minutes{% endif %})&nbsp;:</p>
 
-<p>La rencontre se tiendra en visioconférence sur Microsoft Teams. Une fois
+<p style="margin: 16px 0;">
+  <a href="{{ lien }}" style="display: inline-block; background-color: #111827; color: #FFFFFF; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; font-size: 14px;">choisir un créneau</a>
+</p>
+
+<p style="margin: 0 0 12px 0;">La rencontre se tiendra en visioconférence sur Microsoft Teams. Une fois
 le créneau sélectionné, vous recevrez l'invitation calendrier avec le lien
 de connexion Teams ainsi que la possibilité de reporter ou d'annuler le
 rendez-vous en ligne selon le préavis indiqué.</p>
 
-<p><em>Avis : l'enregistrement, la transcription et la prise de notes assistée
+<p style="margin: 0 0 12px 0; padding: 10px 12px; background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 13px; color: #4B5563;"><em>Avis : l'enregistrement, la transcription et la prise de notes assistée
 par intelligence artificielle (Microsoft Teams) démarrent automatiquement lors
 de cette rencontre ; vous pouvez demander d'y mettre fin en tout temps en début
 d'appel.</em></p>
 
 {% include "reception/_invitation_pied.html" %}
+{% endblock %}

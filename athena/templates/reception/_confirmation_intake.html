@@ -13,7 +13,11 @@
      quand   : chaîne « 25 juillet 2026 à 13 h 09 » (date de RÉCEPTION)
      cabinet : {nom, organisation, adresse_lignes[], telephone, telecopieur}
 #}
-<div style="font-family: Arial, sans-serif; font-size: 12px; color: #333; max-width: 650px; margin: auto; border: 1px solid #ccc; padding: 20px;">
+{% extends "reception/_courriel_cadre.html" %}
+{% block email_kicker %}Confirmation de réception — Ouverture de dossier{% endblock %}
+{% block email_footer %}Confirmation technique automatique — portail client sécurisé.{% endblock %}
+{% block email_body %}
+<div style="font-size: 12px; color: #333;">
   <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 15px;">
     <h2 style="margin: 0; font-size: 16px;">CONFIRMATION DE RÉCEPTION / ACKNOWLEDGMENT OF RECEIPT</h2>
   </div>
@@ -59,3 +63,4 @@
   {# ── Avis de confidentialité (pied du bordereau) ────────────────── #}
   <div style="font-size: 10px; color: #666; text-align: justify; border-top: 1px solid #000; padding-top: 10px;"><strong>AVIS DE CONFIDENTIALITÉ : </strong>Ce document est destiné uniquement à la personne ou à l'entité à qui il est adressé. L'information apparaissant dans ce document est de nature légalement privilégiée et confidentielle. Si vous n'êtes pas le destinataire visé ou la personne chargée de le remettre à son destinataire, vous êtes, par la présente, avisé que toute lecture, usage, copie ou communication du contenu de ce document est strictement interdit. / <strong>CONFIDENTIALITY NOTICE : </strong>This document is intended solely for the individual or entity to whom it is addressed. The information contained in this document is legally privileged and confidential. If you are not the intended recipient or the person responsible for delivering it to the intended recipient, you are hereby advised that you are strictly prohibited from reading, using, copying or disseminating the contents of this document.</div>
 </div>
+{% endblock %}

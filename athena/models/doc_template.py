@@ -84,6 +84,8 @@ logger = logging.getLogger(__name__)
 
 COLLECTION = "doc_templates"
 VERSIONS = "versions"
+EN_VERSIONS = "en_versions"
+VALID_LANGS = ("fr", "en")
 
 # A gabarit's category is a DISTINCT, deliberately-narrow taxonomy — it shares
 # only key names with models/document.VALID_CATEGORIES. Do NOT align it with
@@ -112,11 +114,12 @@ CATEGORY_LABELS = {
 # connector's fill_gabarit both refuse it) and never designated (not a
 # special kind); the connector sees it like any template, by his choice.
 MODELE_KIND = "modele"
-VALID_KINDS = ("gabarit", "note_honoraires", "note_credit", "note", MODELE_KIND)
+VALID_KINDS = ("gabarit", "note_honoraires", "note_credit", "avis_interets", "note", MODELE_KIND)
 KIND_LABELS = {
     "gabarit": "Gabarit",
     "note_honoraires": "Note d'honoraires (facture)",
     "note_credit": "Note de crédit (radiation)",
+    "avis_interets": "Avis d'intérêts",
     "note": "Note (impression)",
     MODELE_KIND: "Modèle (sans champs)",
 }
@@ -130,11 +133,12 @@ def is_modele(template: Optional[dict]) -> bool:
     filled. A legacy record with no ``kind`` is a gabarit."""
     return (template or {}).get("kind") == MODELE_KIND
 # The kinds that carry an « actif » designation — exactly one template each.
-SPECIAL_KINDS = ("note_honoraires", "note_credit", "note")
+SPECIAL_KINDS = ("note_honoraires", "note_credit", "avis_interets", "note")
 # The short name the refusals give each special kind.
 ACTIVE_KIND_NAMES = {
     "note_honoraires": "Note d'honoraires",
     "note_credit": "Note de crédit",
+    "avis_interets": "Avis d'intérêts",
     "note": "Note (impression)",
 }
 
@@ -315,6 +319,50 @@ def is_active(template: Optional[dict]) -> bool:
     return kind in SPECIAL_KINDS and template.get("active_for") == kind
 
 
+def has_en(template: Optional[dict]) -> bool:
+    """True when *template* carries an uploaded English ``.docx`` stream."""
+    return bool((template or {}).get("en_storage_path"))
+
+
+def active_template_has_en(kind: str) -> bool:
+    """Fail-open display helper: whether the designated active template has an EN stream."""
+    try:
+        tpl = get_active_template(kind)
+    except TemplateReadError:
+        return False
+    return has_en(tpl)
+
+
+def template_version_for(template: Optional[dict], lang: str = "fr") -> int:
+    """Active version number of *template* for *lang* (``fr`` or ``en``)."""
+    t = template or {}
+    if lang == "en":
+        return int(t.get("en_version") or 1)
+    return int(t.get("version") or 1)
+
+
+def template_placeholders_for(template: Optional[dict], lang: str = "fr") -> list[str]:
+    """Placeholder list of *template* for *lang* (``fr`` or ``en``)."""
+    t = template or {}
+    key = "en_placeholders" if lang == "en" else "placeholders"
+    return [p for p in (t.get(key) or []) if isinstance(p, str)]
+
+
+def template_warnings_for(template: Optional[dict], lang: str = "fr") -> list[str]:
+    """Validation warnings of *template* for *lang* (``fr`` or ``en``)."""
+    t = template or {}
+    key = "en_validation_warnings" if lang == "en" else "validation_warnings"
+    return [w for w in (t.get(key) or []) if isinstance(w, str)]
+
+
+def template_filename_for(template: Optional[dict], lang: str = "fr") -> str:
+    """Stored safe filename of *template* for *lang*."""
+    t = template or {}
+    if lang == "en":
+        return str(t.get("en_filename") or t.get("filename") or "template.docx")
+    return str(t.get("filename") or "gabarit.docx")
+
+
 # ── Metadata: whitelist, typed, refused rather than mangled ────────────
 
 
@@ -471,17 +519,23 @@ def _sha256(data: bytes) -> str:
 
 
 def _template_object_path(
-    uid: object, template_id: str, version: int, safe_filename: str
+    uid: object,
+    template_id: str,
+    version: int,
+    safe_filename: str,
+    lang: str = "fr",
 ) -> str:
     """The ONE builder of a template object path — ``v{N}`` per version.
 
     A version's object is never overwritten, so its path must be unique to
     it: the version segment guarantees it (and it can never equal a legacy
-    path, which has no version segment). The uid goes through
-    ``require_uid`` whoever computed it (plan rule 8).
+    path, which has no version segment). English streams carry ``en/``
+    before ``v{N}`` so FR and EN versioned objects are strictly disjoint.
+    The uid goes through ``require_uid`` whoever computed it (plan rule 8).
     """
     uid = storage_identity.require_uid(uid)
-    return f"users/{uid}/templates/{template_id}/v{int(version)}/{safe_filename}"
+    leaf = f"en/{safe_filename}" if lang == "en" else safe_filename
+    return f"users/{uid}/templates/{template_id}/v{int(version)}/{leaf}"
 
 
 def _stored_owner_segment(storage_path: str) -> str:
@@ -520,15 +574,20 @@ def _referenced(template_id: str, storage_path: str) -> Optional[bool]:
     ref = db.collection(COLLECTION).document(template_id)
     try:
         snap = ref.get()
-        if snap.exists and (snap.to_dict() or {}).get("storage_path") == storage_path:
-            return True
-        hits = list(
-            ref.collection(VERSIONS)
-            .where(filter=FieldFilter("storage_path", "==", storage_path))
-            .limit(1)
-            .stream()
-        )
-        return bool(hits)
+        if snap.exists:
+            doc = snap.to_dict() or {}
+            if doc.get("storage_path") == storage_path or doc.get("en_storage_path") == storage_path:
+                return True
+        for col_name in (VERSIONS, EN_VERSIONS):
+            hits = list(
+                ref.collection(col_name)
+                .where(filter=FieldFilter("storage_path", "==", storage_path))
+                .limit(1)
+                .stream()
+            )
+            if hits:
+                return True
+        return False
     except Exception as exc:
         # Unreadable is its own answer — every caller then KEEPS the object
         # (an orphan costs storage, a version without bytes costs a
@@ -627,6 +686,21 @@ def _store_version_bytes(
 
 def _versions_ref(template_id: str):
     return db.collection(COLLECTION).document(template_id).collection(VERSIONS)
+
+
+def _en_versions_ref(template_id: str):
+    return db.collection(COLLECTION).document(template_id).collection(EN_VERSIONS)
+
+
+def _en_extraction_meta(extraction: dict) -> dict:
+    return {
+        "en_placeholders": list(extraction.get("placeholders") or []),
+        "en_auto_fields": list(extraction.get("auto_fields") or []),
+        "en_manual_fields": list(extraction.get("manual_fields") or []),
+        "en_passthrough_fields": list(extraction.get("passthrough_fields") or []),
+        "en_slots_required": list(extraction.get("slots_required") or []),
+        "en_validation_warnings": list(extraction.get("validation_warnings") or []),
+    }
 
 
 def _version_entry(
@@ -738,13 +812,17 @@ def create_template(
     *,
     template_id: Optional[str] = None,
     source_dossier_id: str = "",
+    en_file_stream=None,
+    en_filename: str = "",
+    en_file_size: int = 0,
 ) -> tuple[Optional[dict], list[str]]:
     """Validate, extract placeholders, upload to Storage, persist the doc.
 
     The metadata goes through the whitelist; a special-kind template is
     NEVER active on creation — the lawyer designates it (D11). The file is
     version 1, at its ``v1`` path, recorded in ``versions/1`` in the same
-    batch as the template itself.
+    batch as the template itself. An optional English `.docx` stream may be
+    uploaded alongside it (`en_versions/1`, at `en/v1/...`).
 
     ``template_id`` (keyword, lot 2A T9) RESERVES the new template's id — a
     canonical UUIDv4, refused otherwise; ``None`` mints one. The connector's
@@ -802,6 +880,21 @@ def create_template(
     if errors:
         return None, errors
 
+    en_bytes: Optional[bytes] = None
+    en_extraction: Optional[dict] = None
+    if en_file_stream is not None and en_filename:
+        en_errors = _validate_file(en_filename, en_file_size or 0)
+        if en_errors:
+            return None, [f"Version anglaise : {e}" for e in en_errors]
+        try:
+            en_bytes = en_file_stream.read()
+        except Exception as exc:
+            logger.warning("create_template (en): stream read failed: %s", type(exc).__name__)
+            return None, ["Le fichier anglais n'a pas pu être lu. Veuillez réessayer."]
+        en_extraction, en_errors = _extraction_fields(en_bytes)
+        if en_errors:
+            return None, [f"Version anglaise : {e}" for e in en_errors]
+
     now = datetime.now(timezone.utc)
     template_id = template_id if reserved else str(uuid.uuid4())
     safe_filename = _safe_filename(filename)
@@ -832,6 +925,30 @@ def create_template(
         inventory=extraction, now=now, source_dossier_id=source_dossier_id,
     )
 
+    en_storage_path = ""
+    en_generation: Optional[int] = None
+    en_entry: Optional[dict] = None
+    if en_bytes is not None and en_extraction is not None:
+        en_safe = _safe_filename(en_filename)
+        en_storage_path = _template_object_path(
+            user_id, template_id, 1, en_safe, lang="en"
+        )
+        en_digest = _sha256(en_bytes)
+        merged.update(_en_extraction_meta(en_extraction))
+        merged.update({
+            "en_filename": en_safe,
+            "en_original_filename": en_filename,
+            "en_file_size": len(en_bytes),
+            "en_storage_path": en_storage_path,
+            "en_sha256": en_digest,
+            "en_version": 1,
+        })
+        en_entry = _version_entry(
+            1, filename=en_safe, original_filename=en_filename,
+            file_size=len(en_bytes), storage_path=en_storage_path,
+            sha256=en_digest, inventory=en_extraction, now=now,
+        )
+
     # Upload to Firebase Storage (never log the path — it may embed names).
     generation, errors = _store_version_bytes(template_id, storage_path, docx_bytes)
     if errors:
@@ -843,10 +960,20 @@ def create_template(
                 return answer
         return None, errors
 
+    if en_bytes is not None and en_storage_path:
+        en_generation, en_errors = _store_version_bytes(
+            template_id, en_storage_path, en_bytes
+        )
+        if en_errors:
+            _delete_own_object_unreferenced(template_id, storage_path, generation)
+            return None, en_errors
+
     try:
         batch = db.batch()
         batch.create(ref, merged)
         batch.create(_versions_ref(template_id).document("1"), entry)
+        if en_entry is not None:
+            batch.create(_en_versions_ref(template_id).document("1"), en_entry)
         batch.commit()
     except Exception as exc:
         logger.warning(
@@ -856,6 +983,8 @@ def create_template(
         # Never deletes an object a committed record names — the answer
         # below may be that record.
         _delete_own_object_unreferenced(template_id, storage_path, generation)
+        if en_storage_path:
+            _delete_own_object_unreferenced(template_id, en_storage_path, en_generation)
         if reserved:
             answer = _reserved_answer(ref, digest)
             if answer is not None:
@@ -863,7 +992,22 @@ def create_template(
         return None, [SAVE_ERROR]
 
     provenance.note_commit(COLLECTION, template_id)
+    _dispatch_onedrive("sync_template", template_id=template_id)
     return merged, []
+
+
+def _dispatch_onedrive(action: str, **payload) -> None:
+    """Best-effort post-commit async mirror dispatch (never raises)."""
+    try:
+        from services import miroir_onedrive
+
+        miroir_onedrive.enqueue_event(action, **payload)
+    except Exception as exc:
+        logger.warning(
+            "doc_template onedrive dispatch failed (%s): %s",
+            action,
+            type(exc).__name__,
+        )
 
 
 def get_template(template_id: str, *, strict: bool = False) -> Optional[dict]:
@@ -1161,16 +1305,26 @@ def clear_active_template(
 
 def _prepare_new_file(
     existing: dict, template_id: str, docx_bytes: bytes, filename: str,
-    original_filename: str, *, source_dossier_id: str = "",
+    original_filename: str, *, source_dossier_id: str = "", lang: str = "fr",
 ) -> tuple[Optional[_NewFile], list[str]]:
     """Validate and extract a replacement file (nothing is stored yet)."""
     try:
-        segment = _stored_owner_segment(existing.get("storage_path", ""))
+        owner_path = (
+            existing.get("en_storage_path") or existing.get("storage_path", "")
+            if lang == "en"
+            else existing.get("storage_path", "")
+        )
+        segment = _stored_owner_segment(owner_path)
     except storage_identity.StorageIdentityUnavailable:
         return None, [TEMPLATE_PATH_INVALID_MESSAGE]
     extraction, errors = _extraction_fields(docx_bytes)
     if errors:
-        return None, errors
+        return None, [f"Version anglaise : {e}" for e in errors] if lang == "en" else errors
+    base_version = (
+        int(existing.get("en_version") or 0)
+        if lang == "en"
+        else int(existing.get("version") or 1)
+    )
     return _NewFile(
         data=docx_bytes,
         safe_filename=_safe_filename(filename),
@@ -1178,7 +1332,7 @@ def _prepare_new_file(
         sha256=_sha256(docx_bytes),
         extraction=extraction,
         user_segment=segment,
-        base_version=int(existing.get("version") or 1),
+        base_version=base_version,
         source_dossier_id=source_dossier_id,
     ), []
 
@@ -1192,14 +1346,17 @@ def _commit_update(
     expected_version: Optional[int],
     restored_from: Optional[int] = None,
     restored_by: str = "",
+    new_en_file: Optional[_NewFile] = None,
+    en_restored_from: Optional[int] = None,
+    en_restored_by: str = "",
 ) -> tuple[Optional[dict], list[str], bool]:
-    """Write the metadata changes and/or a new version, in ONE transaction.
+    """Write the metadata changes and/or a new version (FR and/or EN), in ONE transaction.
 
     A new version's bytes are stored FIRST, at their own ``v{N}`` path
     (create-only); the transaction then records the version entry and
     moves the template to it, refusing if the template left the version
     the file was built on. Any refusal or failure removes only this call's
-    own, unreferenced object.
+    own, unreferenced object(s).
     """
     storage_path = ""
     generation: Optional[int] = None
@@ -1214,8 +1371,24 @@ def _commit_update(
         if errors:
             return None, errors, False
 
+    en_storage_path = ""
+    en_generation: Optional[int] = None
+    if new_en_file is not None:
+        en_storage_path = _template_object_path(
+            new_en_file.user_segment, template_id, new_en_file.base_version + 1,
+            new_en_file.safe_filename, lang="en",
+        )
+        en_generation, en_errors = _store_version_bytes(
+            template_id, en_storage_path, new_en_file.data
+        )
+        if en_errors:
+            if storage_path:
+                _delete_own_object_unreferenced(template_id, storage_path, generation)
+            return None, en_errors, False
+
     ref = db.collection(COLLECTION).document(template_id)
     versions = _versions_ref(template_id)
+    en_versions = _en_versions_ref(template_id)
 
     @firestore.transactional
     def _apply(transaction) -> tuple[dict, bool]:
@@ -1230,6 +1403,11 @@ def _commit_update(
             previous = versions.document(str(new_file.base_version)).get(
                 transaction=transaction
             )
+        en_previous = None
+        if new_en_file is not None and new_en_file.base_version >= 1:
+            en_previous = en_versions.document(str(new_en_file.base_version)).get(
+                transaction=transaction
+            )
         if not concurrency.matches(current, expected_etag):
             raise _Refused([concurrency.STALE_ETAG_ERROR])
         stored_version = int(current.get("version") or 1)
@@ -1239,6 +1417,9 @@ def _commit_update(
             # Another version was installed since this file was prepared:
             # it would silently REPLACE that one. Refused like a stale save.
             raise _Refused([concurrency.STALE_ETAG_ERROR])
+        stored_en_version = int(current.get("en_version") or 0)
+        if new_en_file is not None and stored_en_version != new_en_file.base_version:
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
         changes = _changed_metadata(current, proposed)
         errors = _metadata_value_errors(changes)
         errors += _validate({**_default_doc(), **current, **changes})
@@ -1247,7 +1428,7 @@ def _commit_update(
         if "kind" in changes and is_active(current):
             raise _Refused([ACTIVE_KIND_CHANGE_ERROR.format(
                 kind=ACTIVE_KIND_NAMES.get(current.get("kind"), ""))])
-        if not changes and new_file is None:
+        if not changes and new_file is None and new_en_file is None:
             return current, False
         now = datetime.now(timezone.utc)
         fields = dict(changes)
@@ -1279,6 +1460,49 @@ def _commit_update(
                     source_dossier_id=new_file.source_dossier_id,
                 ),
             )
+        if new_en_file is not None:
+            new_en_version = new_en_file.base_version + 1
+            fields.update(_en_extraction_meta(new_en_file.extraction))
+            fields.update({
+                "en_filename": new_en_file.safe_filename,
+                "en_original_filename": new_en_file.original_filename,
+                "en_file_size": len(new_en_file.data),
+                "en_storage_path": en_storage_path,
+                "en_sha256": new_en_file.sha256,
+                "en_version": new_en_version,
+            })
+            if en_previous is not None and not en_previous.exists:
+                en_backfill = {
+                    **current,
+                    "version": new_en_file.base_version,
+                    "filename": current.get("en_filename", ""),
+                    "original_filename": current.get("en_original_filename", ""),
+                    "file_size": int(current.get("en_file_size") or 0),
+                    "storage_path": current.get("en_storage_path", ""),
+                    "sha256": current.get("en_sha256", "") or "",
+                    "placeholders": list(current.get("en_placeholders") or []),
+                    "auto_fields": list(current.get("en_auto_fields") or []),
+                    "manual_fields": list(current.get("en_manual_fields") or []),
+                    "passthrough_fields": list(current.get("en_passthrough_fields") or []),
+                    "slots_required": list(current.get("en_slots_required") or []),
+                    "validation_warnings": list(current.get("en_validation_warnings") or []),
+                }
+                transaction.create(
+                    en_versions.document(str(new_en_file.base_version)),
+                    _backfilled_entry(en_backfill, now),
+                )
+            transaction.create(
+                en_versions.document(str(new_en_version)),
+                _version_entry(
+                    new_en_version, filename=new_en_file.safe_filename,
+                    original_filename=new_en_file.original_filename,
+                    file_size=len(new_en_file.data), storage_path=en_storage_path,
+                    sha256=new_en_file.sha256, inventory=new_en_file.extraction,
+                    now=now, restored_from=en_restored_from,
+                    restored_by=en_restored_by,
+                    source_dossier_id=new_en_file.source_dossier_id,
+                ),
+            )
         fields.update(provenance.update_fields(now))
         transaction.update(ref, fields)
         return {**current, **fields}, True
@@ -1287,6 +1511,8 @@ def _commit_update(
         doc, changed = _apply(db.transaction())
     except _Refused as refusal:
         _delete_own_object_unreferenced(template_id, storage_path, generation)
+        if en_storage_path:
+            _delete_own_object_unreferenced(template_id, en_storage_path, en_generation)
         return None, refusal.errors, False
     except Exception as exc:
         logger.warning(
@@ -1294,9 +1520,12 @@ def _commit_update(
             sanitize_log_value(template_id), type(exc).__name__,
         )
         _delete_own_object_unreferenced(template_id, storage_path, generation)
+        if en_storage_path:
+            _delete_own_object_unreferenced(template_id, en_storage_path, en_generation)
         return None, [SAVE_ERROR], False
     if changed:
         provenance.note_commit(COLLECTION, template_id)
+        _dispatch_onedrive("sync_template", template_id=template_id)
     return doc, [], changed
 
 
@@ -1311,8 +1540,11 @@ def update_template(
     expected_version: Optional[int] = None,
     source_dossier_id: str = "",
     name_accept: Iterable[str] = (),
+    en_file_stream=None,
+    en_filename: Optional[str] = None,
+    en_file_size: Optional[int] = None,
 ) -> tuple[Optional[dict], list[str], bool]:
-    """Update metadata; optionally install a new version of the file.
+    """Update metadata; optionally install a new version of the FR and/or EN file.
 
     Returns ``(template, errors, changed)``. *data* is read through the
     metadata whitelist (name, description, category, kind) — nothing else
@@ -1408,14 +1640,46 @@ def update_template(
         if stored_sha and hmac.compare_digest(stored_sha, new_file.sha256):
             new_file = None  # the same bytes: not a new version
 
+    new_en_file: Optional[_NewFile] = None
+    if en_file_stream is not None and en_filename:
+        try:
+            _stored_owner_segment(existing.get("storage_path", ""))
+        except storage_identity.StorageIdentityUnavailable:
+            return None, [TEMPLATE_PATH_INVALID_MESSAGE], False
+        en_errors = _validate_file(en_filename, en_file_size or 0)
+        if en_errors:
+            return None, [f"Version anglaise : {e}" for e in en_errors], False
+        try:
+            en_bytes = en_file_stream.read()
+        except Exception as exc:
+            logger.warning(
+                "update_template (en): stream read failed: %s", type(exc).__name__
+            )
+            return None, ["Le fichier anglais n'a pas pu être lu. Veuillez réessayer."], False
+        new_en_file, en_errors = _prepare_new_file(
+            existing, template_id, en_bytes, en_filename, en_filename,
+            lang="en",
+        )
+        if en_errors:
+            return None, en_errors, False
+        stored_en_sha = existing.get("en_sha256") or ""
+        if stored_en_sha and hmac.compare_digest(stored_en_sha, new_en_file.sha256):
+            new_en_file = None
+
     return _commit_update(
         template_id, proposed, new_file,
         expected_etag=expected_etag, expected_version=expected_version,
+        new_en_file=new_en_file,
     )
 
 
 def restore_template_version(
-    template_id: str, version: int, *, par: str, expected_etag: Optional[str]
+    template_id: str,
+    version: int,
+    *,
+    par: str,
+    expected_etag: Optional[str],
+    lang: str = "fr",
 ) -> tuple[Optional[dict], list[str], bool]:
     """Install version *version*'s bytes as a NEW version (never rewrite).
 
@@ -1425,14 +1689,16 @@ def restore_template_version(
     version was installed — a mismatch refuses. Restoring bytes identical
     to the current file writes nothing (``changed`` False).
     """
+    is_en = lang == "en"
     try:
         version = int(version)
     except (TypeError, ValueError):
         return None, [VERSION_NOT_FOUND_ERROR], False
+    v_ref = _en_versions_ref(template_id) if is_en else _versions_ref(template_id)
     try:
         existing = _read_template_strict(template_id)
         entry_snap = (
-            _versions_ref(template_id).document(str(version)).get()
+            v_ref.document(str(version)).get()
             if existing is not None else None
         )
     except Exception:
@@ -1440,9 +1706,16 @@ def restore_template_version(
         return None, [READ_ERROR], False
     if existing is None:
         return None, [NOT_FOUND_ERROR], False
+    if is_en and not has_en(existing):
+        return None, [VERSION_NOT_FOUND_ERROR], False
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR], False
-    if version == int(existing.get("version") or 1):
+    current_version = (
+        int(existing.get("en_version") or 0)
+        if is_en
+        else int(existing.get("version") or 1)
+    )
+    if version == current_version:
         return None, [VERSION_IS_CURRENT_ERROR], False
     if entry_snap is None or not entry_snap.exists:
         return None, [VERSION_NOT_FOUND_ERROR], False
@@ -1466,31 +1739,37 @@ def restore_template_version(
     if recorded and not hmac.compare_digest(recorded, _sha256(docx_bytes)):
         return None, [VERSION_INTEGRITY_ERROR], False
 
-    filename = entry.get("filename") or "gabarit.docx"
+    filename = entry.get("filename") or ("template.docx" if is_en else "gabarit.docx")
     source, _source_errors = _clean_source_dossier_id(
         entry.get("source_dossier_id") or "")
-    new_file, errors = _prepare_new_file(
+    prepared, errors = _prepare_new_file(
         existing, template_id, docx_bytes, filename,
         entry.get("original_filename") or filename,
-        source_dossier_id=source,
+        source_dossier_id=source, lang="en" if is_en else "fr",
     )
     if errors:
         return None, errors, False
-    stored_sha = existing.get("sha256") or ""
-    if stored_sha and hmac.compare_digest(stored_sha, new_file.sha256):
+    stored_sha = (existing.get("en_sha256") if is_en else existing.get("sha256")) or ""
+    if stored_sha and hmac.compare_digest(stored_sha, prepared.sha256):
         # The current file already holds these bytes: nothing to install.
         # (The page's version was checked above — a no-op answered on a
         # template that moved since would confirm what the lawyer never saw.)
         return existing, [], False
+    if is_en:
+        return _commit_update(
+            template_id, {}, None,
+            expected_etag=expected_etag, expected_version=None,
+            new_en_file=prepared, en_restored_from=version, en_restored_by=par,
+        )
     return _commit_update(
-        template_id, {}, new_file,
+        template_id, {}, prepared,
         expected_etag=expected_etag, expected_version=None,
         restored_from=version, restored_by=par,
     )
 
 
 def list_versions(
-    template_id: str, limit: int = 50, *, strict: bool = False,
+    template_id: str, limit: int = 50, *, strict: bool = False, lang: str = "fr",
 ) -> list[dict]:
     """The template's recorded versions, newest first — DISPLAY only.
 
@@ -1500,9 +1779,10 @@ def list_versions(
     read failure instead, for a caller that must tell « no history
     recorded » from « history unreadable » (the connector says which).
     """
+    ref = _en_versions_ref(template_id) if lang == "en" else _versions_ref(template_id)
     try:
         query = (
-            _versions_ref(template_id)
+            ref
             .order_by("version", direction=firestore.Query.DESCENDING)
             .limit(max(1, int(limit)))
         )
@@ -1559,17 +1839,18 @@ def template_source_dossier_ids(
 
 
 def delete_template(template_id: str) -> tuple[bool, str]:
-    """Delete the template, every version entry, then every stored file.
+    """Delete the template, every version entry (FR & EN), then every stored file.
 
     The records go FIRST, in one transaction (the template and all its
-    ``versions/*``, read inside it — a replacement racing the delete aborts
-    it rather than leaving an entry under a deleted template); the objects
-    of every version follow, one by one. A failed object delete leaves an
-    orphan under the owner's prefix and a log line — never a template
-    whose file is gone.
+    ``versions/*`` / ``en_versions/*``, read inside it — a replacement racing
+    the delete aborts it rather than leaving an entry under a deleted
+    template); the objects of every version follow, one by one. A failed
+    object delete leaves an orphan under the owner's prefix and a log line —
+    never a template whose file is gone.
     """
     ref = db.collection(COLLECTION).document(template_id)
     versions = _versions_ref(template_id)
+    en_versions = _en_versions_ref(template_id)
 
     @firestore.transactional
     def _apply(transaction) -> set[str]:
@@ -1577,8 +1858,13 @@ def delete_template(template_id: str) -> tuple[bool, str]:
         if not snap.exists:
             raise _Refused([NOT_FOUND_ERROR])
         entries = list(versions.stream(transaction=transaction))
-        paths = {(snap.to_dict() or {}).get("storage_path") or ""}
-        for entry in entries:
+        en_entries = list(en_versions.stream(transaction=transaction))
+        doc_data = snap.to_dict() or {}
+        paths = {
+            doc_data.get("storage_path") or "",
+            doc_data.get("en_storage_path") or "",
+        }
+        for entry in entries + en_entries:
             paths.add((entry.to_dict() or {}).get("storage_path") or "")
             transaction.delete(entry.reference)
         transaction.delete(ref)
@@ -1605,15 +1891,18 @@ def delete_template(template_id: str) -> tuple[bool, str]:
         except Exception:
             log_unexpected("template file delete failed",
                            template_id=template_id)
+    _dispatch_onedrive("delete_template", template_id=template_id)
     return True, ""
 
 
-def get_template_bytes(template_id: str) -> Optional[bytes]:
+def get_template_bytes(template_id: str, *, lang: str = "fr") -> Optional[bytes]:
     """Download the current template file (for filling)."""
-    return template_file_bytes(get_template(template_id))
+    return template_file_bytes(get_template(template_id), lang=lang)
 
 
-def template_file_bytes(template: Optional[dict]) -> Optional[bytes]:
+def template_file_bytes(
+    template: Optional[dict], *, lang: str = "fr"
+) -> Optional[bytes]:
     """The bytes of the file THIS record names — the version it reports.
 
     A replacement writes a NEW object (``v{N}`` paths) and never overwrites
@@ -1621,13 +1910,21 @@ def template_file_bytes(template: Optional[dict]) -> Optional[bytes]:
     caller that reports « gabarit X, version N » fills from this, never from
     :func:`get_template_bytes`, whose re-read could pick up a replacement
     committed in between and print version N+1 under the name of N (lot 2A,
-    T8). ``None`` when the record names no file or the download fails.
+    T8). ``None`` when the record names no file (or lacks an EN stream when
+    ``lang="en"``) or the download fails.
     """
-    if not template or not template.get("storage_path"):
+    if not template:
+        return None
+    path = (
+        template.get("en_storage_path")
+        if lang == "en"
+        else template.get("storage_path")
+    )
+    if not path:
         return None
     try:
         bucket = storage.bucket()
-        return bucket.blob(template["storage_path"]).download_as_bytes()
+        return bucket.blob(path).download_as_bytes()
     except Exception as exc:
         logger.warning(
             "template_file_bytes failed for %s: %s",
@@ -1655,24 +1952,35 @@ def _signed_download_url(
         return None
 
 
-def get_signed_url(template_id: str, expires_in_minutes: int = 15) -> Optional[str]:
+def get_signed_url(
+    template_id: str, expires_in_minutes: int = 15, *, lang: str = "fr"
+) -> Optional[str]:
     """Signed download URL for the template file (15-minute expiry)."""
     template = get_template(template_id)
-    if not template or not template.get("storage_path"):
+    if not template:
+        return None
+    path = (
+        template.get("en_storage_path")
+        if lang == "en"
+        else template.get("storage_path")
+    )
+    if not path:
         return None
     return _signed_download_url(
-        template["storage_path"], template.get("filename") or "gabarit.docx",
+        path,
+        template_filename_for(template, lang=lang),
         expires_in_minutes,
     )
 
 
 def get_version_signed_url(
-    template_id: str, version: int, expires_in_minutes: int = 15
+    template_id: str, version: int, expires_in_minutes: int = 15, *, lang: str = "fr"
 ) -> Optional[str]:
     """Signed download URL (15 min) for one recorded version's file — web
     only, never emitted by the connector."""
+    ref = _en_versions_ref(template_id) if lang == "en" else _versions_ref(template_id)
     try:
-        snap = _versions_ref(template_id).document(str(int(version))).get()
+        snap = ref.document(str(int(version))).get()
     except Exception:
         return None
     if not snap.exists:
@@ -1680,7 +1988,8 @@ def get_version_signed_url(
     entry = snap.to_dict() or {}
     if not entry.get("storage_path"):
         return None
-    filename = entry.get("filename") or "gabarit.docx"
+    filename = entry.get("filename") or ("template.docx" if lang == "en" else "gabarit.docx")
+    prefix = f"en-v{int(version)}" if lang == "en" else f"v{int(version)}"
     return _signed_download_url(
-        entry["storage_path"], f"v{int(version)}-{filename}", expires_in_minutes,
+        entry["storage_path"], f"{prefix}-{filename}", expires_in_minutes,
     )

@@ -162,9 +162,9 @@ def test_template_steps_are_created_stamped(fake):
         "d1", "cq_simplifié", WHEN, {"title": "Protocole"})
     assert errors == []
     steps = fake.peek_collection(f"protocols/{proto['id']}/steps")
-    assert len(steps) == 7
+    assert len(steps) == 8
     etags = {s["etag"] for s in steps.values()}
-    assert "" not in etags and len(etags) == 7
+    assert "" not in etags and len(etags) == 8
     for step in steps.values():
         assert step["created_via"] == step["updated_via"] == "script"
     stored = fake.peek(f"protocols/{proto['id']}")
@@ -455,7 +455,7 @@ def test_one_failing_task_no_longer_stops_the_others(fake, monkeypatch, caplog):
     etags_before = [s["etag"] for s in steps]
     with caplog.at_level(logging.INFO):
         report = protocol_model.create_linked_tasks(proto["id"], proto, steps)
-    assert report == {"created": 6, "linked": 6, "failed": 1}
+    assert report == {"created": 7, "linked": 7, "failed": 1}
     stored = sorted(fake.peek_collection(f"protocols/{proto['id']}/steps")
                     .values(), key=lambda s: s["order"])
     assert stored[0]["linked_task_id"] is None
@@ -482,7 +482,7 @@ def test_create_protocol_with_tasks_returns_the_links(fake):
         auto_create_tasks=True)
     assert errors == []
     tasks = fake.peek_collection("tasks")
-    assert len(tasks) == 7
+    assert len(tasks) == 8
     assert {s["linked_task_id"] for s in proto["steps"]} == set(tasks)
 
 
@@ -574,8 +574,8 @@ def test_a_start_date_change_recomputes_in_the_same_write(fake):
     assert after[0]["deadline_date"] == before[0]["deadline_date"]
     assert after[0]["etag"] == before[0]["etag"]  # untouched
     for b, a in zip(before[1:], after[1:]):
-        assert a["deadline_date"] == protocol_model._compute_deadline(
-            START2, b["deadline_offset_days"])
+        assert a["deadline_date"] == protocol_model._compute_step_deadline(
+            START2, b)
         assert a["etag"] != b["etag"]
     report = doc["_recompute"]
     assert {m["step_id"] for m in report["moved"]} == {s["id"] for s in after[1:]}

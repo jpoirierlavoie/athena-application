@@ -119,6 +119,7 @@ def _default_doc() -> dict:
         # dossier.opened_date). Ne JAMAIS la rendre via to_mtl : la conversion
         # vers Montréal la reculerait d'un jour.
         "birth_date": None,
+        "birth_date_mmdd": "",
         # Organization (personne morale)
         "organization_name": "",   # Legal name (nom légal)
         "trade_name": "",          # Trade / "doing business as" name (nom d'emprunt)
@@ -139,6 +140,9 @@ def _default_doc() -> dict:
         "email_work": "",
         "phone_work": "",
         "fax": "",
+        # Secondary vCard EMAIL / TEL entries (same bucket round-trip)
+        "extra_emails": [],
+        "extra_tels": [],
         # Personal address
         "address_street": "",
         "address_unit": "",
@@ -243,6 +247,37 @@ def _coerce_birth_date(brut) -> Optional[datetime]:
     return None
 
 
+def _coerce_birth_date_mmdd(brut: object) -> Optional[str]:
+    """Validate and canonicalize an RFC 6350 yearless BDAY (``--MMDD``)."""
+    if not isinstance(brut, str):
+        return None
+    m = re.fullmatch(r"--(0[1-9]|1[0-2])-?(0[1-9]|[12]\d|3[01])", brut.strip())
+    if not m:
+        return None
+    mm, dd = int(m.group(1)), int(m.group(2))
+    try:
+        date(2000, mm, dd)  # leap year so --0229 stays valid
+    except ValueError:
+        return None
+    return f"--{mm:02d}{dd:02d}"
+
+
+def _extract_vcard_types(prop) -> list[str]:
+    """Return all TYPE parameter tokens in uppercase order for a vobject prop."""
+    params = getattr(prop, "params", None)
+    raw = params.get("TYPE") if isinstance(params, dict) else None
+    if not raw:
+        raw = getattr(prop, "type_param", "")
+    items = raw if isinstance(raw, (list, tuple)) else ([raw] if raw else [])
+    tokens: list[str] = []
+    for item in items:
+        for part in str(item).split(","):
+            tok = part.strip().upper()
+            if tok and tok not in tokens:
+                tokens.append(tok)
+    return tokens
+
+
 def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid)."""
     errors: list[str] = []
@@ -263,6 +298,14 @@ def _validate(data: dict) -> list[str]:
     # Date de naissance — normalisée à minuit UTC (date seule) et jamais dans
     # le futur. Une chaîne « AAAA-MM-JJ » est acceptée : le formulaire, le DAV
     # (BDAY) et le portail la fournissent tous sous cette forme.
+    brut_mmdd = data.get("birth_date_mmdd")
+    if brut_mmdd:
+        canon_mmdd = _coerce_birth_date_mmdd(brut_mmdd)
+        if canon_mmdd is None:
+            errors.append("Date de naissance partielle (--MMDD) invalide.")
+        else:
+            data["birth_date_mmdd"] = canon_mmdd
+
     brut_naissance = data.get("birth_date")
     if brut_naissance not in (None, ""):
         normalisee = _coerce_birth_date(brut_naissance)
@@ -272,6 +315,7 @@ def _validate(data: dict) -> list[str]:
             errors.append("La date de naissance ne peut pas être dans le futur.")
         else:
             data["birth_date"] = normalisee
+            data["birth_date_mmdd"] = ""
     elif brut_naissance == "":
         data["birth_date"] = None
 
@@ -401,6 +445,51 @@ def _normalize(data: dict) -> dict:
             normalized = normalize_email(raw)
             if normalized:
                 data[field] = normalized
+
+    # Normalize secondary vCard EMAIL / TEL lists ONLY when supplied (presence rule).
+    if "extra_emails" in data:
+        raw_ee = data.get("extra_emails") or []
+        if not isinstance(raw_ee, list):
+            raw_ee = []
+        clean_ee: list[dict] = []
+        for entry in raw_ee[:20]:
+            if not isinstance(entry, dict):
+                continue
+            val = sanitize(str(entry.get("value") or "").strip(), max_length=254)
+            if not val:
+                continue
+            norm = normalize_email(val)
+            val = norm if norm else val
+            raw_types = entry.get("types") or []
+            types = [
+                sanitize(str(t).strip().upper(), max_length=32)
+                for t in raw_types[:8]
+                if str(t).strip()
+            ] if isinstance(raw_types, (list, tuple)) else []
+            clean_ee.append({"value": val, "types": types})
+        data["extra_emails"] = clean_ee
+
+    if "extra_tels" in data:
+        raw_et = data.get("extra_tels") or []
+        if not isinstance(raw_et, list):
+            raw_et = []
+        clean_et: list[dict] = []
+        for entry in raw_et[:20]:
+            if not isinstance(entry, dict):
+                continue
+            val = sanitize(str(entry.get("value") or "").strip(), max_length=64)
+            if not val:
+                continue
+            norm = normalize_phone(val)
+            val = norm if norm else val
+            raw_types = entry.get("types") or []
+            types = [
+                sanitize(str(t).strip().upper(), max_length=32)
+                for t in raw_types[:8]
+                if str(t).strip()
+            ] if isinstance(raw_types, (list, tuple)) else []
+            clean_et.append({"value": val, "types": types})
+        data["extra_tels"] = clean_et
 
     # Normalize postal codes
     for prefix in ("address", "work_address"):
@@ -1918,13 +2007,17 @@ def partie_to_vcard(partie: dict) -> str:
         jour = _coerce_birth_date(naissance)
         if jour is not None:
             card.add("bday").value = jour.strftime("%Y%m%d")
+    elif partie.get("birth_date_mmdd") and partie.get("type") != "organization":
+        mmdd = _coerce_birth_date_mmdd(partie["birth_date_mmdd"])
+        if mmdd is not None:
+            card.add("bday").value = mmdd
 
     # TITLE — the « Poste ou profession ». ROLE (« Fonction ») left the
     # schema with job_role and is no longer written.
     if partie.get("job_title"):
         card.add("title").value = partie["job_title"]
 
-    # EMAIL
+    # EMAIL (primary + preserved secondary lines)
     if partie.get("email"):
         email_prop = card.add("email")
         email_prop.value = partie["email"]
@@ -1935,7 +2028,19 @@ def partie_to_vcard(partie: dict) -> str:
         email_prop.value = partie["email_work"]
         email_prop.type_param = "WORK"
 
-    # TEL
+    for extra in partie.get("extra_emails") or []:
+        if not isinstance(extra, dict):
+            continue
+        val = str(extra.get("value") or "").strip()
+        if not val:
+            continue
+        email_prop = card.add("email")
+        email_prop.value = val
+        types = [str(t).strip().upper() for t in (extra.get("types") or []) if str(t).strip()]
+        if types:
+            email_prop.params["TYPE"] = types
+
+    # TEL (primary + preserved secondary lines)
     for field, tel_type in [
         ("phone_home", "HOME"),
         ("phone_cell", "CELL"),
@@ -1946,6 +2051,18 @@ def partie_to_vcard(partie: dict) -> str:
             tel = card.add("tel")
             tel.value = partie[field]
             tel.type_param = tel_type
+
+    for extra in partie.get("extra_tels") or []:
+        if not isinstance(extra, dict):
+            continue
+        val = str(extra.get("value") or "").strip()
+        if not val:
+            continue
+        tel = card.add("tel")
+        tel.value = val
+        types = [str(t).strip().upper() for t in (extra.get("types") or []) if str(t).strip()]
+        if types:
+            tel.params["TYPE"] = types
 
     # ADR — home. Written only when the block holds a LOCATION (street,
     # unit, city or postal code): province and country alone are the
@@ -2070,12 +2187,17 @@ def vcard_to_partie(vcard_str: str) -> dict:
     if hasattr(card, "bday"):
         brut = (card.bday.value or "").strip()
         compact = brut.replace("-", "")
-        if len(compact) == 8 and compact.isdigit():
+        if len(compact) == 8 and compact.isdigit() and not brut.startswith("--"):
             jour = _coerce_birth_date(
                 f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}"
             )
             if jour is not None:
                 data["birth_date"] = jour
+                data["birth_date_mmdd"] = ""
+        else:
+            mmdd = _coerce_birth_date_mmdd(brut)
+            if mmdd is not None:
+                data["birth_date_mmdd"] = mmdd
 
     # Determine type (organization if no last_name but has org)
     if not data.get("last_name") and data.get("organization"):
@@ -2084,42 +2206,66 @@ def vcard_to_partie(vcard_str: str) -> dict:
     else:
         data["type"] = "individual"
 
-    # EMAIL
+    # EMAIL — preserve secondary entries of the same bucket cleanly on round-trip
     if hasattr(card, "email_list"):
+        email_seen = {"email": False, "email_work": False}
+        extra_emails: list[dict] = []
         for em in card.email_list:
-            etype = getattr(em, "type_param", "")
-            if isinstance(etype, str):
-                etype = etype.upper()
-            elif isinstance(etype, list):
-                etype = ",".join(e.upper() for e in etype)
+            val = (em.value or "").strip()
+            if not val:
+                continue
+            types = _extract_vcard_types(em)
+            bucket = "email_work" if "WORK" in types else "email"
+            if not email_seen[bucket]:
+                data[bucket] = val
+                email_seen[bucket] = True
             else:
-                etype = ""
-            if "WORK" in etype:
-                data["email_work"] = em.value
-            else:
-                data["email"] = em.value
+                extra_emails.append({
+                    "value": val,
+                    "types": types or (["WORK"] if bucket == "email_work" else ["HOME"]),
+                })
+        if not email_seen["email"]:
+            data["email"] = ""
+        if not email_seen["email_work"]:
+            data["email_work"] = ""
+        data["extra_emails"] = extra_emails
 
-    # TEL
+    # TEL — preserve secondary entries of the same bucket cleanly on round-trip
     if hasattr(card, "tel_list"):
+        tel_seen = {
+            "fax": False,
+            "phone_cell": False,
+            "phone_work": False,
+            "phone_home": False,
+        }
+        extra_tels: list[dict] = []
         for tel in card.tel_list:
-            ttype = getattr(tel, "type_param", "")
-            if isinstance(ttype, str):
-                ttype = ttype.upper()
-            elif isinstance(ttype, list):
-                ttype = ",".join(t.upper() for t in ttype)
+            raw_tel = (tel.value or "").strip()
+            if not raw_tel:
+                continue
+            types = _extract_vcard_types(tel)
+            if "FAX" in types:
+                field, default_type = "fax", "FAX"
+            elif "CELL" in types:
+                field, default_type = "phone_cell", "CELL"
+            elif "WORK" in types:
+                field, default_type = "phone_work", "WORK"
             else:
-                ttype = ""
-            if "FAX" in ttype:
-                field = "fax"
-            elif "CELL" in ttype:
-                field = "phone_cell"
-            elif "WORK" in ttype:
-                field = "phone_work"
-            else:
-                field = "phone_home"
-            raw_tel = tel.value
+                field, default_type = "phone_home", "HOME"
             normalized = normalize_phone(raw_tel)
-            data[field] = normalized if normalized else raw_tel
+            val = normalized if normalized else raw_tel
+            if not tel_seen[field]:
+                data[field] = val
+                tel_seen[field] = True
+            else:
+                extra_tels.append({
+                    "value": val,
+                    "types": types or [default_type],
+                })
+        for field, seen in tel_seen.items():
+            if not seen:
+                data[field] = ""
+        data["extra_tels"] = extra_tels
 
     # ADR
     if hasattr(card, "adr_list"):
@@ -2176,12 +2322,27 @@ def vcard_to_partie(vcard_str: str) -> dict:
             data["pronouns"] = str(lines[0].value or "").strip()
             break
 
-    # Parse raw lines for LANG, GENDER (not supported by vobject)
-    for line in vcard_str.splitlines():
-        upper_line = line.upper()
-        if upper_line.startswith("LANG:"):
-            data["language"] = line.split(":", 1)[1].strip()
-        elif upper_line.startswith("GENDER:"):
-            data["gender"] = line.split(":", 1)[1].strip()
+    # Unfold RFC 6350 folded lines before parsing LANG, GENDER (not natively
+    # handled by vobject; RFC 6350 §3.2 removes CRLF/LF + single space or tab).
+    unfolded = re.sub(r"\r?\n[ \t]", "", vcard_str)
+    lang_seen = False
+    gender_seen = False
+    for line in unfolded.splitlines():
+        if ":" not in line:
+            continue
+        prop_part, val_part = line.split(":", 1)
+        prop_name = prop_part.split(";", 1)[0].strip().upper()
+        if "." in prop_name:
+            prop_name = prop_name.rsplit(".", 1)[-1]
+        if prop_name == "LANG" and not lang_seen:
+            raw_lang = val_part.strip()
+            if raw_lang:
+                data["language"] = raw_lang
+                lang_seen = True
+        elif prop_name == "GENDER" and not gender_seen:
+            raw_gender = val_part.split(";", 1)[0].strip().upper()
+            if raw_gender and raw_gender in VALID_GENDERS:
+                data["gender"] = raw_gender
+                gender_seen = True
 
     return data

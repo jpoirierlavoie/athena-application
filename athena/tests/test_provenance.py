@@ -586,6 +586,14 @@ _DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
     # Lot 4b (record_kyc_status): the compliance write IS an update_partie
     # of the check's keys (source « mcp »).
     ("partie", "update_kyc_status"): (("partie", "_update_partie"),),
+    # Lot C: dual-leg admin transfers and card payments share _write_account_transfer,
+    # which builds legs via _entry_doc (create_fields), stamps accounts, and notes commits.
+    ("admin_ledger", "create_account_transfer"): (
+        ("admin_ledger", "_write_account_transfer"),
+    ),
+    ("admin_ledger", "create_card_payment"): (
+        ("admin_ledger", "_write_account_transfer"),
+    ),
 }
 # Lot 2A (T9). Names the verb regex catches that are NOT tool writes, each
 # with its reason — and each held to the OPPOSITE rule, so an exemption
@@ -653,6 +661,14 @@ _PHASED_MUTATORS: dict[tuple[str, str], dict[str, tuple[tuple[str, str], ...]]] 
         "stamps": (("trust", "_stage_create"), ("admin_ledger", "_stage_create")),
         "commits": (("admin_ledger", "_after_create_commit"),)},
     ("fee_payment", "reverse_fee_payment"): {
+        "stamps": (("trust", "_stage_reverse"),
+                   ("admin_ledger", "_stage_reverse_legs")),
+        "commits": (("trust", "_after_reverse_commit"),
+                    ("admin_ledger", "_after_reverse_commit"))},
+    ("advance_transfer", "create_advance_transfer"): {
+        "stamps": (("trust", "_stage_create"), ("admin_ledger", "_stage_create")),
+        "commits": (("admin_ledger", "_after_create_commit"),)},
+    ("advance_transfer", "reverse_advance_transfer"): {
         "stamps": (("trust", "_stage_reverse"),
                    ("admin_ledger", "_stage_reverse_legs")),
         "commits": (("trust", "_after_reverse_commit"),

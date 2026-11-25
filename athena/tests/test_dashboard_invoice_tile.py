@@ -121,12 +121,12 @@ def client(fake):
 
 
 def _tile(client) -> str:
-    """The tile's markup: from its own <div> to the next tile's <a>."""
+    """The tile's markup: from its own <div> to the next tile's <div>."""
     response = client.get("/")
     assert response.status_code == 200
     page = response.get_data(as_text=True)
     start = page.rindex("<div", 0, page.index("Factures impayées"))
-    end = page.rindex("<a", start, page.index("Sommes en fidéicommis"))
+    end = page.rindex("<div", start, page.index("Opérations &amp; Fidéicommis"))
     return page[start:end]
 
 
@@ -221,7 +221,7 @@ def test_a_failed_sum_keeps_the_tile_and_its_links(client, monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict", _boom)
+    monkeypatch.setattr(invoice_model, "get_dashboard_invoice_pulse_strict", _boom)
     tile = _tile(client)
     links = _links(tile)
     assert [parse_qs(urlsplit(h).query)["status"] for h, _ in links] == [

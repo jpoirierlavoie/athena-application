@@ -157,6 +157,9 @@ def create_app() -> Flask:
     # sous aucun préfixe exempté d'App Check — contrairement à /auth/.
     app.register_blueprint(settings_bp)
 
+    from routes.calendrier_partage import calendrier_partage_bp
+    app.register_blueprint(calendrier_partage_bp)
+
     # ── DAV blueprints (CardDAV, CalDAV, RFC-5545, per-dossier) ─────────
     from dav import dav_bp
     from dav.carddav import carddav_bp
@@ -229,6 +232,11 @@ def create_app() -> Flask:
     from routes.taches_factures import taches_factures_bp
     app.register_blueprint(taches_factures_bp)
     csrf.exempt(taches_factures_bp)
+
+    # ── Miroir OneDrive (2b) : one-way Athena -> OneDrive worker & cron ──
+    from routes.taches_onedrive import taches_onedrive_bp
+    app.register_blueprint(taches_onedrive_bp)
+    csrf.exempt(taches_onedrive_bp)
 
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
     from mcp import mcp_bp, register_mcp

@@ -310,6 +310,12 @@ class Config:
     COURRIER_ONEDRIVE_ROOT: str = (
         os.environ.get("COURRIER_ONEDRIVE_ROOT", "Dossiers").strip().strip("/")
     )
+    MIROIR_ONEDRIVE_ACTIF: bool = (
+        os.environ.get("MIROIR_ONEDRIVE_ACTIF", "false").lower() == "true"
+    )
+    MIROIR_ONEDRIVE_QUEUE: str = (
+        os.environ.get("MIROIR_ONEDRIVE_QUEUE", "portail").strip() or "portail"
+    )
 
     @classmethod
     def courrier_configured(cls) -> bool:

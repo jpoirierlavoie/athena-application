@@ -15,8 +15,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, dav_ids, db, provenance
 from models.record_ids import is_addressable_id
 from security import sanitize
-from tz import MTL, mtl_to_utc, to_mtl
-from utils import deadlines
+from tz import TORONTO, mtl_to_utc, to_mtl
+from utils import dav_classification, deadlines, ical_tz
 from utils.dav_text import remove_served_block
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -340,6 +340,9 @@ def _default_doc() -> dict:
         # d'une charge DAV, jamais émis dans un VEVENT.
         "serie_id": "",
         "serie_rule": None,
+        "classification": "",
+        "ical_sequence": 0,
+        "dav_valarms": [],
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -353,7 +356,11 @@ def _sanitize_data(data: dict) -> dict:
     """Sanitize all string values and list fields in *data*."""
     out: dict = {}
     for key, val in data.items():
-        if isinstance(val, str):
+        if key == "classification" and isinstance(val, str):
+            out[key] = dav_classification.normalize_classification_value(val)
+        elif key == "dav_valarms" and isinstance(val, (list, tuple)):
+            out[key] = ical_tz.normalize_valarm_list(val)
+        elif isinstance(val, str):
             out[key] = sanitize(val, max_length=2000)
         elif key == "attendee_emails" and isinstance(val, (list, tuple)):
             out[key] = [
@@ -413,6 +420,17 @@ def _validate(data: dict) -> list[str]:
     if st and st not in VALID_STATUSES:
         errors.append("Statut invalide.")
 
+    cls_err = dav_classification.validation_error(
+        data.get("classification"),
+        has_dossier=dav_classification.has_dossier_link(data),
+    )
+    if cls_err:
+        errors.append(cls_err)
+
+    seq = data.get("ical_sequence", 0)
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        errors.append("Séquence iCalendar invalide.")
+
     # End must be after start
     start = data.get("start_datetime")
     end = data.get("end_datetime")
@@ -470,10 +488,16 @@ def create_hearing(
     data = dict(data)
     data.pop("id", None)
     data.pop("vevent_uid", None)
+    data.pop("ical_sequence", None)
     if dav_id is not None and not dav_ids.valid_resource_id(dav_id):
         return None, [dav_ids.DAV_ID_INVALID]
 
     merged = {**_default_doc(), **_sanitize_data(data)}
+    if not merged.get("classification"):
+        merged["classification"] = dav_classification.default_classification(
+            has_dossier=dav_classification.has_dossier_link(merged)
+        )
+    merged["ical_sequence"] = 0
 
     # Auto-set end_datetime if not provided (start + 1 hour)
     if merged.get("start_datetime") and not merged.get("end_datetime"):
@@ -1004,6 +1028,7 @@ UPDATE_FIELDS = frozenset({
     "start_datetime", "end_datetime", "all_day",
     "location", "court", "judge", "notes",
     "reminder_minutes", "status", "modalite", "conference_uri",
+    "classification", "dav_valarms",
 })
 # SERVER-OWNED — set only by the machine paths that own them, through the
 # explicit ``server_fields=`` keyword: the Bookings sync and Réception (the
@@ -1206,6 +1231,23 @@ def update_hearing(
     _renormalize_slot(existing, data, merged)
     merged["id"] = hearing_id
     merged["dav_href"] = dav_href_for(merged.get("dossier_id", ""), hearing_id)
+    if (
+        dav_classification.has_dossier_link(merged)
+        and "classification" not in data
+        and merged.get("classification") == dav_classification.CLASS_PUBLIC
+    ):
+        merged["classification"] = dav_classification.CLASS_CONFIDENTIAL
+    if not merged.get("classification"):
+        merged["classification"] = dav_classification.default_classification(
+            has_dossier=dav_classification.has_dossier_link(merged)
+        )
+    if (
+        "dav_valarms" not in data
+        and "reminder_minutes" in data
+        and data.get("reminder_minutes") != existing.get("reminder_minutes")
+    ):
+        merged["dav_valarms"] = []
+    merged["ical_sequence"] = max(0, int(existing.get("ical_sequence") or 0)) + 1
 
     errors = _validate(merged)
     if errors:
@@ -1421,9 +1463,14 @@ def create_hearing_series(
     # would make N batch.set() on THE SAME reference: Firestore keeps the
     # last one, silently, and 59 occurrences out of 60 vanish behind a
     # success return. Same for the server-owned fields.
-    for cle in ("id", "vevent_uid", "dav_href", "serie_id", "serie_rule"):
+    for cle in ("id", "vevent_uid", "dav_href", "serie_id", "serie_rule", "ical_sequence"):
         merged.pop(cle, None)
     merged = {**_default_doc(), **merged}
+    if not merged.get("classification"):
+        merged["classification"] = dav_classification.default_classification(
+            has_dossier=dav_classification.has_dossier_link(merged)
+        )
+    merged["ical_sequence"] = 0
 
     errors = _validate(merged)
     if errors:
@@ -1799,9 +1846,10 @@ def hearing_to_vevent(hearing: dict) -> str:
     event.add("uid", hearing.get("vevent_uid", ""))
     event.add("summary", hearing.get("title", ""))
 
-    # DTSTART / DTEND — emit in America/Montreal so CalDAV clients
-    # display the correct local time and include a VTIMEZONE component.
-    mtl = MTL  # the one tz authority (tz.py)
+    # DTSTART / DTEND — emit in America/Toronto with standard VTIMEZONE on
+    # timed events so CalDAV clients display exact local wall time without
+    # falling back to UTC Z. All-day events stay VALUE=DATE.
+    toronto = TORONTO
     start = hearing.get("start_datetime")
     end = hearing.get("end_datetime")
     if hearing.get("all_day"):
@@ -1824,13 +1872,19 @@ def hearing_to_vevent(hearing: dict) -> str:
             )
             event.add("dtend", fin)
     else:
+        if start or end:
+            cal.add_component(ical_tz.build_america_toronto_vtimezone())
         if start:
             if start.tzinfo is None or start.tzinfo == timezone.utc:
-                start = start.replace(tzinfo=timezone.utc).astimezone(mtl)
+                start = start.replace(tzinfo=timezone.utc).astimezone(toronto)
+            else:
+                start = start.astimezone(toronto)
             event.add("dtstart", start)
         if end:
             if end.tzinfo is None or end.tzinfo == timezone.utc:
-                end = end.replace(tzinfo=timezone.utc).astimezone(mtl)
+                end = end.replace(tzinfo=timezone.utc).astimezone(toronto)
+            else:
+                end = end.astimezone(toronto)
             event.add("dtend", end)
 
     # LOCATION
@@ -1873,14 +1927,23 @@ def hearing_to_vevent(hearing: dict) -> str:
         label = HEARING_TYPE_LABELS.get(hearing["hearing_type"], hearing["hearing_type"])
         event.add("categories", [label])
 
-    # VALARM — reminder
-    reminder_min = hearing.get("reminder_minutes", 1440)
-    if reminder_min and reminder_min > 0:
-        alarm = icalendar.Alarm()
-        alarm.add("action", "DISPLAY")
-        alarm.add("description", hearing.get("title", "Audience"))
-        alarm.add("trigger", timedelta(minutes=-reminder_min))
-        event.add_component(alarm)
+    # VALARM — preserve client-supplied VALARMs when stored, else default
+    stored_valarms = hearing.get("dav_valarms") or []
+    added_alarms = 0
+    if isinstance(stored_valarms, list):
+        for raw_alarm in stored_valarms:
+            parsed_alarm = ical_tz.parse_valarm_text(raw_alarm)
+            if parsed_alarm is not None:
+                event.add_component(parsed_alarm)
+                added_alarms += 1
+    if not added_alarms:
+        reminder_min = hearing.get("reminder_minutes", 1440)
+        if reminder_min and reminder_min > 0:
+            alarm = icalendar.Alarm()
+            alarm.add("action", "DISPLAY")
+            alarm.add("description", hearing.get("title", "Audience"))
+            alarm.add("trigger", timedelta(minutes=-reminder_min))
+            event.add_component(alarm)
 
     # CREATED + DTSTAMP as UTC date-times. DTSTAMP is MANDATORY per RFC 5545
     # §3.6.1 and was missing entirely; the Android calendar provider tolerates
@@ -1899,10 +1962,11 @@ def hearing_to_vevent(hearing: dict) -> str:
         event.add("dtstamp", _to_utc(stamp))
 
     # LAST-MODIFIED
-    if updated:
-        event.add("last-modified", updated)
+    if updated and hasattr(updated, "hour"):
+        event.add("last-modified", _to_utc(updated))
 
-    event.add("sequence", 0)
+    event.add("class", dav_classification.effective_classification(hearing))
+    event.add("sequence", max(0, int(hearing.get("ical_sequence") or 0)))
 
     # Custom X- properties for round-trip fidelity
     if hearing.get("dossier_id"):
@@ -2041,14 +2105,30 @@ def vevent_to_hearing(ical_str: str) -> dict:
             if is_safe_conference_uri(uri):
                 data["conference_uri"] = uri
 
-        # VALARM → reminder_minutes
+        cls_prop = component.get("class")
+        if cls_prop:
+            cls_norm = dav_classification.normalize_classification_value(str(cls_prop))
+            if cls_norm in dav_classification.VALID_CLASSIFICATIONS:
+                data["classification"] = cls_norm
+
+        # VALARM → preserve raw VALARMs and derive primary reminder_minutes
+        alarms: list[str] = []
+        primary_reminder: Optional[int] = None
         for sub in component.subcomponents:
             if sub.name == "VALARM":
-                trigger = sub.get("trigger")
-                if trigger and hasattr(trigger, "dt"):
-                    td = trigger.dt
-                    if isinstance(td, timedelta):
-                        data["reminder_minutes"] = abs(int(td.total_seconds() / 60))
+                ser = ical_tz.serialize_valarm(sub)
+                if ser:
+                    alarms.append(ser)
+                if primary_reminder is None:
+                    trigger = sub.get("trigger")
+                    if trigger and hasattr(trigger, "dt"):
+                        td = trigger.dt
+                        if isinstance(td, timedelta):
+                            primary_reminder = abs(int(td.total_seconds() / 60))
+        if alarms:
+            data["dav_valarms"] = alarms
+            if primary_reminder is not None:
+                data["reminder_minutes"] = primary_reminder
 
         break  # Only process first VEVENT
 

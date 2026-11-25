@@ -59,6 +59,7 @@ from models.doc_template import (
     SPECIAL_KINDS,
     VALID_CATEGORIES,
     VALID_KINDS,
+    VALID_LANGS,
     TemplateReadError,
     clear_active_template,
     create_template,
@@ -68,12 +69,15 @@ from models.doc_template import (
     get_template,
     get_template_bytes,
     get_version_signed_url,
+    has_en,
     is_active,
     is_modele,
     list_templates,
     list_versions,
     restore_template_version,
     set_active_template,
+    template_placeholders_for,
+    template_version_for,
     update_template,
 )
 from models.dossier import get_dossier
@@ -127,6 +131,7 @@ def _champs_error(message: str) -> str:
 FLOW_SOURCES_FR = {
     "note_honoraires": "la facture",
     "note_credit": "la radiation et sa facture",
+    "avis_interets": "l'avis d'intérêts et sa facture",
     "note": "la note",
 }
 
@@ -284,6 +289,21 @@ def template_new() -> str:
     return render_template("gabarits/form.html", **ctx)
 
 
+def _read_lang(raw: object) -> str | None:
+    val = str(raw or "fr").strip().lower() or "fr"
+    return val if val in VALID_LANGS else None
+
+
+def _file_with_size(field_name: str):
+    f = request.files.get(field_name)
+    if not f or not f.filename:
+        return None, "", 0
+    f.seek(0, 2)
+    size = f.tell()
+    f.seek(0)
+    return f, f.filename, size
+
+
 @doc_templates_bp.route("/", methods=["POST"])
 @login_required
 def template_create() -> Response | str:
@@ -293,29 +313,34 @@ def template_create() -> Response | str:
         "category": request.form.get("category", "autre").strip(),
         "kind": _kind_from_form(request.form),
     }
-    file = request.files.get("file")
-    if not file or not file.filename:
+    file, filename, file_size = _file_with_size("file")
+    if file is None:
         ctx = _template_context()
         ctx.update(
             template=metadata, errors=["Veuillez sélectionner un fichier .docx."]
         )
         return render_template("gabarits/form.html", **ctx)
 
-    file.seek(0, 2)
-    file_size = file.tell()
-    file.seek(0)
-
+    en_file, en_filename, en_file_size = _file_with_size("en_file")
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
         template, errors = None, [storage_identity.public_message(exc)]
     else:
+        create_kw = {}
+        if en_file is not None:
+            create_kw.update(
+                en_file_stream=en_file,
+                en_filename=en_filename,
+                en_file_size=en_file_size,
+            )
         template, errors = create_template(
             file_stream=file,
-            filename=file.filename,
+            filename=filename,
             file_size=file_size,
             metadata=metadata,
             user_id=user_id,
+            **create_kw,
         )
     if errors:
         ctx = _template_context()
@@ -358,6 +383,17 @@ def _designation_context(template: dict) -> dict:
     return ctx
 
 
+def _classify_inventory(placeholders: list[str], kind: str) -> dict:
+    classification = classify_placeholders(placeholders)
+    flow = {n for n in classification.passthrough if is_flow_field(n, kind)}
+    return {
+        "auto": [n for n in placeholders if n in classification.auto],
+        "manual": classification.manual,
+        "flow": [n for n in classification.passthrough if n in flow],
+        "passthrough": [n for n in classification.passthrough if n not in flow],
+    }
+
+
 @doc_templates_bp.route("/<template_id>")
 @login_required
 def template_detail(template_id: str) -> Response | str:
@@ -366,24 +402,31 @@ def template_detail(template_id: str) -> Response | str:
         return redirect(url_for("doc_templates.template_list"))
     # Re-classify for display so the inventory is correct even for templates
     # uploaded before this taxonomy (stored *_fields lists may be stale).
-    placeholders = template.get("placeholders", [])
-    classification = classify_placeholders(placeholders)
-    # A special kind's own fields (facture.*, nc.*, note.* — lot 3d): the
-    # classifier files them under passthrough, yet the kind's flow fills
-    # them. Named apart, never « à compléter dans Word ».
     kind = template.get("kind") or "gabarit"
-    flow = {n for n in classification.passthrough if is_flow_field(n, kind)}
+    inv_fr = _classify_inventory(template.get("placeholders", []), kind)
+    en_present = has_en(template)
+    inv_en = (
+        _classify_inventory(template.get("en_placeholders", []), kind)
+        if en_present
+        else {"auto": [], "manual": [], "flow": [], "passthrough": []}
+    )
     ctx = _template_context()
     ctx.update(
         template=template,
-        auto_fields=[n for n in placeholders if n in classification.auto],
-        manual_fields=classification.manual,
-        flow_fields=[n for n in classification.passthrough if n in flow],
+        has_en=en_present,
+        auto_fields=inv_fr["auto"],
+        manual_fields=inv_fr["manual"],
+        flow_fields=inv_fr["flow"],
         flow_source=FLOW_SOURCES_FR.get(kind, ""),
-        passthrough_fields=[n for n in classification.passthrough
-                            if n not in flow],
+        passthrough_fields=inv_fr["passthrough"],
+        en_auto_fields=inv_en["auto"],
+        en_manual_fields=inv_en["manual"],
+        en_flow_fields=inv_en["flow"],
+        en_passthrough_fields=inv_en["passthrough"],
         versions=list_versions(template_id),
+        en_versions=list_versions(template_id, lang="en") if en_present else [],
         current_version=int(template.get("version") or 1),
+        en_current_version=int(template.get("en_version") or 0),
         erreur=sanitize(request.args.get("erreur", ""), max_length=300),
         message=sanitize(request.args.get("message", ""), max_length=300),
         **_designation_context(template),
@@ -415,21 +458,23 @@ def template_update(template_id: str) -> Response | str:
         "category": request.form.get("category", "autre").strip(),
         "kind": _kind_from_form(request.form),
     }
-    file = request.files.get("file")
-    file_stream = None
-    filename = None
-    file_size = None
-    if file and file.filename:
-        file.seek(0, 2)
-        file_size = file.tell()
-        file.seek(0)
-        file_stream = file
-        filename = file.filename
+    file_stream, filename, file_size = _file_with_size("file")
+    en_stream, en_filename, en_file_size = _file_with_size("en_file")
+    if file_stream is None:
+        filename = None
+        file_size = None
 
     # The version the form was rendered from (plan rule 11, D9): a save
     # over a template another writer changed since is refused, never a
     # silent overwrite. Absent (a page older than the field) → no check.
     submitted = edit_conflict.submitted_etag()
+    update_kw = {}
+    if en_stream is not None:
+        update_kw.update(
+            en_file_stream=en_stream,
+            en_filename=en_filename,
+            en_file_size=en_file_size,
+        )
     template, errors, changed = update_template(
         template_id,
         data,
@@ -437,6 +482,7 @@ def template_update(template_id: str) -> Response | str:
         filename=filename,
         file_size=file_size,
         expected_etag=submitted,
+        **update_kw,
     )
     if errors:
         errors, conflict, etag = edit_conflict.resolve_refusal(
@@ -448,7 +494,7 @@ def template_update(template_id: str) -> Response | str:
             # A browser can never re-fill a file input: say so, rather than
             # let « conservés ci-dessous » cover a file that is not.
             note=("Le fichier choisi n'a pas été conservé : sélectionnez-le "
-                  "de nouveau." if file_stream is not None else ""),
+                  "de nouveau." if (file_stream is not None or en_stream is not None) else ""),
         )
         if conflict:
             log_template_event("template_edit_conflict", template_id=template_id)
@@ -460,16 +506,19 @@ def template_update(template_id: str) -> Response | str:
 
     version_before = int(existing.get("version") or 1)
     version_after = int(template.get("version") or 1)
+    en_before = int(existing.get("en_version") or 0)
+    en_after = int(template.get("en_version") or 0)
     file_replaced = file_stream is not None and version_after != version_before
+    en_replaced = en_stream is not None and en_after != en_before
     if changed:
         log_template_event(
             "template_updated",
             template_id=template_id,
-            file_replaced=file_replaced,
+            file_replaced=file_replaced or en_replaced,
             version=version_after,
         )
     params = {}
-    if file_stream is not None and not file_replaced:
+    if (file_stream is not None and not file_replaced) or (en_stream is not None and not en_replaced):
         # The same bytes as the file in force: no new version (lot 2A, T3).
         # Said, so the lawyer does not look for a version that was not made.
         params["message"] = (
@@ -517,7 +566,10 @@ _DOWNLOAD_FAILED = (
 @doc_templates_bp.route("/<template_id>/download")
 @login_required
 def template_download(template_id: str) -> Response | str:
-    url = get_signed_url(template_id)
+    lang = _read_lang(request.args.get("lang"))
+    if lang is None:
+        return _detail_redirect(template_id, erreur="Langue invalide.")
+    url = get_signed_url(template_id, **({"lang": "en"} if lang == "en" else {}))
     if not url:
         # Said on the page (T3 review) — it used to bounce back silently.
         return _detail_redirect(template_id, erreur=_DOWNLOAD_FAILED)
@@ -610,9 +662,13 @@ def template_deactivate(template_id: str) -> Response:
 def template_version_restore(template_id: str, version: int) -> Response:
     """Rétablit une version antérieure du fichier — comme une NOUVELLE
     version : l'historique ne fait que croître, rien n'est réécrit (D11)."""
+    lang = _read_lang(request.form.get("lang") or request.args.get("lang"))
+    if lang is None:
+        return _detail_redirect(template_id, erreur="Langue invalide.")
     expected = edit_conflict.submitted_etag()
+    restore_kw = {"lang": "en"} if lang == "en" else {}
     template, errors, changed = restore_template_version(
-        template_id, version, par=_signer(), expected_etag=expected
+        template_id, version, par=_signer(), expected_etag=expected, **restore_kw
     )
     if errors:
         if concurrency.is_stale(errors):
@@ -623,13 +679,14 @@ def template_version_restore(template_id: str, version: int) -> Response:
             f"La version {version} est identique au fichier en vigueur : "
             "rien n'a été rétabli."
         ))
-    new_version = int(template.get("version") or 1)
+    new_version = template_version_for(template, lang)
     log_template_event(
         "template_version_restored", template_id=template_id,
         restored_from=version, version=new_version,
     )
+    label_lang = " (EN)" if lang == "en" else ""
     return _detail_redirect(template_id, message=(
-        f"La version {version} a été rétablie : elle est maintenant la "
+        f"La version {version}{label_lang} a été rétablie : elle est maintenant la "
         f"version {new_version} du gabarit."
     ))
 
@@ -637,7 +694,12 @@ def template_version_restore(template_id: str, version: int) -> Response:
 @doc_templates_bp.route("/<template_id>/versions/<int:version>/download")
 @login_required
 def template_version_download(template_id: str, version: int) -> Response:
-    url = get_version_signed_url(template_id, version)
+    lang = _read_lang(request.args.get("lang"))
+    if lang is None:
+        return _detail_redirect(template_id, erreur="Langue invalide.")
+    url = get_version_signed_url(
+        template_id, version, **({"lang": "en"} if lang == "en" else {})
+    )
     if not url:
         return _detail_redirect(template_id, erreur=_DOWNLOAD_FAILED)
     return redirect(url)
@@ -733,7 +795,9 @@ def _arg(name: str) -> str:
     )
 
 
-def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
+def _fields_context(
+    template: dict, destinataire_prefill: str = "", *, lang: str | None = None
+) -> dict:
     """Build the field-form context: slots, resolved values, defaults.
 
     The popup RENDER resolves its slots LENIENTLY (``services.gabarits``):
@@ -748,10 +812,24 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         _arg("destinataire_id") or destinataire_prefill,
         lenient=True,
     )
-    resolved = gabarits.resolve_auto_values(template, slots)
-    classification = classify_placeholders(template.get("placeholders", []))
+    en_available = has_en(template)
+    raw_lang = lang if lang is not None else _arg("lang")
+    if raw_lang:
+        chosen_lang = raw_lang if raw_lang in VALID_LANGS else "fr"
+    elif en_available and (slots.client or {}).get("language") == "en":
+        chosen_lang = "en"
+    else:
+        chosen_lang = "fr"
+    if chosen_lang == "en" and not en_available:
+        chosen_lang = "fr"
+    lang_kw = {"lang": "en"} if chosen_lang == "en" else {}
+    resolved = gabarits.resolve_auto_values(template, slots, **lang_kw)
+    placeholders = template_placeholders_for(template, chosen_lang)
+    classification = classify_placeholders(placeholders)
     return {
         "template": template,
+        "has_en": en_available,
+        "lang": chosen_lang,
         "dossier": slots.dossier,
         "dossier_id": slots.dossier_id,
         "clients": slots.clients,
@@ -769,7 +847,7 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         # Only auto + manual fields become form inputs; passthrough
         # placeholders (blocks, civilité, salutations, unknowns) are left in
         # the .docx for the user to complete in Word, surfaced as a note.
-        "fields": gabarits.form_fields(template, resolved),
+        "fields": gabarits.form_fields(template, resolved, **lang_kw),
         "passthrough_fields": classification.passthrough,
         "generated": None,
     }
@@ -789,6 +867,22 @@ def generate_modal() -> str:
     if is_modele(template):
         refusal, template = MODELE_NOT_GENERATED, None
     template_fixed = request.args.get("fixed", "") == "1" and template is not None
+
+    req_lang = _read_lang(request.args.get("lang"))
+    if req_lang is None:
+        refusal = "Langue demandée invalide."
+    elif (
+        template
+        and req_lang == "en"
+        and not has_en(template)
+        and request.args.get("switch_template") == "1"
+        and not template_fixed
+    ):
+        # Switching from an EN template to an FR-only template via the modal
+        # dropdown drops back to FR instead of trapping the user in a refusal.
+        req_lang = "fr"
+    elif template and req_lang == "en" and not has_en(template):
+        refusal = "Ce gabarit n'a pas de version anglaise."
 
     # Prefill from the entry points.
     partie_id = request.args.get("partie_id", "").strip()
@@ -813,10 +907,15 @@ def generate_modal() -> str:
         "slots_required": [],
         "fields": None,
         "refusal": refusal,
+        "lang": req_lang or "fr",
+        "has_en": has_en(template),
     }
-    if template:
+    if template and not refusal:
         # A partie prefill lands in the destinataire slot (spec §9).
-        ctx.update(_fields_context(template, destinataire_prefill=partie_id))
+        explicit_lang = req_lang if request.args.get("lang") else None
+        ctx.update(_fields_context(
+            template, destinataire_prefill=partie_id, lang=explicit_lang
+        ))
     return render_template("gabarits/_generate_modal.html", **ctx)
 
 
@@ -829,7 +928,13 @@ def generate_fields() -> str:
         return _champs_error("Gabarit introuvable.")
     if is_modele(template):
         return _champs_error(MODELE_NOT_GENERATED)
-    ctx = _fields_context(template)
+    raw_lang = _arg("lang")
+    req_lang = _read_lang(raw_lang)
+    if req_lang is None:
+        return _champs_error("Langue demandée invalide.")
+    if req_lang == "en" and not has_en(template):
+        return _champs_error("Ce gabarit n'a pas de version anglaise.")
+    ctx = _fields_context(template, lang=req_lang if raw_lang else None)
     return render_template("gabarits/_generate_fields.html", **ctx)
 
 
@@ -871,6 +976,14 @@ def generate() -> Response | str:
     if is_modele(template):
         return _generation_refused(template_id, gabarits.GenerationRefused(
             "kind_refused", MODELE_NOT_GENERATED))
+    lang = _read_lang(request.form.get("lang"))
+    if lang is None:
+        return _generation_refused(template_id, gabarits.GenerationRefused(
+            "invalid_lang", "Langue demandée invalide."))
+    if lang == "en" and not has_en(template):
+        return _generation_refused(template_id, gabarits.GenerationRefused(
+            "no_en_version", "Ce gabarit n'a pas de version anglaise."))
+    lang_kw = {"lang": "en"} if lang == "en" else {}
 
     dossier_id = request.form.get("dossier_id", "").strip()
     try:
@@ -888,19 +1001,19 @@ def generate() -> Response | str:
         # The server's own auto values set each auto field's real ceiling;
         # the values FILLED are still the submitted ones — the lawyer may
         # have edited a prefilled value in the popup.
-        resolved = gabarits.resolve_auto_values(template, slots)
+        resolved = gabarits.resolve_auto_values(template, slots, **lang_kw)
         submitted = {
             name: request.form.get(f"{gabarits.FIELD_PREFIX}{name}", "")
-            for name in template.get("placeholders", [])
+            for name in template_placeholders_for(template, lang)
         }
         values, missing = gabarits.values_from_submission(
-            template, submitted, resolved=resolved)
+            template, submitted, resolved=resolved, **lang_kw)
     except gabarits.GenerationRefused as exc:
         return _generation_refused(template_id, exc)
     dossier = slots.dossier
     add_attributes(template_id=template_id, field_count=len(values))
 
-    docx_bytes = get_template_bytes(template_id)
+    docx_bytes = get_template_bytes(template_id, **lang_kw)
     if docx_bytes is None:
         return _generation_refused(template_id, gabarits.GenerationRefused(
             "template_file_unavailable", gabarits.TEMPLATE_FILE_UNAVAILABLE))
@@ -911,7 +1024,7 @@ def generate() -> Response | str:
         return _generation_refused(template_id, exc)
 
     today = today_mtl()
-    display, out_name = gabarits.output_names(template, dossier, today)
+    _display, out_name = gabarits.output_names(template, dossier, today, **lang_kw)
 
     if dossier:
         try:
@@ -923,7 +1036,7 @@ def generate() -> Response | str:
                 raise gabarits.GenerationRefused("save_failed", storage_identity.public_message(exc)) from exc
             doc = gabarits.save_into_projets(
                 template=template, dossier=dossier, filled=filled,
-                uid=user_id, today=today,
+                uid=user_id, today=today, **lang_kw,
             )
         except gabarits.GenerationRefused as exc:
             return _generation_refused(template_id, exc,

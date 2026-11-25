@@ -40,9 +40,10 @@ from utils.template_fields import (
     CATALOG,
     classify_placeholders,
     fallback_value,
+    manual_default,
     manual_options,
-    manual_spec,
     manual_value,
+    normalize_lang,
     resolve_values,
 )
 
@@ -334,12 +335,18 @@ def require_parties_read(slots: SlotResolution) -> None:
 # ── 2. Auto values ───────────────────────────────────────────────────────
 
 
+def _placeholders_for(template: dict, lang: str = "fr") -> list[str]:
+    key = "en_placeholders" if normalize_lang(lang) == "en" else "placeholders"
+    return [p for p in (template.get(key) or []) if isinstance(p, str)]
+
+
 def resolve_auto_values(
     template: dict,
     slots: SlotResolution,
     *,
     firm: Optional[dict] = None,
     today: Optional[date] = None,
+    lang: str = "fr",
 ) -> dict[str, str]:
     """The auto fields of *template* resolved server-side on *slots*.
 
@@ -347,8 +354,10 @@ def resolve_auto_values(
     unresolved). Pure over what *slots* already loaded, plus the firm
     profile — one keyed read of ``settings/cabinet``, fail-open.
     """
+    norm_lang = normalize_lang(lang)
+    kw = {"lang": "en"} if norm_lang == "en" else {}
     return resolve_values(
-        template.get("placeholders", []),
+        _placeholders_for(template, norm_lang),
         dossier=slots.dossier,
         client=slots.client,
         adverse=slots.adverse,
@@ -356,6 +365,7 @@ def resolve_auto_values(
         firm=firm if firm is not None else cabinet_dict(),
         today=today or today_mtl(),
         parties=slots.parties,
+        **kw,
     )
 
 
@@ -402,9 +412,9 @@ class Inventory:
     slots_required: tuple = ()
 
 
-def _prompted(template: dict):
+def _prompted(template: dict, lang: str = "fr"):
     """(name, kind) for every placeholder, in document order."""
-    placeholders = template.get("placeholders", [])
+    placeholders = _placeholders_for(template, lang)
     # Re-classified on every call so the field set is always correct — even
     # for templates uploaded before this taxonomy (their stored *_fields
     # lists may be stale).
@@ -425,17 +435,19 @@ def field_inventory(
     slots: SlotResolution,
     *,
     resolved: Optional[Mapping[str, str]] = None,
+    lang: str = "fr",
 ) -> Inventory:
     """Every placeholder of *template* — its kind, whether the server
     resolves it on *slots*, its ceiling — and NO value (SPEC H.4 D5: the
     connector needs to know a field is the server's, not what the client's
     address is). *resolved* avoids a second resolution when the caller
     already holds one."""
+    norm_lang = normalize_lang(lang)
     if resolved is None:
-        resolved = resolve_auto_values(template, slots)
-    classification = classify_placeholders(template.get("placeholders", []))
+        resolved = resolve_auto_values(template, slots, lang=norm_lang)
+    classification = classify_placeholders(_placeholders_for(template, norm_lang))
     fields = []
-    for name, kind in _prompted(template):
+    for name, kind in _prompted(template, lang=norm_lang):
         if kind == "passthrough":
             fields.append(InventoryField(name, kind, False, 0))
             continue
@@ -448,29 +460,31 @@ def field_inventory(
                 slot=(CATALOG.get(canonical) or ("",))[0] or "",
             ))
             continue
-        spec = manual_spec(name) or {}
         fields.append(InventoryField(
             name, kind, False, field_ceiling(kind, multiline=False),
-            options=tuple(manual_options(name) or ()),
-            default=spec.get("default", "") or "",
+            options=tuple(manual_options(name, lang=norm_lang) or ()),
+            default=manual_default(name, lang=norm_lang),
         ))
     return Inventory(fields=tuple(fields),
                      slots_required=tuple(sorted(classification.slots_required)))
 
 
-def form_fields(template: dict, resolved: Mapping[str, str]) -> list[dict]:
+def form_fields(
+    template: dict, resolved: Mapping[str, str], *, lang: str = "fr"
+) -> list[dict]:
     """The popup's field list: one dict per AUTO or MANUAL placeholder, with
     the value to prefill; passthrough placeholders are not form fields."""
+    norm_lang = normalize_lang(lang)
     fields = []
-    for name, kind in _prompted(template):
+    for name, kind in _prompted(template, lang=norm_lang):
         if kind == "passthrough":
             continue
         value = resolved.get(name, "")
         options = None
         if kind == "manual":
-            options = manual_options(name)
+            options = manual_options(name, lang=norm_lang)
             if not value:
-                value = (manual_spec(name) or {}).get("default", "") or ""
+                value = manual_default(name, lang=norm_lang)
         multiline = _is_multiline(value)
         fields.append({
             "name": name, "kind": kind, "value": value,
@@ -484,8 +498,8 @@ def form_fields(template: dict, resolved: Mapping[str, str]) -> list[dict]:
     return fields
 
 
-def passthrough_fields(template: dict) -> list[str]:
-    return classify_placeholders(template.get("placeholders", [])).passthrough
+def passthrough_fields(template: dict, *, lang: str = "fr") -> list[str]:
+    return classify_placeholders(_placeholders_for(template, lang)).passthrough
 
 
 # ── 4. Submitted values ──────────────────────────────────────────────────
@@ -496,9 +510,10 @@ def values_from_submission(
     submitted: Mapping[str, str],
     *,
     resolved: Optional[Mapping[str, str]] = None,
+    lang: str = "fr",
 ) -> tuple[dict[str, str], int]:
     """One value per prompted placeholder from *submitted* (``{name: raw}``);
-    blanks become the visible French fallback strings (§6.7).
+    blanks become the visible fallback strings (§6.7).
 
     Passthrough placeholders (former blocks, civilité, salutations, unknown
     names) are omitted from the result, so :func:`fill_docx` leaves each
@@ -512,10 +527,11 @@ def values_from_submission(
     on the browser side, and a crafted or stale POST must not write an
     arbitrary mention into a letter). Returns ``(values, missing)``.
     """
+    norm_lang = normalize_lang(lang)
     resolved = resolved or {}
     values: dict[str, str] = {}
     missing = 0
-    for name, kind in _prompted(template):
+    for name, kind in _prompted(template, lang=norm_lang):
         if kind == "passthrough":
             continue  # leave {{name}} in the output for Word
         raw = submitted.get(name, "") or ""
@@ -532,19 +548,19 @@ def values_from_submission(
         if kind == "auto":
             value = raw.strip()
             if not value:
-                value = fallback_value(name, is_auto=True)
+                value = fallback_value(name, is_auto=True, lang=norm_lang)
                 missing += 1
         else:
-            options = manual_options(name)
+            options = manual_options(name, lang=norm_lang)
             if options and raw.strip() and raw.strip() not in {v for _, v in options}:
                 raise GenerationRefused("manual_option_invalid", (
                     f"La valeur du champ « {name} » ne figure pas dans la "
                     "liste proposée. Rouvrez la fenêtre et choisissez une "
                     "option."), field=name)
-            value = manual_value(name, raw)
+            value = manual_value(name, raw, lang=norm_lang)
             # Compare against the marker itself rather than sniffing its
             # prefix: a legitimate value could one day begin the same way.
-            if value == fallback_value(name, is_auto=False):
+            if value == fallback_value(name, is_auto=False, lang=norm_lang):
                 missing += 1
         values[name] = value
     return values, missing
@@ -688,6 +704,7 @@ def values_for_connector(
     *,
     blocs: list,
     manuels: list,
+    lang: str = "fr",
 ) -> ConnectorValues:
     """The fill of *template* on the server's *resolved* auto values plus
     the blocs and manual fields Claude supplied — or a refusal.
@@ -712,8 +729,8 @@ def values_for_connector(
     Markdown hygiene (autolinks, the chevrons ``bleach`` would strip) is the
     caller's, BEFORE this: it owns the normalization the note writes share.
     """
-    placeholders = [p for p in (template.get("placeholders") or [])
-                    if isinstance(p, str)]
+    norm_lang = normalize_lang(lang)
+    placeholders = _placeholders_for(template, lang=norm_lang)
     classification = classify_placeholders(placeholders)
     auto_names = set(classification.auto)
     manual_names = set(classification.manual)
@@ -805,7 +822,7 @@ def values_for_connector(
             if problem:
                 raise _refuse_text(problem, where, CHAMP_MANUEL_MAX_CHARS,
                                    field=name)
-        options = manual_options(name)
+        options = manual_options(name, lang=norm_lang)
         if options and raw.strip() and raw.strip() not in {v for _, v in options}:
             raise GenerationRefused("manual_option_invalid", (
                 f"La valeur du champ manuel « {name} » ne figure pas dans sa "
@@ -822,12 +839,12 @@ def values_for_connector(
             if value:
                 auto_resolved.append(name)
             else:
-                value = fallback_value(name, is_auto=True)
+                value = fallback_value(name, is_auto=True, lang=norm_lang)
                 auto_missing.append(name)
             values[name] = value
         elif name in manual_names:
-            value = manual_value(name, manual_supplied.get(name, ""))
-            if value == fallback_value(name, is_auto=False):
+            value = manual_value(name, manual_supplied.get(name, ""), lang=norm_lang)
+            if value == fallback_value(name, is_auto=False, lang=norm_lang):
                 manual_missing.append(name)
             values[name] = value
         elif name in supplied:

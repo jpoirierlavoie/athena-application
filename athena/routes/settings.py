@@ -46,7 +46,10 @@ from auth import login_required
 from config import Config
 from models.integrations import (
     changed_field_names as integrations_changed,
+    generate_shared_calendar_token,
     get_integrations_state,
+    get_shared_calendar_state,
+    revoke_shared_calendar_token,
     unmapped_keywords,
     update_integrations,
 )
@@ -119,6 +122,7 @@ _FORM_FIELDS: tuple[str, ...] = (
     "courriel",
     "gst_number",
     "qst_number",
+    "overdue_interest_rate",
 )
 
 
@@ -301,6 +305,7 @@ def _integrations_form(rec: dict) -> dict:
 
 def _integrations_context(rec: dict, provenance: str, **over) -> dict:
     from models.hearing import VALID_HEARING_TYPES_EXTRAJUDICIAIRE
+    token_hash, partage_cree_at, partage_prov = get_shared_calendar_state()
     ctx = {
         "onglet": "integrations",
         "form": _integrations_form(rec),
@@ -321,6 +326,11 @@ def _integrations_context(rec: dict, provenance: str, **over) -> dict:
             for name in KILL_SWITCHES
         ],
         "non_mappes": unmapped_keywords(rec),
+        "partage_actif": bool(token_hash) and partage_prov == "store",
+        "partage_cree_at": partage_cree_at,
+        "partage_lisible": partage_prov != "unreadable",
+        "partage_nouvelle_url": "",
+        "partage_revoque": False,
     }
     ctx.update(over)
     return ctx
@@ -339,9 +349,55 @@ def integrations() -> str:
     return render_template(
         "settings/integrations.html",
         **_integrations_context(
-            rec, provenance, enregistre=request.args.get("ok") == "1"
+            rec,
+            provenance,
+            enregistre=request.args.get("ok") == "1",
+            partage_revoque=request.args.get("ok_partage") == "revoque",
         ),
     )
+
+
+@settings_bp.route("/integrations/calendrier-partage/generer", methods=["POST"])
+@login_required
+def calendrier_partage_generer():
+    """Generate or rotate the token for the sanitized read-only .ics feed."""
+    token, _created_at, errors = generate_shared_calendar_token()
+    rec, provenance = get_integrations_state()
+    if errors or not token:
+        return render_template(
+            "settings/integrations.html",
+            **_integrations_context(rec, provenance, errors=errors),
+        )
+    log_settings_event("shared_calendar_token_rotated")
+    scheme = (
+        "https"
+        if (Config.ENV == "production" or request.headers.get("X-Forwarded-Proto") == "https")
+        else (request.scheme or "http")
+    )
+    feed_url = f"{scheme}://{request.host}/calendrier-partage/{token}.ics"
+    return render_template(
+        "settings/integrations.html",
+        **_integrations_context(
+            rec,
+            provenance,
+            partage_nouvelle_url=feed_url,
+        ),
+    )
+
+
+@settings_bp.route("/integrations/calendrier-partage/revoquer", methods=["POST"])
+@login_required
+def calendrier_partage_revoquer():
+    """Revoke the active shared .ics feed token (disables the endpoint)."""
+    ok, errors = revoke_shared_calendar_token()
+    if not ok:
+        rec, provenance = get_integrations_state()
+        return render_template(
+            "settings/integrations.html",
+            **_integrations_context(rec, provenance, errors=errors),
+        )
+    log_settings_event("shared_calendar_token_revoked")
+    return redirect(url_for("settings.integrations", ok_partage="revoque"))
 
 
 @settings_bp.route("/integrations/enregistrer", methods=["POST"])

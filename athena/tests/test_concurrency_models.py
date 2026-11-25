@@ -142,6 +142,15 @@ def _presumed_partie(db):
     return pid
 
 
+def _presumed_conflict_dossier(db):
+    """A dossier whose conflict_check Claude inscribed — presumed until « Confirmer »."""
+    did = _dossier(db)
+    _doc, errors = dossier_model.update_dossier(
+        did, {"conflict_check": "vérifié"}, kyc_source="mcp")
+    assert errors == [], errors
+    return did
+
+
 def _mandataire_ids(stored):
     return [e["id"] for e in stored.get("mandataires") or []]
 
@@ -230,6 +239,21 @@ def _presumed_document(db):
     return _document(db, category="correspondance", category_source="mcp")
 
 
+def _document_with_hearing(db):
+    db.seed("hearings/h1", {"id": "h1", "dossier_id": "d1", "title": "Audience"})
+    return _document(db)
+
+
+def _note_with_hearing(db):
+    db.seed("hearings/h1", {"id": "h1", "dossier_id": "", "title": "Consultation"})
+    return _note(db)
+
+
+def _task_with_hearing(db):
+    db.seed("hearings/h1", {"id": "h1", "dossier_id": "", "title": "Consultation"})
+    return _task(db)
+
+
 # (collection, factory, edit(id, **kw) -> (doc, errors), field, value)
 _CASES = {
     "update_partie": ("parties", _partie,
@@ -282,6 +306,11 @@ _CASES = {
                            lambda i, **kw: partie_model.confirm_kyc_status(
                                i, "identity_verified", par="juriste", **kw),
                            "identity_verified_confirmed_by", "juriste"),
+    "confirm_dossier_conflict_check": (
+        "dossiers", _presumed_conflict_dossier,
+        lambda i, **kw: dossier_model.confirm_dossier_conflict_check(
+            i, par="juriste", **kw),
+        "conflict_check_confirmed_by", "juriste"),
     "update_time_entry": ("timeentries", _time_entry,
                           lambda i, **kw: time_entry_model.update_time_entry(
                               i, {"description": "Révision"}, **kw),
@@ -346,6 +375,19 @@ _CASES = {
                        lambda i, **kw: document_model.record_analyse(
                            i, {"sous_nature": "CORR_CLIENT"}, **kw),
                        "category", "correspondance"),
+    # Lot B (1e): transactional partial link/unlink against calendar hearings.
+    "set_document_hearing": ("documents", _document_with_hearing,
+                             lambda i, **kw: document_model.set_document_hearing(
+                                 i, "h1", **kw)[:2],
+                             "hearing_id", "h1"),
+    "set_note_hearing": ("notes", _note_with_hearing,
+                         lambda i, **kw: note_model.set_note_hearing(
+                             i, "h1", **kw)[:2],
+                         "hearing_id", "h1"),
+    "set_task_hearing": ("tasks", _task_with_hearing,
+                         lambda i, **kw: task_model.set_task_hearing(
+                             i, "h1", **kw)[:2],
+                         "hearing_id", "h1"),
 }
 _ALL = pytest.mark.parametrize("case", sorted(_CASES), ids=sorted(_CASES))
 
@@ -365,6 +407,7 @@ _GETTERS = {
     "remove_partie_mandataire": (partie_model, "get_partie"),
     "update_kyc_status": (partie_model, "get_partie_strict"),
     "confirm_kyc_status": (partie_model, "get_partie_strict"),
+    "confirm_dossier_conflict_check": (dossier_model, "get_dossier_strict"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entry"),
@@ -379,6 +422,9 @@ _GETTERS = {
     "record_analyse": (document_model, "get_document"),
     "move_document": (document_model, "get_document"),
     "confirmer_categorie": (document_model, "get_document"),
+    "set_document_hearing": (document_model, "get_document_strict"),
+    "set_note_hearing": (note_model, "get_note_strict"),
+    "set_task_hearing": (task_model, "get_task_strict"),
 }
 
 # The mutators that read their record ONLY inside their transaction (lot 0b,
@@ -393,7 +439,8 @@ _READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
 # to take the plain legacy set() without an etag; move_document and
 # confirmer_categorie join with this lot.
 _DOCUMENT_PARTIAL = {"update_metadata", "update_analyse", "confirmer_analyse",
-                     "move_document", "confirmer_categorie", "record_analyse"}
+                     "move_document", "confirmer_categorie", "record_analyse",
+                     "set_document_hearing", "set_note_hearing", "set_task_hearing"}
 # Lot 3a (step 2): the two moves read only inside their transaction and
 # write a PARTIAL update() of the dossier link and its stamp.
 _MOVES = {"move_time_entry", "move_expense"}
@@ -414,7 +461,7 @@ _SELF_GUARDED = {"update_dossier_party", "remove_dossier_party",
 # Lot 4a (step 2, D7): a compliance confirmation says « I read THIS
 # version » — without an etag it is refused, nothing written. Its write is
 # a partial update() of the two confirmation keys and the stamp.
-_ETAG_REQUIRED = {"confirm_kyc_status"}
+_ETAG_REQUIRED = {"confirm_kyc_status", "confirm_dossier_conflict_check"}
 _LEGACY_WITHOUT_ETAG = sorted(
     set(_CASES) - _RACE_AT_COMMIT - _CONTENT_REVISED_WITHOUT_ETAG
     - _SELF_GUARDED - _ETAG_REQUIRED)
@@ -724,6 +771,12 @@ def test_without_an_etag_a_link_helper_refuses_a_write_after_its_read(
     assert db.commits == []
 
 
+_NEEDS_VERSION_MESSAGE = {
+    "confirm_kyc_status": partie_model.KYC_CONFIRM_NEEDS_VERSION,
+    "confirm_dossier_conflict_check": dossier_model.CONFLICT_CONFIRM_NEEDS_VERSION,
+}
+
+
 @pytest.mark.parametrize("case", sorted(_ETAG_REQUIRED),
                          ids=sorted(_ETAG_REQUIRED))
 def test_without_an_etag_a_confirmation_is_refused(db, case):
@@ -733,7 +786,7 @@ def test_without_an_etag_a_confirmation_is_refused(db, case):
     doc, errors = edit(row_id)
 
     assert doc is None
-    assert errors == [partie_model.KYC_CONFIRM_NEEDS_VERSION]
+    assert errors == [_NEEDS_VERSION_MESSAGE[case]]
     assert db.peek(path) == before and db.commits == []
 
 

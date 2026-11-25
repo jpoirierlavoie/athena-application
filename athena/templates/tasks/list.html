@@ -8,9 +8,9 @@
     <h1 class="text-xl font-semibold text-gray-900">Tâches</h1>
     <div class="hidden md:flex items-center gap-2">
       <a href="{{ url_for('tasks.task_new') }}"
-         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        {{ ms('add', 16) }}
-        Nouvelle tâche
+         aria-label="Nouvelle tâche" title="Nouvelle tâche"
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('add', 20) }}<span class="sr-only">Nouvelle tâche</span>
       </a>
       <div id="export-dropdown">
         {% set csv_url = url_for('tasks.export_csv_route', dossier=dossier_filter, status=status_filter, priority=priority_filter, category=category_filter) %}

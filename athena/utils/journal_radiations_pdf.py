@@ -26,11 +26,12 @@ gate's « no Helvetica » assertion fires.
 import io
 import logging
 from datetime import datetime
+from typing import Optional
 from xml.sax.saxutils import escape
 
 from flask import Response
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import LEGAL, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -61,6 +62,19 @@ GEOMETRY = {
     "receivables": (0.095, False),
     "state": (0.075, False),
 }
+INTEREST_GEOMETRY = {
+    "date": (0.075, False),
+    "interest_notice_number": (0.095, False),
+    "invoice_number": (0.080, False),
+    "client": (0.180, True),
+    "kind": (0.095, False),
+    "period": (0.145, False),
+    "principal": (0.075, False),
+    "rate": (0.055, False),
+    "receivables": (0.070, False),
+    "interest_revenue": (0.070, False),
+    "state": (0.060, False),
+}
 
 _FONT = _export_pdf.FONT
 _FONT_BOLD = _export_pdf.FONT_BOLD
@@ -79,9 +93,9 @@ def usable_width() -> float:
     return landscape(LEGAL)[0] - 2 * _SIDE_MARGIN
 
 
-def widths(columns) -> list[float]:
+def widths(columns, geometry=GEOMETRY) -> list[float]:
     """Each column's width, in *columns*' order."""
-    return [GEOMETRY[key][0] * usable_width() for key, _label, _side in columns]
+    return [geometry[key][0] * usable_width() for key, _label, _side in columns]
 
 
 def _fit(text: str, width: float) -> str:
@@ -98,14 +112,14 @@ def _fit(text: str, width: float) -> str:
 
 
 def _cell(row: dict, key: str, side: str) -> str:
-    if side:
+    if side or key == "principal":
         return format_cents_fr(int(row.get(key) or 0))
     return str(row.get(key) or "")
 
 
-def row_cells(row: dict, columns, col_widths: list[float]) -> list[str]:
+def row_cells(row: dict, columns, col_widths: list[float], geometry=GEOMETRY) -> list[str]:
     """Every cell of *row*, read by its column's KEY — never positional."""
-    return [_fit(_cell(row, key, side), width) if GEOMETRY[key][1]
+    return [_fit(_cell(row, key, side), width) if geometry[key][1]
             else _cell(row, key, side)
             for (key, _label, side), width in zip(columns, col_widths)]
 
@@ -148,33 +162,14 @@ def _page_furniture(canvas, doc, generated: str) -> None:
     canvas.restoreState()
 
 
-def build_write_off_journal_pdf(
-    rows: list[dict], *, columns, subtitle_lines: list[str],
-    generated_at: datetime, filename: str,
-) -> Response:
-    """Render the journal. *rows* carry text and cents, keyed by the keys of
-    *columns* (``models/financial_statements.JOURNAL_COLUMNS``), oldest
-    first; *generated_at* is the tz-aware UTC instant of the export,
-    printed in Montréal time."""
-    col_widths = widths(columns)
+def _build_section_table(rows: list[dict], columns, geometry) -> Table:
+    col_widths = widths(columns, geometry=geometry)
     lead = next(i for i, (_k, _l, side) in enumerate(columns) if side)
-
-    base = getSampleStyleSheet()
-    base["Normal"].fontName = _FONT
-    title_style = ParagraphStyle(
-        "RadiationsTitle", parent=base["Normal"], fontName=_FONT_BOLD,
-        fontSize=13, leading=16, alignment=TA_CENTER, textColor=_INK,
-    )
-    subtitle_style = ParagraphStyle(
-        "RadiationsSubtitle", parent=base["Normal"], fontSize=8, leading=11,
-        alignment=TA_CENTER, textColor=_MUTED,
-    )
-
     band = [""] * len(columns)
     for side, first, _last in band_spans(columns):
         band[first] = side
     data: list[list[str]] = [band, [label for _key, label, _side in columns]]
-    data += [row_cells(r, columns, col_widths) for r in rows]
+    data += [row_cells(r, columns, col_widths, geometry=geometry) for r in rows]
     if rows:
         data.append(totals_cells(rows, columns, col_widths))
 
@@ -189,7 +184,6 @@ def build_write_off_journal_pdf(
         ("LEFTPADDING", (0, 0), (-1, -1), _PAD),
         ("RIGHTPADDING", (0, 0), (-1, -1), _PAD),
         ("GRID", (0, 1), (-1, -1), 0.25, _RULE),
-        # The band and the headings
         ("FONTNAME", (0, 0), (-1, 1), _FONT_BOLD),
         ("BACKGROUND", (0, 1), (-1, 1), _BAND),
         ("ALIGN", (0, 0), (-1, 1), "CENTER"),
@@ -200,8 +194,8 @@ def build_write_off_journal_pdf(
             ("BACKGROUND", (first, 0), (last_col, 0), _BAND),
             ("BOX", (first, 0), (last_col, 0), 0.25, _RULE),
         ]
-    for idx, (_key, _label, side) in enumerate(columns):
-        if side:
+    for idx, (key, _label, side) in enumerate(columns):
+        if side or key == "principal":
             style_cmds.append(("ALIGN", (idx, 2), (idx, -1), "RIGHT"))
     if rows:
         style_cmds += [
@@ -210,15 +204,50 @@ def build_write_off_journal_pdf(
             ("SPAN", (0, last), (lead - 1, last)),
             ("ALIGN", (0, last), (0, last), "LEFT"),
         ]
-
     table = Table(data, colWidths=col_widths, repeatRows=2)
     table.setStyle(TableStyle(style_cmds))
+    return table
 
+
+def build_write_off_journal_pdf(
+    rows: list[dict], *, columns, subtitle_lines: list[str],
+    generated_at: datetime, filename: str,
+    interest_rows: Optional[list[dict]] = None,
+    interest_columns=None,
+) -> Response:
+    """Render the journal. *rows* carry text and cents, keyed by the keys of
+    *columns* (``models/financial_statements.JOURNAL_COLUMNS``), oldest
+    first; *generated_at* is the tz-aware UTC instant of the export,
+    printed in Montréal time."""
+    base = getSampleStyleSheet()
+    base["Normal"].fontName = _FONT
+    title_style = ParagraphStyle(
+        "RadiationsTitle", parent=base["Normal"], fontName=_FONT_BOLD,
+        fontSize=13, leading=16, alignment=TA_CENTER, textColor=_INK,
+    )
+    subtitle_style = ParagraphStyle(
+        "RadiationsSubtitle", parent=base["Normal"], fontSize=8, leading=11,
+        alignment=TA_CENTER, textColor=_MUTED,
+    )
+    section_style = ParagraphStyle(
+        "RadiationsSection", parent=base["Normal"], fontName=_FONT_BOLD,
+        fontSize=10, leading=13, alignment=TA_LEFT, textColor=_INK,
+    )
+
+    table = _build_section_table(rows, columns, GEOMETRY)
     story = [Paragraph(escape(TITLE), title_style), Spacer(1, 4)]
     story += [Paragraph(escape(line), subtitle_style) for line in subtitle_lines if line]
     story += [Spacer(1, 8), table]
     if not rows:
         story += [Spacer(1, 10), Paragraph(escape(EMPTY_SENTENCE), subtitle_style)]
+    if interest_rows and interest_columns:
+        ai_table = _build_section_table(interest_rows, interest_columns, INTEREST_GEOMETRY)
+        story += [
+            Spacer(1, 14),
+            Paragraph(escape("Avis d'intérêts de la période"), section_style),
+            Spacer(1, 6),
+            ai_table,
+        ]
 
     generated = ("Généré le " + to_mtl(generated_at).strftime("%Y-%m-%d %H:%M")
                  + " (heure de Montréal)")

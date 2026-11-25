@@ -24,6 +24,7 @@ JOBS = {
     "bookings": ("/taches/bookings/sync", 15, 5),
     "transcriptions": ("/taches/transcriptions/sync", 15, 7),
     "outlook": ("/taches/outlook/sync", 15, 10),
+    "onedrive": ("/taches/onedrive/sync", 15, 12),
 }
 
 #: Each job run ONCE a day, at the window's first hour: its URL. The

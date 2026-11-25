@@ -321,6 +321,29 @@ _WRITE_OFF_SHAPES = {
     "time-of-day": [{**_RAD, "date": _utc_event(5, 14)}],
 }
 
+_AVIS = {"id": "ai-1", "kind": "avis_interets", "date": _utc_event(10),
+         "period_start": _utc_event(1), "period_end": _utc_event(10),
+         "principal": 1000, "rate_bps": 1200, "days": 9,
+         "interest_notice_number": "2031-AI001", "amount": 30, "reason": "", "reverses_id": ""}
+_AVIS_CP = {"id": "aicp-1", "kind": "contre_passation", "date": _utc_event(11),
+            "amount": 30, "reason": "", "reverses_id": "ai-1"}
+
+_INTEREST_SHAPES = {
+    "absent": _ABSENT,
+    "empty": [],
+    "none": None,
+    "a-record": {"avis": 30},
+    "a-text": "avis",
+    "standing": [_AVIS],
+    "cancelled": [_AVIS, _AVIS_CP],
+    "text-amount": [{**_AVIS, "amount": "0,30"}],
+    "bool-rate": [{**_AVIS, "rate_bps": True}],
+    "unknown-kind": [{**_AVIS, "kind": "penalite"}],
+    "orphan-contre-passation": [_AVIS_CP],
+    "cancelled-twice": [_AVIS, _AVIS_CP, {**_AVIS_CP, "id": "aicp-2"}],
+    "bad-days": [{**_AVIS, "days": 99}],
+}
+
 
 def _first_unreadable(inv: dict) -> object:
     """The first field of balance_of's reading order whose prefix of the
@@ -343,7 +366,7 @@ def test_the_unreadable_field_is_exactly_what_balance_of_cannot_read():
     as []). Extended deliberately by lot 3a, never loosened: the pairs of
     stored values are the same, each now crossed with every shape."""
     assert invoice_model._BALANCE_FIELDS == ("amount_due", "amount_paid",
-                                             "write_offs")
+                                             "write_offs", "interest_charges")
     values = [_ABSENT, *_STORED_AMOUNTS]
     for due, paid in itertools.product(values, repeat=2):
         for shape in _WRITE_OFF_SHAPES.values():
@@ -359,6 +382,16 @@ def test_the_unreadable_field_is_exactly_what_balance_of_cannot_read():
                 assert invoice_model.unreadable_balance_field(inv) == first, inv
             else:
                 assert invoice_model.unreadable_balance_field(inv) is None, inv
+    for ishape in _INTEREST_SHAPES.values():
+        inv = {"amount_due": 1000, "amount_paid": 0}
+        if ishape is not _ABSENT:
+            inv["interest_charges"] = ishape
+        try:
+            invoice_model.balance_of(inv)
+        except Exception:
+            assert invoice_model.unreadable_balance_field(inv) == "interest_charges", inv
+        else:
+            assert invoice_model.unreadable_balance_field(inv) is None, inv
 
 
 # ══════════════════════════════════════════════════════════════════════

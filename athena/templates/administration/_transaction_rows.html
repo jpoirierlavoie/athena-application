@@ -1,19 +1,31 @@
+{% if is_all_accounts %}
+{% set dl = {'recette': 'Recette', 'déboursé': 'Déboursé'} %}
+{% else %}
 {% set dl = direction_labels_for(account.account_type) %}
+{% endif %}
+{% if read_error %}
+<div class="mb-3 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+  Les écritures d'un compte n'ont pas pu être lues. Réessayez dans un instant.
+</div>
+{% endif %}
 {% if truncated %}
 <div class="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
   Le registre a été tronqué : les écritures les plus récentes de la période n'y figurent pas — resserrez la période.
 </div>
 {% endif %}
 {% if not rows %}
+{% if not read_error %}
 <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
-  Aucune écriture pour ce compte{% if filters.date_from or filters.date_to %} dans cette période{% endif %}.
+  Aucune écriture pour {% if is_all_accounts %}ces comptes{% else %}ce compte{% endif %}{% if filters.date_from or filters.date_to %} dans cette période{% endif %}.
 </div>
+{% endif %}
 {% else %}
 <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
   <table class="min-w-full text-sm">
     <thead>
       <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
         <th class="px-3 py-2 font-medium">Date</th>
+        {% if is_all_accounts %}<th class="px-3 py-2 font-medium">Compte</th>{% endif %}
         <th class="px-3 py-2 font-medium">Fournisseur / Source</th>
         <th class="px-3 py-2 font-medium">Catégorie</th>
         <th class="px-3 py-2 font-medium">Type</th>
@@ -30,6 +42,7 @@
       {% for r in rows %}
       <tr class="hover:bg-gray-50">
         <td class="px-3 py-2 whitespace-nowrap"><a href="{{ url_for('admin_ledger.entry_detail', tx_id=r.id) }}" class="text-indigo-600 hover:underline">{{ r.date.strftime('%Y-%m-%d') if r.date else '' }}</a></td>
+        {% if is_all_accounts %}<td class="px-3 py-2 whitespace-nowrap text-gray-500">{{ r._account_name }}</td>{% endif %}
         <td class="px-3 py-2 text-gray-900">{{ r.counterparty }}</td>
         <td class="px-3 py-2 text-gray-700">{{ category_labels.get(r.category, '') if r.category else '' }}</td>
         <td class="px-3 py-2 text-gray-500">{{ kind_labels.get(r.kind, r.kind) }}</td>
@@ -62,7 +75,7 @@
   </table>
 </div>
 {% if not show_solde and not truncated %}
-<p class="mt-2 text-xs text-gray-400">La colonne « Solde » n'est affichée que sans filtre de type, de statut ou de catégorie — un solde courant sur un sous-ensemble serait un chiffre faux.</p>
+<p class="mt-2 text-xs text-gray-400">{% if is_all_accounts %}La colonne « Solde » n'est pas affichée en vue combinée — chaque compte possède son propre solde.{% else %}La colonne « Solde » n'est affichée que sans filtre de type, de statut ou de catégorie — un solde courant sur un sous-ensemble serait un chiffre faux.{% endif %}</p>
 {% endif %}
 {% if pagination %}
 {% include "components/pagination.html" %}
@@ -85,4 +98,16 @@
 <div id="admin-header" hx-swap-oob="true">
   {% include "administration/_header_cards.html" %}
 </div>
+{% if accounts %}
+{% set new_entry_account_id = account.id if (account and account.status == 'actif') else none %}
+<a id="admin-new-entry" href="{{ url_for('admin_ledger.entry_new', account_id=new_entry_account_id) }}" hx-swap-oob="true"
+   aria-label="Nouvelle écriture"
+   title="Nouvelle écriture"
+   class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+  {{ ms('add', 20) }}
+</a>
+<a id="admin-new-entry-fab" href="{{ url_for('admin_ledger.entry_new', account_id=new_entry_account_id) }}" hx-swap-oob="true" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
+  {{ ms('add', 24) }}
+</a>
+{% endif %}
 {% endif %}

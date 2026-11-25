@@ -45,7 +45,9 @@ so the rendering belongs in the one authority rather than at each reader.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from config import Config
@@ -83,6 +85,7 @@ _FIELDS: tuple[str, ...] = (
     "courriel",
     "gst_number",
     "qst_number",
+    "overdue_interest_rate",
 )
 
 _BLANK: dict = {key: "" for key in _FIELDS}
@@ -250,6 +253,65 @@ def get_cabinet_strict() -> dict:
     return _project(data)
 
 
+_RATE_RE = re.compile(r"^\d{1,3}(?:[.,]\d{1,2})?$")
+MAX_INTEREST_RATE_BPS = 10000
+
+
+def parse_interest_rate_bps(value) -> tuple[Optional[int], str]:
+    """Parse an annual overdue interest percentage into integer basis points.
+
+    Blank or zero returns ``(0, "")`` (unconfigured / cleared). Accepts up to
+    two decimals (e.g. ``12``, ``12,5``, ``12.25 %``), capped at 100 %.
+    """
+    if value is None or isinstance(value, bool):
+        return (0, "") if value is None else (
+            None, "Taux d'intérêt annuel invalide."
+        )
+    raw = str(value).strip()
+    if raw.endswith("%"):
+        raw = raw[:-1].strip()
+    if not raw:
+        return 0, ""
+    if not _RATE_RE.fullmatch(raw):
+        return (
+            None,
+            "Taux d'intérêt annuel invalide (ex. : 12 ou 12,5 % ; au plus deux décimales).",
+        )
+    try:
+        dec = Decimal(raw.replace(",", "."))
+    except (InvalidOperation, ValueError):
+        return None, "Taux d'intérêt annuel invalide."
+    bps = int((dec * Decimal("100")).to_integral_value())
+    if bps > MAX_INTEREST_RATE_BPS:
+        return None, "Le taux d'intérêt annuel ne peut dépasser 100 %."
+    return bps, ""
+
+
+def format_interest_rate_bps(bps: int) -> str:
+    """Canonical editable percentage text for *bps* (``""`` when 0)."""
+    if bps <= 0:
+        return ""
+    if bps % 100 == 0:
+        return str(bps // 100)
+    text = f"{bps / 100:.2f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def interest_rate_bps_from(cab: Optional[dict]) -> int:
+    """Return the configured annual rate in basis points from a cabinet dict (0 if unset)."""
+    if not isinstance(cab, dict):
+        return 0
+    bps, err = parse_interest_rate_bps(cab.get("overdue_interest_rate"))
+    if err or bps is None:
+        return 0
+    return bps
+
+
+def cabinet_interest_rate_bps() -> int:
+    """Read the strict cabinet profile and return the configured annual rate in bps."""
+    return interest_rate_bps_from(get_cabinet_strict())
+
+
 def _normalize(data: dict) -> dict:
     """Normalize IN PLACE, every branch gated on key presence.
 
@@ -274,6 +336,10 @@ def _normalize(data: dict) -> dict:
             data[key] = normalize_phone(data[key]) or data[key]
     if "courriel" in data and (data.get("courriel") or "").strip():
         data["courriel"] = normalize_email(data["courriel"]) or data["courriel"]
+    if "overdue_interest_rate" in data:
+        bps, err = parse_interest_rate_bps(data["overdue_interest_rate"])
+        if not err and bps is not None:
+            data["overdue_interest_rate"] = format_interest_rate_bps(bps)
     return data
 
 
@@ -320,6 +386,10 @@ def _validate(data: dict) -> list[str]:
         country = (data.get("address_country") or "Canada").strip()
         if not normalize_postal_code(postal, country):
             errors.append("Code postal invalide.")
+    if (data.get("overdue_interest_rate") or "").strip():
+        _, rate_err = parse_interest_rate_bps(data.get("overdue_interest_rate"))
+        if rate_err:
+            errors.append(rate_err)
     return errors
 
 

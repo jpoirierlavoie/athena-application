@@ -1,11 +1,17 @@
-"""Case protocol Firestore CRUD — protocols and protocol steps."""
+"""Case protocol Firestore CRUD — protocols and protocol steps.
+
+Rule 6 exception (deterministic ID): ``ensure_ouverture_protocol`` writes a
+dossier's onboarding protocol at ``ouverture-{dossier_id}`` so concurrent
+dossier-creation paths and idempotent MCP retries never mint duplicate
+file-opening protocols.
+"""
 
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from utils import deadlines, phases
+from utils import deadlines, phases, recours
 from utils.deadlines import compute_deadline as _judicial_deadline
 
 from google.cloud import firestore
@@ -21,10 +27,95 @@ logger = logging.getLogger(__name__)
 COLLECTION = "protocols"
 STEPS_SUBCOLLECTION = "steps"
 
+# Parallel tracks: at most one active « instance » litigation protocol AND one
+# active « ouverture » file-opening checklist simultaneously per dossier.
+TRACK_INSTANCE = "instance"
+TRACK_OUVERTURE = "ouverture"
+VALID_TRACKS = (TRACK_INSTANCE, TRACK_OUVERTURE)
+
 # Valid enum values
-VALID_PROTOCOL_TYPES = ("cq_simplifié", "cs_ordinaire", "conventionnel")
-VALID_STATUSES = ("actif", "complété", "suspendu")
+VALID_PROTOCOL_TYPES = (
+    "cq_simplifié",
+    "cs_ordinaire",
+    "conventionnel",
+    "prejudiciaire",
+    "ouverture",
+)
+VALID_STATUSES = ("brouillon", "actif", "complété", "suspendu")
 VALID_STEP_STATUSES = ("à_venir", "en_cours", "complété", "en_retard")
+
+KEY_MILESTONE_LABELS = {
+    "reponse": "Jalon clé : Réponse",
+    "inscription": "Jalon clé : Mise en état / Inscription",
+}
+
+INSCRIPTION_VARIATIONS = {
+    "defaut": {
+        "key": "defaut",
+        "label": "Inscription par défaut (défaut de répondre ou de contester)",
+        "reference": "art. 175 C.p.c.",
+        "description": (
+            "Le défendeur n'a pas répondu dans les 15 jours (art. 145) ou "
+            "n'a pas contesté dans le délai imparti."
+        ),
+    },
+    "commune": {
+        "key": "commune",
+        "label": "Déclaration commune de mise en état",
+        "reference": "art. 174 al. 1 C.p.c.",
+        "description": (
+            "Déclaration conjointe des parties déposée dans le délai de "
+            "rigueur de 6 mois (art. 173 C.p.c.)."
+        ),
+    },
+    "unilaterale": {
+        "key": "unilaterale",
+        "label": (
+            "Déclaration unilatérale de mise en état "
+            "(+ 15 jours pour ajouts/retraits)"
+        ),
+        "reference": "art. 174 al. 2 C.p.c.",
+        "description": (
+            "Notifiée à l'autre partie, qui dispose de 15 jours pour déposer "
+            "ses ajouts ou retraits au dossier."
+        ),
+    },
+    "greffier": {
+        "key": "greffier",
+        "label": (
+            "Inscription par le greffier / sur ordre du tribunal (CQ simplifié)"
+        ),
+        "reference": "art. 535.13 C.p.c.",
+        "description": (
+            "Voie simplifiée de la Cour du Québec : mise en état par le "
+            "greffier ou sur ordre du tribunal à l'expiration des 6 mois."
+        ),
+    },
+}
+
+PRETRIAL_READINESS_HEADINGS: tuple[dict[str, str], ...] = (
+    {"key": "faits_admis", "title": "Faits admis", "notes": ""},
+    {
+        "key": "inventaire_pieces",
+        "title": "Inventaire des pièces communiquées",
+        "notes": "",
+    },
+    {
+        "key": "liste_temoins",
+        "title": "Liste des témoins et déclarations écrites",
+        "notes": "",
+    },
+    {
+        "key": "points_expertise",
+        "title": "Points à trancher par expertise",
+        "notes": "",
+    },
+    {
+        "key": "duree_moyens",
+        "title": "Durée estimée et moyens technologiques / interprète",
+        "notes": "",
+    },
+)
 
 # The « Prochaines » window: get_protocol_summary's `upcoming` counts open
 # steps due within this many calendar days. Shared by the dossier-tab amber
@@ -56,13 +147,18 @@ PROTOCOL_TYPE_LABELS = {
     "cq_simplifié": "CQ — Procédure simplifiée",
     "cs_ordinaire": "CS — Procédure ordinaire",
     "conventionnel": "Conventionnel",
+    "prejudiciaire": "Préjudiciaire (brouillon)",
+    "ouverture": "Ouverture de dossier",
 }
 PROTOCOL_TYPE_SHORT_LABELS = {
     "cq_simplifié": "CQ Simplifié",
     "cs_ordinaire": "CS Ordinaire",
     "conventionnel": "Conventionnel",
+    "prejudiciaire": "Préjudiciaire",
+    "ouverture": "Ouverture",
 }
 STATUS_LABELS = {
+    "brouillon": "Brouillon",
     "actif": "Actif",
     "complété": "Complété",
     "suspendu": "Suspendu",
@@ -74,11 +170,13 @@ STEP_STATUS_LABELS = {
     "en_retard": "En retard",
 }
 
-# Color mapping for protocol type badges
+# Color mapping for protocol type badges (existing compiled Tailwind palette)
 PROTOCOL_TYPE_COLORS = {
     "cq_simplifié": "bg-blue-100 text-blue-700",
     "cs_ordinaire": "bg-indigo-100 text-indigo-700",
     "conventionnel": "bg-gray-200 text-gray-700",
+    "prejudiciaire": "bg-amber-100 text-amber-700",
+    "ouverture": "bg-green-100 text-green-700",
 }
 STEP_STATUS_COLORS = {
     "à_venir": "bg-gray-100 text-gray-600",
@@ -128,8 +226,10 @@ CQ_TEMPLATE_STEPS = [
         "order": 1,
         "title": "Signification de l'avis d'assignation",
         "description": "",
-        "cpc_reference": "art. 145 C.p.c.",
+        "cpc_reference": "art. 145 al. 1 C.p.c.",
         "deadline_offset_days": 0,
+        "actor": "demandeur",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": True,
         "phase": "INT",
@@ -137,67 +237,107 @@ CQ_TEMPLATE_STEPS = [
     },
     {
         "order": 2,
-        "title": "Avis de la partie demanderesse",
-        "description": "",
-        "cpc_reference": "art. 535.4 C.p.c.",
-        "deadline_offset_days": 20,
+        "title": "Réponse à l'assignation",
+        "description": (
+            "Dépôt et notification de la réponse du défendeur dans les "
+            "15 jours de la signification."
+        ),
+        "cpc_reference": "art. 145 al. 2 C.p.c.",
+        "deadline_offset_days": 15,
+        "actor": "défendeur",
+        "key_milestone": "reponse",
         "mandatory": True,
         "deadline_locked": True,
-        # The plaintiff's avis is her evidence disclosure → mise en état.
+        "phase": "CTS",
+        "sous_phase": "CTS-00",
+    },
+    {
+        "order": 3,
+        "title": "Complément de la demande — pièces et avis demandeur",
+        "description": "Communication des pièces et avis de la partie demanderesse.",
+        "cpc_reference": "art. 535.4 C.p.c.",
+        "deadline_offset_days": 20,
+        "actor": "demandeur",
+        "key_milestone": "",
+        "mandatory": True,
+        "deadline_locked": True,
+        # The plaintiff's avis is her evidence disclosure -> mise en état.
         "phase": "MEE",
         "sous_phase": "MEE-01",
     },
     {
-        "order": 3,
-        "title": "Dénonciation des moyens préliminaires",
+        "order": 4,
+        "title": "Dénonciation écrite des moyens préliminaires et incidents",
         "description": "",
         "cpc_reference": "art. 535.5 C.p.c.",
         "deadline_offset_days": 45,
+        "actor": "commun",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": True,
         "phase": "PRL",
         "sous_phase": "PRL-00",
     },
     {
-        "order": 4,
-        "title": "Avis de la partie défenderesse",
-        "description": "",
+        "order": 5,
+        "title": "Exposé sommaire de la contestation, avis défendeur et pièces",
+        "description": (
+            "Dépôt et communication de l'exposé sommaire, de l'avis du "
+            "défendeur et de ses pièces."
+        ),
         "cpc_reference": "art. 535.6 C.p.c.",
         "deadline_offset_days": 95,
+        "actor": "défendeur",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": True,
-        # The defendant's avis is its contestation-side disclosure → défense.
+        # The defendant's avis is its contestation-side disclosure -> défense.
         "phase": "CTS",
         "sous_phase": "CTS-01",
     },
     {
-        "order": 5,
-        "title": "Conférence de gestion",
+        "order": 6,
+        "title": "Conférence de gestion de l'instance",
         "description": "",
         "cpc_reference": "art. 535.8 C.p.c.",
         "deadline_offset_days": 110,
+        "actor": "greffe",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": True,
         "phase": "MEE",
         "sous_phase": "MEE-03",
     },
     {
-        "order": 6,
-        "title": "Conférence de règlement à l'amiable",
-        "description": "",
+        "order": 7,
+        "title": "Conférence de règlement à l'amiable / préparatoire",
+        "description": (
+            "Fenêtre de 130 à 160 jours à compter de la signification "
+            "(art. 535.12 C.p.c.)."
+        ),
         "cpc_reference": "art. 535.12 C.p.c.",
-        "deadline_offset_days": 145,
+        "deadline_offset_days": 160,
+        "window_min_days": 130,
+        "window_max_days": 160,
+        "actor": "greffe",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": True,
         "phase": "PRD",
         "sous_phase": "PRD-03",
     },
     {
-        "order": 7,
-        "title": "Inscription pour instruction et jugement",
-        "description": "",
+        "order": 8,
+        "title": "Inscription pour instruction et jugement par le greffier",
+        "description": (
+            "Délai de 6 mois civils à compter de la signification "
+            "(art. 535.13 et 83 C.p.c.)."
+        ),
         "cpc_reference": "art. 535.13 C.p.c.",
-        "deadline_offset_days": 180,
+        "deadline_offset_days": None,
+        "deadline_offset_months": 6,
+        "actor": "greffe",
+        "key_milestone": "inscription",
         "mandatory": True,
         "deadline_locked": True,
         "phase": "INS",
@@ -212,6 +352,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "art. 145(1) C.p.c.",
         "deadline_offset_days": 0,
+        "actor": "demandeur",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "INT",
@@ -223,6 +365,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "art. 145(2) C.p.c.",
         "deadline_offset_days": 15,
+        "actor": "défendeur",
+        "key_milestone": "reponse",
         "mandatory": True,
         "deadline_locked": False,
         # The réponse is the defendant's first act — contestation begins,
@@ -236,6 +380,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "art. 149(2) C.p.c.",
         "deadline_offset_days": 45,
+        "actor": "commun",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "INT",
@@ -247,6 +393,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "",
         "deadline_offset_days": 120,
+        "actor": "commun",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "INR",
@@ -258,6 +406,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "",
         "deadline_offset_days": 150,
+        "actor": "commun",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "EXP",
@@ -269,6 +419,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "",
         "deadline_offset_days": 180,
+        "actor": "greffe",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "PRD",
@@ -280,6 +432,8 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "",
         "deadline_offset_days": 180,
+        "actor": "greffe",
+        "key_milestone": "",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "MEE",
@@ -291,10 +445,126 @@ CS_TEMPLATE_STEPS = [
         "description": "",
         "cpc_reference": "art. 173(1) C.p.c.",
         "deadline_offset_days": 180,
+        "actor": "greffe",
+        "key_milestone": "inscription",
         "mandatory": True,
         "deadline_locked": False,
         "phase": "INS",
         "sous_phase": "INS-01",
+    },
+]
+
+PREJUDICIAIRE_TEMPLATE_STEPS = [
+    {
+        "order": 1,
+        "title": "Vérification de la prescription et des avis préalables",
+        "description": "Qualifier le délai d'action et les avis préalables applicables.",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "demandeur",
+        "key_milestone": "",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "PRE",
+        "sous_phase": "PRE-02",
+    },
+    {
+        "order": 2,
+        "title": "Mise en demeure",
+        "description": "Rédaction, transmission et suivi du délai de mise en demeure.",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "demandeur",
+        "key_milestone": "",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "PRE",
+        "sous_phase": "PRE-04",
+    },
+    {
+        "order": 3,
+        "title": "Négociation / mode privé PRD",
+        "description": "Pourparlers, médiation ou conférence privée de règlement.",
+        "cpc_reference": "art. 1 C.p.c.",
+        "deadline_offset_days": None,
+        "actor": "commun",
+        "key_milestone": "",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "PRD",
+        "sous_phase": "PRD-01",
+    },
+    {
+        "order": 4,
+        "title": "Décision d'introduire l'instance",
+        "description": "Analyse finale, budget et mandat avant dépôt de la demande.",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "demandeur",
+        "key_milestone": "",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "INT",
+        "sous_phase": "INT-01",
+    },
+]
+
+OUVERTURE_TEMPLATE_STEPS = [
+    {
+        "order": 1,
+        "title": "Vérification des conflits d'intérêts au dossier",
+        "description": "Confirmer l'absence de conflit d'intérêts sur le dossier et ses parties.",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "",
+        "key_milestone": "",
+        "ouverture_key": "conflit",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "ADM",
+        "sous_phase": "ADM-01",
+    },
+    {
+        "order": 2,
+        "title": "Identification et vérification d'identité du client (KYC)",
+        "description": "Compléter l'identification (art. 13–14) et la vérification KYC (art. 20–23).",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "",
+        "key_milestone": "",
+        "ouverture_key": "kyc",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "ADM",
+        "sous_phase": "ADM-01",
+    },
+    {
+        "order": 3,
+        "title": "Triage de la prescription et des avis préalables",
+        "description": "Consigner le domaine, l'action, la prescription et les avis préalables requis.",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "",
+        "key_milestone": "",
+        "ouverture_key": "prescription",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "PRE",
+        "sous_phase": "PRE-02",
+    },
+    {
+        "order": 4,
+        "title": "Convention d'honoraires et avance en fidéicommis",
+        "description": "Convenir du mandat, de la convention d'honoraires et de l'avance en fidéicommis.",
+        "cpc_reference": "",
+        "deadline_offset_days": None,
+        "actor": "",
+        "key_milestone": "",
+        "ouverture_key": "mandat",
+        "mandatory": False,
+        "deadline_locked": False,
+        "phase": "ADM",
+        "sous_phase": "ADM-02",
     },
 ]
 
@@ -303,12 +573,162 @@ def get_template(protocol_type: str) -> list[dict]:
     """Return the step template for a given protocol type."""
     if protocol_type == "cq_simplifié":
         return [dict(s) for s in CQ_TEMPLATE_STEPS]
-    elif protocol_type == "cs_ordinaire":
+    if protocol_type == "cs_ordinaire":
         return [dict(s) for s in CS_TEMPLATE_STEPS]
+    if protocol_type == "prejudiciaire":
+        return [dict(s) for s in PREJUDICIAIRE_TEMPLATE_STEPS]
+    if protocol_type == "ouverture":
+        return [dict(s) for s in OUVERTURE_TEMPLATE_STEPS]
     return []
 
 
 # ── Default docs ────────────────────────────────────────────────────────
+
+
+def track_for_type(protocol_type: str) -> str:
+    """Return the parallel track for a protocol type (``instance`` or ``ouverture``)."""
+    return TRACK_OUVERTURE if protocol_type == "ouverture" else TRACK_INSTANCE
+
+
+def track_of(protocol: Optional[dict]) -> str:
+    """Return the stored or inferred track of a protocol (defaults to ``instance``)."""
+    if not isinstance(protocol, dict):
+        return TRACK_INSTANCE
+    stored = protocol.get("track")
+    if stored in VALID_TRACKS:
+        return stored
+    return track_for_type(protocol.get("protocol_type", ""))
+
+
+def default_pretrial_headings() -> list[dict]:
+    """Fresh editable Art. 174 C.p.c. pre-trial readiness draft headings."""
+    return [
+        {**h, "completed": False}
+        for h in PRETRIAL_READINESS_HEADINGS
+    ]
+
+
+def pretrial_headings_for(protocol: Optional[dict]) -> list[dict]:
+    """Return editable Art. 174 headings for a litigation protocol."""
+    if not isinstance(protocol, dict):
+        return []
+    stored = protocol.get("pretrial_headings")
+    if isinstance(stored, list) and stored:
+        return [
+            {
+                "key": str(h.get("key") or ""),
+                "title": str(h.get("title") or ""),
+                "notes": str(h.get("notes") or ""),
+                "completed": bool(h.get("completed")),
+            }
+            for h in stored
+            if isinstance(h, dict) and str(h.get("title") or "").strip()
+        ]
+    if track_of(protocol) == TRACK_INSTANCE and protocol.get("protocol_type") != "prejudiciaire":
+        return default_pretrial_headings()
+    return []
+
+
+def _normalize_pretrial_headings(raw) -> tuple[Optional[list[dict]], list[str]]:
+    """Validate and sanitize caller-supplied Art. 174 pre-trial headings."""
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return None, ["Les rubriques de préparation à l'instruction doivent former une liste."]
+    if len(raw) > 30:
+        return None, ["Un maximum de 30 rubriques de préparation à l'instruction est permis."]
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None, ["Rubrique de préparation à l'instruction invalide."]
+        title = sanitize(str(item.get("title") or "").strip(), max_length=200)
+        if not title:
+            return None, ["Chaque rubrique de préparation à l'instruction requiert un titre."]
+        notes = sanitize(str(item.get("notes") or "").strip(), max_length=1000)
+        key = sanitize(str(item.get("key") or "").strip(), max_length=60) or f"item_{len(out) + 1}"
+        out.append({
+            "key": key,
+            "title": title,
+            "notes": notes,
+            "completed": bool(item.get("completed")),
+        })
+    return out, []
+
+
+_PLAINTIFF_ROLES = frozenset({"demandeur", "requérant", "appelant"})
+_DEFENDANT_ROLES = frozenset({"défendeur", "intimé"})
+
+
+def resolve_client_litigation_side(dossier: Optional[dict]) -> str:
+    """Detect whether our client acts as ``demandeur`` or ``défendeur`` on *dossier*."""
+    if not isinstance(dossier, dict):
+        return ""
+    roles: list[str] = []
+    for entry in dossier.get("clients") or []:
+        if isinstance(entry, dict):
+            for r in entry.get("roles") or []:
+                if isinstance(r, str) and r.strip():
+                    roles.append(r.strip())
+    fallback = str(dossier.get("role") or "").strip()
+    if fallback and fallback not in roles:
+        roles.append(fallback)
+    role_set = set(roles)
+    has_plaintiff = bool(role_set & _PLAINTIFF_ROLES)
+    has_defendant = bool(role_set & _DEFENDANT_ROLES)
+    if has_plaintiff and not has_defendant:
+        return "demandeur"
+    if has_defendant and not has_plaintiff:
+        return "défendeur"
+    if fallback in _PLAINTIFF_ROLES:
+        return "demandeur"
+    if fallback in _DEFENDANT_ROLES:
+        return "défendeur"
+    return ""
+
+
+def resolve_step_actor_badge(step: dict, dossier: Optional[dict] = None) -> Optional[dict]:
+    """Compute a French actor badge for *step* against our client's role on *dossier*.
+
+    Degrades gracefully (returns ``None``) for legacy steps carrying no ``actor``.
+    """
+    actor = str((step or {}).get("actor") or "").strip()
+    if not actor:
+        return None
+    if actor == "greffe":
+        return {
+            "actor": actor,
+            "kind": "greffe",
+            "label": "Délai du greffe / tribunal",
+            "color": "bg-purple-100 text-purple-700",
+        }
+    if actor == "commun":
+        return {
+            "actor": actor,
+            "kind": "commun",
+            "label": "Commun",
+            "color": "bg-blue-100 text-blue-700",
+        }
+    side = resolve_client_litigation_side(dossier)
+    if side == actor:
+        return {
+            "actor": actor,
+            "kind": "notre",
+            "label": "Notre délai",
+            "color": "bg-indigo-100 text-indigo-700",
+        }
+    if side and actor in ("demandeur", "défendeur"):
+        return {
+            "actor": actor,
+            "kind": "adverse",
+            "label": "Délai adverse",
+            "color": "bg-amber-100 text-amber-700",
+        }
+    return {
+        "actor": actor,
+        "kind": "statutaire",
+        "label": actor.capitalize(),
+        "color": "bg-gray-100 text-gray-600",
+    }
 
 
 def _default_protocol() -> dict:
@@ -320,6 +740,9 @@ def _default_protocol() -> dict:
         "dossier_title": "",
         "title": "Protocole de l'instance",
         "protocol_type": "",
+        "track": TRACK_INSTANCE,
+        "inscription_variation": "",
+        "pretrial_headings": [],
         "start_date": None,
         "end_date": None,
         "court": "",
@@ -343,6 +766,11 @@ def _default_step() -> dict:
         "cpc_reference": "",
         "deadline_date": None,
         "deadline_offset_days": None,
+        "deadline_offset_months": None,
+        "window_min_days": None,
+        "window_max_days": None,
+        "actor": "",
+        "key_milestone": "",
         "mandatory": False,
         "deadline_locked": False,
         "status": "à_venir",
@@ -401,6 +829,14 @@ def _validate_protocol(data: dict) -> list[str]:
     if status and status not in VALID_STATUSES:
         errors.append("Statut invalide.")
 
+    track = data.get("track")
+    if track and track not in VALID_TRACKS:
+        errors.append("Piste de protocole invalide.")
+
+    variation = data.get("inscription_variation", "")
+    if variation and variation not in INSCRIPTION_VARIATIONS:
+        errors.append("Mode de mise en état / inscription invalide.")
+
     return errors
 
 
@@ -417,10 +853,15 @@ def regime_mismatch(protocol_type: str, dossier: Optional[dict]) -> bool:
     dossier whose tribunal is blank (préjudiciaire, unparsed) → False —
     there is nothing to validate against, and refusing would strand the
     file. A non-judicial forum (administratif/federal) mismatches BOTH
-    C.p.c. templates.
+    C.p.c. templates. A ``prejudiciaire`` protocol mismatches once a real
+    court file number is assigned before a judicial/admin/federal forum.
     """
     if not dossier:
         return False
+    if protocol_type == "prejudiciaire":
+        ft = dossier.get("forum_type") or "judiciaire"
+        cfn = (dossier.get("court_file_number") or "").strip()
+        return ft != "prejudiciaire" and bool(cfn) and cfn != "Préjudiciaire"
     expected = PROTOCOL_TYPE_TRIBUNAL.get(protocol_type)
     if not expected:
         return False
@@ -430,15 +871,33 @@ def regime_mismatch(protocol_type: str, dossier: Optional[dict]) -> bool:
     return bool(tribunal) and tribunal != expected
 
 
+def _read_dossier_strict(dossier_id: str) -> Optional[dict]:
+    """Read dossier document strictly without importing models.dossier."""
+    if not is_addressable_id(dossier_id):
+        return None
+    snap = db.collection("dossiers").document(dossier_id).get()
+    if not snap.exists:
+        return None
+    return dict(snap.to_dict() or {})
+
+
 def _regime_errors(dossier_id: str, protocol_type: str) -> list[str]:
     """French, actionable refusal when the template regime is incoherent."""
+    if protocol_type == "ouverture":
+        return []
+    from models.dossier import get_dossier
+    dossier = get_dossier(dossier_id)
+    if protocol_type == "prejudiciaire":
+        if not regime_mismatch(protocol_type, dossier):
+            return []
+        return [
+            "Le protocole « Préjudiciaire » vise un dossier avant "
+            "l'introduction d'instance : ce dossier porte déjà un numéro "
+            "judiciaire. Choisissez le protocole d'instance adapté au tribunal."
+        ]
     expected = PROTOCOL_TYPE_TRIBUNAL.get(protocol_type)
     if not expected:
         return []
-    # Deferred function-level import — the house pattern for the
-    # protocol↔dossier edge (see _sync_task_status / _auto_create_tasks).
-    from models.dossier import get_dossier
-    dossier = get_dossier(dossier_id)
     if not regime_mismatch(protocol_type, dossier):
         return []
     label = PROTOCOL_TYPE_LABELS.get(protocol_type, protocol_type)
@@ -485,6 +944,24 @@ def _compute_deadline(start_date: datetime, offset_days: int) -> datetime:
     return datetime.combine(result_date, datetime.min.time(), timezone.utc)
 
 
+def _add_judicial_months(start_date: datetime, months: int) -> datetime:
+    """Compute *months* calendar months forward using ``recours.add_period`` + ``PROCEDURAL`` prorogation."""
+    raw = recours.add_period(start_date, months, recours.MONTHS)
+    adjusted = deadlines.next_juridical_day(raw.date(), regime=deadlines.PROCEDURAL)
+    return datetime.combine(adjusted, datetime.min.time(), timezone.utc)
+
+
+def _compute_step_deadline(start_date: datetime, step: dict) -> Optional[datetime]:
+    """Compute a template step's deadline from month or day offset."""
+    months = step.get("deadline_offset_months")
+    if months is not None:
+        return _add_judicial_months(start_date, int(months))
+    offset = step.get("deadline_offset_days")
+    if offset is not None:
+        return _compute_deadline(start_date, int(offset))
+    return None
+
+
 def _compute_end_date(start_date: datetime, steps: list[dict]) -> datetime:
     """Compute the protocol end date as the latest step deadline."""
     max_offset = 0
@@ -522,9 +999,10 @@ def _get_active_protocols_strict(
     dossier_id: str,
     *,
     exclude_id: Optional[str] = None,
+    track: Optional[str] = TRACK_INSTANCE,
     transaction=None,
 ) -> list[dict]:
-    """The dossier's « actif » protocols — a read failure PROPAGATES.
+    """The dossier's « actif » protocols (scoped by *track* unless ``None``) — a read failure PROPAGATES.
 
     The one-actif rule used to read through a helper that answered ``[]``
     on ANY exception: a Firestore blip read as « no active protocol » and a
@@ -534,18 +1012,23 @@ def _get_active_protocols_strict(
     the transaction (and its retry sees it) instead of slipping past.
 
     Two equality filters, merged by Firestore from the automatic
-    single-field indexes — no composite index.
+    single-field indexes — no composite index. Track filtering runs in
+    Python so legacy documents missing ``track`` resolve as ``instance``.
     """
     query = db.collection(COLLECTION).where(
         filter=FieldFilter("dossier_id", "==", dossier_id)
     ).where(
         filter=FieldFilter("status", "==", "actif")
     )
-    return [
-        snap.to_dict() or {}
-        for snap in query.stream(transaction=transaction)
-        if snap.id != exclude_id
-    ]
+    out = []
+    for snap in query.stream(transaction=transaction):
+        if snap.id == exclude_id:
+            continue
+        data = snap.to_dict() or {}
+        if track is not None and track_of(data) != track:
+            continue
+        out.append(data)
+    return out
 
 
 def _step_linked_to(protocol_id: str, task_id: str) -> Optional[dict]:
@@ -635,11 +1118,24 @@ def find_step_for_task(
 # this list is a caller that believes it set something.
 _CREATE_FIELDS = frozenset({
     "title", "notes", "court", "dossier_file_number", "dossier_title",
+    "inscription_variation", "pretrial_headings",
 })
 
 
 def _unknown_field_error(key: str, what: str) -> str:
     return f"Le champ « {key} » {what} ne se modifie pas ainsi."
+
+
+def _initial_status_for(protocol_type: str) -> str:
+    """Draft (``brouillon``) for préjudiciaire proposals, ``actif`` elsewhere."""
+    return "brouillon" if protocol_type == "prejudiciaire" else "actif"
+
+
+def _step_confirmation_flag(protocol_type: str, step: dict) -> bool:
+    """Whether a newly created step starts with confirmed date."""
+    if protocol_type == "cs_ordinaire":
+        return False
+    return True
 
 
 def create_protocol(
@@ -652,11 +1148,11 @@ def create_protocol(
     """Create a protocol with auto-generated steps. Returns (doc, errors).
 
     The one-actif rule is checked INSIDE the transaction that writes the
-    protocol and its steps, on a query that joins the transaction's read
-    set, and FAILS CLOSED: a read error refuses (``ACTIVE_CHECK_FAILED``)
-    instead of reading as « no active protocol », and a protocol activated
-    between the check and the commit aborts it — the retry then sees it.
-    A new protocol is always « actif ».
+    protocol and its steps, scoped per ``track`` (at most one active
+    ``ouverture`` AND one active ``instance`` simultaneously), on a query that
+    joins the transaction's read set, and FAILS CLOSED. Draft ``brouillon``
+    (``prejudiciaire``) protocols do not occupy the active slot until
+    activated.
 
     Each step is stamped (``created_*``/``updated_*``/``etag``) like any
     document. ``auto_create_tasks`` creates one linked task per step after
@@ -670,10 +1166,26 @@ def create_protocol(
                            dossier_id=dossier_id)
         return None, [_unknown_field_error(unknown[0], "d'un protocole")]
 
-    merged = {**_default_protocol(), **_sanitize_data(data)}
+    raw_headings = data.get("pretrial_headings")
+    clean_input = {k: v for k, v in data.items() if k != "pretrial_headings"}
+    merged = {**_default_protocol(), **_sanitize_data(clean_input)}
     merged["dossier_id"] = dossier_id
     merged["protocol_type"] = protocol_type
+    merged["track"] = track_for_type(protocol_type)
     merged["start_date"] = start_date
+    initial_status = _initial_status_for(protocol_type)
+    merged["status"] = initial_status
+
+    if "pretrial_headings" in data:
+        headings, h_errors = _normalize_pretrial_headings(raw_headings)
+        if h_errors:
+            return None, h_errors
+        merged["pretrial_headings"] = headings
+    elif merged["track"] == TRACK_INSTANCE and protocol_type != "prejudiciaire":
+        merged["pretrial_headings"] = default_pretrial_headings()
+
+    if not merged.get("inscription_variation") and protocol_type == "cq_simplifié":
+        merged["inscription_variation"] = "greffier"
 
     errors = _validate_protocol(merged)
     if errors:
@@ -682,10 +1194,7 @@ def create_protocol(
                            dossier_id=dossier_id)
         return None, errors
 
-    # Regime/forum coherence gate (PA-D03): a C.p.c. template whose court
-    # disagrees with the dossier's tribunal is refused with the expected
-    # template named — a protocol tracking the wrong Code is a litigation
-    # risk, not a preference.
+    # Regime/forum coherence gate (PA-D03)
     regime = _regime_errors(dossier_id, protocol_type)
     if regime:
         log_protocol_event("protocol_refused", "", outcome="refused",
@@ -703,15 +1212,10 @@ def create_protocol(
         step = {**_default_step(), **tmpl}
         step["id"] = str(uuid.uuid4())
         step.update(provenance.create_fields(now))
-        if step["deadline_offset_days"] is not None:
-            step["deadline_date"] = _compute_deadline(
-                start_date, step["deadline_offset_days"]
-            )
-        # For CS type, mark dates as unconfirmed (needs user edit)
-        if protocol_type == "cs_ordinaire":
-            step["date_confirmed"] = False
-        else:
-            step["date_confirmed"] = True
+        computed = _compute_step_deadline(start_date, step)
+        if computed is not None:
+            step["deadline_date"] = computed
+        step["date_confirmed"] = _step_confirmation_flag(protocol_type, step)
         step_docs.append(step)
 
     # Compute end date
@@ -722,7 +1226,7 @@ def create_protocol(
 
     merged.update({
         "id": protocol_id,
-        "status": "actif",
+        "status": initial_status,
         **provenance.create_fields(now),
     })
 
@@ -732,14 +1236,17 @@ def create_protocol(
     def _create(txn) -> None:
         # The read comes first (the real client refuses a transactional read
         # after a staged write) and is the one-actif check itself.
-        try:
-            active = _get_active_protocols_strict(dossier_id, transaction=txn)
-        except Exception:
-            log_unexpected("protocol one-actif check failed",
-                           dossier_id=dossier_id)
-            raise _Refusal(ACTIVE_CHECK_FAILED, "lecture_impossible")
-        if active:
-            raise _Refusal(ONE_ACTIVE_ERROR, "protocole_actif_existant")
+        if initial_status == "actif":
+            try:
+                active = _get_active_protocols_strict(
+                    dossier_id, track=merged["track"], transaction=txn,
+                )
+            except Exception:
+                log_unexpected("protocol one-actif check failed",
+                               dossier_id=dossier_id)
+                raise _Refusal(ACTIVE_CHECK_FAILED, "lecture_impossible")
+            if active:
+                raise _Refusal(ONE_ACTIVE_ERROR, "protocole_actif_existant")
         txn.set(proto_ref, merged)
         for step in step_docs:
             txn.set(
@@ -768,6 +1275,146 @@ def create_protocol(
 
     merged["steps"] = step_docs
     return merged, []
+
+
+def ensure_ouverture_protocol(
+    dossier_id: str,
+    dossier: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Idempotently seed the auto-triggered ``ouverture`` protocol for *dossier_id*.
+
+    Skips closed/archived dossiers (e.g. historical backfill imports). Uses the
+    Rule-6 documented deterministic ID ``ouverture-{dossier_id}`` inside an
+    atomic transaction so concurrent paths and MCP retries never duplicate it.
+    """
+    if not is_addressable_id(dossier_id):
+        return None, ["Identifiant de dossier invalide."]
+    if dossier is None:
+        try:
+            dossier = _read_dossier_strict(dossier_id)
+        except Exception:
+            log_unexpected("ouverture protocol: dossier read failed",
+                           dossier_id=dossier_id)
+            return None, [concurrency.READ_UNAVAILABLE_ERROR]
+    if not dossier:
+        return None, ["Dossier introuvable."]
+    if dossier.get("status") in ("fermé", "archivé"):
+        return None, []
+
+    from utils import kyc as kyc_util
+
+    now = datetime.now(timezone.utc)
+    t = deadlines.today_mtl()
+    start_date = dossier.get("opened_date")
+    if not isinstance(start_date, datetime):
+        start_date = datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
+
+    protocol_id = f"ouverture-{dossier_id}"
+    conflict_verified = (
+        kyc_util.stored_status(dossier, kyc_util.FIELD_CONFLICT) == "vérifié"
+        and kyc_util.is_decided(dossier, kyc_util.FIELD_CONFLICT)
+    )
+
+    step_docs: list[dict] = []
+    for tmpl in get_template("ouverture"):
+        step = {**_default_step(), **tmpl}
+        step["id"] = str(uuid.uuid4())
+        step["date_confirmed"] = True
+        if step.get("ouverture_key") == "conflit" and conflict_verified:
+            step["status"] = "complété"
+            step["completed_date"] = now
+        step.update(provenance.create_fields(now))
+        step_docs.append(step)
+
+    merged = {
+        **_default_protocol(),
+        "id": protocol_id,
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", "") or "",
+        "dossier_title": dossier.get("title", "") or "",
+        "title": "Protocole d'ouverture du dossier",
+        "protocol_type": "ouverture",
+        "track": TRACK_OUVERTURE,
+        "start_date": start_date,
+        "end_date": start_date,
+        "court": dossier.get("tribunal", "") or "",
+        "status": "actif",
+        **provenance.create_fields(now),
+    }
+
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
+
+    @firestore.transactional
+    def _ensure_txn(txn) -> tuple[dict, bool]:
+        snap = proto_ref.get(transaction=txn)
+        if snap.exists:
+            existing = dict(snap.to_dict() or {})
+            existing.setdefault("id", protocol_id)
+            existing["steps"] = _read_steps(proto_ref, txn)
+            return existing, False
+        txn.set(proto_ref, merged)
+        for step in step_docs:
+            txn.set(
+                proto_ref.collection(STEPS_SUBCOLLECTION).document(step["id"]),
+                step,
+            )
+        return {**merged, "steps": step_docs}, True
+
+    try:
+        result, created = _ensure_txn(db.transaction())
+    except Exception:
+        log_unexpected("ouverture protocol create failed", dossier_id=dossier_id)
+        return None, ["Erreur lors de la création du protocole d'ouverture."]
+
+    if created:
+        provenance.note_commit(COLLECTION, protocol_id, idempotent=True)
+        log_protocol_event(
+            "protocol_created", protocol_id,
+            dossier_id=dossier_id, protocol_type="ouverture",
+            step_count=len(step_docs),
+        )
+    return result, []
+
+
+def sync_ouverture_conflict_step(
+    dossier_id: str, dossier: Optional[dict]
+) -> None:
+    """Best-effort sync of step 1 of the ``ouverture`` protocol from dossier ``conflict_check``.
+
+    Automated paths never elevate conflict_check; only a lawyer-decided
+    (non-presumed) ``vérifié`` marks step 1 complete, and reverting from
+    ``vérifié`` (or becoming presumed) reopens it if it was completed.
+    """
+    if not dossier_id or not isinstance(dossier, dict):
+        return
+    try:
+        from utils import kyc as kyc_util
+
+        proto = get_ouverture_protocol_for_dossier(dossier_id)
+        if not proto or proto.get("status") != "actif":
+            return
+        target_step = next(
+            (s for s in proto.get("steps", []) if s.get("ouverture_key") == "conflit"),
+            None,
+        )
+        if target_step is None:
+            return
+        conflict_ok = (
+            kyc_util.stored_status(dossier, kyc_util.FIELD_CONFLICT) == "vérifié"
+            and kyc_util.is_decided(dossier, kyc_util.FIELD_CONFLICT)
+        )
+        want = "complété" if conflict_ok else "à_venir"
+        cur = target_step.get("status", "")
+        if (want == "complété" and cur == "complété") or (
+            want == "à_venir" and cur != "complété"
+        ):
+            return
+        set_step_status(
+            proto["id"], target_step["id"], want,
+            expected_etag=concurrency.etag_of(target_step),
+        )
+    except Exception:
+        log_unexpected("ouverture conflict step sync failed", dossier_id=dossier_id)
 
 
 def get_protocol_strict(protocol_id: str) -> Optional[dict]:
@@ -820,16 +1467,20 @@ def get_protocol(protocol_id: str) -> Optional[dict]:
 def get_protocol_for_dossier(
     dossier_id: str, active_only: bool = True
 ) -> Optional[dict]:
-    """Return a protocol for a dossier.
+    """Return the litigation (``instance`` track) protocol for a dossier.
 
-    If active_only is True (default), returns only the 'actif' protocol.
-    If active_only is False, returns the most recent protocol regardless of status.
+    If active_only is True (default), returns only the 'actif' protocol on the
+    ``instance`` track (ignoring auto-created ``ouverture`` protocols).
+    If active_only is False, returns the most recent ``instance`` protocol.
     """
     try:
         query = db.collection(COLLECTION).where(
             filter=FieldFilter("dossier_id", "==", dossier_id)
         )
-        results = [doc.to_dict() for doc in query.stream()]
+        results = [
+            doc.to_dict() for doc in query.stream()
+            if track_of(doc.to_dict() or {}) == TRACK_INSTANCE
+        ]
 
         # Prefer active protocol
         for r in results:
@@ -850,6 +1501,29 @@ def get_protocol_for_dossier(
             return get_protocol(results[0]["id"])
 
         return None
+    except Exception:
+        return None
+
+
+def get_ouverture_protocol_for_dossier(dossier_id: str) -> Optional[dict]:
+    """Return the auto-triggered ``ouverture`` protocol for *dossier_id*, if any."""
+    if not is_addressable_id(dossier_id):
+        return None
+    direct = get_protocol(f"ouverture-{dossier_id}")
+    if direct:
+        return direct
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("dossier_id", "==", dossier_id)
+        )
+        matches = [
+            doc.to_dict() or {} for doc in query.stream()
+            if track_of(doc.to_dict() or {}) == TRACK_OUVERTURE
+        ]
+        if not matches:
+            return None
+        matches.sort(key=_created_sort_key)
+        return get_protocol(matches[0].get("id", ""))
     except Exception:
         return None
 
@@ -940,6 +1614,7 @@ def list_protocols(
 # have their own writers.
 _PROTOCOL_EDITABLE = frozenset({
     "title", "notes", "court", "start_date", "status",
+    "inscription_variation", "pretrial_headings",
 })
 
 OTHER_ACTIVE_ON_REACTIVATION = (
@@ -1078,10 +1753,13 @@ def _recompute_plan(
     after: list[dict] = []
     for original in steps:
         step = dict(original)
-        offset = step.get("deadline_offset_days")
-        if offset is not None:
-            new_deadline = _compute_deadline(new_start, offset)
-            if _date_key(new_deadline) != _date_key(step.get("deadline_date")):
+        has_offset = (
+            step.get("deadline_offset_months") is not None
+            or step.get("deadline_offset_days") is not None
+        )
+        if has_offset:
+            new_deadline = _compute_step_deadline(new_start, step)
+            if new_deadline is not None and _date_key(new_deadline) != _date_key(step.get("deadline_date")):
                 if step.get("status") == "complété":
                     preserved.append({"step_id": step.get("id", ""),
                                       "reason": "completed"})
@@ -1145,7 +1823,13 @@ def update_protocol(
         log_protocol_event("protocol_refused", protocol_id, outcome="refused",
                            reason="champ_refuse", operation="update")
         return None, [_unknown_field_error(unknown[0], "d'un protocole")]
-    sanitized = _sanitize_data(data)
+    clean_input = {k: v for k, v in data.items() if k != "pretrial_headings"}
+    sanitized = _sanitize_data(clean_input)
+    if "pretrial_headings" in data:
+        headings, h_errors = _normalize_pretrial_headings(data.get("pretrial_headings"))
+        if h_errors:
+            return None, h_errors
+        sanitized["pretrial_headings"] = headings
     proto_ref = db.collection(COLLECTION).document(protocol_id)
     now = datetime.now(timezone.utc)
     via = provenance.current_via()
@@ -1183,7 +1867,9 @@ def update_protocol(
                 try:
                     others = _get_active_protocols_strict(
                         merged.get("dossier_id") or "",
-                        exclude_id=protocol_id, transaction=txn,
+                        exclude_id=protocol_id,
+                        track=track_of(existing),
+                        transaction=txn,
                     )
                 except Exception:
                     log_unexpected("protocol one-actif check failed",
@@ -1194,9 +1880,12 @@ def update_protocol(
                                    "autre_protocole_actif")
                 merged["closed_by"] = ""
                 merged["closed_at"] = None
-            else:
+            elif new_status in ("complété", "suspendu"):
                 merged["closed_by"] = via
                 merged["closed_at"] = now
+            else:
+                merged["closed_by"] = ""
+                merged["closed_at"] = None
         report = None
         if start_changed:
             moved, preserved, steps = _recompute_plan(
@@ -1403,7 +2092,7 @@ def add_step(
         protocol = snap.to_dict() or {}
         steps = _read_steps(proto_ref, txn)
         status = protocol.get("status", "")
-        if status != "actif":
+        if status not in ("actif", "brouillon"):
             raise _Refusal(inactive_protocol_edit_error(status),
                            "protocole_non_actif")
         doc = {
@@ -1546,7 +2235,7 @@ def update_step(
                for k in set(merged) | set(existing)):
             return existing, False, None, False
         status = protocol.get("status", "")
-        if status != "actif":
+        if status not in ("actif", "brouillon"):
             raise _Refusal(inactive_protocol_edit_error(status),
                            "protocole_non_actif")
         provenance.stamp_update(merged, now)
@@ -1660,13 +2349,13 @@ def _reopen_blocker(protocol: dict, protocol_id: str, txn) -> Optional[_Refusal]
     """Why an auto-closed protocol cannot be reopened now, or ``None``.
 
     Only a protocol the CASCADE closed (``closed_by == CLOSED_BY_AUTO``)
-    reopens by itself; the one-actif rule then applies as everywhere, read
+    reopens by itself; the one-actif rule then applies per track, read
     fail-closed inside the caller's transaction.
     """
     try:
         others = _get_active_protocols_strict(
             protocol.get("dossier_id") or "", exclude_id=protocol_id,
-            transaction=txn,
+            track=track_of(protocol), transaction=txn,
         )
     except Exception:
         log_unexpected("protocol one-actif check failed",
@@ -2054,9 +2743,12 @@ def get_protocol_summary(
             if protocols is not None
             else list_protocols_for_dossier(dossier_id)
         )
+        instance_protos = [
+            p for p in all_protos if track_of(p) == TRACK_INSTANCE
+        ]
         return {
             "has_protocol": False,
-            "has_history": len(all_protos) > 0,
+            "has_history": len(instance_protos) > 0,
             "total": 0,
             "completed": 0,
             "overdue": 0,
@@ -2091,9 +2783,12 @@ def get_protocol_summary(
         if protocols is not None
         else list_protocols_for_dossier(dossier_id)
     )
+    instance_protos = [
+        p for p in all_protos if track_of(p) == TRACK_INSTANCE
+    ]
     return {
         "has_protocol": True,
-        "has_history": len(all_protos) > 1,
+        "has_history": len(instance_protos) > 1,
         "protocol_id": protocol["id"],
         "protocol_type": protocol.get("protocol_type", ""),
         "total": len(steps),

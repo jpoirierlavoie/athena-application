@@ -34,9 +34,11 @@ boxes + HTTP 400. The receipt API endpoints exchange small JSON control
 messages only — the bytes go browser→GCS (32 MB platform cap doctrine).
 """
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from firebase_admin import storage
 from flask import (
@@ -47,6 +49,7 @@ from flask import (
     request,
     url_for,
 )
+from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from auth import login_required
@@ -63,9 +66,7 @@ from models.admin_ledger import (
     KIND_LABELS,
     MAX_RECEIPT_SIZE,
     METHOD_LABELS,
-    RECEIPT_ACCEPT,
     RECEIPT_EXTENSIONS,
-    RECEIPT_HINT_FR,
     RECEIPT_MIME_TYPES,
     RECEIPT_SIZE_REFUSED_FR,
     RECEIPT_TYPE_REFUSED_FR,
@@ -77,6 +78,7 @@ from models.admin_ledger import (
     VALID_TX_STATUSES,
     direction_labels_for,
 )
+from utils.receipts import RECEIPT_ACCEPT, RECEIPT_HINT_FR
 from models.audit_event import record_deletion
 from services import comptabilite
 from services import pieces_justificatives
@@ -104,6 +106,7 @@ from routes._helpers import (
     dossier_search_fragment,
     is_htmx,
     no_counterparty_suggestions,
+    standard_dossier_row,
     types_ecritures_url,
     parse_date_input,
     redirect_after_post,
@@ -245,6 +248,18 @@ def _factures_impayees() -> list[dict]:
 @admin_bp.route("/dossier-search")
 @login_required
 def dossier_search() -> str:
+    if request.args.get("clients"):
+        def _row(d: dict) -> str:
+            clients = [
+                {"id": c.get("id", ""), "name": c.get("name", "")}
+                for c in d.get("clients", [])
+            ]
+            extra = (
+                f' data-clients="{escape(json.dumps(clients, ensure_ascii=False))}"'
+            )
+            return standard_dossier_row(d, extra_attrs=extra)
+
+        return dossier_search_fragment(request.args.get("q", ""), _row)
     return dossier_search_fragment(request.args.get("q", ""))
 
 
@@ -269,19 +284,33 @@ def counterparty_suggest():
 # ── Journal ────────────────────────────────────────────────────────────────
 
 
+ALL_ACCOUNTS_FILTER = "tous"
+
+
+def _combined_sort_key(tx: dict) -> tuple:
+    d = al._as_utc(tx.get("date")) or datetime.min.replace(tzinfo=timezone.utc)
+    return (d, int(tx.get("sequence") or 0), tx.get("account_id", ""), tx.get("id", ""))
+
+
 @admin_bp.route("/")
 @login_required
 def journal():
     accounts = al.list_accounts()
     if not accounts:
         return render_template("administration/list.html", accounts=[], account=None,
-                               rows=[], header=None, filters={}, opening=None,
-                               truncated=False, show_solde=False,
-                               pagination=None, **_labels())
+                               rows=[], header=None, account_headers=[],
+                               is_all_accounts=False, read_error=False,
+                               filters={}, opening=None, truncated=False,
+                               show_solde=False, pagination=None, **_labels())
 
-    account_id = request.args.get("account_id") or accounts[0]["id"]
-    account = next((a for a in accounts if a["id"] == account_id), accounts[0])
-    account_id = account["id"]
+    raw_account_id = (request.args.get("account_id") or accounts[0]["id"]).strip()
+    is_all_accounts = raw_account_id == ALL_ACCOUNTS_FILTER
+    account = None
+    if is_all_accounts:
+        account_id = ALL_ACCOUNTS_FILTER
+    else:
+        account = next((a for a in accounts if a["id"] == raw_account_id), accounts[0])
+        account_id = account["id"]
 
     status = request.args.get("status") or None
     kind = request.args.get("kind") or None
@@ -295,7 +324,29 @@ def journal():
     if category not in ADMIN_EXPENSE_CATEGORIES:
         category = None
 
-    rows, truncated = al.list_register(account_id, date_from, date_to)
+    read_error = False
+    if is_all_accounts:
+        rows = []
+        truncated = False
+        for a in accounts:
+            try:
+                part, part_trunc = al.list_register(a["id"], date_from, date_to)
+            except Exception:
+                log_unexpected("admin combined register read failed",
+                               account_id=a["id"])
+                read_error = True
+                break
+            truncated = truncated or part_trunc
+            for r in part:
+                r["_account_name"] = a.get("name", "")
+            rows.extend(part)
+        if read_error:
+            rows = []
+        else:
+            rows.sort(key=_combined_sort_key)
+    else:
+        rows, truncated = al.list_register(account_id, date_from, date_to)
+
     if status:
         rows = [r for r in rows if r.get("status") == status]
     if kind:
@@ -303,11 +354,14 @@ def journal():
     if category:
         rows = [r for r in rows if r.get("category") == category]
 
-    # The Solde column renders ONLY when no content filter is active — a
-    # running balance over a filtered subset is a false figure; hide it
-    # rather than lie. Date bounds are fine: the opening carries everything
-    # before the period.
-    show_solde = not (status or kind or category) and not truncated
+    # The Solde column renders ONLY for a single account when no content
+    # filter is active — a running balance across accounts (opérations vs
+    # carte de crédit) or over a filtered subset is a false figure.
+    show_solde = (
+        not is_all_accounts
+        and not (status or kind or category)
+        and not truncated
+    )
     opening = None
     if show_solde:
         try:
@@ -333,10 +387,17 @@ def journal():
     rows, pagination = paginate(rows, request.args.get("page", 1, type=int))
     pagination["url"] = url_for("admin_ledger.journal")
     pagination["target"] = "#admin-rows"
+    pagination["extra_vals"] = {"account_id": account_id}
 
-    header = _account_header(account)
+    header = None if is_all_accounts else _account_header(account)
+    account_headers = (
+        [{"account": a, "header": _account_header(a)} for a in accounts]
+        if is_all_accounts else []
+    )
     ctx = dict(
         accounts=accounts, account=account, rows=rows, header=header,
+        account_headers=account_headers, is_all_accounts=is_all_accounts,
+        read_error=read_error,
         opening=opening, truncated=truncated, show_solde=show_solde,
         pagination=pagination,
         filters={"status": status or "", "kind": kind or "", "category": category or "",
@@ -485,7 +546,8 @@ def _counterparty_profiles(prefill_on: bool) -> dict:
 
 
 def _form_context(entry, errors: list[str], mode: str = "create",
-                  conflict=None, *, stored_kind: str = "") -> dict:
+                  conflict=None, *, stored_kind: str = "",
+                  account_id: Optional[str] = None) -> dict:
     """The entry form's context. *entry* is what the form shows — the stored
     entry, or what a refused POST sent; *stored_kind* (an edit) is the kind
     on file, which alone decides the passages offered (default: the entry's
@@ -528,8 +590,32 @@ def _form_context(entry, errors: list[str], mode: str = "create",
     kind_groups = [(family, [(value, choice_labels[value]) for value in values])
                    for family, values in al.kinds_by_family(list(choice_labels))]
     initial = profiles.get(kind_value, {})
+    active_accounts = al.list_accounts(status="actif")
+    entry_account_id = (entry or {}).get("account_id") or ""
+    if mode == "edit" or entry_account_id:
+        selected_account_id = entry_account_id
+    elif account_id and any(a["id"] == account_id for a in active_accounts):
+        selected_account_id = account_id
+    else:
+        # 1h-i: default to the first active « opérations » account rather than
+        # alphabetical accounts[0] (often a corporate credit card).
+        selected_account_id = next(
+            (a["id"] for a in active_accounts if a.get("account_type") == "opérations"),
+            active_accounts[0]["id"] if active_accounts else "",
+        )
+    selected_acc = next(
+        (a for a in active_accounts if a["id"] == selected_account_id), None
+    )
+    default_method = (
+        "carte"
+        if selected_acc and selected_acc.get("account_type") == "carte_crédit"
+        else "virement"
+    )
+    selected_method = (entry or {}).get("method") or default_method
     return dict(
-        accounts=al.list_accounts(status="actif"), entry=entry, dossier=dossier,
+        accounts=active_accounts, entry=entry, dossier=dossier,
+        selected_account_id=selected_account_id,
+        selected_method=selected_method,
         mode=mode, errors=errors, conflict=conflict,
         factures=_factures_impayees() if mode == "create" else [],
         kind_choices=kind_choices, kind_groups=kind_groups,
@@ -559,6 +645,21 @@ def _form_context(entry, errors: list[str], mode: str = "create",
         transfer_purpose_choices=[(p, al.TRANSFER_PURPOSE_LABELS[p])
                                   for p in ("",) + al.TRANSFER_PURPOSES],
         form_transfer_purpose=(entry or {}).get("transfer_purpose") or "",
+        receipt_accept=RECEIPT_ACCEPT,
+        receipt_hint=RECEIPT_HINT_FR,
+        staged_receipt_objet=(
+            request.form.get("staged_receipt_objet", "").strip()
+            if request.method == "POST" else ""
+        ),
+        staged_receipt_name=(
+            request.form.get("staged_receipt_name", "").strip()
+            or (
+                request.form.get("staged_receipt_objet", "").strip().rsplit("/", 1)[-1]
+                if "/" in request.form.get("staged_receipt_objet", "").strip()
+                else ""
+            )
+            if request.method == "POST" else ""
+        ),
         **_labels(),
     )
 
@@ -566,8 +667,9 @@ def _form_context(entry, errors: list[str], mode: str = "create",
 @admin_bp.route("/nouvelle")
 @login_required
 def entry_new():
+    account_id = request.args.get("account_id", "").strip() or None
     return render_template(
-        "administration/form.html", **_form_context(None, []),
+        "administration/form.html", **_form_context(None, [], account_id=account_id),
     )
 
 
@@ -575,6 +677,11 @@ def entry_new():
 @login_required
 def entry_create():
     data = _entry_form_data()
+    staged_objet = request.form.get("staged_receipt_objet", "").strip()
+    staged_name = (
+        request.form.get("staged_receipt_name", "").strip()
+        or (staged_objet.rsplit("/", 1)[-1] if "/" in staged_objet else "recu")
+    )
     if data["kind"] == al.INTERNAL_TRANSFER_FORM_KIND:
         return render_template(
             "administration/form.html",
@@ -593,7 +700,30 @@ def entry_create():
         return render_template(
             "administration/form.html", **_form_context(data, report["errors"]),
         ), 400
-    return redirect(url_for("admin_ledger.entry_detail", tx_id=report["entry"]["id"]))
+    tx_id = report["entry"]["id"]
+    if staged_objet:
+        try:
+            user_id = storage_identity.request_uid()
+        except storage_identity.StorageIdentityUnavailable:
+            return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                    avertissement="recu_joint"))
+        seg_uuid = _staged_receipt_uuid(staged_objet, user_id)
+        if not seg_uuid:
+            return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                    avertissement="recu_joint"))
+        safe = secure_filename("".join(ch for ch in staged_name if ch.isprintable())) or "recu"
+        dest_path = f"users/{user_id}/administration/{tx_id}/{seg_uuid}/{safe}"
+        updated, err_msg, _code = _copy_and_attach_staged_receipt(
+            tx_id, staged_objet, staged_name, dest_path, user_id,
+        )
+        if err_msg or updated is None:
+            return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                    avertissement="recu_joint"))
+        avert = _maybe_verser_recu_au_dossier(tx_id, updated, user_id, seg_uuid)
+        if avert:
+            return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                                    avertissement=avert))
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=tx_id))
 
 
 @admin_bp.route("/<tx_id>")
@@ -913,6 +1043,79 @@ def card_payment():
     return redirect(url_for("admin_ledger.entry_detail", tx_id=report["entry"]["id"]))
 
 
+@admin_bp.route("/virement", methods=["GET", "POST"])
+@login_required
+def account_transfer():
+    active_accounts = al.list_accounts(status="actif")
+    if request.method == "GET":
+        return render_template(
+            "administration/transfer_form.html",
+            active_accounts=active_accounts, errors=[], form={}, **_labels(),
+        )
+    f = request.form
+    report = comptabilite.enregistrer_virement_comptes_admin(
+        from_account_id=f.get("from_account_id", "").strip(),
+        to_account_id=f.get("to_account_id", "").strip(),
+        amount=_parse_cents(f.get("amount", "")) or 0,
+        date_value=_parse_date(f.get("date", "")),
+        method=f.get("method", "virement").strip(),
+        reference=f.get("reference", "").strip(),
+        description=f.get("description", "").strip(),
+    )
+    if report["errors"]:
+        return render_template(
+            "administration/transfer_form.html",
+            active_accounts=active_accounts, errors=report["errors"],
+            form=f.to_dict(), **_labels(),
+        ), 400
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=report["entry"]["id"]))
+
+
+@admin_bp.route("/virement-fideicommis", methods=["GET", "POST"])
+@login_required
+def advance_transfer():
+    ops_accounts, _ops_ok = comptabilite.comptes_operations_actifs()
+    trust_accounts, _trust_ok = comptabilite.comptes_fideicommis_actifs()
+    dossier_id = request.form.get("dossier_id", "").strip() if request.method == "POST" else request.args.get("dossier_id", "").strip()
+    dossier = get_dossier(dossier_id) if dossier_id else None
+    form_clients = dossier.get("clients", []) if dossier else []
+    form_dossier_display = (
+        f"{dossier.get('file_number', '')} — {dossier.get('title', '')}"
+        if dossier else ""
+    )
+    if request.method == "GET":
+        return render_template(
+            "administration/advance_transfer_form.html",
+            ops_accounts=ops_accounts, trust_accounts=trust_accounts,
+            errors=[], form={"dossier_id": dossier_id},
+            form_clients=form_clients,
+            form_dossier_display=form_dossier_display,
+            **_labels(),
+        )
+    f = request.form
+    report = comptabilite.enregistrer_virement_avances(
+        admin_account_id=f.get("admin_account_id", "").strip(),
+        trust_account_id=f.get("trust_account_id", "").strip(),
+        dossier_id=dossier_id,
+        client_id=f.get("client_id", "").strip(),
+        amount=_parse_cents(f.get("amount", "")) or 0,
+        date_value=_parse_date(f.get("date", "")),
+        method=f.get("method", "virement").strip(),
+        reference=f.get("reference", "").strip(),
+        description=f.get("description", "").strip(),
+    )
+    if report["errors"]:
+        return render_template(
+            "administration/advance_transfer_form.html",
+            ops_accounts=ops_accounts, trust_accounts=trust_accounts,
+            errors=report["errors"], form=f.to_dict(),
+            form_clients=form_clients,
+            form_dossier_display=form_dossier_display,
+            **_labels(),
+        ), 400
+    return redirect(url_for("admin_ledger.entry_detail", tx_id=report["admin_entry"]["id"]))
+
+
 # ── Receipts (pièce justificative) — direct-to-GCS ─────────────────────────
 
 
@@ -961,6 +1164,99 @@ def api_televersement():
     return jsonify({"url": url, "objet": objet})
 
 
+def _staged_receipt_uuid(objet: str, user_id: str) -> Optional[str]:
+    """Return the canonical UUIDv4 segment of a staged receipt path belonging
+    to *user_id*, else ``None``."""
+    user_id = storage_identity.require_uid(user_id)
+    if not objet.startswith(f"staging/{user_id}/"):
+        return None
+    segments = objet.split("/")
+    if (len(segments) != 4 or not segments[3]
+            or not is_canonical_uuid4(segments[2])):
+        return None
+    return segments[2]
+
+
+def _copy_and_attach_staged_receipt(
+    tx_id: str, objet: str, nom: str, dest_path: str, user_id: str,
+) -> tuple[Optional[dict], Optional[str], int]:
+    """Verify staged bytes, GCS-copy to *dest_path*, attach metadata, and
+    consume the staging blob. Returns ``(updated_entry, error_msg, http_status)``."""
+    bucket = storage.bucket()
+    try:
+        blob = bucket.blob(objet)
+        blob.reload()
+    except Exception as exc:
+        logger.error("admin: staging blob reload failed: %s", type(exc).__name__)
+        return None, "Fichier téléversé introuvable. Réessayez.", 422
+
+    def _consume_staging():
+        try:
+            blob.delete()
+        except Exception:
+            logger.warning("admin: staging cleanup failed")
+
+    ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
+    if ext not in RECEIPT_EXTENSIONS or int(blob.size or 0) > MAX_RECEIPT_SIZE:
+        _consume_staging()
+        return None, "Type ou taille de fichier non autorisé.", 422
+    try:
+        header = blob.download_as_bytes(start=0, end=511)
+    except Exception:
+        _consume_staging()
+        return None, "Lecture du fichier impossible. Réessayez.", 422
+    content_type, refus = al.receipt_content_type(nom, int(blob.size or 0), header)
+    if content_type is None:
+        _consume_staging()
+        return None, refus, 422
+
+    try:
+        dest = bucket.blob(dest_path)
+        token, _, _ = dest.rewrite(blob)
+        while token is not None:
+            token, _, _ = dest.rewrite(blob, token=token)
+        dest.content_type = content_type
+        dest.content_disposition = "attachment"
+        dest.patch()
+    except Exception as exc:
+        logger.error("admin: receipt rewrite failed: %s", type(exc).__name__)
+        _consume_staging()
+        return None, "Erreur lors de la sauvegarde. Réessayez.", 422
+
+    md5 = blob.md5_hash if isinstance(blob.md5_hash, str) else ""
+    updated, errors = al.attach_receipt(
+        tx_id, dest_path, nom, content_type, int(blob.size or 0), md5=md5,
+    )
+    _consume_staging()
+    if errors or updated is None:
+        return None, " ".join(errors) or "Sauvegarde impossible.", 422
+    previous = updated.get("_previous_receipt_path")
+    if previous and previous != dest_path:
+        try:
+            bucket.blob(previous).delete()
+        except Exception:
+            logger.warning("admin: previous receipt cleanup failed")
+    return updated, None, 200
+
+
+def _maybe_verser_recu_au_dossier(
+    tx_id: str, updated: dict, user_id: str, document_id: str,
+) -> Optional[str]:
+    """Auto-copy an admissible dossier-linked dépense receipt into Mandat › Déboursés."""
+    if not pieces_justificatives.admissible(updated):
+        return None
+    try:
+        versement = pieces_justificatives.verser_recu_au_dossier(
+            tx_id, user_id, document_id=document_id,
+        )
+    except Exception:
+        log_unexpected("admin: receipt copy to dossier failed", transaction_id=tx_id)
+        versement = None
+    if versement is None or versement.document is None:
+        return _versement_code(versement)
+    return None
+
+
 @admin_bp.route("/<tx_id>/api/recu", methods=["POST"])
 @login_required
 def api_recu(tx_id: str):
@@ -976,119 +1272,30 @@ def api_recu(tx_id: str):
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
         return jsonify({"erreur": storage_identity.public_message(exc)}), 503
-    if not objet.startswith(f"staging/{user_id}/"):
-        return jsonify({"erreur": "Requête invalide."}), 400
-    # staging/{uid}/{uuid4}/{nom} — EXACTEMENT la forme que frappe
-    # api_televersement ci-dessus, et que routes/documents.api_finaliser
-    # exige déjà. Le seul préfixe laissait classer comme pièce justificative
-    # l'objet d'un billet de téléversement du connecteur
-    # (staging/{uid}/mcp/{billet}/upload{ext}) — sans le contrôle de taille
-    # et d'empreinte du billet, sans son échéance, sans claim_ticket — et le
-    # CONSOMMAIT, si bien que finalize_upload répondait ensuite « rien
-    # reçu ». Même chose pour une archive staging/{uid}/exports/… : refusées
-    # ici, avant tout reload ni delete.
-    segments = objet.split("/")
-    if (len(segments) != 4 or not segments[3]
-            or not is_canonical_uuid4(segments[2])):
+    seg_uuid = _staged_receipt_uuid(objet, user_id)
+    if not seg_uuid:
         return jsonify({"erreur": "Requête invalide."}), 400
     entry = al.get_transaction(tx_id)
     if entry is None:
         return jsonify({"erreur": "Écriture introuvable."}), 404
-
-    bucket = storage.bucket()
-    try:
-        blob = bucket.blob(objet)
-        blob.reload()
-    except Exception as exc:
-        # The class only, never the traceback (the « incertain » lot,
-        # 2026-11-06): a Storage error's text names the object, whose last
-        # segment is the uploaded file's name.
-        logger.error("admin: staging blob reload failed: %s",
-                     type(exc).__name__)
-        return jsonify({"erreur": "Fichier téléversé introuvable. Réessayez."}), 422
-
-    def _consume_staging():
-        try:
-            blob.delete()
-        except Exception:
-            logger.warning("admin: staging cleanup failed")
-
-    ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
-    if ext not in RECEIPT_EXTENSIONS or int(blob.size or 0) > MAX_RECEIPT_SIZE:
-        _consume_staging()
-        return jsonify({"erreur": "Type ou taille de fichier non autorisé."}), 422
-    try:
-        header = blob.download_as_bytes(start=0, end=511)
-    except Exception:
-        _consume_staging()
-        return jsonify({"erreur": "Lecture du fichier impossible. Réessayez."}), 422
-    # The one judgement of a receipt's bytes, shared with the connector's
-    # door (models/admin_ledger.receipt_content_type).
-    content_type, refus = al.receipt_content_type(nom, int(blob.size or 0), header)
-    if content_type is None:
-        _consume_staging()
-        return jsonify({"erreur": refus}), 422
 
     safe = secure_filename("".join(ch for ch in nom if ch.isprintable())) or "recu"
     # Under the staging upload's own uuid (2026-11-10): a web upload never
     # lands on another receipt's object — not one the connector replaced and
     # KEPT (models/admin_ledger.attach_uploaded_receipt), not an earlier web
     # one of the same name.
-    dest_path = f"users/{user_id}/administration/{tx_id}/{segments[2]}/{safe}"
-    try:
-        dest = bucket.blob(dest_path)
-        token, _, _ = dest.rewrite(blob)
-        while token is not None:
-            token, _, _ = dest.rewrite(blob, token=token)
-        dest.content_type = content_type
-        dest.content_disposition = "attachment"
-        dest.patch()
-    except Exception as exc:
-        # The class only, never the traceback: the error's text names the
-        # staging object or the entry's copy, both ending in the file's name.
-        logger.error("admin: receipt rewrite failed: %s", type(exc).__name__)
-        _consume_staging()
-        return jsonify({"erreur": "Erreur lors de la sauvegarde. Réessayez."}), 422
-
-    # The receipt's MD5 travels with it (the staging object's — the firm
-    # copy holds the same bytes): it names WHICH receipt the entry carries,
-    # so its copy in the dossier is told apart from a replaced one's.
-    md5 = blob.md5_hash if isinstance(blob.md5_hash, str) else ""
-    updated, errors = al.attach_receipt(
-        tx_id, dest_path, nom, content_type, int(blob.size or 0), md5=md5,
+    dest_path = f"users/{user_id}/administration/{tx_id}/{seg_uuid}/{safe}"
+    updated, err_msg, status_code = _copy_and_attach_staged_receipt(
+        tx_id, objet, nom, dest_path, user_id,
     )
-    _consume_staging()
-    if errors or updated is None:
-        return jsonify({"erreur": " ".join(errors) or "Sauvegarde impossible."}), 422
-    previous = updated.get("_previous_receipt_path")
-    if previous and previous != dest_path:
-        try:
-            bucket.blob(previous).delete()
-        except Exception:
-            logger.warning("admin: previous receipt cleanup failed")
-    # The page to return to is built HERE, on success too: the upload
-    # widget navigates to it rather than reloading, so a banner an earlier
-    # failure left in the address (?avertissement=versement) never
-    # survives a receipt that was filed.
+    if err_msg or updated is None:
+        return jsonify({"erreur": err_msg}), status_code
+
     suivant = url_for("admin_ledger.entry_detail", tx_id=tx_id)
-    if pieces_justificatives.admissible(updated):
-        # A dépense of a dossier: its COPY goes to the dossier's « Mandat ›
-        # Déboursés », under the staging object's id (validated above), so
-        # a retried finalization lands on ONE document. The receipt IS
-        # attached whatever happens here: a failure is a banner on the
-        # entry page, never an error the upload widget would show as
-        # « refusé ».
-        try:
-            versement = pieces_justificatives.verser_recu_au_dossier(
-                tx_id, user_id, document_id=segments[2],
-            )
-        except Exception:
-            log_unexpected("admin: receipt copy to dossier failed",
-                           transaction_id=tx_id)
-            versement = None
-        if versement is None or versement.document is None:
-            suivant = url_for("admin_ledger.entry_detail", tx_id=tx_id,
-                              avertissement=_versement_code(versement))
+    avert = _maybe_verser_recu_au_dossier(tx_id, updated, user_id, seg_uuid)
+    if avert:
+        suivant = url_for("admin_ledger.entry_detail", tx_id=tx_id,
+                          avertissement=avert)
     return jsonify({"ok": True, "suivant": suivant})
 
 
@@ -1474,12 +1681,12 @@ def _ventilation_signed(tx: dict) -> tuple:
     return sign * n, sign * g, sign * q
 
 
-def _export_rows(txs: list[dict], soldes) -> list[dict]:
+def _export_rows(txs: list[dict], soldes, *, include_account: bool = False) -> list[dict]:
     """Project entries for the CSV. ``soldes`` is the running-balance list
-    (aligned with txs) or None — a filtered export leaves the Solde column
-    BLANK rather than printing a false running figure. « * » flags an
-    en_circulation row on the date, the trust convention. Ventilation via
-    :func:`_ventilation_signed` (a reversed dépense NETS)."""
+    (aligned with txs) or None — a filtered or combined export leaves the
+    Solde column BLANK rather than printing a false running figure. « * »
+    flags an en_circulation row on the date, the trust convention.
+    Ventilation via :func:`_ventilation_signed` (a reversed dépense NETS)."""
     out = []
     for i, tx in enumerate(txs):
         d = al._as_utc(tx.get("date"))
@@ -1489,7 +1696,7 @@ def _export_rows(txs: list[dict], soldes) -> list[dict]:
         direction = tx.get("direction", "")
         amount = int(tx.get("amount") or 0)
         net, tps, tvq = _ventilation_signed(tx)
-        out.append({
+        row = {
             "date": s,
             "counterparty": tx.get("counterparty", ""),
             "nature": KIND_LABELS.get(tx.get("kind", ""), tx.get("kind", "")),
@@ -1505,7 +1712,10 @@ def _export_rows(txs: list[dict], soldes) -> list[dict]:
             "debours": amount if direction == "déboursé" else None,
             "solde": soldes[i] if soldes is not None else None,
             "description": tx.get("description", ""),
-        })
+        }
+        if include_account:
+            row["account_name"] = tx.get("_account_name", "")
+        out.append(row)
     return out
 
 
@@ -1534,13 +1744,21 @@ def _account_line(account: dict) -> str:
 @login_required
 def journal_export(fmt: str):
     account_id = request.args.get("account_id", "").strip()
-    account = al.get_account(account_id) if account_id else None
-    if account is None:
+    is_all_accounts = account_id == ALL_ACCOUNTS_FILTER
+    accounts: list[dict] = []
+    account = None
+    if is_all_accounts:
         accounts = al.list_accounts()
         if not accounts:
             return "Aucun compte", 404
-        account = accounts[0]
-        account_id = account["id"]
+    else:
+        account = al.get_account(account_id) if account_id else None
+        if account is None:
+            accounts = al.list_accounts()
+            if not accounts:
+                return "Aucun compte", 404
+            account = accounts[0]
+            account_id = account["id"]
     status = request.args.get("status") or None
     kind = request.args.get("kind") or None
     category = request.args.get("category") or None
@@ -1554,27 +1772,44 @@ def journal_export(fmt: str):
         category = None
 
     if fmt == "pdf":
-        return _journal_pdf(account, account_id, date_from, date_to)
+        return _journal_pdf(account, account_id, date_from, date_to, accounts=accounts)
     if fmt != "csv":
         return "Format non supporté", 400
 
-    try:
-        rows, truncated = al.list_register(account_id, date_from, date_to)
-    except Exception:
-        log_unexpected("admin register read failed")
-        return "Lecture du registre impossible. Réessayez.", 503
-    filtered = bool(status or kind or category)
-    soldes = None
-    if not filtered and not truncated:
+    if is_all_accounts:
+        rows = []
+        truncated = False
+        for a in accounts:
+            try:
+                part, part_trunc = al.list_register(a["id"], date_from, date_to)
+            except Exception:
+                log_unexpected("admin combined register read failed",
+                               account_id=a["id"])
+                return "Lecture du registre impossible. Réessayez.", 503
+            truncated = truncated or part_trunc
+            for r in part:
+                r["_account_name"] = a.get("name", "")
+            rows.extend(part)
+        rows.sort(key=_combined_sort_key)
+        soldes = None
+    else:
         try:
-            opening, _had = (
-                al.opening_ledger_balance(account_id, date_from)
-                if date_from is not None else (0, False)
-            )
-            soldes = al.running_balances(rows, opening=opening)
+            rows, truncated = al.list_register(account_id, date_from, date_to)
         except Exception:
-            log_unexpected("admin export balance computation failed")
-            soldes = None
+            log_unexpected("admin register read failed")
+            return "Lecture du registre impossible. Réessayez.", 503
+        filtered = bool(status or kind or category)
+        soldes = None
+        if not filtered and not truncated:
+            try:
+                opening, _had = (
+                    al.opening_ledger_balance(account_id, date_from)
+                    if date_from is not None else (0, False)
+                )
+                soldes = al.running_balances(rows, opening=opening)
+            except Exception:
+                log_unexpected("admin export balance computation failed")
+                soldes = None
     if status:
         rows = [r for r in rows if r.get("status") == status]
         soldes = None
@@ -1590,7 +1825,7 @@ def journal_export(fmt: str):
                            row_count=len(rows))
     from utils.export_csv import export_csv
 
-    export_rows = _export_rows(rows, soldes)
+    export_rows = _export_rows(rows, soldes, include_account=is_all_accounts)
     if truncated:
         # The screen banners and the PDF prints its avertissement — the CSV
         # must carry its own marker, or an incomplete export is
@@ -1602,13 +1837,20 @@ def journal_export(fmt: str):
                 "la période demandée."
             ),
         })
+    columns = (
+        [("account_name", "Compte"), *_CSV_COLUMNS]
+        if is_all_accounts else _CSV_COLUMNS
+    )
+    suffix = "tous_" if is_all_accounts else ""
     return export_csv(
-        rows=export_rows, columns=_CSV_COLUMNS,
-        filename=f"journal_administration_{day}.csv", cents_fields=_CENTS_KEYS,
+        rows=export_rows, columns=columns,
+        filename=f"journal_administration_{suffix}{day}.csv",
+        cents_fields=_CENTS_KEYS,
     )
 
 
-def _journal_pdf(account: dict, account_id: str, date_from, date_to):
+def _journal_pdf(account: Optional[dict], account_id: str, date_from, date_to,
+                 *, accounts: Optional[list[dict]] = None):
     """The legal-landscape journal. Like the trust register it deliberately
     IGNORES the content filters (a book of account is complete — only a
     complete one lets « report + Σ recettes − Σ déboursés = solde de
@@ -1616,22 +1858,56 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     notice rather than a generic error page."""
     from utils.admin_journal_pdf import build_admin_journal_pdf
 
+    is_all_accounts = account is None
     notices: list[str] = []
-    try:
-        txs, truncated = al.list_register(account_id, date_from=date_from, date_to=date_to)
-    except Exception:
-        log_unexpected("admin register read failed")
-        txs, truncated = [], False
-        notices.append(
-            "AVERTISSEMENT : les inscriptions n'ont pas pu être lues. Ce "
-            "document ne contient AUCUNE inscription — cela ne signifie "
-            "pas que la période est vide. Ne l'utilisez pas comme registre."
-        )
+    if is_all_accounts:
+        txs = []
+        truncated = False
+        read_failed = False
+        for a in (accounts or []):
+            try:
+                part, part_trunc = al.list_register(
+                    a["id"], date_from=date_from, date_to=date_to,
+                )
+            except Exception:
+                log_unexpected("admin combined register read failed",
+                               account_id=a["id"])
+                read_failed = True
+                break
+            truncated = truncated or part_trunc
+            for r in part:
+                r["_account_name"] = a.get("name", "")
+            txs.extend(part)
+        if read_failed:
+            txs, truncated = [], False
+            notices.append(
+                "AVERTISSEMENT : les inscriptions d'un compte n'ont pas pu être "
+                "lues. Ce document est INCOMPLET — ne l'utilisez pas comme registre."
+            )
+        else:
+            txs.sort(key=_combined_sort_key)
+    else:
+        try:
+            txs, truncated = al.list_register(account_id, date_from=date_from, date_to=date_to)
+        except Exception:
+            log_unexpected("admin register read failed")
+            txs, truncated = [], False
+            notices.append(
+                "AVERTISSEMENT : les inscriptions n'ont pas pu être lues. Ce "
+                "document ne contient AUCUNE inscription — cela ne signifie "
+                "pas que la période est vide. Ne l'utilisez pas comme registre."
+            )
 
     opening_cents = None
     opening_label = ""
     soldes = None
-    if not truncated:
+    if is_all_accounts:
+        notices.append(
+            "Vue combinée (Opérations et Carte de crédit) : la colonne « Solde » "
+            "est laissée vide par nature ; consultez le journal de chaque compte "
+            "pour le solde courant."
+        )
+    elif not truncated:
         try:
             if date_from is not None:
                 carried, had_prior = al.opening_ledger_balance(account_id, date_from)
@@ -1665,16 +1941,18 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
         direction = tx.get("direction", "")
         amount = int(tx.get("amount") or 0)
         net, tps, tvq = _ventilation_signed(tx)
+        cat_label = (ADMIN_CATEGORY_LABELS.get(tx.get("category") or "", "")
+                     or KIND_LABELS.get(tx.get("kind", ""), tx.get("kind", "")))
+        if is_all_accounts and tx.get("_account_name"):
+            cat_label = f"{cat_label} [{tx['_account_name']}]"
         rows.append({
             "date": d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "",
             "counterparty": objet,
             # The sheet has no « Type » column (COLUMNS is pinned): a row
             # with no category — a recette, a card payment, a prélèvement,
             # an apport, a virement interne — says its nature there.
-            "categorie": (ADMIN_CATEGORY_LABELS.get(tx.get("category") or "", "")
-                          or KIND_LABELS.get(tx.get("kind", ""), tx.get("kind", ""))),
+            "categorie": cat_label,
             "facture": tx.get("supplier_invoice_ref", "") or tx.get("invoice_number", ""),
-            "mode": METHOD_LABELS.get(tx.get("method", ""), tx.get("method", "")),
             "net": net,
             "tps": tps,
             "tvq": tvq,
@@ -1694,11 +1972,16 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     log_admin_ledger_event("admin_export", format="pdf", account_id=account_id,
                            row_count=len(rows))
+    account_line = (
+        "Tous les comptes (Opérations + Carte de crédit)"
+        if is_all_accounts else _account_line(account)
+    )
+    suffix = "tous_" if is_all_accounts else ""
     return build_admin_journal_pdf(
         rows,
-        account_line=_account_line(account),
+        account_line=account_line,
         period=_journal_period_label(date_from, date_to),
-        filename=f"journal_administration_{day}.pdf",
+        filename=f"journal_administration_{suffix}{day}.pdf",
         opening_cents=opening_cents,
         opening_label=opening_label,
         tps_total=tps_total,

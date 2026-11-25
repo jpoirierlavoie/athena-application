@@ -146,21 +146,23 @@ _SEARCH_LIST_CLASS = "divide-y divide-gray-100"
 
 
 def standard_dossier_row(d: dict, extra_attrs: str = "") -> str:
-    """The default autocomplete <li>: data- attributes + n° / titre spans.
+    """The default autocomplete row: a ≥44 px <button type="button"> inside
+    <li> carrying data- attributes and n° / titre spans.
 
-    ``extra_attrs`` is a pre-escaped attribute string appended to the <li>
-    (e.g. time_expenses' ``data-dossier-rate``).
+    ``extra_attrs`` is a pre-escaped attribute string appended to the button
+    (e.g. time_expenses' ``data-dossier-rate`` or trust's ``data-clients``).
     """
     dossier_id = escape(d["id"])
     file_number = escape(d.get("file_number", ""))
     title = escape(d.get("title", ""))
     return (
-        f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
+        f'<li><button type="button"'
+        f' class="w-full text-left px-3 py-3 min-h-[44px] cursor-pointer hover:bg-gray-50 text-sm"'
         f' data-dossier-id="{dossier_id}"'
         f' data-dossier-file-number="{file_number}"'
         f' data-dossier-title="{title}"{extra_attrs}>'
         f'<span class="font-medium text-gray-900">{file_number}</span>'
-        f'<span class="text-gray-500 ml-1">{title}</span></li>'
+        f'<span class="text-gray-500 ml-1">{title}</span></button></li>'
     )
 
 

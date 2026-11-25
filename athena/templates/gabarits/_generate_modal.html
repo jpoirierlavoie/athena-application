@@ -56,7 +56,8 @@
                 hx-trigger="change"
                 hx-target="#gabarit-modal"
                 hx-swap="innerHTML"
-                hx-include=".gabarit-ctx">
+                hx-include=".gabarit-ctx"
+                hx-vals='{"switch_template": "1"}'>
           <option value="">Sélectionner un gabarit…</option>
           {% for t in templates %}
           <option value="{{ t.id }}" {{ 'selected' if template and template.id == t.id }}>{{ t.name }}</option>
@@ -98,6 +99,7 @@
       {% if template and fields is defined and fields is not none %}
       {% include "gabarits/_generate_fields.html" %}
       {% else %}
+      <input type="hidden" name="lang" value="{{ lang|default('fr') }}" class="gabarit-ctx">
       <div id="gabarit-champs">
         {% if refusal %}
         <p role="alert" class="text-sm text-red-600 py-4">{{ refusal }}</p>

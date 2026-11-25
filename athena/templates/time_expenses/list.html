@@ -7,16 +7,26 @@
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Temps & Dépenses</h1>
     <div class="hidden md:flex items-center gap-2">
-      <a href="{{ url_for('time_expenses.time_entry_new') }}"
-         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        {{ ms('add', 16) }}
-        Nouvelle entrée
-      </a>
-      <a href="{{ url_for('time_expenses.expense_new') }}"
-         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        {{ ms('add', 16) }}
-        Nouvelle dépense
-      </a>
+      <div class="relative" x-data="{ addOpen: false }" @click.outside="addOpen = false">
+        <button type="button"
+                @click="addOpen = !addOpen"
+                :aria-expanded="addOpen"
+                aria-label="Ajouter" title="Ajouter"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          {{ ms('add', 20) }}<span class="sr-only">Ajouter</span>
+        </button>
+        <div x-show="addOpen" x-cloak
+             class="absolute right-0 mt-1.5 w-48 bg-white rounded-xl border border-gray-200 shadow-lg py-1 z-20">
+          <a href="{{ url_for('time_expenses.time_entry_new') }}"
+             class="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+            {{ ms('schedule', 16) }} Entrée de temps
+          </a>
+          <a href="{{ url_for('time_expenses.expense_new') }}"
+             class="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+            {{ ms('payments', 16) }} Dépense
+          </a>
+        </div>
+      </div>
       <div id="export-dropdown">
         {% if active_tab == 'depenses' %}
           {% set csv_url = url_for('time_expenses.export_expense_csv_route', dossier_id=dossier_id, filter=billable_filter, date_from=date_from, date_to=date_to) %}

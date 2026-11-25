@@ -644,6 +644,13 @@ TRANSITIONS: dict[str, tuple[tuple[str, ...], str, str]] = {
         "tests/test_mcp_accounting.py::"
         "test_a_stale_web_reversal_of_a_fee_payment_the_connector_reversed_is_refused",
     ),
+    "advance_transfer": (
+        ("reverse_advance_transfer",),
+        "an advance transfer is reversed whole — trust leg and ops leg — "
+        "inside one transaction that re-reads each and checks etag/status",
+        "tests/test_lot_c_features.py::"
+        "test_a_stale_web_reversal_of_an_advance_transfer_the_connector_reversed_is_refused",
+    ),
 }
 
 # ``upload``/``ingest``/``copy``/``ensure`` since lot 2A (T8): the

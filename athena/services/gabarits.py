@@ -200,11 +200,14 @@ def fill(
 
 
 def output_names(
-    template: dict, dossier: Optional[dict], today: date
+    template: dict, dossier: Optional[dict], today: date, *, lang: str = "fr"
 ) -> tuple[str, str]:
     """``(display_name, filename)`` of a generated document:
     ``"REF - YYYY-MM-DD - Projet Nom"`` and its safe ``.docx`` filename."""
-    return projet_names(dossier, template.get("name", "Gabarit"), today)
+    base = template.get("name", "Gabarit")
+    if lang == "en":
+        base = f"{base} (EN)"
+    return projet_names(dossier, base, today)
 
 
 def projet_names(
@@ -222,8 +225,13 @@ def projet_names(
     return display, out_name
 
 
-def generated_from(template: dict) -> str:
+def generated_from(template: dict, *, lang: str = "fr") -> str:
     """The machine provenance a generated document carries (``genere_depuis``)."""
+    if lang == "en":
+        return (
+            f"Généré depuis le gabarit «{template.get('name', '')}» "
+            f"v{template.get('en_version', 1)} (EN)"
+        )
     return (f"Généré depuis le gabarit «{template.get('name', '')}» "
             f"v{template.get('version', 1)}")
 
@@ -235,6 +243,7 @@ def save_into_projets(
     filled: bytes,
     uid: str,
     today: date,
+    lang: str = "fr",
 ) -> dict:
     """File *filled* in *dossier*'s « Projets » folder; return the document.
 
@@ -248,12 +257,13 @@ def save_into_projets(
     could not be obtained — the document is NEVER saved at the dossier root
     instead, which the old ``get_or_create_folder`` path did on its None).
     """
-    display, out_name = output_names(template, dossier, today)
+    lang_kw = {"lang": "en"} if lang == "en" else {}
+    display, out_name = output_names(template, dossier, today, **lang_kw)
     doc, _folder = save_generated(
         dossier=dossier, filled=filled, uid=uid,
         display_name=display, filename=out_name,
         category=template.get("category", "autre"),
-        genere_depuis=generated_from(template),
+        genere_depuis=generated_from(template, **lang_kw),
         tags=("gabarit",),
     )
     return doc

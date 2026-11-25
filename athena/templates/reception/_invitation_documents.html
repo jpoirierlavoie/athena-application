@@ -16,20 +16,27 @@
      max_file_mb          : taille maximale par fichier
      + le contexte de _invitation_pied.html
 #}
-<p>Bonjour,</p>
+{% extends "reception/_courriel_cadre.html" %}
+{% block email_kicker %}Transmission de documents{% endblock %}
+{% block email_body %}
+<p style="margin: 0 0 12px 0;">Bonjour,</p>
 
 {# display_label_phrase = le libellé SANS son éventuel préfixe « Dossier »,
    dérivé par le Python : le libellé par défaut est « Dossier {n°} », et la
    phrase disait « du dossier Dossier 2026-001 ». #}
-<p>Dans le cadre du dossier {{ display_label_phrase }}, vous êtes invité(e) à
-transmettre vos documents de façon sécurisée par le lien suivant :
-<a href="{{ lien }}">transmettre mes documents</a>.</p>
+<p style="margin: 0 0 14px 0;">Dans le cadre du dossier {{ display_label_phrase }}, vous êtes invité(e) à
+transmettre vos documents de façon sécurisée&nbsp;:</p>
+
+<p style="margin: 16px 0;">
+  <a href="{{ lien }}" style="display: inline-block; background-color: #111827; color: #FFFFFF; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; font-size: 14px;">transmettre mes documents</a>
+</p>
 
 {# Même énumération, mot pour mot, que la page du portail et son erreur 422
    (client/templates/documents.html, client/routes.py) — l'omission
    audio/vidéo réparée le 2026-08-11 en ajoutant courriels + ZIP. #}
-<p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office,
+<p style="margin: 0 0 12px 0; padding: 10px 12px; background-color: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 6px; font-size: 13px; color: #374151;">Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office,
 texte, courriels (EML, MSG), archives ZIP, audio et vidéo ; taille maximale
 de {{ max_file_mb }} Mo par fichier.</p>
 
 {% include "reception/_invitation_pied.html" %}
+{% endblock %}

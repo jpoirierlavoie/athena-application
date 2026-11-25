@@ -12,15 +12,15 @@
   {# ── Back ──────────────────────────────────────────────────── #}
   {% if protocol and protocol.id is defined and protocol.id %}
   <a href="{{ url_for('protocols.protocol_detail', protocol_id=protocol.id) }}"
-     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
-    {{ ms('chevron_left', 16) }}
-    Protocole
+     class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 mb-6"
+     aria-label="Retour au protocole" title="Protocole">
+    {{ ms('arrow_back', 20) }}<span class="sr-only">Protocole</span>
   </a>
   {% elif dossier %}
   <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) }}"
-     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
-    {{ ms('chevron_left', 16) }}
-    {{ dossier.file_number }} — {{ dossier.title }}
+     class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 mb-6"
+     aria-label="Retour au dossier {{ dossier.file_number }}" title="{{ dossier.file_number }} — {{ dossier.title }}">
+    {{ ms('arrow_back', 20) }}<span class="sr-only">{{ dossier.file_number }} — {{ dossier.title }}</span>
   </a>
   {% endif %}
 
@@ -133,6 +133,28 @@
           </div>
         </label>
 
+        {# Préjudiciaire (brouillon) #}
+        <label class="relative cursor-pointer">
+          <input type="radio" name="protocol_type" value="prejudiciaire"
+                 x-model="protocolType"
+                 class="peer sr-only"
+                 {{ 'checked' if (protocol and protocol.protocol_type == 'prejudiciaire') or (not protocol and dossier and dossier.forum_type == 'prejudiciaire') }}>
+          <div class="p-4 rounded-xl border-2 transition-colors
+                      peer-checked:border-indigo-500 peer-checked:bg-indigo-50
+                      border-gray-200 hover:border-gray-300">
+            <div class="flex items-start gap-3">
+              <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-700 mt-0.5 flex-shrink-0">Préj.</span>
+              <div>
+                <p class="text-sm font-semibold text-gray-900">Préjudiciaire (brouillon)</p>
+                <p class="text-xs text-gray-500 mt-1">Rubriques proposées avant l'introduction d'instance : prescription et avis préalables, mise en demeure, négociation / PRD, décision d'intenter l'action.</p>
+                {% if regime_mismatches and regime_mismatches.get('prejudiciaire') %}
+                <p class="text-xs font-medium text-amber-700 mt-1">Ce dossier porte déjà un numéro judiciaire : privilégiez un protocole d'instance.</p>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </label>
+
       </div>
     </div>
     {% endif %}
@@ -150,7 +172,7 @@
     <div>
       <label for="start_date" class="block text-sm font-medium text-gray-700 mb-1">Date de début *</label>
       <input type="date" id="start_date" name="start_date"
-             value="{{ protocol.start_date.strftime('%Y-%m-%d') if protocol and protocol.start_date and protocol.start_date.strftime is defined else '' }}"
+             value="{{ protocol.start_date.strftime('%Y-%m-%d') if protocol and protocol.start_date and protocol.start_date.strftime is defined else (default_start_date if default_start_date is defined else '') }}"
              required
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       <div class="mt-1.5">
@@ -163,8 +185,27 @@
         <p x-show="protocolType === 'conventionnel'" x-cloak class="text-xs text-gray-500">
           Date de référence pour le protocole. Vous définirez les échéances de chaque étape manuellement.
         </p>
+        <p x-show="protocolType === 'prejudiciaire'" x-cloak class="text-xs text-gray-500">
+          Créé au statut brouillon avec les rubriques préjudiciaires proposées ; activez-le lorsque le suivi démarre.
+        </p>
       </div>
     </div>
+
+    {# ── Mode de mise en état / inscription ────────────────────── #}
+    {% if not protocol or protocol.protocol_type in ('cq_simplifié', 'cs_ordinaire', 'conventionnel') %}
+    <div x-show="!protocolType || protocolType === 'cq_simplifié' || protocolType === 'cs_ordinaire' || protocolType === 'conventionnel'">
+      <label for="inscription_variation" class="block text-sm font-medium text-gray-700 mb-1">Mode de mise en état / inscription</label>
+      <select id="inscription_variation" name="inscription_variation"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        <option value="">À déterminer</option>
+        {% for key, item in inscription_variations.items() %}
+        <option value="{{ key }}" {{ 'selected' if protocol and protocol.inscription_variation == key }}>
+          {{ item.label }} ({{ item.reference }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
 
     {# ── Status (edit mode only) ───────────────────────────────── #}
     {% if edit_mode is defined and edit_mode %}

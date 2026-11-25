@@ -170,8 +170,14 @@ def build_bench(fake, set_attr) -> dict:
                       counterparty="Banque Exemple")
     e["b4"] = _entry(ops, "recette_autre", 1234, _d(8, 12), counterparty="Banque Exemple")
     leg = _ok(al.create_card_payment(ops["id"], card["id"], 30000, _d(8, 18), "virement"))
-    e["carte"] = fake.peek(f"admin_transactions/{leg['id']}")
-    e["volet"] = fake.peek(f"admin_transactions/{leg['related_transaction_id']}")
+    # Historical pre-Lot-C card payments in the migration bench were born en_circulation
+    # so moving the date forward (18 -> 19) tests reclassify's pair-move without colliding
+    # with cleared_date.
+    for _k, _lid in (("carte", leg["id"]), ("volet", leg["related_transaction_id"])):
+        _row = {k: v for k, v in fake.peek(f"admin_transactions/{_lid}").items() if k != "cleared_via"}
+        _row.update({"status": "en_circulation", "cleared_date": None})
+        fake.external_write(f"admin_transactions/{_lid}", _row)
+        e[_k] = fake.peek(f"admin_transactions/{_lid}")
     e["c"] = _entry(ops, "dépense", 650, _d(8, 20), category="intérêts",
                     counterparty="Banqe Exemple")
     e["e"] = _entry(ops, "recette_autre", 2000, _d(8, 22), counterparty="Client Exemple",

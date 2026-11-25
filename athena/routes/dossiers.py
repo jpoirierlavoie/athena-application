@@ -60,12 +60,22 @@ from models.task import (
     list_tasks,
 )
 from models.protocol import (
+    INSCRIPTION_VARIATIONS,
+    KEY_MILESTONE_LABELS,
     PROTOCOL_TYPE_COLORS,
     PROTOCOL_TYPE_SHORT_LABELS,
+    STATUS_LABELS as PROTOCOL_STATUS_LABELS,
+    TRACK_INSTANCE,
     check_overdue_steps,
+    ensure_ouverture_protocol,
+    get_ouverture_protocol_for_dossier,
     get_protocol,
     get_protocol_summary,
     list_protocols_for_dossier,
+    pretrial_headings_for,
+    resolve_step_actor_badge,
+    sync_ouverture_conflict_step,
+    track_of,
 )
 from models.document import (
     CATEGORY_LABELS as DOCUMENT_CATEGORY_LABELS,
@@ -75,9 +85,13 @@ from models.document import (
 )
 from models import folder as folder_model
 from models.folder import list_folders
+from models.partie import display_name as partie_display_name, get_partie
+from models.record_ids import is_addressable_id
 from models.dossier import (
+    CONFLICT_NOTHING_TO_CONFIRM,
     DELETE_FAILED,
     DELETE_NOT_FOUND,
+    DOSSIER_NOT_FOUND,
     DOMAINE_LABELS,
     FEE_TYPE_LABELS,
     FORUM_TYPE_LABELS,
@@ -89,6 +103,7 @@ from models.dossier import (
     ROLE_LABELS,
     SIGNIFICATION_MODE_LABELS,
     STATUS_LABELS,
+    confirm_dossier_conflict_check,
     count_dossiers_page,
     create_dossier,
     delete_dossier,
@@ -101,14 +116,15 @@ from models.dossier import (
     suggest_file_number,
     update_dossier,
 )
-from models import reference
+from models import concurrency, reference
 from models.reference import list_forums
-from utils import taxonomie
+from utils import kyc, taxonomie
+from utils.cabinet import cabinet_dict
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires_parts, retention_date
 from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input, redirect_after_post
-from utils.format_fr import parse_cents_or_none
+from utils.format_fr import format_date_fr, parse_cents_or_none
 from utils.logging_setup import log_dossier_event, log_unexpected
 
 dossiers_bp = Blueprint(
@@ -232,6 +248,10 @@ def _form_data() -> dict:
         ),
         "prescription_notes": f.get("prescription_notes", "").strip(),
     }
+    if "conflict_check" in f:
+        data["conflict_check"] = f.get("conflict_check", "").strip()
+    if "conflict_check_notes" in f:
+        data["conflict_check_notes"] = f.get("conflict_check_notes", "").strip()
     normalize_forum(data)
     return data
 
@@ -324,6 +344,11 @@ def _template_context() -> dict:
         "prescription_labels": PRESCRIPTION_LABELS,
         "prescription_event_labels": PRESCRIPTION_EVENT_LABELS,
         "signification_mode_labels": SIGNIFICATION_MODE_LABELS,
+        "conflict_choices": kyc.choices(kyc.FIELD_CONFLICT),
+        "conflict_todo": kyc.NON_VERIFIE,
+        "inscription_variations": INSCRIPTION_VARIATIONS,
+        "key_milestone_labels": KEY_MILESTONE_LABELS,
+        "protocol_status_labels": PROTOCOL_STATUS_LABELS,
     }
 
 
@@ -563,6 +588,7 @@ _DETAIL_MESSAGES = {
         "L'arborescence par défaut est en place — il ne reste rien à créer "
         "ni à ranger."
     ),
+    "conflit_confirme": "Vérification des conflits d'intérêts confirmée.",
 }
 _DETAIL_ERRORS = {
     "dav_resync": (
@@ -598,6 +624,15 @@ _DETAIL_ERRORS = {
         "L'arborescence par défaut n'a pas pu être créée ou complétée — "
         "réessayez dans un instant ; les dossiers déjà en place ne sont "
         "jamais dupliqués."
+    ),
+    "conflit_stale": (
+        "Le dossier a changé depuis son affichage — rien n'a été confirmé. "
+        "Relisez-le, puis confirmez de nouveau."
+    ),
+    "conflit_rien": CONFLICT_NOTHING_TO_CONFIRM,
+    "conflit_echec": (
+        "La vérification des conflits d'intérêts n'a pas pu être confirmée. "
+        "Veuillez réessayer."
     ),
 }
 _DETAIL_WARNINGS = {
@@ -699,12 +734,70 @@ def _dav_warning_code(old_status: Optional[str], saved_status: str) -> str:
     return "dav_fermeture"
 
 
+_CONFLICT_BADGES = {
+    kyc.NON_VERIFIE: "bg-gray-100 text-gray-600",
+    "vérifié": "bg-green-100 text-green-700",
+    "conflit_détecté": "bg-red-100 text-red-700",
+}
+_CONFLICT_PRESUMED_BADGE = "bg-amber-100 text-amber-700"
+
+
+def _conflict_day(value) -> str:
+    local = to_mtl(value) if value else None
+    return format_date_fr(local.date()) if local else ""
+
+
+def _conflict_view(dossier: Optional[dict]) -> dict:
+    """Conformité / conflit d'intérêts view model for Aperçu & Ouverture."""
+    if not isinstance(dossier, dict):
+        return {
+            "status": kyc.NON_VERIFIE,
+            "label": kyc.STATUS_LABELS[kyc.NON_VERIFIE],
+            "badge": _CONFLICT_BADGES[kyc.NON_VERIFIE],
+            "presumed": False,
+            "attribution": "",
+            "notes": "",
+        }
+    field = kyc.FIELD_CONFLICT
+    signer = str((cabinet_dict() or {}).get("juriste") or "").strip()
+    by = f" par {signer}" if signer else ""
+    status = kyc.stored_status(dossier, field)
+    presumed = kyc.is_presumed(dossier, field)
+    label = kyc.STATUS_LABELS.get(status, status)
+    badge = _CONFLICT_BADGES.get(status, "bg-gray-100 text-gray-600")
+    if presumed:
+        label = f"{label} (présumé)"
+        if status != "conflit_détecté":
+            badge = _CONFLICT_PRESUMED_BADGE
+    inscribed = _conflict_day(dossier.get(kyc.date_key(field)))
+    attribution = ""
+    if status in kyc.DECIDED[field]:
+        if presumed:
+            attribution = (
+                f"inscrit par Claude le {inscribed} — à confirmer"
+                if inscribed else "inscrit par Claude — à confirmer"
+            )
+        elif kyc.source_of(dossier, field) == kyc.SOURCE_MCP:
+            confirmed = _conflict_day(dossier.get(kyc.confirmed_at_key(field)))
+            attribution = (
+                f"confirmé le {confirmed}{by}" if confirmed else f"confirmé{by}"
+            )
+            if inscribed:
+                attribution += f" (inscrit par Claude le {inscribed})"
+        elif inscribed:
+            attribution = f"le {inscribed}{by}"
+    return {
+        "status": status,
+        "label": label,
+        "badge": badge,
+        "presumed": presumed,
+        "attribution": attribution,
+        "notes": str(dossier.get(kyc.notes_key(field)) or ""),
+    }
+
+
 def _apercu_card_context(dossier: dict) -> dict:
-    """Derived values the Aperçu tab's four cards consume (Juridiction /
-    Recours / Prescription / Mandat) — computed route-side so the template
-    stays logic-free. The cards moved from detail.html into the apercu leaf
-    (user decision 2026-07-23), taking these with them.
-    """
+    """Derived values the Aperçu tab's cards consume — computed route-side."""
     return {
         "value_class": compute_class(dossier.get("valeur")),
         # (type label, rate) — the card greys the rate in parentheses;
@@ -719,6 +812,7 @@ def _apercu_card_context(dossier: dict) -> dict:
         "action_niveau_decheance": taxonomie.niveau_decheance(
             dossier.get("action", "")
         ),
+        "conflict_view": _conflict_view(dossier),
     }
 
 
@@ -801,39 +895,60 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     # get_protocol_summary, each with its own reads).
     if tab_name == "protocole":
         all_protocols = list_protocols_for_dossier(dossier_id)
+        instance_protos = [
+            p for p in all_protocols if track_of(p) == TRACK_INSTANCE
+        ]
+        # Prefer active instance protocol; fall back to a draft (brouillon)
+        # préjudiciaire proposal when no active instance protocol exists yet.
         active_meta = next(
-            (p for p in all_protocols if p.get("status") == "actif"), None
+            (p for p in instance_protos if p.get("status") == "actif"), None
+        ) or next(
+            (p for p in instance_protos if p.get("status") == "brouillon"), None
         )
         active_protocol = None
         if active_meta:
-            # Flips first (check_overdue_steps writes), then ONE fresh read.
-            check_overdue_steps(active_meta["id"])
+            if active_meta.get("status") == "actif":
+                check_overdue_steps(active_meta["id"])
             active_protocol = get_protocol(active_meta["id"])
 
-        # Historical protocols (completed/suspended)
+        ouverture_protocol = get_ouverture_protocol_for_dossier(dossier_id)
+        if ouverture_protocol and ouverture_protocol.get("status") == "actif":
+            check_overdue_steps(ouverture_protocol["id"])
+            ouverture_protocol = get_protocol(ouverture_protocol["id"])
+
+        # Historical protocols (completed/suspended instance protocols)
         historical_protocols = [
-            p for p in all_protocols
+            p for p in instance_protos
             if p.get("status") in ("complété", "suspendu")
         ]
 
-        # Route-computed lateness (Montréal day, prorogued) — the template
-        # used to compare datetimes against a wall-clock « now » injection.
-        if active_protocol:
-            today = deadlines.today_mtl()
-            for s in active_protocol.get("steps", []):
+        # Route-computed lateness (Montréal day, prorogued) & actor badges
+        today = deadlines.today_mtl()
+        for proto_obj in (active_protocol, ouverture_protocol):
+            if not proto_obj:
+                continue
+            for s in proto_obj.get("steps", []):
                 s["_overdue"] = s.get(
                     "status"
                 ) != "complété" and deadlines.is_past_due(
                     s.get("deadline_date"), today=today
                 )
+                s["_actor_badge"] = resolve_step_actor_badge(s, dossier)
 
         ctx["protocol"] = active_protocol
+        ctx["ouverture_protocol"] = ouverture_protocol
         ctx["historical_protocols"] = historical_protocols
         ctx["protocol_summary"] = get_protocol_summary(
             dossier_id, protocol=active_protocol, protocols=all_protocols
         )
         ctx["protocol_type_colors"] = PROTOCOL_TYPE_COLORS
         ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS
+        ctx["pretrial_headings"] = pretrial_headings_for(active_protocol)
+        ctx["conflict_view"] = _conflict_view(dossier)
+        ctx["can_create_prejudiciaire"] = (
+            dossier.get("forum_type") == "prejudiciaire"
+            and active_protocol is None
+        )
 
     # Load file/folder data for the documents (Fichiers) tab (counters removed
     # July 2026 — no summary aggregation, no per-folder _count_items N+1)
@@ -970,13 +1085,42 @@ def dossier_analyse_init(dossier_id: str) -> str:
 # ── Create ────────────────────────────────────────────────────────────────
 
 
+def _conflict_form_context(dossier: Optional[dict]) -> dict:
+    """Conflict-check select/presumed state for ``dossiers/form.html``."""
+    selected = kyc.stored_status(dossier, kyc.FIELD_CONFLICT) if dossier else kyc.NON_VERIFIE
+    return {
+        "conflict_selected": selected,
+        "conflict_presumed": (
+            kyc.is_presumed(dossier, kyc.FIELD_CONFLICT) if dossier else False
+        ),
+    }
+
+
 @dossiers_bp.route("/new")
 @login_required
 def dossier_new() -> str:
-    """Render the empty dossier form."""
+    """Render the empty dossier form (optional ``?client_id=`` prefill)."""
     suggested = suggest_file_number()
+    prefill = None
+    client_id = request.args.get("client_id", "").strip()
+    if client_id and is_addressable_id(client_id):
+        partie = get_partie(client_id)
+        if partie:
+            prefill = {
+                "clients": [{
+                    "id": client_id,
+                    "name": partie_display_name(partie),
+                    "roles": [],
+                    "avocat_id": "",
+                    "avocat_name": "",
+                }],
+                "opposing_parties": [],
+            }
     ctx = _template_context()
-    ctx.update(dossier=None, errors=[], suggested_file_number=suggested)
+    ctx.update(
+        dossier=prefill, errors=[], suggested_file_number=suggested,
+        **_conflict_form_context(prefill),
+    )
     return render_template("dossiers/form.html", **ctx)
 
 
@@ -985,7 +1129,8 @@ def dossier_new() -> str:
 def dossier_create() -> str:
     """Handle new dossier form submission."""
     data = _form_data()
-    dossier, errors = create_dossier(data)
+    dossier_kw = {"kyc_source": kyc.SOURCE_JURISTE} if "conflict_check" in data else {}
+    dossier, errors = create_dossier(data, **dossier_kw)
 
     if errors:
         ctx = _template_context()
@@ -993,6 +1138,7 @@ def dossier_create() -> str:
             dossier=data,
             errors=errors,
             suggested_file_number=data.get("file_number", ""),
+            **_conflict_form_context(data),
         )
         return render_template("dossiers/form.html", **ctx)
 
@@ -1007,6 +1153,11 @@ def dossier_create() -> str:
         log_unexpected("default folder tree failed at dossier creation",
                        dossier_id=new_id)
         tree_ok = False
+    try:
+        ensure_ouverture_protocol(new_id, dossier=dossier)
+    except Exception:
+        log_unexpected("ouverture protocol failed at dossier creation",
+                       dossier_id=new_id)
     params = {} if tree_ok else {"tab": "documents",
                                  "avertissement": "arborescence"}
     return redirect_after_post(
@@ -1029,6 +1180,7 @@ def dossier_edit(dossier_id: str) -> str:
         dossier=dossier,
         errors=[],
         suggested_file_number=dossier.get("file_number", ""),
+        **_conflict_form_context(dossier),
     )
     return render_template("dossiers/form.html", **ctx)
 
@@ -1079,9 +1231,12 @@ def dossier_update(dossier_id: str) -> str:
 
     expected = edit_conflict.submitted_etag()
     data = _form_data()
+    dossier_kw = {"kyc_source": kyc.SOURCE_JURISTE} if "conflict_check" in data else {}
     result = dossier_dav.run_status_transition(
         dossier_id, old_status, data.get("status", ""),
-        lambda: update_dossier(dossier_id, data, expected_etag=expected),
+        lambda: update_dossier(
+            dossier_id, data, expected_etag=expected, **dossier_kw,
+        ),
         reconcile_always=False,
     )
     dossier, errors = result.doc, result.errors
@@ -1103,8 +1258,12 @@ def dossier_update(dossier_id: str) -> str:
             errors=errors,
             conflict=conflict,
             suggested_file_number=data.get("file_number", ""),
+            **_conflict_form_context(data),
         )
         return render_template("dossiers/form.html", **ctx)
+
+    if "conflict_check" in data and dossier:
+        sync_ouverture_conflict_step(dossier_id, dossier)
 
     # The status is written. When its DavX5 drain or restore could not
     # finish, the detail page says so and offers the resync — a success
@@ -1116,6 +1275,36 @@ def dossier_update(dossier_id: str) -> str:
             old_status, str((dossier or {}).get("status") or ""))
     return redirect_after_post(url_for(
         "dossiers.dossier_detail", dossier_id=dossier_id, **params))
+
+
+@dossiers_bp.route("/<dossier_id>/conflit/confirmer", methods=["POST"])
+@login_required
+def dossier_confirm_conflict(dossier_id: str) -> Response:
+    """Confirm a presumed dossier-level conflict check as the lawyer."""
+    if not dossier_id.strip():
+        return redirect(url_for("dossiers.dossier_list"))
+    expected = edit_conflict.submitted_etag()
+    doc, errors = confirm_dossier_conflict_check(
+        dossier_id, par=kyc.SOURCE_JURISTE, expected_etag=expected,
+    )
+    if errors:
+        if errors == [DOSSIER_NOT_FOUND]:
+            return redirect_after_post(url_for("dossiers.dossier_list"))
+        if concurrency.is_stale(errors):
+            code = "conflit_stale"
+        elif CONFLICT_NOTHING_TO_CONFIRM in errors:
+            code = "conflit_rien"
+        else:
+            code = "conflit_echec"
+        return redirect_after_post(url_for(
+            "dossiers.dossier_detail", dossier_id=dossier_id, erreur=code,
+        ))
+    sync_ouverture_conflict_step(dossier_id, doc)
+    log_dossier_event("dossier_conflict_confirmed", dossier_id)
+    return redirect_after_post(url_for(
+        "dossiers.dossier_detail", dossier_id=dossier_id,
+        message="conflit_confirme",
+    ))
 
 
 @dossiers_bp.route("/<dossier_id>/dav/resync", methods=["POST"])

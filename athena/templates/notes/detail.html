@@ -8,9 +8,10 @@
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ return_to or url_for('notes.note_list') }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      {{ 'Retour' if return_to else 'Notes' }}
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+       aria-label="{{ 'Retour' if return_to else 'Retour aux notes' }}"
+       title="{{ 'Retour' if return_to else 'Notes' }}">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">{{ 'Retour' if return_to else 'Notes' }}</span>
     </a>
     <div class="flex items-center gap-2">
       <form method="post" action="{{ url_for('notes.note_pin', note_id=note.id) }}">
@@ -22,20 +23,20 @@
                 title="{{ 'Désépingler' if note.pinned else 'Épingler' }}"
                 aria-label="{{ 'Désépingler' if note.pinned else 'Épingler' }}"
                 aria-pressed="{{ 'true' if note.pinned else 'false' }}"
-                class="inline-flex items-center justify-center p-2 {{ 'text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100' if note.pinned else 'text-gray-700 bg-white border-gray-300 hover:bg-gray-50' }} border rounded-lg">
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 {{ 'text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100' if note.pinned else 'text-gray-700 bg-white border-gray-300 hover:bg-gray-50' }} border rounded-lg">
           {{ ms('bookmark', 20, fill=note.pinned) }}
         </button>
       </form>
       <a href="{{ url_for('notes.note_edit', note_id=note.id, return_to=return_to or None) }}"
          title="Modifier"
          aria-label="Modifier"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('edit', 20) }}
       </a>
       <button @click="deleteOpen = true"
               title="Supprimer"
               aria-label="Supprimer"
-              class="inline-flex items-center justify-center p-2 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
         {{ ms('delete', 20) }}
       </button>
     </div>
@@ -129,21 +130,33 @@
   {% endif %}
   <div class="flex gap-2 mb-4">
     <a href="{{ url_for('tasks.task_new', dossier_id=note.dossier_id, related_note_id=note.id) }}"
-       class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-      {{ ms('add', 16) }}
-      Créer une tâche liée
+       aria-label="Créer une tâche liée" title="Créer une tâche liée"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      {{ ms('assignment', 20) }}<span class="sr-only">Créer une tâche liée</span>
     </a>
     {# Impression via le gabarit « Note (impression) » — POST navigateur
        ordinaire (jamais HTMX : la réponse est une pièce jointe .docx). #}
     <form method="post" action="{{ url_for('notes.note_gabarit_docx', note_id=note.id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit"
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        {{ ms('print', 16) }}
-        Imprimer (Word)
+              aria-label="Imprimer (Word)" title="Imprimer (Word)"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('print', 20) }}<span class="sr-only">Imprimer (Word)</span>
       </button>
     </form>
   </div>
+
+  {# ── Linked hearing ──────────────────────────────────────────── #}
+  {% if linked_hearing %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Événement lié</h2>
+    <a href="{{ url_for('hearings.hearing_detail', hearing_id=linked_hearing.id) }}"
+       class="inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-700">
+      {{ ms('calendar_month', 16) }}
+      <span>{{ linked_hearing.title }}{% if linked_hearing.start_datetime and linked_hearing.start_datetime.strftime is defined %} · {{ (linked_hearing.start_datetime if linked_hearing.all_day else (linked_hearing.start_datetime|to_mtl)).strftime('%Y-%m-%d') }}{% endif %}</span>
+    </a>
+  </div>
+  {% endif %}
 
   {# ── Linked tasks ───────────────────────────────────────────── #}
   {% if linked_tasks %}

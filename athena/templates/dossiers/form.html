@@ -135,9 +135,9 @@
   {# ── Header ──────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) if dossier and dossier.id else url_for('dossiers.dossier_list') }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      Retour
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+       aria-label="Retour" title="Retour">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">Retour</span>
     </a>
     <h1 class="text-lg font-semibold text-gray-900">
       {{ 'Modifier le dossier' if dossier and dossier.id else 'Nouveau dossier' }}
@@ -638,6 +638,27 @@
         <label class="block text-sm text-gray-700 mb-1">Notes</label>
         <textarea name="fee_notes" rows="3" placeholder="Détails de l'entente d'honoraires…"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ dossier.fee_notes if dossier else '' }}</textarea>
+      </div>
+
+      <div class="mt-4 pt-4 border-t border-gray-200 grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label for="dossier-conflict-check" class="block text-sm text-gray-700 mb-1">Conflit d'intérêts au dossier</label>
+          <select id="dossier-conflict-check" name="conflict_check"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% for cle, libelle in conflict_choices %}
+            <option value="{{ cle }}" {{ 'selected' if conflict_selected == cle }}>{{ libelle }}</option>
+            {% endfor %}
+          </select>
+          {% if conflict_presumed %}
+          <p class="text-xs text-amber-700 mt-1">Inscrit par Claude — à confirmer depuis l'onglet Aperçu. Changer le statut ici vaut décision du juriste.</p>
+          {% endif %}
+        </div>
+        <div>
+          <label for="dossier-conflict-notes" class="block text-sm text-gray-700 mb-1">Notes (conflit d'intérêts)</label>
+          <textarea id="dossier-conflict-notes" name="conflict_check_notes" rows="2"
+                    placeholder="Vérification effectuée (parties, tiers)…"
+                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ dossier.conflict_check_notes if dossier and dossier.conflict_check_notes else '' }}</textarea>
+        </div>
       </div>
 
     </div>

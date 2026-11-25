@@ -804,7 +804,22 @@ def create_folder(
     if parent_id:
         _touch_folder(dossier_id, parent_id)
 
+    _dispatch_onedrive("sync_folder", dossier_id=dossier_id, folder_id=folder_id)
     return folder, []
+
+
+def _dispatch_onedrive(action: str, **payload) -> None:
+    """Best-effort post-commit async mirror dispatch (never raises)."""
+    try:
+        from services import miroir_onedrive
+
+        miroir_onedrive.enqueue_event(action, **payload)
+    except Exception as exc:
+        logger.warning(
+            "folder onedrive dispatch failed (%s): %s",
+            action,
+            type(exc).__name__,
+        )
 
 
 # ── The default tree: one planner, one writer ─────────────────────────────
@@ -1194,6 +1209,8 @@ def _ensure(
             # else is a refusal whose wording promises nothing either way.
             landed = _landed_plan(dossier_id, target, relocate)
             if landed is not None:
+                if landed.writes:
+                    _dispatch_onedrive("sync_dossier_tree", dossier_id=dossier_id)
                 return landed, []
             return _refused(dossier_id, target, [CREATE_ERROR])
     if committed is None:
@@ -1208,6 +1225,7 @@ def _ensure(
     for w in committed.writes:
         provenance.note_commit(COLLECTION, w.folder_id, idempotent=True)
     _log_tree_events(dossier_id, committed, target)
+    _dispatch_onedrive("sync_dossier_tree", dossier_id=dossier_id)
     return committed, []
 
 
@@ -1279,6 +1297,18 @@ def get_folder(dossier_id: str, folder_id: str) -> Optional[dict]:
                 return data
     except Exception as exc:
         logger.warning("get_folder failed for %s: %s", sanitize_log_value(folder_id), exc)
+    return None
+
+
+def get_folder_strict(dossier_id: str, folder_id: str) -> Optional[dict]:
+    """Fetch a folder strictly, verifying it belongs to *dossier_id* (raises on error)."""
+    if not is_addressable_id(dossier_id) or not is_addressable_id(folder_id):
+        return None
+    doc = db.collection(COLLECTION).document(folder_id).get()
+    if doc.exists:
+        data = doc.to_dict() or {}
+        if data.get("dossier_id") == dossier_id:
+            return data
     return None
 
 
@@ -1368,6 +1398,7 @@ def rename_folder(
         provenance.note_commit(COLLECTION, folder_id)
         if folder.get("parent_folder_id"):
             _touch_folder(dossier_id, folder["parent_folder_id"])
+        _dispatch_onedrive("sync_folder", dossier_id=dossier_id, folder_id=folder_id)
     return folder, [], changed
 
 
@@ -1446,6 +1477,7 @@ def move_folder(
     for parent in (old_parent, target):
         if parent:
             _touch_folder(dossier_id, parent)
+    _dispatch_onedrive("sync_folder", dossier_id=dossier_id, folder_id=folder_id)
     return folder, [], True
 
 
@@ -1741,6 +1773,24 @@ def delete_folder(
 
     if parent_id:
         _touch_folder(dossier_id, parent_id)
+
+    moved_ids = (
+        [d["id"] for d in documents if d.get("id")]
+        if contents == CONTENTS_MOVE
+        else []
+    )
+    deleted_ids = (
+        [d["id"] for d in supprimes if d.get("id")]
+        if contents == CONTENTS_DELETE
+        else []
+    )
+    _dispatch_onedrive(
+        "delete_folder",
+        dossier_id=dossier_id,
+        folder_ids=folder_ids,
+        moved_document_ids=moved_ids,
+        deleted_document_ids=deleted_ids,
+    )
 
     return True, "", {
         "folders": [folders_by_id.get(fid, {"id": fid}) for fid in folder_ids],

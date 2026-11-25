@@ -12,15 +12,11 @@
 {% set back_url = url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else (url_for('modeles.modele_list') if modele else url_for('doc_templates.template_list')) %}
 <div class="max-w-2xl mx-auto px-4 py-6">
 
+  {% set back_label = ('Fiche du modèle' if modele else 'Fiche du gabarit') if (edit_mode is defined and edit_mode and template and template.id) else ('Modèles' if modele else 'Gabarits') %}
   <a href="{{ back_url }}"
-     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
-    {{ ms('chevron_left', 16) }}
-    {#- A back link names where it leads: the record's page when editing. #}
-    {%- if edit_mode is defined and edit_mode and template and template.id %}
-    {{ 'Fiche du modèle' if modele else 'Fiche du gabarit' }}
-    {%- else %}
-    {{ 'Modèles' if modele else 'Gabarits' }}
-    {%- endif %}
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 py-2.5 min-h-[44px] mb-6">
+    {{ ms('arrow_back', 20) }}
+    {{ back_label }}
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
@@ -100,8 +96,13 @@
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1.5">
-        {{ 'Remplacer le fichier (facultatif)' if edit_mode is defined and edit_mode else 'Fichier .docx *' }}
+        {{ 'Remplacer le fichier FR (facultatif)' if edit_mode is defined and edit_mode else 'Fichier .docx (FR) *' }}
       </label>
+      {% if edit_mode is defined and edit_mode and template and template.original_filename %}
+      <p class="text-xs text-gray-500 mb-2">
+        Fichier FR actuel : {{ template.original_filename }} (v{{ template.version or 1 }}).
+      </p>
+      {% endif %}
       <input type="file" name="file" accept=".docx"
              {{ '' if edit_mode is defined and edit_mode else 'required' }}
              class="w-full text-sm text-gray-700">
@@ -123,6 +124,35 @@
         {% else %}
         Les champs seront extraits et affichés après le téléversement.
         {% endif %}
+        {% endif %}
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">
+        {% if edit_mode is defined and edit_mode and template and template.en_storage_path %}
+        Remplacer la version anglaise — EN (facultatif)
+        {% else %}
+        Version anglaise (.docx EN — facultatif)
+        {% endif %}
+      </label>
+      {% if edit_mode is defined and edit_mode and template and template.en_storage_path %}
+      <p class="text-xs text-gray-500 mb-2">
+        Fichier EN actuel : {{ template.en_original_filename or template.en_filename }}
+        (v{{ template.en_version or 1 }}{% if not modele %}, {{ (template.en_placeholders or [])|length }} champ{{ 's' if (template.en_placeholders or [])|length > 1 }}{% endif %}).
+      </p>
+      {% endif %}
+      <input type="file" name="en_file" accept=".docx"
+             class="w-full text-sm text-gray-700">
+      <p class="text-xs text-gray-400 mt-2">
+        {% if modele %}
+        Document Word (.docx) en anglais — 10 Mo max. Facultatif ; chaque
+        langue garde sa propre numérotation de versions.
+        {% else %}
+        Document Word (.docx) en anglais contenant les mêmes champs
+        <span class="font-medium">{{ '{{champ}}' }}</span> (noms identiques :
+        les dates, montants, rôles, formules de politesse et tribunaux
+        seront formatés en anglais). — 10 Mo max.
         {% endif %}
       </p>
     </div>

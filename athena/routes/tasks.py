@@ -42,8 +42,10 @@ from models.dossier import (
     get_dossier,
     get_dossiers_bulk,
 )
+from models.hearing import get_hearing, get_hearing_strict
+from models.record_ids import is_addressable_id
 from models.protocol import get_current_phase_for_dossier
-from utils import phases
+from utils import dav_classification, phases
 from routes import edit_conflict
 from routes._helpers import (
     dossier_search_fragment,
@@ -104,6 +106,9 @@ def _template_context() -> dict:
         "phases_payload": phases.form_payload(),
         "phase_labels": phases.PHASE_LABELS,
         "sous_phase_labels": phases.SOUS_PHASE_LABELS,
+        "valid_classifications": dav_classification.VALID_CLASSIFICATIONS,
+        "classification_labels": dav_classification.CLASSIFICATION_LABELS_FR,
+        "effective_classification": dav_classification.effective_classification,
         "today": datetime.now(MTL).strftime("%Y-%m-%d"),
     }
 
@@ -138,7 +143,7 @@ def _enrich_dossier_info(data: dict) -> tuple[dict, list[str]]:
 def _form_data() -> dict:
     """Extract task fields from the submitted form."""
     f = request.form
-    return {
+    data = {
         "dossier_id": f.get("dossier_id", "").strip() or None,
         "title": f.get("title", "").strip(),
         "description": f.get("description", "").strip(),
@@ -150,6 +155,37 @@ def _form_data() -> dict:
         "due_date": _parse_date(f.get("due_date", "")),
         "related_note_id": f.get("related_note_id", "").strip() or None,
     }
+    if "hearing_id" in f:
+        data["hearing_id"] = f.get("hearing_id", "").strip() or None
+    raw_cls = f.get("classification", "").strip()
+    if raw_cls:
+        data["classification"] = raw_cls
+    return data
+
+
+def _validate_hearing_link(
+    hearing_id: str | None,
+    dossier_id: str | None,
+    *,
+    allow_missing: bool = False,
+) -> tuple[dict | None, list[str]]:
+    """Verify optional *hearing_id* exists (strictly) and matches *dossier_id*."""
+    if not hearing_id:
+        return None, []
+    if not is_addressable_id(hearing_id):
+        return None, ["Événement du calendrier invalide."]
+    try:
+        hearing = get_hearing_strict(hearing_id)
+    except Exception:
+        return None, [READ_UNAVAILABLE_ERROR]
+    if not hearing:
+        if allow_missing:
+            return None, []
+        return None, ["Événement du calendrier introuvable."]
+    h_dossier = hearing.get("dossier_id") or ""
+    if h_dossier and (dossier_id or "") != h_dossier:
+        return hearing, ["Cette tâche n'appartient pas au même dossier que l'événement."]
+    return hearing, []
 
 
 # ── Dossier search (for autocomplete in forms) ───────────────────────────
@@ -286,9 +322,11 @@ def task_list() -> str:
 def task_new() -> str:
     """Render the empty task form."""
     ctx = _template_context()
-    dossier_id = request.args.get("dossier_id", "")
-    related_note_id = request.args.get("related_note_id", "")
+    dossier_id = request.args.get("dossier_id", "").strip()
+    related_note_id = request.args.get("related_note_id", "").strip()
+    hearing_id = request.args.get("hearing_id", "").strip()
     prefilled = None
+    linked_hearing = get_hearing(hearing_id) if hearing_id else None
 
     if related_note_id:
         from models.note import get_note
@@ -303,7 +341,17 @@ def task_new() -> str:
                 "dossier_title": dossier.get("title", "") if dossier else "",
             }
 
-    if not prefilled and dossier_id:
+    if linked_hearing:
+        h_dossier_id = linked_hearing.get("dossier_id", "") or dossier_id
+        dossier = get_dossier(h_dossier_id) if h_dossier_id else None
+        prefilled = {
+            **(prefilled or {}),
+            "hearing_id": linked_hearing["id"],
+            "dossier_id": h_dossier_id or "",
+            "dossier_file_number": dossier.get("file_number", "") if dossier else "",
+            "dossier_title": dossier.get("title", "") if dossier else "",
+        }
+    elif not prefilled and dossier_id:
         dossier = get_dossier(dossier_id)
         if dossier:
             prefilled = {
@@ -321,7 +369,9 @@ def task_new() -> str:
         ctx.update(phase_default=phase_default, sous_phase_default=sous_default)
 
     ctx.update(
-        task=prefilled, errors=[],
+        task=prefilled,
+        linked_hearing=linked_hearing,
+        errors=[],
         return_to=safe_internal_redirect(request.args.get("return_to"), ""),
     )
     return render_template("tasks/form.html", **ctx)
@@ -333,6 +383,10 @@ def task_create() -> str:
     """Handle new task form submission."""
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
+    linked_hearing, hearing_errors = _validate_hearing_link(
+        data.get("hearing_id"), data.get("dossier_id")
+    )
+    link_errors = link_errors + hearing_errors
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
     # Re-rendered at 200 like every refusal here: htmx swaps only 2xx.
@@ -342,7 +396,12 @@ def task_create() -> str:
         ctx = _template_context()
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(task=data, errors=errors, return_to=return_to)
+        ctx.update(
+            task=data,
+            linked_hearing=linked_hearing,
+            errors=errors,
+            return_to=return_to,
+        )
         return render_template("tasks/form.html", **ctx)
 
     bump_ctag(collection_for(task.get("dossier_id")))
@@ -380,6 +439,9 @@ def task_detail(task_id: str) -> str:
         from models.note import get_note
         related_note = get_note(task["related_note_id"])
     ctx["related_note"] = related_note
+    ctx["linked_hearing"] = (
+        get_hearing(task["hearing_id"]) if task.get("hearing_id") else None
+    )
 
     return render_template("tasks/detail.html", **ctx)
 
@@ -397,7 +459,11 @@ def task_edit(task_id: str) -> str:
 
     ctx = _template_context()
     ctx.update(
-        task=task, errors=[],
+        task=task,
+        linked_hearing=(
+            get_hearing(task["hearing_id"]) if task.get("hearing_id") else None
+        ),
+        errors=[],
         return_to=safe_internal_redirect(request.args.get("return_to"), ""),
     )
     return render_template("tasks/form.html", **ctx)
@@ -427,6 +493,24 @@ def task_update(task_id: str) -> str:
     link_errors = read_errors + link_errors
     return_to = safe_internal_redirect(request.form.get("return_to"), "")
 
+    effective_hearing_id = (
+        data["hearing_id"]
+        if "hearing_id" in data
+        else (existing_task.get("hearing_id") if existing_task else None)
+    )
+    linked_hearing = None
+    if not link_errors and effective_hearing_id:
+        existing_hid = (existing_task.get("hearing_id") if existing_task else None) or None
+        linked_hearing, hearing_errors = _validate_hearing_link(
+            effective_hearing_id,
+            data.get("dossier_id"),
+            allow_missing=(effective_hearing_id == existing_hid),
+        )
+        if not hearing_errors and linked_hearing is None:
+            data["hearing_id"] = None
+            effective_hearing_id = None
+        link_errors = link_errors + hearing_errors
+
     task, errors = (
         (None, link_errors) if link_errors
         else update_task(task_id, data, expected_etag=expected)
@@ -442,9 +526,17 @@ def task_update(task_id: str) -> str:
         data["id"] = task_id
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
+        if "hearing_id" not in data and existing_task:
+            data["hearing_id"] = existing_task.get("hearing_id")
+        if linked_hearing is None and effective_hearing_id:
+            linked_hearing = get_hearing(effective_hearing_id)
         ctx = _template_context()
         ctx.update(
-            task=data, errors=errors, conflict=conflict, return_to=return_to
+            task=data,
+            linked_hearing=linked_hearing,
+            errors=errors,
+            conflict=conflict,
+            return_to=return_to,
         )
         return render_template("tasks/form.html", **ctx)
 

@@ -11,15 +11,15 @@
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('dossiers.dossier_detail', dossier_id=protocol.dossier_id) }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      {{ protocol.dossier_file_number }}
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+       aria-label="Retour au dossier {{ protocol.dossier_file_number }}" title="Retour au dossier">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">{{ protocol.dossier_file_number }}</span>
     </a>
     <div class="flex items-center gap-2">
       <a href="{{ url_for('protocols.protocol_edit', protocol_id=protocol.id) }}"
          title="Modifier"
          aria-label="Modifier"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('edit', 20) }}
       </a>
     </div>
@@ -44,9 +44,23 @@
      d'offrir des boutons voués au refus. Seule exception, celle du
      modèle : rouvrir une étape complétée d'un protocole que la cascade a
      fermé (closed_by « auto ») le réactive. Classes : celles du rebond. #}
-  {% if not steps_editable %}
+  {% if is_inactive %}
   <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     {{ inactive_banner }}{% if steps_reopenable %} {{ auto_closed_hint }}{% endif %}
+  </div>
+  {% elif is_draft %}
+  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-wrap items-center justify-between gap-3">
+    <p class="text-sm text-amber-800">Ce protocole est un brouillon : personnalisez les rubriques proposées ou activez-le pour suivre l'exécution de ses étapes.</p>
+    <form method="post" action="{{ url_for('protocols.protocol_update', protocol_id=protocol.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="protocol_expected_etag" value="{{ protocol.etag or '' }}">
+      <input type="hidden" name="title" value="{{ protocol.title }}">
+      <input type="hidden" name="notes" value="{{ protocol.notes or '' }}">
+      <input type="hidden" name="status" value="actif">
+      <button type="submit" class="inline-flex items-center min-h-[44px] px-4 py-2 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Activer le protocole
+      </button>
+    </form>
   </div>
   {% endif %}
 
@@ -62,6 +76,7 @@
             {{ protocol_type_short_labels.get(protocol.protocol_type, protocol.protocol_type) }}
           </span>
           {% set proto_status_colors = {
+            'brouillon': 'bg-amber-100 text-amber-700',
             'actif': 'bg-green-100 text-green-700',
             'complété': 'bg-blue-100 text-blue-700',
             'suspendu': 'bg-amber-100 text-amber-700'
@@ -124,14 +139,50 @@
   </div>
   {% endif %}
 
+  {# ── Mise en état / Inscription variation ───────────────────────── #}
+  {% if is_instance_litigation %}
+  {% set cur_var = inscription_variations.get(protocol.inscription_variation) if protocol.inscription_variation else none %}
+  <div class="mb-4 p-4 bg-white rounded-xl border border-gray-200">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0 flex-1">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">Mode de mise en état / inscription</p>
+        {% if cur_var %}
+        <p class="text-sm font-semibold text-gray-900 mt-1">{{ cur_var.label }} <span class="text-xs font-normal text-gray-500">({{ cur_var.reference }})</span></p>
+        <p class="text-xs text-gray-500 mt-1">{{ cur_var.description }}</p>
+        {% if protocol.inscription_variation == 'unilaterale' %}
+        <p class="text-xs font-medium text-amber-700 mt-1">+ 15 jours pour ajouts ou retraits au dossier (art. 174 al. 2 C.p.c.){% if unilateral_reply_deadline %} — échéance estimée : {{ unilateral_reply_deadline.strftime('%Y-%m-%d') }}{% endif %}.</p>
+        {% endif %}
+        {% else %}
+        <p class="text-sm text-gray-500 mt-1">Non sélectionné (art. 174, 175 ou 535.13 C.p.c.).</p>
+        {% endif %}
+      </div>
+      <form method="post" action="{{ url_for('protocols.protocol_inscription_update', protocol_id=protocol.id) }}" class="flex items-center gap-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="protocol_expected_etag" value="{{ protocol.etag or '' }}">
+        <select name="inscription_variation" aria-label="Mode de mise en état"
+                class="px-3 py-2 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <option value="">À déterminer</option>
+          {% for key, item in inscription_variations.items() %}
+          <option value="{{ key }}" {{ 'selected' if protocol.inscription_variation == key }}>{{ item.label }} ({{ item.reference }})</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="inline-flex items-center min-h-[44px] px-3 py-2 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Enregistrer
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Timeline ──────────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-sm font-semibold text-gray-900">Étapes</h2>
       {% if steps_editable %}
       <button @click="addStepOpen = !addStepOpen"
-              class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
-        + Ajouter une étape
+              aria-label="Ajouter une étape" title="Ajouter une étape"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">
+        {{ ms('add', 20) }}<span class="sr-only">+ Ajouter une étape</span>
       </button>
       {% endif %}
     </div>
@@ -231,6 +282,7 @@
 
           {# Step card #}
           <div class="flex-1 min-w-0 p-4 rounded-xl border transition-colors
+                      {{ 'border-l-4 border-indigo-500 ' if step.key_milestone else '' }}
                       {{ 'border-green-200 bg-green-50/50' if is_completed else
                          'border-red-200 bg-red-50/50' if is_overdue else
                          'border-amber-200 bg-amber-50/50' if is_upcoming else
@@ -242,6 +294,16 @@
                   <span class="text-sm font-medium text-gray-900 {{ 'line-through opacity-60' if is_completed }}">
                     {{ step.title }}
                   </span>
+                  {% if step.key_milestone %}
+                  <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-indigo-100 text-indigo-700">
+                    Jalon clé
+                  </span>
+                  {% endif %}
+                  {% if step._actor_badge %}
+                  <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full {{ step._actor_badge.color }}">
+                    {{ step._actor_badge.label }}
+                  </span>
+                  {% endif %}
                   {# Lock icon for CQ mandatory steps #}
                   {% if step.deadline_locked %}
                   {# Icône porteuse de sens sans texte voisin : le libellé vit
@@ -275,11 +337,14 @@
                 {# Deadline + days remaining #}
                 {% if step.deadline_date and step.deadline_date.strftime is defined %}
                 {% set month_names = ['', 'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'] %}
-                <div class="flex items-center gap-2 mt-1.5">
+                <div class="flex items-center gap-2 mt-1.5 flex-wrap">
                   {{ ms('calendar_month', 14, 'text-red-500' if is_overdue else 'text-gray-400') }}
                   <span class="text-xs {{ 'text-red-600 font-semibold' if is_overdue else 'text-gray-600' }}">
                     {{ step.deadline_date.strftime('%d') }} {{ month_names[step.deadline_date.month] }} {{ step.deadline_date.strftime('%Y') }}
                   </span>
+                  {% if step.window_min_days and step.window_max_days %}
+                  <span class="text-xs text-gray-500">(fenêtre {{ step.window_min_days }} à {{ step.window_max_days }} jours)</span>
+                  {% endif %}
                   {% if step._days_remaining is not none and not is_completed %}
                   <span class="text-xs {{ 'text-red-600 font-semibold' if is_overdue else 'text-amber-600' if is_upcoming else 'text-gray-500' }}">
                     {% if step._days_remaining < 0 %}
@@ -301,6 +366,14 @@
                 <p class="text-xs text-gray-500 mt-1.5">{{ step.description }}</p>
                 {% endif %}
 
+                {# Conflict step dossier link #}
+                {% if step.ouverture_key == 'conflit' and dossier %}
+                <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) }}"
+                   class="inline-flex items-center gap-1 mt-1.5 text-xs text-indigo-600 hover:text-indigo-700">
+                  Vérification des conflits au dossier
+                </a>
+                {% endif %}
+
                 {# Notes #}
                 {% if step.notes %}
                 <p class="text-xs text-gray-400 mt-1 italic">{{ step.notes }}</p>
@@ -318,13 +391,8 @@
 
               {# Action buttons #}
               <div class="flex items-center gap-1 flex-shrink-0">
-                {# Complete/uncomplete button — posts the state it was
-                   RENDERED to reach, never « toggle »: a page left open
-                   while the phone or the connector changed the step can no
-                   longer do the opposite of what it shows. On a protocol
-                   that is not « actif », only the reopen of a completed
-                   step of an auto-closed protocol is offered (D17). #}
-                {% if steps_editable or (steps_reopenable and is_completed) %}
+                {# Complete/uncomplete button — active protocols or auto-closed reopen #}
+                {% if steps_completable or (steps_reopenable and is_completed) %}
                 <form method="post"
                       action="{{ url_for('protocols.step_complete', protocol_id=protocol.id, step_id=step.id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -332,7 +400,7 @@
                   <button type="submit"
                           title="{{ 'Rouvrir' if is_completed else 'Compléter' }}"
                           aria-label="{{ 'Rouvrir' if is_completed else 'Compléter' }}"
-                          class="p-1.5 rounded-lg transition-colors
+                          class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg transition-colors
                                  {{ 'text-green-600 hover:bg-green-100' if is_completed else 'text-gray-400 hover:bg-gray-100 hover:text-green-600' }}">
                     {{ ms('check', 20) }}
                   </button>
@@ -347,16 +415,16 @@
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit"
                           title="Supprimer"
-                          class="p-1.5 rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors">
-                    {{ ms('delete', 16) }}
+                          aria-label="Supprimer"
+                          class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors">
+                    {{ ms('delete', 20) }}
                   </button>
                 </form>
                 {% endif %}
               </div>
             </div>
 
-            {# Inline edit for deadline (CS / Conventionnel non-locked steps)
-               — « actif » protocols only (D17) #}
+            {# Inline edit for deadline / notes / draft headings #}
             {% if steps_editable and not step.deadline_locked and not is_completed %}
             <div x-show="editStepId === '{{ step.id }}'" x-cloak class="mt-3 pt-3 border-t border-gray-200">
               <form method="post"
@@ -364,6 +432,13 @@
                     class="flex flex-wrap items-end gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 {{ etag_field({'id': step.id, 'etag': sf.etag}) if sf else etag_field(step) }}
+                {% if not step.mandatory %}
+                <div class="w-full">
+                  <label class="block text-xs text-gray-500 mb-0.5">Rubrique / titre</label>
+                  <input type="text" name="title" value="{{ step.title }}" required
+                         class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                {% endif %}
                 <div class="flex-1 min-w-[140px]">
                   <label class="block text-xs text-gray-500 mb-0.5">Échéance</label>
                   <input type="date" name="deadline_date"
@@ -399,8 +474,9 @@
             </div>
             <button x-show="editStepId !== '{{ step.id }}'"
                     @click="editStepId = '{{ step.id }}'"
-                    class="mt-2 text-xs text-indigo-600 hover:text-indigo-700">
-              Modifier
+                    aria-label="Modifier l'étape" title="Modifier l'étape"
+                    class="mt-1 inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">
+              {{ ms('edit', 20) }}<span class="sr-only">Modifier</span>
             </button>
             {% elif steps_editable and not is_completed %}
             {# CQ locked steps can still edit notes #}
@@ -429,8 +505,9 @@
             </div>
             <button x-show="editStepId !== '{{ step.id }}'"
                     @click="editStepId = '{{ step.id }}'"
-                    class="mt-2 text-xs text-gray-500 hover:text-gray-700">
-              Ajouter une note
+                    aria-label="Ajouter une note" title="Ajouter une note"
+                    class="mt-1 inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100">
+              {{ ms('edit', 20) }}<span class="sr-only">Ajouter une note</span>
             </button>
             {% endif %}
           </div>
@@ -444,13 +521,55 @@
       <p class="text-sm text-gray-500 mb-3">Aucune étape dans ce protocole.</p>
       {% if steps_editable %}
       <button @click="addStepOpen = true"
-              class="text-sm font-medium text-indigo-600 hover:text-indigo-700">
-        + Ajouter une étape
+              aria-label="Ajouter une étape" title="Ajouter une étape"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">
+        {{ ms('add', 20) }}<span class="sr-only">+ Ajouter une étape</span>
       </button>
       {% endif %}
     </div>
     {% endif %}
   </div>
+
+  {# ── Pre-trial readiness draft block (art. 174 C.p.c.) ─────────── #}
+  {% if is_instance_litigation and pretrial_headings %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
+    <div class="mb-4">
+      <h2 class="text-sm font-semibold text-gray-900">Conférence préparatoire / Déclaration de mise en état (art. 174 C.p.c.) — brouillon</h2>
+      <p class="text-xs text-gray-500 mt-1">Rubriques proposées modifiables pour préparer l'instruction et la déclaration de mise en état.</p>
+    </div>
+    <form method="post" action="{{ url_for('protocols.protocol_pretrial_update', protocol_id=protocol.id) }}" class="space-y-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="protocol_expected_etag" value="{{ protocol.etag or '' }}">
+      {% for h in pretrial_headings %}
+      <div class="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+        <input type="hidden" name="heading_key" value="{{ h.key }}">
+        <div class="flex items-center gap-2">
+          <input type="checkbox" name="heading_completed" value="{{ loop.index0 }}"
+                 {{ 'checked' if h.completed }}
+                 class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+          <input type="text" name="heading_title" value="{{ h.title }}"
+                 placeholder="Titre de la rubrique"
+                 class="flex-1 px-2.5 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <textarea name="heading_notes" rows="2" placeholder="Précisions, pièces ou témoins à prévoir…"
+                  class="w-full px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ h.notes }}</textarea>
+      </div>
+      {% endfor %}
+      <div class="p-3 rounded-xl border border-dashed border-gray-300 space-y-2">
+        <p class="text-xs font-medium text-gray-500">Ajouter une rubrique</p>
+        <input type="text" name="new_heading_title" placeholder="Nouvelle rubrique de préparation…"
+               class="w-full px-2.5 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <input type="text" name="new_heading_notes" placeholder="Notes (optionnel)…"
+               class="w-full px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div class="flex justify-end">
+        <button type="submit" class="inline-flex items-center min-h-[44px] px-4 py-2 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Enregistrer la préparation (art. 174)
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
 
 </div>
 {% endblock %}

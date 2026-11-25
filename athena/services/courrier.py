@@ -25,6 +25,7 @@ from models import folder as folder_model
 from tz import mtl_to_utc, to_mtl
 from utils import courrier_apercu, email_text, graph_courrier, storage_identity
 from utils.logging_setup import log_courrier_event
+from utils.noms_fichiers import extraire_prefixe_dossier
 
 DEFAULT_NOMBRE = 5
 MAX_NOMBRE = 25
@@ -67,7 +68,6 @@ OUTLOOK_STATUTS: tuple[str, ...] = (
 )
 
 # Linear CWE-1333 regexes: explicit ASCII character classes, zero nested quantifiers.
-_DOSSIER_PREFIX_RE = re.compile(r"\A([0-9]{4}-[0-9]{3})(?:\Z|[\s\-–—_])")
 _DOSSIER_STRICT_RE = re.compile(r"\A[0-9]{4}-[0-9]{3}\Z")
 _DEPUIS_DATE_RE = re.compile(r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 _COTE_PIECE_RE = re.compile(r"\b([A-Z]{1,3}-[0-9]{1,4})\b")
@@ -130,12 +130,6 @@ __all__ = [
     "nettoyer_nom_piece",
     "suffixer_nom_conflit",
 ]
-
-
-def extraire_prefixe_dossier(nom: str) -> str:
-    """Extract a leading ``AAAA-NNN`` dossier number from a folder display name."""
-    match = _DOSSIER_PREFIX_RE.match(str(nom or "").strip())
-    return match.group(1) if match else ""
 
 
 def _parse_recu_mtl(raw_iso: Any) -> str:

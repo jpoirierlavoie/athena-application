@@ -1,5 +1,7 @@
 """Protocol management routes — create, detail, edit, steps, completion."""
 
+from datetime import datetime, timezone
+
 from flask import (
     Blueprint,
     redirect,
@@ -9,7 +11,7 @@ from flask import (
 )
 
 from auth import login_required
-from security import sanitize
+from security import safe_internal_redirect, sanitize
 from utils import deadlines, phases
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from models.audit_event import record_deletion
@@ -17,6 +19,8 @@ from models.concurrency import READ_UNAVAILABLE_ERROR
 from models.dossier import get_dossier
 from models.protocol import (
     CLOSED_BY_AUTO,
+    INSCRIPTION_VARIATIONS,
+    KEY_MILESTONE_LABELS,
     PROTOCOL_NOT_FOUND,
     PROTOCOL_TYPE_COLORS,
     PROTOCOL_TYPE_LABELS,
@@ -26,6 +30,7 @@ from models.protocol import (
     STEP_NOT_FOUND,
     STEP_STATUS_COLORS,
     STEP_STATUS_LABELS,
+    TRACK_INSTANCE,
     VALID_PROTOCOL_TYPES,
     VALID_STATUSES,
     check_overdue_steps,
@@ -36,7 +41,10 @@ from models.protocol import (
     get_protocol_for_dossier,
     get_protocol_strict,
     list_protocols,
+    pretrial_headings_for,
     regime_mismatch,
+    resolve_step_actor_badge,
+    track_of,
 )
 from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input, redirect_after_post
@@ -65,13 +73,16 @@ def _template_context() -> dict:
         # Phase O — the custom-step phase select + the step-row phase chip.
         "phase_labels": phases.PHASE_LABELS,
         "sous_phase_labels": phases.SOUS_PHASE_LABELS,
+        "inscription_variations": INSCRIPTION_VARIATIONS,
+        "key_milestone_labels": KEY_MILESTONE_LABELS,
     }
 
 
 def _regime_mismatches(dossier: dict | None) -> dict[str, bool]:
     """Per-template mismatch flags for the wizard's radio-card warnings."""
     return {
-        t: regime_mismatch(t, dossier) for t in PROTOCOL_TYPE_TRIBUNAL
+        t: regime_mismatch(t, dossier)
+        for t in (*PROTOCOL_TYPE_TRIBUNAL, "prejudiciaire")
     }
 
 
@@ -126,8 +137,11 @@ def protocol_new() -> str:
         )
 
     ctx = _template_context()
-    ctx.update(dossier=dossier, protocol=None, errors=[],
-               regime_mismatches=_regime_mismatches(dossier))
+    ctx.update(
+        dossier=dossier, protocol=None, errors=[],
+        regime_mismatches=_regime_mismatches(dossier),
+        default_start_date=deadlines.today_mtl().isoformat(),
+    )
     return render_template("protocols/form.html", **ctx)
 
 
@@ -139,7 +153,11 @@ def protocol_create() -> str:
     dossier_id = f.get("dossier_id", "").strip()
     protocol_type = f.get("protocol_type", "").strip()
     start_date = _parse_date(f.get("start_date", ""))
+    if protocol_type == "prejudiciaire" and start_date is None:
+        t = deadlines.today_mtl()
+        start_date = datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
     auto_create_tasks = f.get("auto_create_tasks") == "on"
+    inscription_variation = f.get("inscription_variation", "").strip()
 
     dossier = get_dossier(dossier_id) if dossier_id else None
     if not dossier:
@@ -154,6 +172,7 @@ def protocol_create() -> str:
     protocol, errors, report = protocol_service.create_protocol(
         dossier, protocol_type, start_date,
         title=f.get("title", ""), notes=f.get("notes", ""),
+        inscription_variation=inscription_variation,
         create_linked_tasks=auto_create_tasks,
     )
 
@@ -165,9 +184,11 @@ def protocol_create() -> str:
             "notes": f.get("notes", "").strip(),
             "protocol_type": protocol_type,
             "start_date": start_date,
+            "inscription_variation": inscription_variation,
         }
         ctx.update(dossier=dossier, protocol=shown, errors=errors,
-                   regime_mismatches=_regime_mismatches(dossier))
+                   regime_mismatches=_regime_mismatches(dossier),
+                   default_start_date=deadlines.today_mtl().isoformat())
         return render_template("protocols/form.html", **ctx)
 
     params = {}
@@ -234,31 +255,45 @@ def _render_detail(
     a validation error, the current one after a conflict (the banner then
     says why, and a second save is a deliberate overwrite).
     """
-    # Flips first (check_overdue_steps reads + writes internally), then ONE
-    # fresh read — the old read→check→reload chain streamed the whole steps
-    # subcollection three times per detail view. The flip is a derived
-    # stamp: it never regenerates a step's etag.
-    check_overdue_steps(protocol_id)
     protocol = get_protocol(protocol_id)
     if not protocol:
         return redirect(url_for("dossiers.dossier_list"))
+    if protocol.get("status") == "actif":
+        check_overdue_steps(protocol_id)
+        protocol = get_protocol(protocol_id)
+        if not protocol:
+            return redirect(url_for("dossiers.dossier_list"))
+
+    dossier = (
+        get_dossier(protocol["dossier_id"])
+        if protocol.get("dossier_id") else None
+    )
 
     ctx = _template_context()
     ctx["protocol"] = protocol
+    ctx["dossier"] = dossier
     ctx["erreur"] = erreur
     ctx["message"] = message
     ctx["conflict"] = conflict
     ctx["step_form"] = step_form
-    # The model's D17 rule, mirrored for the controls: add/edit only on an
-    # « actif » protocol; on one the cascade closed, the reopen button of a
-    # completed step stays (set_step_status reactivates the protocol).
+    # The model's D17 rule, mirrored for the controls: add/edit on « actif »
+    # or editable « brouillon » drafts; completion requires « actif », or
+    # reopening a completed step of a cascade-closed protocol.
     status = protocol.get("status", "")
-    ctx["steps_editable"] = status == "actif"
+    ctx["steps_editable"] = status in ("actif", "brouillon")
+    ctx["steps_completable"] = status == "actif"
+    ctx["is_draft"] = status == "brouillon"
+    ctx["is_inactive"] = status in ("suspendu", "complété")
     ctx["steps_reopenable"] = (
         status == "complété" and protocol.get("closed_by") == CLOSED_BY_AUTO
     )
     ctx["inactive_banner"] = INACTIVE_STEPS_BANNER
     ctx["auto_closed_hint"] = AUTO_CLOSED_REOPEN_HINT
+    ctx["pretrial_headings"] = pretrial_headings_for(protocol)
+    ctx["is_instance_litigation"] = (
+        track_of(protocol) == TRACK_INSTANCE
+        and protocol.get("protocol_type") != "prejudiciaire"
+    )
 
     # Compute progress
     steps = protocol.get("steps", [])
@@ -268,20 +303,27 @@ def _render_detail(
     ctx["steps_completed"] = completed
     ctx["steps_total"] = total
 
-    # Days remaining per step — Montréal day, prorogued deadline
-    # (utils.deadlines.days_until): due today = 0, and the count goes
-    # negative only once the step is truly late. Aligned with
-    # get_protocol_summary and the MCP is_overdue rule (2026-08-02).
+    # Days remaining + dynamic actor badge per step
     today = deadlines.today_mtl()
+    unilateral_reply_deadline = None
     for step in steps:
         deadline = step.get("deadline_date")
         if deadline and step.get("status") != "complété":
             step["_days_remaining"] = deadlines.days_until(deadline, today=today)
         else:
             step["_days_remaining"] = None
-        # « À modifier » + the confirmation box: the recompute's own test,
-        # never the raw flag (a notes-only save set it before lot 1a).
         step["_needs_confirmation"] = date_needs_confirmation(protocol, step)
+        step["_actor_badge"] = resolve_step_actor_badge(step, dossier)
+        if (
+            protocol.get("inscription_variation") == "unilaterale"
+            and step.get("key_milestone") == "inscription"
+            and deadline is not None
+        ):
+            base_date = deadline.date() if hasattr(deadline, "date") else deadline
+            unilateral_reply_deadline = deadlines.compute_deadline(
+                base_date, 15, direction="after",
+            )
+    ctx["unilateral_reply_deadline"] = unilateral_reply_deadline
 
     return render_template("protocols/detail.html", **ctx)
 
@@ -349,6 +391,12 @@ def _update_notice(report: dict) -> str:
     return " ".join(parts)
 
 
+def _protocol_submitted_etag() -> str | None:
+    if request.form.get(edit_conflict.FIELD) is not None:
+        return edit_conflict.submitted_etag()
+    return edit_conflict.submitted_etag("protocol_expected_etag")
+
+
 @protocols_bp.route("/<protocol_id>", methods=["POST"])
 @login_required
 def protocol_update(protocol_id: str) -> str:
@@ -360,12 +408,14 @@ def protocol_update(protocol_id: str) -> str:
     values, never overwritten. A start-date change recomputes the steps in
     the model's own write and carries their linked tasks along (service).
     """
-    expected = edit_conflict.submitted_etag()
+    expected = _protocol_submitted_etag()
     f = request.form
     data = {
         "title": f.get("title", "").strip(),
         "notes": f.get("notes", "").strip(),
     }
+    if "inscription_variation" in f:
+        data["inscription_variation"] = f.get("inscription_variation", "").strip()
     # Only when posted: the old default « actif » reactivated a completed or
     # suspended protocol on any save that did not carry the field.
     if f.get("status"):
@@ -400,9 +450,83 @@ def protocol_update(protocol_id: str) -> str:
         return render_template("protocols/form.html", **ctx)
 
     notice = _update_notice(report)
+    if f.get("status") == "actif" and protocol.get("status") == "brouillon":
+        notice = notice or "Protocole activé."
     return redirect_after_post(url_for(
         "protocols.protocol_detail", protocol_id=protocol_id,
         **({"message": notice} if notice else {})))
+
+
+def _back_url(protocol_id: str, **params) -> str:
+    base = safe_internal_redirect(
+        request.form.get("return_to", ""),
+        url_for("protocols.protocol_detail", protocol_id=protocol_id),
+    )
+    if params:
+        sep = "&" if "?" in base else "?"
+        from urllib.parse import urlencode
+        return base + sep + urlencode(params)
+    return base
+
+
+@protocols_bp.route("/<protocol_id>/inscription", methods=["POST"])
+@login_required
+def protocol_inscription_update(protocol_id: str) -> str:
+    """Update the setting-down (mise en état / inscription) variation."""
+    expected = _protocol_submitted_etag()
+    variation = request.form.get("inscription_variation", "").strip()
+    _updated, errors, _report = protocol_service.update_protocol(
+        protocol_id, {"inscription_variation": variation},
+        expected_etag=expected,
+    )
+    if errors:
+        return redirect_after_post(_back_url(
+            protocol_id, erreur=" ".join(errors),
+        ))
+    return redirect_after_post(_back_url(protocol_id))
+
+
+@protocols_bp.route("/<protocol_id>/preparation", methods=["POST"])
+@login_required
+def protocol_pretrial_update(protocol_id: str) -> str:
+    """Save editable Art. 174 C.p.c. pre-trial readiness proposed headings."""
+    expected = _protocol_submitted_etag()
+    f = request.form
+    keys = f.getlist("heading_key")
+    titles = f.getlist("heading_title")
+    notes_list = f.getlist("heading_notes")
+    checked = set(f.getlist("heading_completed"))
+    headings: list[dict] = []
+    for idx, raw_title in enumerate(titles):
+        title = raw_title.strip()
+        if not title:
+            continue
+        key = keys[idx].strip() if idx < len(keys) else f"item_{idx + 1}"
+        notes = notes_list[idx].strip() if idx < len(notes_list) else ""
+        headings.append({
+            "key": key or f"item_{idx + 1}",
+            "title": title,
+            "notes": notes,
+            "completed": str(idx) in checked or key in checked,
+        })
+    new_title = f.get("new_heading_title", "").strip()
+    if new_title:
+        headings.append({
+            "key": f"custom_{len(headings) + 1}",
+            "title": new_title,
+            "notes": f.get("new_heading_notes", "").strip(),
+            "completed": False,
+        })
+
+    _updated, errors, _report = protocol_service.update_protocol(
+        protocol_id, {"pretrial_headings": headings},
+        expected_etag=expected,
+    )
+    if errors:
+        return redirect_after_post(_back_url(
+            protocol_id, erreur=" ".join(errors),
+        ))
+    return redirect_after_post(_back_url(protocol_id))
 
 
 # ── Delete protocol ─────────────────────────────────────────────────────
@@ -514,6 +638,10 @@ def step_update(protocol_id: str, step_id: str) -> str:
         data["deadline_date"] = _parse_date(f.get("deadline_date", ""))
     if f.get("notes") is not None:
         data["notes"] = f.get("notes", "").strip()
+    if f.get("title") is not None:
+        data["title"] = f.get("title", "").strip()
+    if f.get("description") is not None:
+        data["description"] = f.get("description", "").strip()
     # A posted `status` is never forwarded: a step changes status through
     # the « Compléter / Rouvrir » button (set_step_status) only — a status
     # written here skipped the task cascade and the completion check, and
@@ -641,9 +769,7 @@ def step_complete(protocol_id: str, step_id: str) -> str:
         if notice:
             params["message"] = notice
 
-    return redirect_after_post(url_for(
-        "protocols.protocol_detail", protocol_id=protocol_id, **params
-    ))
+    return redirect_after_post(_back_url(protocol_id, **params))
 
 
 @protocols_bp.route("/<protocol_id>/steps/<step_id>/delete", methods=["POST"])

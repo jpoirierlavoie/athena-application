@@ -80,12 +80,12 @@
              class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
       <button type="submit"
               title="Créer le dossier" aria-label="Créer le dossier"
-              class="p-1.5 text-green-600 hover:text-green-700">
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-green-600 hover:text-green-700 rounded-lg">
         {{ ms('check', 20) }}
       </button>
       <button type="button" @click="creating = false"
               title="Annuler" aria-label="Annuler"
-              class="p-1.5 text-gray-400 hover:text-gray-600">
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-400 hover:text-gray-600 rounded-lg">
         {{ ms('close', 20) }}
       </button>
     </form>
@@ -94,15 +94,15 @@
     {# Racine unique obligatoire pour x-if — le bouton et le lien zip
        partagent l'enveloppe. À la racine du dossier, le zip couvre tout
        le dossier ; dans un sous-dossier, ce sous-arbre. #}
-    <div class="flex items-center gap-4">
+    <div class="flex items-center gap-2">
       <button @click="creating = true"
-              class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700">
+              class="inline-flex items-center gap-1.5 min-h-[44px] px-2 text-xs font-medium text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-50">
         {{ ms('add', 16) }}
         Nouveau dossier
       </button>
       <a href="{{ url_for('documents.folder_zip', dossier_id=dossier_id, folder_id=folder_id or '') }}"
          title="Préparer une archive ZIP de ce dossier (le téléchargement démarre après la composition)"
-         class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700">
+         class="inline-flex items-center gap-1.5 min-h-[44px] px-2 text-xs font-medium text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-50">
         {{ ms('download', 16) }}
         Télécharger (zip)
       </a>
@@ -181,10 +181,12 @@
                maxlength="100"
                autofocus
                class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        <button type="submit" title="Confirmer le renommage" aria-label="Confirmer le renommage" class="p-1.5 text-green-600 hover:text-green-700">
+        <button type="submit" title="Confirmer le renommage" aria-label="Confirmer le renommage"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-green-600 hover:text-green-700">
           {{ ms('check', 20) }}
         </button>
-        <button type="button" @click="renaming = false" title="Annuler" aria-label="Annuler" class="p-1.5 text-gray-400 hover:text-gray-600">
+        <button type="button" @click="renaming = false" title="Annuler" aria-label="Annuler"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-400 hover:text-gray-600">
           {{ ms('close', 20) }}
         </button>
       </form>
@@ -195,7 +197,7 @@
       <div class="relative flex-shrink-0">
         <button @click.stop="menuOpen = !menuOpen"
                 title="Actions du dossier" aria-label="Actions du dossier"
-                class="p-1.5 text-gray-400 hover:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           {{ ms('more_vert', 20) }}
         </button>
         <div x-show="menuOpen"

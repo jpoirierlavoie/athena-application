@@ -4,7 +4,12 @@
 {% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-2xl mx-auto px-4 py-6" x-data="{ deleteOpen: false }">
   <div class="flex flex-wrap items-center gap-2 mb-4">
-    <a href="{{ url_for('admin_ledger.journal', account_id=entry.account_id) }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('admin_ledger.journal', account_id=entry.account_id) }}"
+       aria-label="Journal d'administration"
+       title="Journal d'administration"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
+      {{ ms('arrow_back', 20) }}
+    </a>
     <h1 class="text-xl font-semibold text-gray-900">Écriture n<sup>o</sup> {{ entry.sequence }}</h1>
     {% if entry.status == 'compensée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Compensée</span>
     {% elif entry.status == 'en_circulation' %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En circulation</span>
@@ -58,6 +63,10 @@
   {% elif avertissement == 'recu' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     La pièce justificative n'a pas pu être servie — réessayez dans un instant.
+  </div>
+  {% elif avertissement == 'recu_joint' %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    L'écriture est enregistrée, mais la pièce justificative n'a pas pu être jointe — vous pouvez la joindre ci-dessous.
   </div>
   {% elif avertissement == 'versement' %}
   <div role="alert" class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
@@ -125,8 +134,8 @@
     <div class="pt-3 border-t border-gray-100 space-y-1">
       {% if reverses %}<p class="text-xs">Contre-passe l'écriture <a href="{{ url_for('admin_ledger.entry_detail', tx_id=reverses.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reverses.sequence }}</a></p>{% endif %}
       {% if reversal %}<p class="text-xs">Contre-passée par l'écriture <a href="{{ url_for('admin_ledger.entry_detail', tx_id=reversal.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reversal.sequence }}</a></p>{% endif %}
-      {% if other_leg %}<p class="text-xs">Autre jambe du paiement de carte : <a href="{{ url_for('admin_ledger.entry_detail', tx_id=other_leg.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ other_leg.sequence }}</a></p>{% endif %}
-      {% if entry.trust_transaction_id %}<p class="text-xs">Recette issue d'un paiement d'honoraires du fidéicommis : <a href="{{ url_for('trust.entry_detail', tx_id=entry.trust_transaction_id) }}" class="text-indigo-600 hover:underline">voir le virement</a></p>{% endif %}
+      {% if other_leg %}<p class="text-xs">Autre jambe {% if entry.kind == 'paiement_carte' %}du paiement de carte{% else %}du virement entre comptes{% endif %} : <a href="{{ url_for('admin_ledger.entry_detail', tx_id=other_leg.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ other_leg.sequence }}</a></p>{% endif %}
+      {% if entry.trust_transaction_id %}<p class="text-xs">{% if entry.kind == 'virement_interne_sortant' %}Avance versée au fidéicommis{% else %}Recette issue d'un paiement d'honoraires du fidéicommis{% endif %} : <a href="{{ url_for('trust.entry_detail', tx_id=entry.trust_transaction_id) }}" class="text-indigo-600 hover:underline">voir l'écriture</a></p>{% endif %}
     </div>
     {% endif %}
 
@@ -215,13 +224,20 @@
       </div>
       <div class="flex items-center gap-2">
         {% if entry.receipt_storage_path %}
-        <a href="{{ url_for('admin_ledger.recu', tx_id=entry.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Télécharger</a>
+        <a href="{{ url_for('admin_ledger.recu', tx_id=entry.id) }}"
+           aria-label="Télécharger la pièce justificative"
+           title="Télécharger la pièce justificative"
+           class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+          {{ ms('download', 20) }}
+        </a>
         {% endif %}
         {# opacity-50 seul : cursor-wait n'est PAS dans l'artefact CSS compilé
            (pipeline précompilé — une classe absente ne s'applique pas). #}
-        <label class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer"
-               :class="occupe ? 'opacity-50' : ''">
-          <span x-text="occupe ? 'Envoi…' : '{{ 'Remplacer' if entry.receipt_storage_path else 'Joindre' }}'"></span>
+        <label class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer"
+               :class="occupe ? 'opacity-50' : ''"
+               :title="occupe ? 'Envoi…' : '{{ 'Remplacer la pièce justificative' if entry.receipt_storage_path else 'Joindre une pièce justificative' }}'"
+               :aria-label="occupe ? 'Envoi…' : '{{ 'Remplacer la pièce justificative' if entry.receipt_storage_path else 'Joindre une pièce justificative' }}'">
+          {{ ms('upload', 20) }}
           <input type="file" accept="{{ receipt_accept }}" class="hidden"
                  @change="televerser($event.target.files[0]); $event.target.value = '';">
         </label>
@@ -275,15 +291,31 @@
         <label class="block text-xs font-medium text-gray-700 mb-1">Compenser (date au relevé)</label>
         <input type="date" name="cleared_date" required value="{{ today }}" class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
       </div>
-      <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Compenser</button>
+      <button type="submit"
+              aria-label="Compenser"
+              title="Compenser"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('check', 20) }}
+      </button>
     </form>
     {% endif %}
     {% if not lock_reason %}
-    <a href="{{ url_for('admin_ledger.entry_edit', tx_id=entry.id) }}" class="text-sm text-gray-700 hover:text-gray-900 font-medium">Modifier</a>
-    <button @click="deleteOpen = true" class="text-sm text-red-600 hover:text-red-700 font-medium">Supprimer</button>
+    <a href="{{ url_for('admin_ledger.entry_edit', tx_id=entry.id) }}"
+       aria-label="Modifier"
+       title="Modifier"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      {{ ms('edit', 20) }}
+    </a>
+    <button type="button"
+            @click="deleteOpen = true"
+            aria-label="Supprimer"
+            title="Supprimer"
+            class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+      {{ ms('delete', 20) }}
+    </button>
     {% endif %}
     {% if not entry.reversed_by_id and entry.status != 'annulée' and not entry.trust_transaction_id %}
-    <a href="{{ url_for('admin_ledger.entry_reverse_confirm', tx_id=entry.id) }}" class="text-sm text-red-600 hover:text-red-700 font-medium">Contre-passer</a>
+    <a href="{{ url_for('admin_ledger.entry_reverse_confirm', tx_id=entry.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm text-red-600 hover:text-red-700 font-medium bg-white border border-gray-300 rounded-lg hover:bg-red-50">Contre-passer</a>
     {% endif %}
   </div>
   {% if lock_reason %}

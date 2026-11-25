@@ -60,10 +60,9 @@ class Column(NamedTuple):
 # at 7 pt with margin.
 COLUMNS: tuple[Column, ...] = (
     Column("Date", 0.065, False, "date"),
-    Column("Fournisseur / Source", 0.180, False, "counterparty", clip=True),
-    Column("Catégorie", 0.115, False, "categorie", clip=True),
-    Column("N° facture", 0.095, False, "facture", clip=True),
-    Column("Mode", 0.060, False, "mode"),
+    Column("Fournisseur / Source", 0.210, False, "counterparty", clip=True),
+    Column("Catégorie", 0.135, False, "categorie", clip=True),
+    Column("N° facture", 0.105, False, "facture", clip=True),
     Column("Net", 0.080, True, "net"),
     Column("TPS", 0.075, True, "tps"),
     Column("TVQ", 0.075, True, "tvq"),

@@ -69,6 +69,7 @@ from tests._fake_gcs import FakeBucket  # noqa: E402
 from tests._frozen_clock import freeze_deadlines  # noqa: E402
 from utils import storage_identity  # noqa: E402
 from utils.format_fr import format_cents_fr, format_cents_fr_parens  # noqa: E402
+from utils.icons import ms  # noqa: E402
 
 UTC = timezone.utc
 UID = "kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s"
@@ -688,7 +689,7 @@ def test_find_generated_for_invoice_propagates_a_read_failure(store, monkeypatch
 def web(store):
     app = Flask(__name__, template_folder=str(_ATHENA / "templates"))
     app.secret_key = "t"
-    app.jinja_env.globals.update(csrf_token=lambda: "tok", csp_nonce="n")
+    app.jinja_env.globals.update(csrf_token=lambda: "tok", csp_nonce="n", ms=ms)
     app.register_blueprint(ri.invoices_bp)
     app.register_blueprint(rd.documents_bp)
     client = app.test_client()

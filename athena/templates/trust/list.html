@@ -15,9 +15,11 @@
       <a href="{{ url_for('trust.accounts_list') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
       <a href="{{ url_for('trust.reconciliations_list') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
       {% if account %}
-      <a href="{{ url_for('trust.entry_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        {{ ms('add', 16) }}
-        Nouvelle écriture
+      <a id="trust-new-entry" href="{{ url_for('trust.entry_new', account_id=account.id if account.status == 'actif' else none) }}"
+         aria-label="Nouvelle écriture"
+         title="Nouvelle écriture"
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('add', 20) }}
       </a>
       {% endif %}
     </div>
@@ -99,7 +101,7 @@
   {% endif %}
 
   {% if account %}
-  <a href="{{ url_for('trust.entry_new') }}" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
+  <a id="trust-new-entry-fab" href="{{ url_for('trust.entry_new', account_id=account.id if account.status == 'actif' else none) }}" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
     {{ ms('add', 24) }}
   </a>
   {% endif %}

@@ -400,6 +400,7 @@ def _tax_credits(row: dict) -> tuple:
 #: (``invoice.WRITE_OFF_KINDS``: a radiation, then the contre_passation that
 #: cancels one), in its order; pinned by a test.
 WRITE_OFF_SIGNS = dict(zip(invoice_model.WRITE_OFF_KINDS, (1, -1)))
+INTEREST_SIGNS = dict(zip(invoice_model.INTEREST_EVENT_KINDS, (1, -1)))
 
 #: The cost class (``admin_ledger.COST_CLASSES``) of the bad debts, the
 #: expense « Créances irrécouvrables » (lot 3b): an OPERATING expense, as
@@ -427,11 +428,23 @@ class _WriteOff:
     tax_claimed: bool
 
 
+@dataclass(frozen=True)
+class _InterestEvent:
+    """One overdue-interest notice event of an invoice: +1 for avis_interets,
+    -1 for its contre_passation."""
+
+    id: str
+    sign: int
+    day: date
+    amount: int
+
+
 @dataclass
 class _Invoices:
     by_id: dict
     index: dict                    # normalized number -> [invoice ids]
-    write_offs: dict = field(default_factory=dict)   # invoice id -> (_WriteOff, ...)
+    write_offs: dict = field(default_factory=dict)        # invoice id -> (_WriteOff, ...)
+    interest_charges: dict = field(default_factory=dict)  # invoice id -> (_InterestEvent, ...)
 
 
 _INVOICE_MONEY = ("subtotal_fees", "subtotal_expenses", "gst_amount",
@@ -443,6 +456,7 @@ def _invoices(snapshot: Snapshot) -> _Invoices:
     by_id = {}
     index: dict = {}
     write_offs: dict = {}
+    interest_charges: dict = {}
     for inv in snapshot.rows("invoices"):
         for key in _INVOICE_MONEY:
             _cents(inv, key)                      # unreadable ⇒ Unavailable
@@ -451,12 +465,15 @@ def _invoices(snapshot: Snapshot) -> _Invoices:
         events = _write_off_events(inv)           # malformed ⇒ Unavailable
         if events:
             write_offs[iid] = events
+        ievents = _interest_charge_events(inv)    # malformed ⇒ Unavailable
+        if ievents:
+            interest_charges[iid] = ievents
         keys = {invoice_model.normalize_reference(inv.get("invoice_number")),
                 invoice_model.normalize_reference(inv.get("legacy_ref"))}
         for key in keys:
             if key and iid not in index.setdefault(key, []):
                 index[key].append(iid)
-    return _Invoices(by_id, index, write_offs)
+    return _Invoices(by_id, index, write_offs, interest_charges)
 
 
 def _write_off_events(inv: dict) -> tuple:
@@ -476,6 +493,19 @@ def _write_off_events(inv: dict) -> tuple:
         _WriteOff(id=e["id"], sign=WRITE_OFF_SIGNS[e["kind"]],
                   day=_day(e["date"]), amount=e["amount"], gst=e["gst_amount"],
                   qst=e["qst_amount"], tax_claimed=e["tax_claimed"])
+        for e in events)
+
+
+def _interest_charge_events(inv: dict) -> tuple:
+    try:
+        events = invoice_model.interest_charge_events(inv)
+    except invoice_model.InterestChargesUnreadable as exc:
+        raise Unavailable(
+            f"Avis d'intérêts illisibles sur la facture {_number(inv)} ({exc}) — "
+            "aucun total n'est calculé sur des intérêts douteux.") from None
+    return tuple(
+        _InterestEvent(id=e["id"], sign=INTEREST_SIGNS[e["kind"]],
+                       day=_day(e["date"]), amount=e["amount"])
         for e in events)
 
 
@@ -516,6 +546,21 @@ def _period_write_offs(invoices: _Invoices, start: date, end: date) -> list:
     opening = start - timedelta(days=1)
     found = []
     for iid, events in invoices.write_offs.items():
+        inv = invoices.by_id[iid]
+        for position, event in enumerate(events):
+            if (_event_counts(inv, event, end)
+                    and not _event_counts(inv, event, opening)):
+                found.append(((event.day, _number(inv), str(iid), position), inv, event))
+    found.sort(key=lambda item: item[0])
+    return [(inv, event) for _key, inv, event in found]
+
+
+def _period_interest_charges(invoices: _Invoices, start: date, end: date) -> list:
+    """``[(invoice, event)]`` — the interest-charge events starting to count in
+    *[start, end]*, in event day / invoice number / id / stored order."""
+    opening = start - timedelta(days=1)
+    found = []
+    for iid, events in invoices.interest_charges.items():
         inv = invoices.by_id[iid]
         for position, event in enumerate(events):
             if (_event_counts(inv, event, end)
@@ -678,9 +723,15 @@ class _World:
                 qst += e.sign * e.qst
         return gst, qst
 
+    def interest_charged(self, iid: str, until: Optional[date]) -> int:
+        inv = self.invoices.by_id[iid]
+        return sum(e.sign * e.amount for e in self.invoices.interest_charges.get(iid, ())
+                   if _event_counts(inv, e, until))
+
     def balance(self, iid: str, until: date) -> int:
         inv = self.invoices.by_id[iid]
-        return (_amount_due(inv) - self.paid(iid, until) - self.written_off(iid, until)
+        return (_amount_due(inv) + self.interest_charged(iid, until)
+                - self.paid(iid, until) - self.written_off(iid, until)
                 - self.settled.get(iid, 0))
 
     def taken(self, iid: Optional[str], until: date) -> bool:
@@ -705,8 +756,8 @@ def _world(admin: _Admin, invoices: _Invoices, trust_rows: Optional[list]) -> _W
         if inv.get("status") == "payée":
             # What stands written off is no presumed settlement: subtracted
             # from the balance already, it would be lost a second time.
-            shortfall = (_amount_due(inv) - world.paid(iid, None)
-                         - world.written_off(iid, None))
+            shortfall = (_amount_due(inv) + world.interest_charged(iid, None)
+                         - world.paid(iid, None) - world.written_off(iid, None))
             if shortfall > 0:
                 world.settled[iid] = shortfall
     return world
@@ -856,12 +907,15 @@ def _income(admin: _Admin, invoices: _Invoices, start: date, end: date,
     # as billed.
     bad_debts = sum(e.sign * (e.amount - e.gst - e.qst)
                     for _inv, e in _period_write_offs(invoices, start, end))
+    interest_charges = sum(e.sign * e.amount
+                           for _inv, e in _period_interest_charges(invoices, start, end))
     totals = {cls: sum(v.values()) for cls, v in costs.items()}
     totals[BAD_DEBT_CLASS] += bad_debts
-    revenue = fees + billed_expenses + other_total
+    revenue = fees + billed_expenses + interest_charges + other_total
     gross = revenue - totals["direct"]
     net = gross - totals["variable"] - totals["fixe"]
     return {"fees": fees, "billed_expenses": billed_expenses,
+            "interest_charges": interest_charges,
             "other": other, "other_total": other_total, "bad_debts": bad_debts,
             "marks": {r["id"]: marks[r["id"]] for r in other if r["id"] in marks},
             "costs": costs, "cost_totals": totals,
@@ -1210,6 +1264,8 @@ def _points(st: Statements, world: Optional[_World], admin: Optional[_Admin],
                [r["id"] for r in no_dossier], amount=sum(_cost(r) for r in no_dossier),
                refs=[_ref(r) for r in no_dossier])
         fiscal = [r for r in period_rows if r.get("kind") in _FISCAL_SCAN_KINDS
+                  and not (r.get("kind") in ("virement_interne_sortant", "virement_interne_entrant")
+                           and r.get("related_transaction_id"))
                   and ((r.get("kind") == "dépense"
                         and (r.get("category") or "") == "taxes_permis")
                        or _names_the_taxes(r))]
@@ -1235,7 +1291,9 @@ def _points(st: Statements, world: Optional[_World], admin: Optional[_Admin],
         # shape of a client's advance that reached the wrong account.
         window = timedelta(days=14)
         sent = [r for r in admin.rows if r.get("kind") == "virement_interne_sortant"
-                and not al.is_advance_transfer(r) and r["sign"] == 1
+                and not al.is_advance_transfer(r)
+                and not r.get("related_transaction_id")
+                and r["sign"] == 1
                 and not r.get("reversed_by_id")]
         maybe = [r for r in period_rows if r.get("kind") == "recette_autre"
                  and r["sign"] == 1 and not r.get("trust_transaction_id")
@@ -1458,8 +1516,11 @@ def _present_income(data: dict) -> dict:
     rows = [_row("Produits", None, key="produits", style="heading"),
             _row("Honoraires facturés", data["fees"], key="honoraires", level=1),
             _row("Débours refacturés", data["billed_expenses"],
-                 key="debours_refactures", level=1),
-            _row("Autres produits", data["other_total"], key="autres_produits", level=1)]
+                 key="debours_refactures", level=1)]
+    if data.get("interest_charges"):
+        rows.append(_row("Intérêts sur comptes en souffrance",
+                         data["interest_charges"], key="interets_factures", level=1))
+    rows.append(_row("Autres produits", data["other_total"], key="autres_produits", level=1))
     notes = ["Base facturée : factures envoyées, en retard ou payées, à la date de "
              "la facture, avant taxes. Coûts nets de TPS/TVQ."]
     if data["bad_debts"]:
@@ -1821,10 +1882,57 @@ JOURNAL_TOTALS_SENTENCE = (
     "Les totaux de la période sont ceux des états financiers : les "
     "« Créances irrécouvrables » de l'état des résultats, et la TPS et la "
     "TVQ des créances irrécouvrables du tableau de la TPS/TVQ.")
-#: Until lot 4b, the interest notices do not exist: said, never faked.
+#: How the interest notices are recorded (lot 4a).
 JOURNAL_INTEREST_SENTENCE = (
-    "Les avis d'intérêts n'existent pas encore dans Athéna : ce journal ne "
-    "porte, pour l'instant, que les radiations.")
+    "Les avis d'intérêts (exonérés de TPS et de TVQ) portent le montant au débit "
+    "des comptes clients et au crédit des intérêts sur comptes en souffrance ; "
+    "une contre-passation en passe l'écriture inverse.")
+
+INTEREST_JOURNAL_COLUMNS = (
+    ("date", "Date", ""),
+    ("interest_notice_number", "N° avis d'intérêts", ""),
+    ("invoice_number", "N° facture", ""),
+    ("client", "Client", ""),
+    ("kind", "Nature", ""),
+    ("period", "Période", ""),
+    ("principal", "Capital", ""),
+    ("rate", "Taux", ""),
+    ("receivables", "Comptes clients", "Débit"),
+    ("interest_revenue", "Intérêts facturés", "Crédit"),
+    ("state", "État de l'avis", ""),
+)
+INTEREST_JOURNAL_MONEY_KEYS = tuple(
+    key for key, _label, side in INTEREST_JOURNAL_COLUMNS if side
+)
+
+
+@dataclass(frozen=True)
+class InterestJournalEntry:
+    """One row of the interest-notices section of the journal (lot 4a)."""
+
+    invoice_id: str
+    invoice_number: str
+    client_name: str
+    event_id: str
+    kind: str
+    day: date
+    period_start: date
+    period_end: date
+    days: int
+    principal: int
+    rate_bps: int
+    interest_notice_number: str
+    amount: int                    # signed cents (+ for avis_interets, - for contre_passation)
+    standing: bool
+    reason: str
+
+    @property
+    def receivables(self) -> int:
+        return self.amount
+
+    @property
+    def interest_revenue(self) -> int:
+        return self.amount
 
 
 @dataclass(frozen=True)
@@ -1869,6 +1977,8 @@ class WriteOffJournal:
     in_progress: bool
     entries: list = field(default_factory=list)
     totals: dict = field(default_factory=dict)
+    interest_entries: list = field(default_factory=list)
+    interest_total: int = 0
     unavailable: str = ""
 
 
@@ -1890,10 +2000,9 @@ def write_off_journal(snapshot: Snapshot, period: periods.Period, *,
     or truncated read, or one unreadable amount or write-off array, makes
     the journal ``unavailable``.
 
-    The interest notices (« avis d'intérêts ») do not exist before lot 4a:
-    lot 4b adds each avis of the period HERE, as a memo row (calculated,
-    recalculated, cancelled, with the receipts linked to it), outside the
-    totals — at the place the comment below marks. None is faked."""
+    Overdue interest notices (``avis_interets`` / ``contre_passation``) are
+    surfaced in ``interest_entries`` and netted in ``interest_total`` (and in
+    ``results_statement`` / ``receivables``)."""
     as_of = periods.as_of(period, today)
     journal = WriteOffJournal(period=period, as_of=as_of,
                               in_progress=periods.in_progress(period, today))
@@ -1923,8 +2032,30 @@ def write_off_journal(snapshot: Snapshot, period: periods.Period, *,
             receivables=event.sign * event.amount,
             standing=radiation["id"] in standing,
             reason=str(own.get("reason") or "")))
-    # Lot 4b: each avis d'intérêts of the period joins the journal here, as
-    # a memo row — never in the totals below, which stay the statements'.
+    seen_ai: dict = {}
+    for inv, event in _period_interest_charges(invoices, period.start, as_of):
+        iid = str(inv["id"])
+        if iid not in seen_ai:
+            seen_ai[iid] = ({e["id"]: e for e in inv["interest_charges"]},
+                            {e["id"] for e in invoice_model.standing_interest_charges(inv)})
+        stored, standing = seen_ai[iid]
+        own = stored[event.id]
+        avis = own if event.sign > 0 else stored[own["reverses_id"]]
+        journal.interest_entries.append(InterestJournalEntry(
+            invoice_id=iid, invoice_number=_number(inv),
+            client_name=str(inv.get("client_name") or ""),
+            event_id=event.id, kind=own["kind"], day=event.day,
+            period_start=_day(avis["period_start"]),
+            period_end=_day(avis["period_end"]),
+            days=int(avis["days"]),
+            principal=int(avis["principal"]),
+            rate_bps=int(avis["rate_bps"]),
+            interest_notice_number=avis["interest_notice_number"],
+            amount=event.sign * event.amount,
+            standing=avis["id"] in standing,
+            reason=str(own.get("reason") or ""),
+        ))
+    journal.interest_total = sum(e.amount for e in journal.interest_entries)
     journal.totals = {key: sum(getattr(e, key) for e in journal.entries)
                       for key in JOURNAL_MONEY_KEYS}
     return journal

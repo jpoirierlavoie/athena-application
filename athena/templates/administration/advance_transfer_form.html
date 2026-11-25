@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Verser des avances au fidéicommis — Administration — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto px-4 py-6">
+  <div class="flex items-center gap-2 mb-6">
+    <a href="{{ url_for('admin_ledger.journal') }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour au journal" title="Retour au journal">{{ ms('arrow_back', 20) }}</a>
+    <h1 class="text-xl font-semibold text-gray-900">Verser des avances au fidéicommis</h1>
+  </div>
+
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% if not ops_accounts or not trust_accounts %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+    Ce virement exige un compte d'opérations actif et un compte en fidéicommis actif.
+  </div>
+  {% else %}
+  <p class="mb-4 text-sm text-gray-500">Vire des avances d'un client du compte d'opérations vers son dossier au fidéicommis en une seule opération : les deux écritures naissent compensées et soldent le passif « Avances de clients » aux états financiers.</p>
+
+  <script type="application/json" id="advance-clients">{{ (form_clients or []) | tojson }}</script>
+  <form method="post" action="{{ url_for('admin_ledger.advance_transfer') }}"
+        class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4"
+        x-data="{
+          dossierId: {{ (form.get('dossier_id') or '') | jsattr }},
+          dossierDisplay: {{ (form_dossier_display or '') | jsattr }},
+          clientId: {{ (form.get('client_id') or '') | jsattr }},
+          clients: JSON.parse(document.getElementById('advance-clients')?.textContent || '[]'),
+          dOpen: false, dEmpty: true
+        }">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div>
+        <label for="adv-admin-account" class="block text-sm font-medium text-gray-700 mb-1">Compte d'opérations</label>
+        <select id="adv-admin-account" name="admin_account_id" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          {% for a in ops_accounts %}<option value="{{ a.id }}" {% if form.get('admin_account_id') == a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="adv-trust-account" class="block text-sm font-medium text-gray-700 mb-1">Compte en fidéicommis</label>
+        <select id="adv-trust-account" name="trust_account_id" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          {% for a in trust_accounts %}<option value="{{ a.id }}" {% if form.get('trust_account_id') == a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="relative" @click.outside="dOpen=false"
+         @htmx:after-swap="if ($event.detail.target.id === 'adv-d-res') { var inp = $el.querySelector('input[name=q]'); if (inp &amp;&amp; !inp.value.trim()) { $event.detail.target.innerHTML = ''; dEmpty = true; dOpen = false; } else { dEmpty = !$event.detail.target.firstElementChild; } }">
+      <label for="adv-dossier-q" class="block text-sm font-medium text-gray-700 mb-1">Dossier</label>
+      <input type="hidden" name="dossier_id" :value="dossierId">
+      <input id="adv-dossier-q" type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
+             @focus="if (!dEmpty) { dOpen=true; }"
+             @input="dossierId=''; if ($el.value.trim().length === 0) { document.getElementById('adv-d-res').innerHTML=''; dEmpty=true; dOpen=false; } else { dOpen=true; }"
+             hx-get="{{ url_for('admin_ledger.dossier_search', clients=1) }}" hx-trigger="input changed delay:300ms" hx-target="#adv-d-res" hx-include="this"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      <div id="adv-d-res" x-show="dOpen &amp;&amp; !dEmpty" x-cloak
+           @pointerdown.prevent @mousedown.prevent
+           @click="let b=$event.target.closest('button[data-dossier-id]'); if(b){dossierId=b.dataset.dossierId; dossierDisplay=b.dataset.dossierFileNumber+' — '+b.dataset.dossierTitle; dOpen=false; clients=JSON.parse(b.dataset.clients || '[]'); clientId = clients.length === 1 ? clients[0].id : '';}"
+           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+    </div>
+
+    <div x-show="dossierId" x-cloak>
+      <label for="adv-client" class="block text-sm font-medium text-gray-700 mb-1">Client</label>
+      <select id="adv-client" name="client_id" x-model="clientId" :required="Boolean(dossierId)"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <option value="">Choisir le client…</option>
+        <template x-for="c in clients" :key="c.id">
+          <option :value="c.id" x-text="c.name"></option>
+        </template>
+      </select>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="adv-amount" class="block text-sm font-medium text-gray-700 mb-1">Montant</label>
+        <input id="adv-amount" type="text" name="amount" inputmode="decimal" required placeholder="0,00" value="{{ form.get('amount', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      </div>
+      <div>
+        <label for="adv-date" class="block text-sm font-medium text-gray-700 mb-1">Date</label>
+        <input id="adv-date" type="date" name="date" required max="{{ today }}" value="{{ form.get('date', today) }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="adv-method" class="block text-sm font-medium text-gray-700 mb-1">Mode</label>
+        <select id="adv-method" name="method" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          {% for m in valid_methods %}<option value="{{ m }}" {% if form.get('method', 'virement') == m %}selected{% endif %}>{{ method_labels[m] }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="adv-reference" class="block text-sm font-medium text-gray-700 mb-1">Référence</label>
+        <input id="adv-reference" type="text" name="reference" value="{{ form.get('reference', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      </div>
+    </div>
+    <div>
+      <label for="adv-description" class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+      <textarea id="adv-description" name="description" rows="2" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">{{ form.get('description', '') }}</textarea>
+    </div>
+    <div class="flex justify-end gap-2">
+      <a href="{{ url_for('admin_ledger.journal') }}" class="inline-flex items-center min-h-[44px] px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
+      <button type="submit" class="min-h-[44px] px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Effectuer le virement</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

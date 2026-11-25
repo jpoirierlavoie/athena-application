@@ -49,9 +49,10 @@
 
   {# ── Back ──────────────────────────────────────────────────── #}
   <a href="{{ return_to or url_for('hearings.hearing_list') }}"
-     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
-    {{ ms('chevron_left', 16) }}
-    {{ 'Retour' if return_to else 'Calendrier' }}
+     class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 mb-6"
+     aria-label="{{ 'Retour' if return_to else 'Retour au calendrier' }}"
+     title="{{ 'Retour' if return_to else 'Calendrier' }}">
+    {{ ms('arrow_back', 20) }}<span class="sr-only">{{ 'Retour' if return_to else 'Calendrier' }}</span>
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
@@ -101,20 +102,21 @@
                 @click="dossierId = ''; dossierDisplay = ''"
                 x-cloak
                 title="Effacer le dossier sélectionné" aria-label="Effacer le dossier sélectionné"
-                class="px-3 py-2 text-sm text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50">
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-sm text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50">
           {{ ms('close', 16) }}
         </button>
       </div>
       <div id="dossier-results"
            x-show="searchOpen"
            @click.outside="searchOpen = false"
+           @pointerdown.prevent @mousedown.prevent
            x-cloak
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto"
            @click="
-             let li = $event.target.closest('li');
-             if (li) {
-               dossierId = li.dataset.dossierId;
-               dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle;
+             let b = $event.target.closest('button[data-dossier-id]');
+             if (b) {
+               dossierId = b.dataset.dossierId;
+               dossierDisplay = b.dataset.dossierFileNumber + ' — ' + b.dataset.dossierTitle;
                searchOpen = false;
              }
            ">
@@ -271,8 +273,10 @@
     {# Location #}
     <div>
       <label for="location" class="block text-sm font-medium text-gray-700 mb-1">Lieu</label>
-      {# Quick-select courthouse chips #}
-      <div class="flex flex-wrap gap-1.5 mb-2">
+      {# Quick-select courthouse chips (judicial events only) #}
+      <div class="flex flex-wrap gap-1.5 mb-2"
+           x-show="forum === 'judiciaire'"
+           {% if hearing and hearing.hearing_type and forum_of(hearing.hearing_type) == 'extrajudiciaire' %}style="display: none"{% endif %}>
         {% for loc in quick_locations %}
         <button type="button"
                 @click="$refs.locationInput.value = '{{ loc }}'"
@@ -283,7 +287,7 @@
       </div>
       <input type="text" id="location" name="location" x-ref="locationInput"
              value="{{ hearing.location if hearing and hearing.location else '' }}"
-             placeholder="Ex: Palais de justice de Montréal, salle 2.14"
+             :placeholder="forum === 'judiciaire' ? 'Ex: Palais de justice de Montréal, salle 2.14' : 'Ex: Bureaux du cabinet, salle A'"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
     </div>
 
@@ -357,11 +361,14 @@
       </div>
     </div>
 
-    {# Court + Judge row #}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    {# Court + Judge row (judicial events only) #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4"
+         x-show="forum === 'judiciaire'"
+         {% if hearing and hearing.hearing_type and forum_of(hearing.hearing_type) == 'extrajudiciaire' %}style="display: none"{% endif %}>
       <div>
         <label for="court" class="block text-sm font-medium text-gray-700 mb-1">Tribunal</label>
         <select id="court" name="court"
+                :disabled="forum !== 'judiciaire'"
                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
           <option value="">— Sélectionner —</option>
           {% for c in valid_courts %}
@@ -372,6 +379,7 @@
       <div>
         <label for="judge" class="block text-sm font-medium text-gray-700 mb-1">Juge</label>
         <input type="text" id="judge" name="judge"
+               :disabled="forum !== 'judiciaire'"
                value="{{ hearing.judge if hearing and hearing.judge else '' }}"
                placeholder="L'honorable…"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
@@ -383,6 +391,11 @@
       <label for="reminder_minutes" class="block text-sm font-medium text-gray-700 mb-1">Rappel</label>
       <select id="reminder_minutes" name="reminder_minutes"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% if hearing and hearing.reminder_minutes is not none and hearing.reminder_minutes not in valid_reminder_minutes %}
+        <option value="{{ hearing.reminder_minutes }}" selected>
+          {{ hearing.reminder_minutes }} minutes avant (client DAV)
+        </option>
+        {% endif %}
         {% for val in valid_reminder_minutes %}
         <option value="{{ val }}" {{ 'selected' if hearing and hearing.reminder_minutes == val else ('selected' if not hearing and val == 1440) }}>
           {{ reminder_labels.get(val, val) }} avant
@@ -391,17 +404,34 @@
       </select>
     </div>
 
-    {# Status #}
-    <div>
-      <label for="status" class="block text-sm font-medium text-gray-700 mb-1">Statut</label>
-      <select id="status" name="status"
-              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-        {% for key in valid_statuses %}
-        <option value="{{ key }}" {{ 'selected' if hearing and hearing.status == key else ('selected' if not hearing and key == 'à_confirmer') }}>
-          {{ status_labels.get(key, key) }}
-        </option>
-        {% endfor %}
-      </select>
+    {# Status + Confidentialité #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <label for="status" class="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+        <select id="status" name="status"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          {% for key in valid_statuses %}
+          <option value="{{ key }}" {{ 'selected' if hearing and hearing.status == key else ('selected' if not hearing and key == 'à_confirmer') }}>
+            {{ status_labels.get(key, key) }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="classification" class="block text-sm font-medium text-gray-700 mb-1">Confidentialité (CLASS)</label>
+        {% set current_cls = effective_classification(hearing) if hearing else ('CONFIDENTIAL' if request.args.get('dossier_id') else 'PRIVATE') %}
+        <select id="classification" name="classification"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          {% for key in valid_classifications %}
+          <option value="{{ key }}"
+                  {% if key == 'PUBLIC' %}:disabled="Boolean(dossierId)"{% endif %}
+                  {{ 'selected' if current_cls == key }}>
+            {{ classification_labels.get(key, key) }}
+          </option>
+          {% endfor %}
+        </select>
+        <p class="text-xs text-gray-500 mt-1">Un événement lié à un dossier ne peut jamais être public.</p>
+      </div>
     </div>
 
     {# Notes #}
