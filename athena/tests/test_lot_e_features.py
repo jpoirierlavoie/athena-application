@@ -62,8 +62,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.reception as reception_routes
     import routes.tasks as tasks_routes
     import routes.time_expenses as time_expenses_routes
-    from services import protocoles as protocol_service
-    from utils import deadlines, kyc
+    from utils import kyc
     from utils.format_fr import format_cents_fr
     from utils.html_attr import jsattr
     from utils.icons import ms

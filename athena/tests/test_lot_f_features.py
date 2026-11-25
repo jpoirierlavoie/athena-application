@@ -54,7 +54,6 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 from flask import Flask  # noqa: E402
-from icalendar import Calendar  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
     import models.admin_ledger as admin_model
@@ -68,7 +67,6 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.partie as partie_model
     import models.task as task_model
     import models.trust as trust_model
-    import security  # noqa: F401
     from config import Config
     from dav import dav_bp
     from dav import sync as dav_sync
@@ -81,7 +79,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from routes.taches_onedrive import taches_onedrive_bp
     from routes.tasks import tasks_bp
     from services import miroir_onedrive
-    from utils import dav_classification, graph_courrier, graph_miroir, ical_tz, logging_setup, tracing_setup
+    from utils import graph_courrier, graph_miroir, ical_tz, logging_setup, tracing_setup
     from utils.quickxorhash import quickxorhash_b64
 
 from tests._fake_firestore import install as install_fake_firestore  # noqa: E402

@@ -57,7 +57,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.trust as trust_routes
     from mcp import handlers, write_support
     from scripts import verify_admin_integrity, verify_trust_integrity
-    from services import avis_interets, comptabilite, financial_statements as fs_svc
+    from services import avis_interets, comptabilite
     from tz import to_mtl
 
 from tests._fake_firestore import install  # noqa: E402
@@ -112,7 +112,7 @@ def _web_app(*blueprints) -> Flask:
     app.jinja_env.filters["cents_fr"] = lambda c: format_fr.format_cents_fr(c) if c is not None else ""
     app.jinja_env.filters["date_fr"] = format_fr.format_date_fr
     app.jinja_env.filters["to_mtl"] = to_mtl
-    app.jinja_env.filters["jsattr"] = lambda v: str(v)
+    app.jinja_env.filters["jsattr"] = str
 
     @app.before_request
     def _auth():

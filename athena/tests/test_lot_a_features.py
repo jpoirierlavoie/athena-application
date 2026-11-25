@@ -201,8 +201,6 @@ def _seed_trust_accounts(fake):
 
 
 def _assert_all_classes_compiled(html_text: str):
-    import re
-
     classes = {
         c
         for attr in re.findall(r'(?<![:\w-])class="([^"]+)"', html_text)

@@ -217,7 +217,7 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `COURRIER_GRAPH_CLIENT_SECRET` → secret `courrier-graph-client-secret` | ○ | `""` | Client secret for Courrier's Entra app registration (Secret Manager in prod, `required=False`) |
 | `COURRIER_UPN` | ○ | `""` | Target mailbox and OneDrive UPN for Courrier (scoped via Exchange RBAC) |
 | `COURRIER_ONEDRIVE_ROOT` | ○ | `Dossiers` | Top-level OneDrive folder under which Courrier files emails and attachments |
-| `MIROIR_ONEDRIVE_ACTIF` | ○ | `false` | Kill switch for the one-way `Athena → OneDrive` mirror (`app.yaml` ships `"false"`, requires `courrier_configured()`) |
+| `MIROIR_ONEDRIVE_ACTIF` | ○ | `false` | Kill switch for the one-way `Athena → OneDrive` mirror (`app.yaml` ships `"true"`, requires `courrier_configured()`; toggle to `"false"` to freeze the mirror in place) |
 | `MIROIR_ONEDRIVE_QUEUE` | ○ | `portail` | Cloud Tasks queue name used for asynchronous post-commit OneDrive mirror events |
 | `FEATURE_INTAKE` | ○ | `false` | Offers the portal's intake (dossier-opening) form when confirming a Bookings rendez-vous whose email matches no contact |
 

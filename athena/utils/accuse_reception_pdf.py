@@ -19,7 +19,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from tz import to_mtl
-from utils import export_pdf as _export_pdf  # noqa: F401 — registers NotoSerif at import
+from utils.export_pdf import FONT, FONT_BOLD
 from utils.format_fr import format_date_fr
 
 
@@ -90,48 +90,48 @@ def build_accuse_reception_pdf(
         leftMargin=15 * mm,
         rightMargin=15 * mm,
         title="Bordereau d'accusé de réception",
-        initialFontName="NotoSerif",
+        initialFontName=FONT,
     )
 
     base = getSampleStyleSheet()
     s_firm = ParagraphStyle(
-        "AccuseFirm", parent=base["Normal"], fontName="NotoSerif-Bold",
+        "AccuseFirm", parent=base["Normal"], fontName=FONT_BOLD,
         fontSize=12, leading=15, textColor=colors.HexColor("#111827"),
     )
     s_firm_sub = ParagraphStyle(
-        "AccuseFirmSub", parent=base["Normal"], fontName="NotoSerif",
+        "AccuseFirmSub", parent=base["Normal"], fontName=FONT,
         fontSize=8.5, leading=12, textColor=colors.HexColor("#4B5563"),
     )
     s_title = ParagraphStyle(
-        "AccuseTitle", parent=base["Normal"], fontName="NotoSerif-Bold",
+        "AccuseTitle", parent=base["Normal"], fontName=FONT_BOLD,
         fontSize=14, leading=18, textColor=colors.HexColor("#111827"),
         spaceAfter=2,
     )
     s_sub = ParagraphStyle(
-        "AccuseSub", parent=base["Normal"], fontName="NotoSerif",
+        "AccuseSub", parent=base["Normal"], fontName=FONT,
         fontSize=8.5, leading=12, textColor=colors.HexColor("#4B5563"),
         spaceAfter=8,
     )
     s_section = ParagraphStyle(
-        "AccuseSection", parent=base["Normal"], fontName="NotoSerif-Bold",
+        "AccuseSection", parent=base["Normal"], fontName=FONT_BOLD,
         fontSize=9.5, leading=13, textColor=colors.HexColor("#111827"),
         spaceBefore=10, spaceAfter=4,
     )
     s_cell_bold = ParagraphStyle(
-        "AccuseCellBold", parent=base["Normal"], fontName="NotoSerif-Bold",
+        "AccuseCellBold", parent=base["Normal"], fontName=FONT_BOLD,
         fontSize=8, leading=11, textColor=colors.HexColor("#111827"),
     )
     s_cell = ParagraphStyle(
-        "AccuseCell", parent=base["Normal"], fontName="NotoSerif",
+        "AccuseCell", parent=base["Normal"], fontName=FONT,
         fontSize=8, leading=11, textColor=colors.HexColor("#1F2937"),
     )
     s_hash = ParagraphStyle(
-        "AccuseHash", parent=base["Normal"], fontName="NotoSerif",
+        "AccuseHash", parent=base["Normal"], fontName=FONT,
         fontSize=6.8, leading=9.5, textColor=colors.HexColor("#374151"),
         wordWrap="CJK",
     )
     s_notice = ParagraphStyle(
-        "AccuseNotice", parent=base["Normal"], fontName="NotoSerif",
+        "AccuseNotice", parent=base["Normal"], fontName=FONT,
         fontSize=7.5, leading=10.5, textColor=colors.HexColor("#4B5563"),
         spaceBefore=10,
     )
@@ -199,8 +199,8 @@ def build_accuse_reception_pdf(
     )
     meta_table.setStyle(
         TableStyle([
-            ("FONTNAME", (0, 0), (-1, 0), "NotoSerif-Bold"),
-            ("FONTNAME", (0, 1), (-1, -1), "NotoSerif"),
+            ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+            ("FONTNAME", (0, 1), (-1, -1), FONT),
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
             ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D1D5DB")),
             ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E5E7EB")),
@@ -250,8 +250,8 @@ def build_accuse_reception_pdf(
             intake_tbl = Table(rows, colWidths=[usable_width * 0.35, usable_width * 0.65], repeatRows=1)
             intake_tbl.setStyle(
                 TableStyle([
-                    ("FONTNAME", (0, 0), (-1, 0), "NotoSerif-Bold"),
-                    ("FONTNAME", (0, 1), (-1, -1), "NotoSerif"),
+                    ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+                    ("FONTNAME", (0, 1), (-1, -1), FONT),
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
                     ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
                     ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#E5E7EB")),
@@ -303,8 +303,8 @@ def build_accuse_reception_pdf(
         )
         file_tbl.setStyle(
             TableStyle([
-                ("FONTNAME", (0, 0), (-1, 0), "NotoSerif-Bold"),
-                ("FONTNAME", (0, 1), (-1, -1), "NotoSerif"),
+                ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+                ("FONTNAME", (0, 1), (-1, -1), FONT),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D1D5DB")),
                 ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#E5E7EB")),
@@ -329,7 +329,7 @@ def build_accuse_reception_pdf(
 
     def _draw_footer(canvas, doc_obj):
         canvas.saveState()
-        canvas.setFont("NotoSerif", 7.5)
+        canvas.setFont(FONT, 7.5)
         canvas.setFillColor(colors.HexColor("#6B7280"))
         footer_title = (
             firm_title[:62] + "…" if len(firm_title) > 65 else firm_title
