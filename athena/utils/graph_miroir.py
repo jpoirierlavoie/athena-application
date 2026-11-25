@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from config import Config
 from utils import graph
+from utils.dav_classification import graph_sensitivity
 from utils.graph_calendrier import (
     EXPAND_MIROIR,
     MIROIR_CATEGORIE,
@@ -49,7 +50,7 @@ _TZ_JOURNEE = "America/Toronto"
 # comparer condamnerait chaque cycle à un PATCH sans effet.
 _SELECT = (
     "id,subject,start,end,isAllDay,location,"
-    "reminderMinutesBeforeStart,isReminderOn,showAs,categories"
+    "reminderMinutesBeforeStart,isReminderOn,showAs,sensitivity,categories"
 )
 
 
@@ -118,6 +119,7 @@ def construire_charge(h: dict, avec_transaction: bool = False) -> dict:
         "body": {"contentType": "text", "content": _corps(h)},
         "isAllDay": bool(h.get("all_day")),
         "showAs": "busy",
+        "sensitivity": graph_sensitivity(h),
         "isReminderOn": bool(h.get("reminder_minutes")),
         "reminderMinutesBeforeStart": int(h.get("reminder_minutes") or 0),
         # displayName TOUJOURS présent, même vide : un PATCH qui omet la clé
@@ -198,6 +200,7 @@ def champs_cibles(h: dict) -> dict:
         "rappel_actif": rappel_actif,
         "rappel_minutes": int(h.get("reminder_minutes") or 0) if rappel_actif else 0,
         "show_as": "busy",
+        "sensitivity": graph_sensitivity(h),
         # La catégorie est la moitié du garde anti-boucle : retirée à la main
         # dans Outlook, le diff la voit et le PATCH la restaure.
         "categorie": True,
@@ -225,6 +228,7 @@ def champs_observes(ev: dict) -> dict:
         if rappel_actif
         else 0,
         "show_as": ev.get("showAs") or "",
+        "sensitivity": (ev.get("sensitivity") or "").lower(),
         "categorie": MIROIR_CATEGORIE in (ev.get("categories") or []),
     }
 

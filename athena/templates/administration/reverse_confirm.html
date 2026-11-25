@@ -4,7 +4,9 @@
 {% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-lg mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-6">
-    <a href="{{ url_for('admin_ledger.entry_detail', tx_id=entry.id) }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('admin_ledger.entry_detail', tx_id=entry.id) }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour à l'écriture" title="Retour à l'écriture">{{ ms('arrow_back', 20) }}</a>
     <h1 class="text-xl font-semibold text-gray-900">Contre-passer l'écriture n<sup>o</sup> {{ entry.sequence }}</h1>
   </div>
 
@@ -25,7 +27,7 @@
     Une contre-passation crée une écriture « Correction » de sens inverse.
     {% if entry.status == 'en_circulation' %}L'écriture originale et sa contre-passation seront toutes deux marquées <strong>annulée</strong>.
     {% else %}L'écriture originale demeure compensée; la contre-passation entre <strong>en circulation</strong>.{% endif %}
-    {% if entry.kind == 'paiement_carte' %}Les <strong>deux jambes</strong> du paiement de carte seront contre-passées ensemble.{% endif %}
+    {% if entry.related_transaction_id %}{% if entry.kind == 'paiement_carte' %}Les <strong>deux jambes</strong> du paiement de carte seront contre-passées ensemble.{% else %}Les <strong>deux jambes</strong> du virement entre comptes seront contre-passées ensemble.{% endif %}{% endif %}
     {% if entry.invoice_id %}Le paiement enregistré sur la facture liée sera <strong>réduit d'autant</strong>.{% endif %}
   </div>
 

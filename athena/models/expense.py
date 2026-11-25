@@ -427,6 +427,20 @@ def count_expenses_page(
         return None
 
 
+def get_unbilled_totals_strict() -> dict:
+    """Return ``{"amount": int}`` for all unbilled disbursements (``invoiced == False``).
+
+    STRICT: propagates aggregation errors rather than returning ``0`` (used by
+    the dashboard's fail-closed « Travail non facturé » tile). Uses the
+    existing ``expenses`` index ``(invoiced ASC, date DESC, id DESC, amount DESC)``.
+    """
+    query = _filtered_query(None, "non_facture", None, None)
+    agg_query = query.sum("amount", alias="amount")
+    values = aggregation_values(agg_query.get())
+    amount = values.get("amount", 0) or 0
+    return {"amount": int(round(amount))}
+
+
 def get_filtered_expense_totals(
     dossier_id: Optional[str] = None,
     billable_filter: Optional[str] = None,

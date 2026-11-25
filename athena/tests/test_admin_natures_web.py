@@ -947,7 +947,7 @@ def test_the_sheet_takes_no_owner_equity():
 
     assert "avoir" not in inspect.signature(ajp.build_admin_journal_pdf).parameters
     assert [c.key for c in ajp.COLUMNS] == [
-        "date", "counterparty", "categorie", "facture", "mode",
+        "date", "counterparty", "categorie", "facture",
         "net", "tps", "tvq", "recette", "debours", "solde"]
 
 

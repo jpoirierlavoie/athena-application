@@ -34,6 +34,7 @@ with mock.patch("google.cloud.firestore.Client"):
 
 from config import Config  # noqa: E402
 from utils.graph import GraphError  # noqa: E402
+from utils import graph_miroir
 from utils.graph_calendrier import MIROIR_CATEGORIE, MIROIR_PROP_ID  # noqa: E402
 
 UTC = timezone.utc
@@ -104,6 +105,7 @@ def _miroir_de(aud, event_id="EVT-1", etag_stampe=None, **over):
         "isReminderOn": True,
         "reminderMinutesBeforeStart": aud["reminder_minutes"],
         "showAs": "busy",
+        "sensitivity": graph_miroir.graph_sensitivity(aud),
         "categories": [MIROIR_CATEGORIE],
         "singleValueExtendedProperties": [
             {

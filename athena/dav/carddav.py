@@ -508,6 +508,14 @@ def put_resource(partie_id: str) -> Response:
     if existing:
         # Update. The parser hands over the card's UID: the model drops it
         # (Rule 11 — a contact's UID never changes after creation).
+        # If the phone changed BDAY to a different yearless --MMDD than the
+        # stored birth_date, drop birth_date so the partial change takes effect;
+        # if --MMDD still matches the stored month/day, keep the stored year.
+        if "birth_date_mmdd" in data and "birth_date" not in data:
+            existing_bday = existing.get("birth_date")
+            if hasattr(existing_bday, "strftime"):
+                if existing_bday.strftime("--%m%d") != data["birth_date_mmdd"]:
+                    data["birth_date"] = None
         updated, errors = update_partie(partie_id, data)
         if errors:
             return _refused(partie_id, errors)

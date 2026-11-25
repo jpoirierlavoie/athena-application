@@ -308,7 +308,7 @@ def test_barreau_columns_exact_order_and_headers():
         "Objet de la recette ou du débours",
         "Mode du retrait",
         "Recette",
-        "Crédit",
+        "Déboursé",
         "Solde",
     ]
 

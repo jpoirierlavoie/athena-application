@@ -467,7 +467,27 @@ def test_the_flow_prefixes_are_the_builders_own_namespaces():
     assert own == set(CREDIT_NOTE_FIELDS) | set(CREDIT_NOTE_INVOICE_FIELDS)
     assert FLOW_PREFIXES["note_credit"] == ("nc.",)
     assert all(k.startswith("nc.") for k in CREDIT_NOTE_FIELDS)
-    assert FLOW_NAMES == {"note_credit": CREDIT_NOTE_INVOICE_FIELDS}
+    # Lot 4a — the interest notice: its own ai.* and its few facture.* fields.
+    from datetime import timezone as _tz
+    from utils.invoice_docx import INTEREST_NOTICE_FIELDS, build_interest_notice_context
+    from utils.template_fields import INTEREST_NOTICE_INVOICE_FIELDS
+    interest = build_interest_notice_context(
+        {"invoice_number": "2031-F001"},
+        {"interest_notice_number": "2031-AI001",
+         "date": datetime(2031, 3, 10, tzinfo=_tz.utc),
+         "period_start": datetime(2031, 2, 3, tzinfo=_tz.utc),
+         "period_end": datetime(2031, 3, 10, tzinfo=_tz.utc),
+         "days": 35, "principal": 100000, "rate_bps": 1200, "amount": 1151},
+        firm={}, destinataire=None, dossier=None,
+        today=datetime(2031, 3, 10).date(), balance_cents=101151)
+    own_ai = {k for k in interest.values if k not in header}
+    assert own_ai == set(INTEREST_NOTICE_FIELDS) | set(INTEREST_NOTICE_INVOICE_FIELDS)
+    assert FLOW_PREFIXES["avis_interets"] == ("ai.",)
+    assert all(k.startswith("ai.") for k in INTEREST_NOTICE_FIELDS)
+    assert FLOW_NAMES == {
+        "note_credit": CREDIT_NOTE_INVOICE_FIELDS,
+        "avis_interets": INTEREST_NOTICE_INVOICE_FIELDS,
+    }
     assert all(is_flow_field(k, "note_credit") for k in own)
     # The credit note's flow fills no OTHER facture.* field: one left in its
     # gabarit stays as typed, a bloc, never reported as filled.
@@ -590,6 +610,8 @@ def test_every_special_kind_has_its_flow_tables():
     ("note_honoraires", "adverse_id"),
     ("note_credit", "client_id"),
     ("note_credit", "adverse_id"),
+    ("avis_interets", "client_id"),
+    ("avis_interets", "adverse_id"),
     ("note", "client_id"),
     ("note", "destinataire_id"),
 ])
@@ -629,6 +651,27 @@ def test_the_flow_slots_are_the_builders_own(monkeypatch):
         {"billing_address": {"name": "X"}}, _CREDIT_WRITE_OFF, firm={},
         destinataire=None, dossier=dossier, today=datetime(2031, 3, 10).date(),
         balance_cents=0)
+    # Lot 4a: the interest notice's builder, its own capture.
+    monkeypatch.setattr(invoice_docx, "resolve_values", _capture("avis_interets"))
+    invoice_docx.build_interest_notice_context(
+        {"billing_address": {"name": "X"}},
+        {
+            "interest_notice_number": "2031-AI001",
+            "date": datetime(2031, 3, 10, tzinfo=timezone.utc),
+            "period_start": datetime(2031, 2, 1, tzinfo=timezone.utc),
+            "period_end": datetime(2031, 3, 10, tzinfo=timezone.utc),
+            "days": 37,
+            "principal": 100000,
+            "rate_bps": 1200,
+            "amount": 1216,
+            "reason": "",
+        },
+        firm={},
+        destinataire=None,
+        dossier=dossier,
+        today=datetime(2031, 3, 10).date(),
+        balance_cents=101216,
+    )
     note_docx.build_note_context({"title": "T"}, dossier=dossier, firm={},
                                  today=datetime(2026, 9, 27).date())
     assert {k: set(v) for k, v in handlers._FLOW_SLOTS.items()} == seen

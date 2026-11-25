@@ -26,36 +26,70 @@
      écran large, la rangée d'un brouillon qui tient de justesse. #}
   <div class="flex flex-wrap items-center justify-between gap-y-1 mb-6">
     <a href="{{ return_to or url_for('invoices.invoice_list') }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      {{ 'Retour' if return_to else 'Honoraires' }}
+       aria-label="{{ 'Retour' if return_to else 'Honoraires' }}"
+       title="{{ 'Retour' if return_to else 'Honoraires' }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">{{ 'Retour' if return_to else 'Honoraires' }}</span>
     </a>
     <div class="flex flex-wrap items-center gap-2">
       {# Un brouillon se corrige sur sa propre page (lot 3a) : notes,
          échéance, adresse — jamais un montant ni une ligne. #}
       {% if can_edit_draft %}
       <a href="{{ url_for('invoices.invoice_draft_edit', invoice_id=invoice.id) }}"
-         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        Modifier le brouillon
+         title="Modifier le brouillon"
+         aria-label="Modifier le brouillon"
+         class="inline-flex items-center justify-center p-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('edit', 20) }}<span class="sr-only">Modifier le brouillon</span>
       </a>
       {% endif %}
       {% if invoice.status != 'annulée' %}
+      {% if note_template_has_en %}
       <button type="button"
+              title="Note d'honoraires (Word — FR)"
+              aria-label="Note d'honoraires (Word — FR)"
+              hx-post="{{ url_for('invoices.invoice_note_docx', invoice_id=invoice.id) }}"
+              hx-vals='{"lang": "fr"}'
+              hx-target="#note-docx-result"
+              hx-swap="innerHTML"
+              class="inline-flex items-center justify-center gap-1 min-h-[44px] min-w-[44px] px-3 py-2 text-xs font-medium rounded-lg {{ 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50' if default_doc_lang == 'en' else 'text-white bg-gray-900 hover:bg-gray-800' }}">
+        {{ ms('print', 16) }}<span>FR</span>
+      </button>
+      <button type="button"
+              title="Note d'honoraires (Word — EN)"
+              aria-label="Note d'honoraires (Word — EN)"
+              hx-post="{{ url_for('invoices.invoice_note_docx', invoice_id=invoice.id) }}"
+              hx-vals='{"lang": "en"}'
+              hx-target="#note-docx-result"
+              hx-swap="innerHTML"
+              class="inline-flex items-center justify-center gap-1 min-h-[44px] min-w-[44px] px-3 py-2 text-xs font-medium rounded-lg {{ 'text-white bg-gray-900 hover:bg-gray-800' if default_doc_lang == 'en' else 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50' }}">
+        {{ ms('print', 16) }}<span>EN</span>
+      </button>
+      {% else %}
+      <button type="button"
+              title="Note d'honoraires (Word)"
+              aria-label="Note d'honoraires (Word)"
               hx-post="{{ url_for('invoices.invoice_note_docx', invoice_id=invoice.id) }}"
               hx-target="#note-docx-result"
               hx-swap="innerHTML"
-              class="px-3 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        Note d'honoraires (Word)
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('print', 20) }}<span class="sr-only">Note d'honoraires (Word)</span>
       </button>
+      {% endif %}
       {% endif %}
       {# « Radier le solde » (lot 3b) : offert seulement quand le modèle
          radierait le solde aujourd'hui — la route calcule can_write_off
          (invoice.write_off_refusal, jour de Montréal) ; ce gabarit ne compare
          aucune date. Il ouvre la page de la radiation, qui montre le solde,
          sa TPS, sa TVQ, et ne réserve aucun numéro. 44 px (py-3, règle 9). #}
+      {% if can_charge_interest %}
+      <a href="{{ url_for('invoices.invoice_interest_form', invoice_id=invoice.id) }}"
+         class="inline-flex items-center min-h-[44px] px-3 py-3 text-sm font-medium text-indigo-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Facturer des intérêts
+      </a>
+      {% endif %}
       {% if can_write_off %}
       <a href="{{ url_for('invoices.invoice_write_off_form', invoice_id=invoice.id) }}"
-         class="px-3 py-3 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+         class="inline-flex items-center min-h-[44px] px-3 py-3 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
         Radier le solde
       </a>
       {% endif %}
@@ -70,7 +104,7 @@
         {{ etag_field(invoice) }}
         <input type="hidden" name="status" value="envoyée">
         <button type="submit"
-                class="px-3 py-1.5 text-sm font-medium text-amber-700 bg-white border border-gray-300 rounded-lg hover:bg-amber-50">
+                class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-amber-700 bg-white border border-gray-300 rounded-lg hover:bg-amber-50">
           Rouvrir la facture
         </button>
       </form>
@@ -87,7 +121,7 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           {{ etag_field(invoice) }}
           <button type="submit"
-                  class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+                  class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
             Annuler
           </button>
         </form>
@@ -102,17 +136,17 @@
              correction d'une marque posée avant l'échéance, jamais une
              dispense. #}
           <button type="submit"
-                  class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
+                  class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
             Retirer le retard
           </button>
           {% elif status == 'envoyée' %}
           <button type="submit"
-                  class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
+                  class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
             Marquer comme envoyée
           </button>
           {% elif status == 'en_retard' %}
           <button type="submit"
-                  class="px-3 py-1.5 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+                  class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
             Marquer en retard
           </button>
           {% endif %}
@@ -125,8 +159,10 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="return_to" value="{{ return_to or '' }}">
         <button type="submit"
-                class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">
-          Supprimer
+                title="Supprimer"
+                aria-label="Supprimer"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+          {{ ms('delete', 20) }}<span class="sr-only">Supprimer</span>
         </button>
       </form>
       {% endif %}
@@ -404,6 +440,12 @@
       {# Ce que les radiations en vigueur retranchent (lot 3b ; la route le
          calcule, invoice.written_off_of) : sans cette ligne, le solde nul
          d'une facture radiée ne se lirait pas. #}
+      {% if interest_charged %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Intérêts de retard (exonérés TPS/TVQ)</dt>
+        <dd class="text-gray-900 text-right">+{{ interest_charged | cents_fr }}</dd>
+      </div>
+      {% endif %}
       {% if written_off %}
       <div class="flex justify-between gap-4">
         <dt class="text-gray-500 flex-shrink-0">Radié (notes de crédit)</dt>
@@ -546,10 +588,23 @@
             hx-target="#note-credit-{{ loop.index }}"
             hx-swap="innerHTML">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if credit_note_template_has_en %}
+        <div class="flex items-center gap-2 flex-wrap">
+          <button type="submit" name="lang" value="fr"
+                  class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium rounded-lg {{ 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50' if default_doc_lang == 'en' else 'text-white bg-gray-900 hover:bg-gray-800' }}">
+            Générer la note de crédit (FR)
+          </button>
+          <button type="submit" name="lang" value="en"
+                  class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium rounded-lg {{ 'text-white bg-gray-900 hover:bg-gray-800' if default_doc_lang == 'en' else 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50' }}">
+            Générer la note de crédit (EN)
+          </button>
+        </div>
+        {% else %}
         <button type="submit"
                 class="px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
           Générer la note de crédit
         </button>
+        {% endif %}
       </form>
       <div id="note-credit-{{ loop.index }}"></div>
       {% endif %}
@@ -564,6 +619,95 @@
         <button type="submit"
                 class="mt-2 px-4 py-3 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
           Annuler la radiation
+        </button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ── Avis d'intérêts (lot 4a) ────────────────────────────────── #}
+  {% if interest_notices is none %}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Avis d'intérêts</h2>
+  <div class="bg-white rounded-xl border border-gray-200 p-5 text-sm text-red-700 mb-4">
+    Les avis d'intérêts enregistrés sur cette facture sont illisibles : la
+    facture doit d'abord être réparée.
+  </div>
+  {% elif interest_notices %}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Avis d'intérêts</h2>
+  <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 mb-4">
+    {% for n in interest_notices %}
+    <div class="p-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-sm font-medium text-gray-900">
+          {{ n.kind_label }} · avis {{ n.interest_notice_number }}
+        </p>
+        {% if n.is_notice %}
+        <span class="text-xs px-2 py-0.5 rounded-full {{ 'bg-amber-100 text-amber-800' if n.standing else 'bg-gray-200 text-gray-600' }}">{{ n.state }}</span>
+        {% endif %}
+      </div>
+      <dl class="mt-2 space-y-1 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Date</dt>
+          <dd class="text-gray-900 text-right">{{ n.date }}</dd>
+        </div>
+        {% if n.is_notice %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Période</dt>
+          <dd class="text-gray-900 text-right">{{ n.period_start }} → {{ n.period_end }} ({{ n.days }} j)</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Capital et taux annuel</dt>
+          <dd class="text-gray-900 text-right">{{ n.principal | cents_fr }} à {{ n.rate_text }}</dd>
+        </div>
+        {% endif %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Intérêts (exonérés TPS/TVQ)</dt>
+          <dd class="text-gray-900 text-right font-medium">{{ n.amount | cents_fr }}</dd>
+        </div>
+      </dl>
+      {% if n.reason %}
+      <p class="mt-2 text-sm text-gray-700 whitespace-pre-line wrap-anywhere">{{ n.reason }}</p>
+      {% endif %}
+      {% if n.can_generate %}
+      <form method="post" class="mt-3"
+            action="{{ url_for('invoices.invoice_interest_notice_docx', invoice_id=invoice.id, event_id=n.id) }}"
+            hx-post="{{ url_for('invoices.invoice_interest_notice_docx', invoice_id=invoice.id, event_id=n.id) }}"
+            hx-target="#avis-interets-{{ loop.index }}"
+            hx-swap="innerHTML">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if interest_template_has_en %}
+        <div class="flex items-center gap-2 flex-wrap">
+          <button type="submit" name="lang" value="fr"
+                  class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium rounded-lg {{ 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50' if default_doc_lang == 'en' else 'text-white bg-gray-900 hover:bg-gray-800' }}">
+            Générer l'avis d'intérêts (FR)
+          </button>
+          <button type="submit" name="lang" value="en"
+                  class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium rounded-lg {{ 'text-white bg-gray-900 hover:bg-gray-800' if default_doc_lang == 'en' else 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50' }}">
+            Générer l'avis d'intérêts (EN)
+          </button>
+        </div>
+        {% else %}
+        <button type="submit"
+                class="px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Générer l'avis d'intérêts
+        </button>
+        {% endif %}
+      </form>
+      <div id="avis-interets-{{ loop.index }}"></div>
+      {% endif %}
+      {% if n.can_cancel %}
+      <form method="post" action="{{ url_for('invoices.invoice_interest_reversal', invoice_id=invoice.id, event_id=n.id) }}" class="mt-3"
+            data-confirm="Annuler l'avis d'intérêts {{ n.interest_notice_number }} de {{ n.amount | cents_fr }} ? Le numéro restera consigné comme annulé et le montant sera retranché du solde dû.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {{ etag_field(invoice) }}
+        <label for="motif-ai-{{ n.id }}" class="block text-xs font-medium text-gray-700 mb-1">Motif de l'annulation (facultatif)</label>
+        <textarea id="motif-ai-{{ n.id }}" name="reason" rows="2"
+                  class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2"></textarea>
+        <button type="submit"
+                class="mt-2 px-4 py-3 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+          Annuler l'avis d'intérêts
         </button>
       </form>
       {% endif %}

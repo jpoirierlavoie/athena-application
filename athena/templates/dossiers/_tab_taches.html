@@ -5,8 +5,9 @@
   <div class="flex items-center justify-between mb-3">
     <h3 class="text-sm font-semibold text-gray-900">Tâches</h3>
     <a href="{{ url_for('tasks.task_new', dossier_id=dossier.id, return_to=tab_return_to) }}"
-       class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
-      + Nouvelle tâche
+       aria-label="Nouvelle tâche" title="Nouvelle tâche"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">
+      {{ ms('add', 20) }}<span class="sr-only">+ Nouvelle tâche</span>
     </a>
   </div>
 

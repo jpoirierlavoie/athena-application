@@ -1,0 +1,129 @@
+{# Carte d'un rendez-vous à confirmer (Bookings / portail RDV). #}
+{% from "components/_edit_conflict.html" import etag_field %}
+{% set annule = h.confirmation == "annulée_client" %}
+<div class="bg-white rounded-xl border border-gray-200 p-4 {{ 'opacity-70' if annule }}">
+  <div class="flex items-start justify-between gap-3 mb-2">
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <p class="text-sm font-semibold text-gray-900">{{ h.title }}</p>
+        {% if onglet is defined and onglet == 'tout' %}
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">Rendez-vous</span>
+        {% endif %}
+      </div>
+      <p class="text-xs text-gray-500 mt-0.5">
+        {% if h.start_datetime and h.start_datetime.strftime is defined %}
+          {{ (h.start_datetime|to_mtl).strftime('%Y-%m-%d à %H:%M') }}
+          {% if h.end_datetime and h.end_datetime.strftime is defined %}– {{ (h.end_datetime|to_mtl).strftime('%H:%M') }}{% endif %}
+        {% endif %}
+      </p>
+    </div>
+    <span class="flex items-center gap-1.5 flex-shrink-0">
+      {% if h.source == "portail" %}
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700">Portail</span>
+      {% endif %}
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium
+                   {{ 'bg-gray-200 text-gray-500' if annule else 'bg-amber-100 text-amber-700' }}">
+        {{ "Annulé par le client" if annule else "À confirmer" }}
+      </span>
+    </span>
+  </div>
+
+  {# Client + modalité #}
+  <div class="flex flex-wrap items-center gap-3 text-xs text-gray-600 mb-3">
+    {% if h.client_nom %}<span class="font-medium text-gray-800">{{ h.client_nom }}</span>{% endif %}
+    {% if h.client_email %}<span>{{ h.client_email }}</span>{% endif %}
+    {% if h.client_telephone %}<span>{{ h.client_telephone }}</span>{% endif %}
+    {% if h.modalite == "visioconférence" and h.conference_uri and h.conference_uri.startswith("http") %}
+    <a href="{{ h.conference_uri }}" target="_blank" rel="noopener noreferrer"
+       class="text-indigo-600 hover:text-indigo-500 font-medium">Lien Teams</a>
+    {% elif h.modalite == "visioconférence" %}
+    <span class="text-indigo-600">Visioconférence Teams (créée à la confirmation)</span>
+    {% elif h.location %}
+    <span class="truncate max-w-xs">{{ h.location }}</span>
+    {% endif %}
+  </div>
+
+  {% if h.sujet_client %}
+  <p class="text-xs text-gray-700 mb-2 wrap-anywhere"><span class="text-gray-500">Sujet&nbsp;:</span> {{ h.sujet_client }}</p>
+  {% endif %}
+
+  {% if h.parties_adverses %}
+  <p class="text-xs text-gray-700 mb-2 wrap-anywhere"><span class="text-gray-500">Partie(s) adverse(s)&nbsp;:</span> {{ h.parties_adverses|join(', ') }}</p>
+  {% endif %}
+
+  {% if h._conflit_horaire %}
+  <p class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-2">
+    Chevauchement détecté avec un autre événement du calendrier.
+  </p>
+  {% endif %}
+
+  {% if h._conflits_candidats %}
+  <div class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-2 space-y-1">
+    <p class="font-medium">Rapprochement visuel (vérification de conflit)&nbsp;:</p>
+    {% for item in h._conflits_candidats %}
+    <p class="wrap-anywhere">
+      {{ item.nom }} →
+      {% for c in item.candidats %}
+      <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}" class="underline font-medium">{{ c.nom }}</a> ({{ c.motif }}{% if c.en_dossier %} · lié à un dossier{% endif %}){% if not loop.last %}, {% endif %}
+      {% endfor %}
+    </p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# Liaison partie #}
+  <div class="text-xs mb-3">
+    {% if h._partie_id %}
+    <span class="inline-flex items-center gap-1 text-green-700">
+      {{ ms('check', 14) }}
+      Partie reconnue&nbsp;: {{ h._partie_nom }}
+    </span>
+    {% else %}
+    <span class="text-gray-400">Aucune partie au dossier pour ce courriel.</span>
+    {% endif %}
+  </div>
+
+  {# Actions #}
+  <div class="space-y-3">
+    {% if not annule %}
+    <form method="post" action="{{ url_for('reception.rdv_confirmer', hid=h.id) }}"
+          class="space-y-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      {{ etag_field(h) }}
+      {% if h.source == "portail" %}
+      <details class="text-xs text-gray-600">
+        <summary class="cursor-pointer font-medium text-indigo-600 hover:text-indigo-500">Ordre du jour minuté Teams (facultatif)</summary>
+        <textarea name="teams_agenda" rows="3" maxlength="2000"
+                  class="mt-2 w-full rounded-lg border border-gray-300 px-2.5 py-2 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ h.teams_agenda }}</textarea>
+      </details>
+      {% endif %}
+      <div class="flex flex-wrap items-center gap-3">
+      {% if h._partie_id %}
+      <label class="flex items-center gap-1.5 text-xs text-gray-600">
+        <input type="checkbox" name="lier" checked class="rounded border-gray-300">
+        Lier à {{ h._partie_nom }}
+      </label>
+      {% elif feature_intake and h.client_email %}
+      {# Déclencheur (a) : aucune partie ne correspond au courriel — c'est
+         un nouveau client. Cochée par défaut (§2). #}
+      <label class="flex items-center gap-1.5 text-xs text-gray-600">
+        <input type="checkbox" name="intake" checked class="rounded border-gray-300">
+        Envoyer le formulaire d'ouverture
+      </label>
+      {% endif %}
+      <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Confirmer</button>
+      </div>
+    </form>
+    {% endif %}
+    <form method="post" action="{{ url_for('reception.rdv_refuser', hid=h.id) }}"
+          data-confirm="{{ 'Retirer ce rendez-vous de la réception ?' if annule else 'Refuser ce rendez-vous ? Le client sera prévenu.' }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      {{ etag_field(h) }}
+      <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">
+        {{ "Retirer" if annule else "Refuser" }}
+      </button>
+    </form>
+  </div>
+</div>

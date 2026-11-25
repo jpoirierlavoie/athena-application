@@ -3,7 +3,9 @@
 {% block content %}
 <div class="max-w-3xl mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-4">
-    <a href="{{ url_for('trust.reconciliations_list') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('trust.reconciliations_list') }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour aux conciliations" title="Retour aux conciliations">{{ ms('arrow_back', 20) }}</a>
     <div>
       <h1 class="text-xl font-semibold text-gray-900">Conciliation — {{ account.name if account else '' }}</h1>
       <p class="text-sm text-gray-500">Période au {{ rec.period_end.strftime('%Y-%m-%d') if rec.period_end else '' }}</p>

@@ -320,21 +320,21 @@ def _payee_selected(html: str) -> list:
 def test_d23_sur_un_cheque_l_avocat_est_prechoisi(fake, client):
     """Régression — l'art. 58 tire un CHÈQUE d'honoraires « à l'ordre de
     l'avocat » et ne nomme la société qu'en titulaire du compte d'un
-    virement. Le sélecteur ne préchoisissait rien : le navigateur retenait
-    sa première option, le cabinet, et le formulaire s'ouvre en « chèque ».
-    Il préchoisit désormais le défaut du modèle pour le mode affiché —
-    l'avocat sur un chèque, le cabinet sur un virement —, et un bénéficiaire
+    virement. Depuis le lot 1l, le formulaire s'ouvre en « virement » et
+    préchoisit donc le cabinet ; sur un réaffichage en « chèque » (sans
+    bénéficiaire posté), l'avocat reste préchoisi, et un bénéficiaire
     posté reste celui qu'on réaffiche."""
-    assert _payee_selected(_html(client.get("/fideicommis/nouvelle"))) == [LAWYER]
+    assert _payee_selected(_html(client.get("/fideicommis/nouvelle"))) == [FIRM]
 
     # Réaffichages (la facture brouillon est refusée, D20) : sans
     # bénéficiaire posté, le défaut du mode posté ; posté, celui-là.
-    form = {k: v for k, v in _fee_form(method="virement",
-                                        invoice_number="2026-F042").items()
-            if k != "counterparty"}
-    resp = client.post("/fideicommis/", data=form)
-    assert resp.status_code == 400
-    assert _payee_selected(_html(resp)) == [FIRM]
+    for method, expected in (("chèque", LAWYER), ("virement", FIRM)):
+        form = {k: v for k, v in _fee_form(method=method,
+                                            invoice_number="2026-F042").items()
+                if k != "counterparty"}
+        resp = client.post("/fideicommis/", data=form)
+        assert resp.status_code == 400
+        assert _payee_selected(_html(resp)) == [expected]
     resp = client.post("/fideicommis/", data=_fee_form(
         method="virement", invoice_number="2026-F042", counterparty=LAWYER))
     assert resp.status_code == 400
@@ -420,7 +420,7 @@ def test_d23_le_paiement_construit_depuis_le_formulaire_n_a_qu_un_beneficiaire(
     parser = _Controls()
     parser.feed(page[start:page.index("</form>", start)])
     browser = {"purpose": "virement_honoraires", "direction": "déboursé",
-               "amount": "100,00", "method": "chèque", "date": "2026-09-10",
+               "amount": "100,00", "method": "virement", "date": "2026-09-10",
                "dossier_id": "dos1", "client_id": "c1",
                "invoice_number": "2026-F040", "admin_account_id": "ops1"}
     posted = MultiDict()
@@ -430,13 +430,13 @@ def test_d23_le_paiement_construit_depuis_le_formulaire_n_a_qu_un_beneficiaire(
             continue                       # disabled for a fee payment
         assert disabled in ("", "purpose !== 'virement_honoraires'"), disabled
         posted.add(control["name"], browser.get(control["name"], control["value"] or ""))
-    assert posted.getlist("counterparty") == [LAWYER]   # the select, on a cheque
+    assert posted.getlist("counterparty") == [FIRM]     # the select, on a transfer (lot 1l default)
     resp = client.post("/fideicommis/", data=posted)
     assert resp.status_code == 302, (re.findall(r"<li>(.*?)</li>", _html(resp)),
                                      sorted(posted.items(multi=True)))
     fees = [t for t in fake.peek_collection("trust_transactions").values()
             if t["purpose"] == trust.FEE_PAYMENT_PURPOSE]
-    assert [t["counterparty"] for t in fees] == [LAWYER]
+    assert [t["counterparty"] for t in fees] == [FIRM]
 
 
 def test_d23_un_profil_sans_nom_le_dit_au_formulaire(fake, client):

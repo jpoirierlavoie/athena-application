@@ -26,6 +26,7 @@ from models import concurrency, dav_ids, db, provenance
 from models import revision as revision_model
 from models.record_ids import is_addressable_id
 from security import sanitize
+from utils import dav_classification
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ COLLECTION = "notes"
 _PROTECTED_ON_UPDATE = frozenset({
     "id",
     "vjournal_uid",
+    "ical_sequence",
     "created_at",
     "created_via",
     "updated_at",
@@ -108,8 +110,12 @@ def _default_doc() -> dict:
         # sheet). Hidden from the Notes views, INCLUDED on the DAV and MCP
         # read paths — see list_notes(include_analyse=...).
         "is_analyse": False,
+        # Optional link to a calendar hearing/meeting (Lot B).
+        "hearing_id": None,
         # DAV
         "vjournal_uid": "",
+        "classification": "",
+        "ical_sequence": 0,
         # Metadata
         "created_at": None,
         "updated_at": None,
@@ -136,7 +142,9 @@ def _sanitize_data(data: dict) -> dict:
     """
     out: dict = {}
     for key, val in data.items():
-        if isinstance(val, str):
+        if key == "classification" and isinstance(val, str):
+            out[key] = dav_classification.normalize_classification_value(val)
+        elif isinstance(val, str):
             limit = CONTENT_MAX_LENGTH if key == "content" else _FIELD_MAX_LENGTH
             out[key] = sanitize(val, max_length=limit)
         else:
@@ -161,7 +169,50 @@ def _validate(data: dict) -> list[str]:
     if category and category not in VALID_CATEGORIES:
         errors.append("Catégorie invalide.")
 
+    cls_err = dav_classification.validation_error(
+        data.get("classification"),
+        has_dossier=dav_classification.has_dossier_link(data),
+    )
+    if cls_err:
+        errors.append(cls_err)
+
+    seq = data.get("ical_sequence", 0)
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        errors.append("Séquence iCalendar invalide.")
+
+    hearing_id = data.get("hearing_id")
+    if hearing_id is not None and (
+        not isinstance(hearing_id, str) or not is_addressable_id(hearing_id)
+    ):
+        errors.append("Événement du calendrier invalide.")
+
     return errors
+
+
+def _validate_hearing_target(
+    hearing_id: Optional[str],
+    dossier_id: str,
+    *,
+    allow_missing: bool = False,
+) -> tuple[Optional[str], list[str]]:
+    """Verify *hearing_id* exists (strictly) and matches *dossier_id*."""
+    if not hearing_id:
+        return None, []
+    from models.hearing import get_hearing_strict
+    try:
+        linked_hearing = get_hearing_strict(hearing_id)
+    except Exception:
+        return hearing_id, [concurrency.READ_UNAVAILABLE_ERROR]
+    if not linked_hearing:
+        if allow_missing:
+            return None, []
+        return hearing_id, ["Événement du calendrier introuvable."]
+    h_dossier = linked_hearing.get("dossier_id") or ""
+    if h_dossier and (dossier_id or "") != h_dossier:
+        return hearing_id, [
+            "Cette note n'appartient pas au même dossier que l'événement."
+        ]
+    return hearing_id, []
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
@@ -202,20 +253,37 @@ def create_note(
     data = dict(data)
     data.pop("id", None)
     data.pop("vjournal_uid", None)
+    data.pop("ical_sequence", None)
     if dav_id is not None and not dav_ids.valid_resource_id(dav_id):
         return None, [dav_ids.DAV_ID_INVALID]
 
     merged = {**_default_doc(), **_sanitize_data(data)}
+    if not merged.get("hearing_id"):
+        merged["hearing_id"] = None
+    if not merged.get("classification"):
+        merged["classification"] = dav_classification.default_classification(
+            has_dossier=dav_classification.has_dossier_link(merged)
+        )
+    merged["ical_sequence"] = 0
     if merged.get("is_analyse"):
         # The théorie de la cause is a dateless jtx *Note*, on every path.
         # update_note ignores « dateless » for it, so an analyse note BORN
         # dated — a DAV create carrying X-PALLAS-ANALYSE and a DTSTART —
         # could never be corrected afterwards (lot 1a L3 review).
         merged["dateless"] = True
+        merged["hearing_id"] = None
 
     errors = _validate(merged)
     if errors:
         return None, errors
+
+    if merged.get("hearing_id"):
+        resolved_hid, hearing_errors = _validate_hearing_target(
+            merged["hearing_id"], merged.get("dossier_id") or ""
+        )
+        if hearing_errors:
+            return None, hearing_errors
+        merged["hearing_id"] = resolved_hid
 
     now = datetime.now(timezone.utc)
     note_id = (dav_id if dav_id is not None
@@ -382,6 +450,51 @@ def list_notes_without_dossier_strict(*, include_analyse: bool) -> list[dict]:
     """
     return [n for n in _raw_notes(None, include_analyse=include_analyse)
             if not n.get("dossier_id")]
+
+
+def list_notes_for_hearing_strict(
+    hearing_id: str, *, include_analyse: bool = False
+) -> list[dict]:
+    """Notes linked to *hearing_id* — STRICT, pinned first then newest first.
+
+    Single-field equality query on ``hearing_id`` (automatic index; no composite
+    index required).
+    """
+    if not is_addressable_id(hearing_id):
+        return []
+    rows = [
+        _migrate_category(doc.to_dict() or {})
+        for doc in db.collection(COLLECTION)
+        .where(filter=FieldFilter("hearing_id", "==", hearing_id))
+        .stream()
+    ]
+    if not include_analyse:
+        rows = [r for r in rows if not r.get("is_analyse")]
+    rows.sort(
+        key=lambda n: (
+            0 if n.get("pinned") else 1,
+            -(n.get("created_at") or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+        ),
+    )
+    return rows
+
+
+def list_notes_for_hearing(
+    hearing_id: str, *, include_analyse: bool = False
+) -> list[dict]:
+    """Fail-open wrapper of :func:`list_notes_for_hearing_strict` for display."""
+    if not is_addressable_id(hearing_id):
+        return []
+    try:
+        return list_notes_for_hearing_strict(
+            hearing_id, include_analyse=include_analyse
+        )
+    except Exception as exc:
+        logger.warning(
+            "list_notes_for_hearing failed for %s: %s",
+            sanitize_log_value(hearing_id), type(exc).__name__,
+        )
+        return []
 
 
 # Bounded read caps for the default /notes/ list view (no search/category
@@ -559,16 +672,46 @@ def update_note(
         changes.pop("is_analyse", None)
         if existing.get("is_analyse"):
             changes.pop("dateless", None)
+            changes.pop("hearing_id", None)
             if "dossier_id" in changes and (
                 changes.get("dossier_id") or ""
             ) != (existing.get("dossier_id") or ""):
                 return None, [ANALYSE_DOSSIER_LOCKED_ERROR]
+        if "hearing_id" in changes and not changes["hearing_id"]:
+            changes["hearing_id"] = None
 
         merged = {**existing, **_sanitize_data(changes)}
+        if (
+            dav_classification.has_dossier_link(merged)
+            and "classification" not in changes
+            and merged.get("classification") == dav_classification.CLASS_PUBLIC
+        ):
+            merged["classification"] = dav_classification.CLASS_CONFIDENTIAL
+        if not merged.get("classification"):
+            merged["classification"] = dav_classification.default_classification(
+                has_dossier=dav_classification.has_dossier_link(merged)
+            )
+        merged["ical_sequence"] = max(0, int(existing.get("ical_sequence") or 0)) + 1
 
         errors = _validate(merged)
         if errors:
             return None, errors
+
+        if merged.get("hearing_id") and (
+            (merged.get("hearing_id") or None) != (existing.get("hearing_id") or None)
+            or (merged.get("dossier_id") or "") != (existing.get("dossier_id") or "")
+        ):
+            resolved_hid, hearing_errors = _validate_hearing_target(
+                merged["hearing_id"],
+                merged.get("dossier_id") or "",
+                allow_missing=(
+                    (merged.get("hearing_id") or None)
+                    == (existing.get("hearing_id") or None)
+                ),
+            )
+            if hearing_errors:
+                return None, hearing_errors
+            merged["hearing_id"] = resolved_hid
 
         now = datetime.now(timezone.utc)
         provenance.stamp_update(merged, now)
@@ -759,6 +902,72 @@ def toggle_pin(note_id: str) -> tuple[Optional[dict], list[str], bool]:
     if not existing:
         return None, ["Note introuvable."], False
     return set_pinned(note_id, not existing.get("pinned", False))
+
+
+class _NoteLinkRefused(Exception):
+    """Raised inside :func:`set_note_hearing` transaction to roll back with French errors."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__("refused")
+        self.errors = list(errors)
+
+
+def set_note_hearing(
+    note_id: str,
+    hearing_id: Optional[str],
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """Link or unlink *note_id* from a calendar hearing — partial transactional write.
+
+    Returns ``(doc, errors, changed)``. Updates only ``hearing_id`` and
+    provenance stamps via ``transaction.update()``, so linking never creates a
+    spurious content revision and never overwrites concurrent edits.
+    """
+    if not is_addressable_id(note_id):
+        return None, ["Note introuvable."], False
+    target = (hearing_id or None)
+    if target is not None and (not isinstance(target, str) or not is_addressable_id(target)):
+        return None, ["Événement du calendrier invalide."], False
+    ref = db.collection(COLLECTION).document(note_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _NoteLinkRefused(["Note introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _NoteLinkRefused([concurrency.STALE_ETAG_ERROR])
+        if existing.get("is_analyse"):
+            raise _NoteLinkRefused(["La note d'analyse ne peut pas être liée à un événement."])
+        if target is not None:
+            h_snap = db.collection("hearings").document(target).get(transaction=transaction)
+            if not h_snap.exists:
+                raise _NoteLinkRefused(["Événement du calendrier introuvable."])
+            h_dossier = (h_snap.to_dict() or {}).get("dossier_id") or ""
+            note_dossier = existing.get("dossier_id") or ""
+            if h_dossier and note_dossier != h_dossier:
+                raise _NoteLinkRefused([
+                    "Cette note n'appartient pas au même dossier que l'événement."
+                ])
+        if (existing.get("hearing_id") or None) == target:
+            return existing, False
+        stamp = provenance.update_fields(datetime.now(timezone.utc))
+        fields = {"hearing_id": target, **stamp}
+        transaction.update(ref, fields)
+        return {**existing, **fields}, True
+
+    try:
+        doc, changed = _apply(db.transaction())
+    except _NoteLinkRefused as refusal:
+        return None, refusal.errors, False
+    except Exception:
+        log_unexpected("note hearing link failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    if changed:
+        provenance.note_commit(COLLECTION, note_id)
+    return doc, [], changed
 
 
 # ── Théorie de la cause (feuille « Analyse ») ────────────────────────────
@@ -1224,10 +1433,11 @@ def note_to_vjournal(note: dict) -> str:
         journal.add("categories", [label])
 
     updated = note.get("updated_at")
-    if updated:
-        journal.add("last-modified", updated)
+    if updated and hasattr(updated, "hour"):
+        journal.add("last-modified", _to_utc(updated))
 
-    journal.add("sequence", 0)
+    journal.add("class", dav_classification.effective_classification(note))
+    journal.add("sequence", max(0, int(note.get("ical_sequence") or 0)))
 
     # Custom X- properties
     if note.get("category"):
@@ -1302,6 +1512,12 @@ def vjournal_to_note(ical_str: str) -> dict:
         analyse = component.get("x-pallas-analyse")
         if analyse and str(analyse).lower() == "true":
             data["is_analyse"] = True
+
+        cls_prop = component.get("class")
+        if cls_prop:
+            cls_norm = dav_classification.normalize_classification_value(str(cls_prop))
+            if cls_norm in dav_classification.VALID_CLASSIFICATIONS:
+                data["classification"] = cls_norm
 
         break  # Only process first VJOURNAL
 

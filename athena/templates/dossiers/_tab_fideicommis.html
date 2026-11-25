@@ -3,9 +3,9 @@
   <div class="flex items-center justify-between">
     <h2 class="text-sm font-semibold text-gray-900">Fidéicommis</h2>
     <a href="{{ url_for('trust.entry_new', dossier_id=dossier.id, locked=1) }}"
-       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-      {{ ms('add', 16) }}
-      Nouvelle écriture
+       aria-label="Nouvelle écriture en fidéicommis" title="Nouvelle écriture"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ ms('add', 20) }}<span class="sr-only">Nouvelle écriture</span>
     </a>
   </div>
 

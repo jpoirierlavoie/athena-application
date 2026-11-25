@@ -243,8 +243,11 @@ def _where(aid: str, tx: dict) -> str:
 
 
 def _born_cleared(tx: dict) -> bool:
-    """Transfer legs and their pair reversals are created compensée."""
-    return bool(tx.get("related_transaction_id")) and tx.get("purpose") in _BORN_CLEARED_PURPOSES
+    """Transfer legs, their pair reversals, and bridged ops→trust advances are created compensée."""
+    return (
+        (bool(tx.get("related_transaction_id")) and tx.get("purpose") in _BORN_CLEARED_PURPOSES)
+        or (bool(tx.get("admin_transaction_id")) and tx.get("purpose") == "avance_honoraires")
+    )
 
 
 def _legacy_transfer_leg(tx: dict, stored: int, expected: int, by_sequence: dict) -> bool:
@@ -803,7 +806,11 @@ def _check_fee_payment_linkage(
             )
 
     for link in sorted(set(by_link) - fee_ids):
-        standing = [r for r in by_link[link] if _admin_standing(r)]
+        standing = [
+            r for r in by_link[link]
+            if _admin_standing(r)
+            and not (r.get("kind") == "virement_interne_sortant" and r.get("transfer_purpose") == "avances")
+        ]
         if not standing:
             continue
         ids = ", ".join(str(r.get("id")) for r in standing)
@@ -812,6 +819,59 @@ def _check_fee_payment_linkage(
             f"recette(s) d'administration {ids} ({total} cents) liée(s) à "
             f"l'écriture du fidéicommis {link}, qui n'est pas un paiement "
             f"d'honoraires du registre — un lien que rien n'adosse"
+        )
+
+
+def _check_advance_transfer_linkage(
+    bridged_advances: list[tuple[str, dict]], by_link: dict, problems: list,
+) -> None:
+    """Every bridged Ops → Trust advance (`avance_honoraires` + `admin_transaction_id`)
+    must match a linked `virement_interne_sortant` (`transfer_purpose='avances'`)."""
+    trust_ids = {tx.get("id") for _aid, tx in bridged_advances}
+    for aid, tx in bridged_advances:
+        where = _where(aid, tx)
+        amount = int(tx.get("amount", 0))
+        admin_id = tx.get("admin_transaction_id") or ""
+        linked = [
+            r for r in by_link.get(tx.get("id"), [])
+            if r.get("kind") == "virement_interne_sortant" and r.get("transfer_purpose") == "avances"
+        ]
+        standing = [r for r in linked if _admin_standing(r)]
+        trust_standing = tx.get("status") != "annulée" and not tx.get("reversed_by_id")
+        if trust_standing:
+            if not standing:
+                problems.append(
+                    f"{where}: dépôt d'avances lié à l'administration {admin_id}, "
+                    f"sans virement sortant d'administration actif"
+                )
+            elif len(standing) != 1 or standing[0].get("id") != admin_id:
+                problems.append(
+                    f"{where}: lien asymétrique avec le registre d'administration"
+                )
+            elif int(standing[0].get("amount", 0)) != amount:
+                problems.append(
+                    f"{where}: montant ({amount}) ≠ virement d'administration "
+                    f"({standing[0].get('amount')})"
+                )
+        elif standing:
+            ids = ", ".join(str(r.get("id")) for r in standing)
+            problems.append(
+                f"{where}: dépôt d'avances annulé ou contre-passé, mais "
+                f"virement d'administration {ids} toujours actif"
+            )
+    for link in sorted(set(by_link) - trust_ids):
+        standing = [
+            r for r in by_link[link]
+            if _admin_standing(r)
+            and r.get("kind") == "virement_interne_sortant"
+            and r.get("transfer_purpose") == "avances"
+        ]
+        if not standing:
+            continue
+        ids = ", ".join(str(r.get("id")) for r in standing)
+        problems.append(
+            f"virement d'avances d'administration {ids} lié à l'écriture du "
+            f"fidéicommis {link}, qui n'est pas un dépôt d'avances lié"
         )
 
 
@@ -963,6 +1023,7 @@ def collect() -> tuple[list[str], list[str]]:
     dossier_book: dict[str, int] = defaultdict(int)
     invoices: dict = {}
     fee_payments: list[tuple[str, dict]] = []
+    bridged_advances: list[tuple[str, dict]] = []
     # D23 — the accepted payees, read ONCE and STRICTLY: a check that cannot
     # read must say so. Degraded to the deploy-time seed (the fail-open
     # reader every RENDER of the profile uses), it judged the register
@@ -1026,6 +1087,8 @@ def collect() -> tuple[list[str], list[str]]:
                 couple_rows[(t["dossier_id"], t["client_id"])].append(t)
             if t.get("purpose") == _FEE_PAYMENT_PURPOSE:
                 fee_payments.append((aid, t))
+            if t.get("purpose") == "avance_honoraires" and t.get("admin_transaction_id"):
+                bridged_advances.append((aid, t))
 
         try:
             recs = trust.list_reconciliations(aid)
@@ -1093,6 +1156,7 @@ def collect() -> tuple[list[str], list[str]]:
     if admin_rows is not None:
         by_link, unlinked = admin_rows
         _check_fee_payment_linkage(fee_payments, by_link, unlinked, problems, notes)
+        _check_advance_transfer_linkage(bridged_advances, by_link, problems)
     return problems, notes
 
 

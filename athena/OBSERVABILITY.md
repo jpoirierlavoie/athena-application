@@ -218,6 +218,9 @@ INFO, except `cabinet_refused` and `integrations_refused` (WARNING). The firm pr
 | `integrations_refused` | WARNING; `error_count`. The store refused — an empty keyword set, a judicial `hearing_type` in the keyword→type map, a day count outside its bounds. Never the submitted value |
 | `rendez_vous_reglages_updated` | `fields_changed` (sorted field NAMES) + `fields_changed_count`, over `settings/rendez_vous` (scheduling rules, weekly windows, meeting types & default timed agendas). Field names only, never labels or agenda prose |
 | `rendez_vous_reglages_refused` | WARNING; `error_count`. The store refused invalid bounds, malformed windows, duplicate/invalid meeting-type keys, or disallowed characters (`<` / `>`). Never the submitted value |
+| `shared_calendar_token_rotated` | New bearer token generated/rotated for the sanitized read-only `.ics` feed (`/calendrier-partage/<token>.ics`). Only its SHA-256 hash lives in `settings/integrations`; neither token nor hash is ever logged |
+| `shared_calendar_token_revoked` | Shared `.ics` feed token revoked (`settings/integrations` hash cleared); existing subscribers receive 404 |
+| `shared_calendar_rejected` | Public `.ics` feed access refused (`404` for `unconfigured` / `invalid_token` / `bad_format`; `503` for `store_unreadable` / `read_failed`); never logs token value or URL |
 
 ### `log_template_event(event, *, template_id=None, dossier_id=None, **extra)` — logger `pallas.templates`
 
@@ -254,6 +257,7 @@ Trust accounting (« comptabilité en fidéicommis », Phase K). `outcome` ∈ `
 | `trust_reconciliation_abandoned` | success | A DRAFT reconciliation was deleted (« Abandonner » — a brouillon never mutated any transaction); `reconciliation_id`, `account_id` |
 | `trust_reconciliation_statement_attached` | success | The bank statement a reconciliation rests on (art. 32 — `models/releve_conciliation`, 2026-11-10) was attached by THIS call: its object copied GCS-side to its canonical path, then the reconciliation's six `statement_*` fields set (a replacement also retires the outgoing statement's id, `statement_retired_ids`); `reconciliation_id`, `statement_id`, `size`, `file_type` (the sniffed MIME type), `catch_up` (true when joined to a reconciliation already completed — the « Relevés manquants » catch-up) — never a file name or a path |
 | `trust_reconciliation_statement_removed` | success | A DRAFT's statement was removed (« Retirer »): the fields cleared and its id retired (`statement_retired_ids`), then the object erased; `reconciliation_id`, `statement_id` |
+| `trust_receipt_attached` | success | A supporting document's metadata was set on a trust entry (`attach_receipt`); `transaction_id`, `account_id`, `size` — never a file name or a path |
 | `trust_export` | success | Journal / carte-client CSV or PDF export; `format`, `view`, `row_count` |
 
 ### `log_admin_ledger_event(event, outcome='success', *, transaction_id=None, account_id=None, invoice_id=None, reconciliation_id=None, reason=None, **extra)` — logger `pallas.admin_ledger`
@@ -307,6 +311,15 @@ The write-offs (2026-11-12, lot 3a of « Factures : retard, radiation, intérêt
 |---|---|---|
 | `invoice_written_off` | success | `write_off_remainder` (« Radier le solde ») committed: the WHOLE remainder of an overdue invoice written off by a « radiation » event, the invoice now « payée » (its label derived: « Soldée par radiation » or « Payée en partie — solde radié »). `invoice_id`, `dossier_id`, `write_off_id` (the event appended), `tax_claimed` (bool — the TPS/TVQ parts claimed, D3), `via` (the writer's path, the event's own `created_via`: `web`, `script`…), `status` (the invoice's status after: `payée`). Since lot 3b the sheet's « Radier le solde » (`routes/invoices`) is its one caller, `via` `web`; the radiation carries its credit note's number, taken in the SAME transaction from `counters/notes-credit-{year}` — no line of its own, and the number is no field here (it is on the invoice, by `write_off_id`). A counter whose `seq` cannot be read fails the door, nothing written and no number guessed: the `unexpected` line « invoice write-off failed », `error_type` the failed conversion's (`ValueError`, `TypeError`), `commit_attempted` false |
 | `invoice_write_off_reversed` | success | `reverse_write_off` (« Annuler la radiation ») committed: a « contre_passation » dated that day, repeating the radiation's figures, cancels it; the invoice reopens « en_retard » (its due date passed before it was written off). The same fields, `write_off_id` being the contre_passation, plus `reverses_id` — the radiation it cancels. Its one caller since lot 3b: the sheet's « Annuler la radiation »; the contre_passation takes no credit-note number and moves no counter |
+
+### `log_invoice_interest(event, invoice_id, *, interest_id, via, status, dossier_id='', reverses_id=None)` — logger `pallas.invoice`
+
+Manual overdue interest notices (« Avis d'intérêts », lot 4a) — a dated TPS/TVQ-exempt event appended to `invoice.interest_charges`, emitted by `models/invoice.py` after commit through this TYPED helper (zero amounts, rates, or free-text notes; `RedactionFilter` compliant).
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `invoice_interest_charged` | success | `charge_overdue_interest` (« Facturer des intérêts ») committed: `interest_id`, `invoice_id`, `dossier_id`, `via`, `status`. Sequential `AAAA-AI###` minted transactionally from `counters/avis-interets-{year}` |
+| `invoice_interest_reversed` | success | `reverse_interest_charge` (« Annuler l'avis d'intérêts ») committed: dated `contre_passation` cancelling `reverses_id`; preserves `AAAA-AI###` untouched |
 
 ### `log_protocol_event(event, protocol_id, *, outcome='success', reason=None, **extra)` — logger `pallas.protocol`
 
@@ -521,6 +534,24 @@ Messages of the daily lateness sweep (2026-11-11, lot 2 of « Factures : retard,
 Messages of the write-off doors (2026-11-12, lot 3a of « Factures : retard, radiation, intérêts ») — **IDs only**, WITHOUT a traceback (`exc_info=False`: nothing a door raises may carry a stored value into the log): « invoice write-off failed » (`models/invoice.write_off_remainder`) and « invoice write-off reversal failed » (`reverse_write_off`) — `invoice_id`, `error_type` (the exception's class), `commit_attempted` (bool). The door's transaction RAISED. `commit_attempted` false: a read failed before any write was staged — nothing was written, and the door says so. True: the door SETTLES the outcome by reading the invoice back — this call's event found, the commit landed and its answer was lost: the write is answered as made and its `invoice_written_off` / `invoice_write_off_reversed` line follows; absent, nothing was written; the read-back failing too, the outcome is UNCERTAIN (`concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR`) — never « nothing written ». A re-run of a door's body over this call's OWN landed commit (an `Aborted` retry) is told apart the same way, by the event id minted once per call, and logs nothing here.
 
 Messages of the Documents landing (2026-11-12), each a READ whose failure is answered rather than guessed: « document_list: landing page read failed » (no field — the STRICT page read of the cross-dossier list, `models/document.list_documents_page`, raised: an outage, or the category's composite index `(category ASC, created_at DESC)` missing or still building, FAILED_PRECONDITION. The page answers 200 with « La liste des documents n'a pas pu être lue » and « Réessayer », never « Aucun document »; a burst on category views right after a deploy is that index not yet « Enabled »); « document_list: dossier picker read failed » (no field — `models/dossier.list_dossiers_for_picker` raised: the select reads « Liste des dossiers indisponible » and keeps the chosen dossier, the list beside it is unaffected). The two counts beside the page read (`count_documents_page`, `count_documents_unordered`) fail OPEN to None with a raw WARNING carrying the exception CLASS only: a lost total hides the leap controls, a lost completeness count hides the « sans date de création » notice. No field carries a name, a title or a category.
+
+### `log_onedrive_mirror_event(event, outcome='success', *, reason=None, **counts)` — logger `pallas.onedrive`
+
+Strict one-way mirror (`Athena → OneDrive`, gated by `MIROIR_ONEDRIVE_ACTIF`). Carries entity IDs, action/outcome codes, HTTP status codes, and integer counts ONLY — never filenames, folder names, client names, or amounts. Client identity proofs (`pieces_identite`) are hard-excluded and never mirrored.
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `miroir_onedrive_doc_sync` | success / failure | Dossier document mirrored/updated/renamed/moved/deduplicated (`document_id`, `dossier_id`, `action` ∈ `uploaded`\|`dedup_item`\|`dedup_hash`\|`moved_or_renamed`\|`noop`) |
+| `miroir_onedrive_doc_delete` | success / failure | Dossier document mirror deleted (`document_id`, `dossier_id`, `deleted: bool`) |
+| `miroir_onedrive_folder_sync` | success / failure | Dossier folder created/renamed/moved (`folder_id`, `dossier_id`, `action` ∈ `created`\|`updated`\|`noop`) |
+| `miroir_onedrive_folder_delete` | success / failure | Deleted folder tree cleaned up (`dossier_id`, `folder_count`, `doc_count`) |
+| `miroir_onedrive_template_sync` | success / failure | Template (`FR` / `EN`) `.docx` mirrored (`template_id`, `lang`, `action`) |
+| `miroir_onedrive_template_delete` | success / failure | Template mirror removed (`template_id`, `deleted_count`) |
+| `miroir_onedrive_receipt_sync` | success / failure | Admin or Trust receipt mirrored under `Cabinet/Comptabilité` (`register`, `transaction_id`, `action`) |
+| `miroir_onedrive_statement_sync` | success / failure | Completed reconciliation bank statement mirrored (`register`, `reconciliation_id`, `action`); draft reconciliations are always skipped (`reason=not_completed`) |
+| `miroir_onedrive_sweep` | success / failure | Periodic catch-up cron sweep (`/taches/onedrive/sync`) counters (`dossiers`, `docs`, `templates`, `receipts`, `statements`, `errors`) |
+| `miroir_onedrive_dispatch_error` | refused / failure | Best-effort Cloud Tasks enqueue failed without failing user write (`action`, `error_type`) |
+| `miroir_onedrive_excluded_skipped` | refused | Hard-exclusion guard refused an identity proof (`pieces_identite`) or unsupported path (`entity_type`, `reason`) |
 
 ## Adding a new event type
 

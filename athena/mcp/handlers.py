@@ -575,7 +575,12 @@ def derive_step_status(stored: str, deadline, *, today: date) -> str:
     return "à_venir"
 
 
-def _step_row(s: dict, today: date) -> dict:
+def _step_row(
+    s: dict,
+    today: date,
+    *,
+    dossier: Optional[dict] = None,
+) -> dict:
     deadline = _as_utc(s.get("deadline_date"))
     stored = s.get("status", "")
     status = derive_step_status(stored, deadline, today=today)
@@ -583,6 +588,7 @@ def _step_row(s: dict, today: date) -> dict:
     # « status: en_retard + is_overdue: false » pair the audit found can no
     # longer be emitted.
     is_overdue = status == "en_retard"
+    badge = protocol_model.resolve_step_actor_badge(s, dossier)
     return {
         "id": s.get("id", ""),
         "order": s.get("order", 0),
@@ -605,6 +611,9 @@ def _step_row(s: dict, today: date) -> dict:
         "linked_hearing_id": s.get("linked_hearing_id"),
         "notes": s.get("notes", ""),
         "is_overdue": is_overdue,
+        "actor": str(s.get("actor") or ""),
+        "actor_label": (badge or {}).get("label", ""),
+        "key_milestone": str(s.get("key_milestone") or ""),
         # Lot 1b (L6): the phase the step carries — the defaults a new
         # time entry or task on the dossier is offered — read back, since
         # update_protocol_step and add_protocol_step now write it.
@@ -858,7 +867,7 @@ def get_agenda(args: dict) -> dict:
     ]
     urgent_steps = [
         {
-            **_step_row(s, today),
+            **_step_row(s, today, dossier=live.get(s.get("_dossier_id") or "")),
             "protocol_id": s.get("_protocol_id", ""),
             "protocol_title": s.get("_protocol_title", ""),
             # The id, not just the number. A caller acting on a step — the
@@ -1107,6 +1116,9 @@ def get_dossier(args: dict) -> dict:
             # get_dossier bypassed _stamps until 2026-09-25, so the record
             # update_dossier edits carried no etag and no provenance.
             **_stamps(d),
+            "conflict_check": d.get("conflict_check", kyc.NON_VERIFIE),
+            "conflict_check_presumed": kyc.is_presumed(d, kyc.FIELD_CONFLICT),
+            "conflict_check_notes": d.get("conflict_check_notes", ""),
         }
     )
     # The théorie de la cause's id — the handle edit_analyse's etag is read
@@ -2056,6 +2068,12 @@ _FLOW_SOURCES_FR = {
         "outil ne la génère) : les champs nc.* viennent de la radiation, les "
         "champs facture.* de sa facture, le destinataire de son client"
     ),
+    "avis_interets": (
+        "un avis d'intérêts de la facture — « Générer l'avis d'intérêts », sur "
+        "la fiche de la facture dans l'application, et nulle part ailleurs (aucun "
+        "outil ne le génère) : les champs ai.* viennent de l'avis d'intérêts, "
+        "les champs facture.* de sa facture, le destinataire de son client"
+    ),
 }
 # The party slots each SPECIAL kind's own flow fills — and no other:
 # utils/invoice_docx.build_invoice_context passes the invoice's dossier and
@@ -2070,9 +2088,11 @@ _FLOW_SLOTS = {
     "note": ("dossier",),
     "note_honoraires": ("dossier", "destinataire"),
     "note_credit": ("dossier", "destinataire"),
+    "avis_interets": ("dossier", "destinataire"),
 }
 _FLOW_ORIGIN_FR = {"note": "la note imprimée", "note_honoraires": "la facture",
-                   "note_credit": "la radiation et sa facture"}
+                   "note_credit": "la radiation et sa facture",
+                   "avis_interets": "l'avis d'intérêts et sa facture"}
 _SLOT_ARGS = (("client_id", "client"), ("adverse_id", "adverse"),
               ("destinataire_id", "destinataire"))
 
@@ -2566,6 +2586,20 @@ def get_partie(args: dict) -> dict:
         "kyc_document_ids": p.get("kyc_document_ids", []),
         "mandataires": p.get("mandataires", []),
         "notes": p.get("notes", ""),
+        # Fiche fournisseur (1d) : servie seulement si le rôle courant est
+        # un rôle payé (PAYEE_ROLES) ; un dossier dormant d'un ancien
+        # fournisseur devenu client reste caché, comme sur la fiche web.
+        **{
+            field: (
+                val
+                if (
+                    p.get("contact_role") in contact_roles.PAYEE_ROLES
+                    and isinstance((val := p.get(field)), str)
+                )
+                else ""
+            )
+            for field in partie_model.SUPPLIER_RECORD_FIELDS
+        },
         # Same gap as get_dossier: the card update_partie edits now carries
         # its etag and provenance.
         **_stamps(p),
@@ -3190,11 +3224,16 @@ def get_invoice(args: dict) -> dict:
 # ── 12. list_protocol_steps ─────────────────────────────────────────────
 
 def _protocol_payload(p: dict, today: date, dossier: Optional[dict]) -> dict:
+    variation = p.get("inscription_variation", "") or ""
+    var_info = protocol_model.INSCRIPTION_VARIATIONS.get(variation) or {}
     return {
         "id": p.get("id", ""),
         "title": p.get("title", ""),
         "protocol_type": p.get("protocol_type", ""),
+        "track": protocol_model.track_of(p),
         "status": p.get("status", ""),
+        "inscription_variation": variation,
+        "inscription_variation_label": var_info.get("label", ""),
         "court": p.get("court", ""),
         # The mismatch flag surfaces protocols created BEFORE the regime
         # gate (PA-D03) — a cq_simplifié tracking arts. 535.x on a Superior
@@ -3212,7 +3251,7 @@ def _protocol_payload(p: dict, today: date, dossier: Optional[dict]) -> dict:
         # actif, or closed before the field existed.
         "closed_by": p.get("closed_by") or "",
         "closed_at": iso_mtl(_as_utc(p.get("closed_at"))),
-        "steps": [_step_row(s, today) for s in p.get("steps", [])],
+        "steps": [_step_row(s, today, dossier=dossier) for s in p.get("steps", [])],
         **_stamps(p),
     }
 
@@ -3887,6 +3926,8 @@ def get_coverage_report(args: dict) -> dict:
     protocols = protocol_model.list_protocols(status_filter="actif")
     by_dossier: dict = {}
     for p in protocols:
+        if protocol_model.track_of(p) != protocol_model.TRACK_INSTANCE:
+            continue
         did = p.get("dossier_id", "")
         if did:
             by_dossier[did] = {
@@ -5435,6 +5476,8 @@ _PARTIE_TEXT_FIELDS = (
     "pronouns", "occupation", "job_title", "organization", "email",
     "email_work", "phone_home", "phone_cell", "phone_work", "fax",
     "bar_number", "company_neq", "notes", "legacy_ref",
+    "numero_tps", "numero_tvq", "categorie_depense_defaut",
+    "numero_compte_fournisseur",
 )
 
 
@@ -7882,6 +7925,7 @@ def _create_dossier_impl(args: dict) -> dict:
         raise ToolArgumentError("; ".join(errors))
     # ── Committed: nothing below may refuse. ───────────────────────────
     warnings.extend(_default_tree_warnings(dossier.get("id") or ""))
+    warnings.extend(_ouverture_protocol_warnings(dossier))
     warnings.extend(_prescription_warnings(dossier, data))
     if dossier.get("status") in ("fermé", "archivé"):
         warnings.append(
@@ -7924,6 +7968,35 @@ def _default_tree_warnings(dossier_id: str) -> list[str]:
                        dossier_id=loggable_id(dossier_id))
         return [_DEFAULT_TREE_FAILED]
     return [_DEFAULT_TREE_FAILED] if errors else []
+
+
+_OUVERTURE_PROTOCOL_FAILED = (
+    "Le protocole d'ouverture du dossier n'a pas pu être initialisé : le "
+    "dossier, lui, est bien créé — ne le recréez pas. Vous pouvez créer "
+    "ou compléter les vérifications d'ouverture dans l'onglet Protocole du "
+    "dossier."
+)
+
+
+def _ouverture_protocol_warnings(dossier: dict) -> list[str]:
+    """Auto-seed the ``ouverture`` track protocol right after ``create_dossier``
+    commits. Skips closed/archived dossiers and notes its write idempotent so
+    post-commit replay reporting stays focused on the dossier row itself.
+    """
+    dossier_id = (dossier or {}).get("id") or ""
+    if not dossier_id or dossier.get("status") in _CLOSED_STATUSES:
+        return []
+    try:
+        _proto, errors = protocol_model.ensure_ouverture_protocol(
+            dossier_id, dossier=dossier
+        )
+    except Exception:
+        log_unexpected(
+            "mcp ouverture protocol init failed",
+            dossier_id=loggable_id(dossier_id),
+        )
+        return [_OUVERTURE_PROTOCOL_FAILED]
+    return [_OUVERTURE_PROTOCOL_FAILED] if errors else []
 
 
 def _prescription_warnings(doc: dict, supplied: dict) -> list[str]:
@@ -12178,17 +12251,29 @@ def _create_protocol_impl(args: dict) -> dict:
             "`protocol_type` refusé : " + " ".join(reasons)
             + " Rien n'a été écrit."
         )
-    try:
-        active = protocol_model._get_active_protocols_strict(dossier_id)
-    except Exception:
-        raise ToolArgumentError(protocol_model.ACTIVE_CHECK_FAILED)
-    if active:
-        raise ToolArgumentError(
-            "Ce dossier a déjà un protocole actif "
-            f"({active[0].get('id', '')}) : un seul peut l'être à la fois. "
-            "Suspendez-le ou complétez-le d'abord (update_protocol, "
-            "status), puis recommencez. Rien n'a été écrit."
-        )
+    track = protocol_model.track_for_type(ptype)
+    if ptype == "ouverture":
+        existing_open = protocol_model.get_ouverture_protocol_for_dossier(dossier_id)
+        if existing_open is not None:
+            raise ToolArgumentError(
+                "Ce dossier possède déjà un protocole d'ouverture "
+                f"({existing_open.get('id', '')}). Rien n'a été écrit."
+            )
+    if ptype != "prejudiciaire":
+        try:
+            active = protocol_model._get_active_protocols_strict(
+                dossier_id, track=track
+            )
+        except Exception:
+            raise ToolArgumentError(protocol_model.ACTIVE_CHECK_FAILED)
+        if active:
+            raise ToolArgumentError(
+                "Ce dossier a déjà un protocole actif "
+                f"({active[0].get('id', '')}) sur cette piste : un seul "
+                "peut l'être à la fois. Suspendez-le ou complétez-le "
+                "d'abord (update_protocol, status), puis recommencez. Rien "
+                "n'a été écrit."
+            )
 
     make_tasks = args.get("create_linked_tasks") is True
     protocol, errors, report = protocol_service.create_protocol(
@@ -12231,7 +12316,13 @@ def _create_protocol_impl(args: dict) -> dict:
             "l'application (« Confirmer cette date ») — le connecteur ne le "
             "fait pas."
         )
-    if not steps:
+    if ptype == "prejudiciaire":
+        warnings.append(
+            "Protocole préjudiciaire créé en « brouillon » : ses rubriques "
+            "proposées peuvent être ajustées, puis il s'active via "
+            "update_protocol (status « actif »)."
+        )
+    if ptype == "conventionnel" and not steps:
         warnings.append(
             "Protocole conventionnel : il n'a aucune étape. Ajoutez-les "
             "avec add_protocol_step."
@@ -12314,7 +12405,10 @@ def _update_protocol_impl(args: dict) -> dict:
         # The model re-decides in its transaction; this names the field.
         try:
             others = protocol_model._get_active_protocols_strict(
-                existing.get("dossier_id") or "", exclude_id=protocol_id)
+                existing.get("dossier_id") or "",
+                exclude_id=protocol_id,
+                track=protocol_model.track_of(existing),
+            )
         except Exception:
             raise ToolArgumentError(
                 "`status` refusé : " + protocol_model.ACTIVE_CHECK_FAILED)
@@ -12454,7 +12548,7 @@ def _add_protocol_step_impl(args: dict) -> dict:
     if not protocol_id:
         raise ToolArgumentError("`protocol_id` est requis.")
     protocol = _read_protocol(protocol_id)
-    if protocol.get("status", "") != "actif":
+    if protocol.get("status", "") not in ("actif", "brouillon"):
         raise _inactive_protocol_refusal(protocol)
     title = _clean_entity_text(args.get("title") or "", "title")
     if not title:
@@ -12635,7 +12729,7 @@ def _edit_protocol_step_fields(args: dict, protocol: dict, step: dict) -> dict:
         return payload
     expected = _expected_etag(
         args, step, tool="update_protocol_step", subject=_STEP_SUBJECT)
-    if protocol.get("status", "") != "actif":
+    if protocol.get("status", "") not in ("actif", "brouillon"):
         raise _inactive_protocol_refusal(protocol)
 
     result, errors, report = protocol_service.update_step(
@@ -13975,6 +14069,10 @@ _GABARIT_FLOWS_FR = {
         "se remplit depuis une radiation de la facture — « Générer la note "
         "de crédit », sur la fiche de la facture, dans l'application "
         "seulement"
+    ),
+    "avis_interets": (
+        "se remplit depuis un avis d'intérêts de la facture — « Générer l'avis "
+        "d'intérêts », sur la fiche de la facture, dans l'application seulement"
     ),
     # Bibliothèque (2026-11-11): a contract model is never filled.
     "modele": "est un modèle, que l'avocat télécharge et adapte dans Word",
@@ -19285,9 +19383,9 @@ def _record_admin_entry_impl(args: dict) -> dict:
                          if report.get("card_leg") else None),
             "invoice": None,
             "warnings": [
-                "Deux écritures liées sont inscrites, EN CIRCULATION : le "
-                "déboursé au compte d'opérations et la recette à la carte — "
-                "chacune se compense sur son propre relevé.",
+                "Deux écritures liées sont inscrites et déjà compensées à "
+                "leur date : le déboursé au compte d'opérations et la recette "
+                "à la carte.",
             ],
         }
 
@@ -19794,6 +19892,14 @@ def _reverse_register_entry_impl(args: dict) -> dict:
             "ce que le connecteur ne fait jamais. Rien n'a été écrit.",
             reason="accounting_refused")
     if register == "admin" and original.get("trust_transaction_id"):
+        if original.get("kind") == "virement_interne_sortant":
+            raise ToolArgumentError(
+                "Ce virement d'avances provient d'une opération liée au "
+                "fidéicommis : contre-passez l'écriture du fidéicommis "
+                f"({original['trust_transaction_id']}, register « trust ») — "
+                "les deux registres suivent dans la même opération.",
+                reason="accounting_refused",
+            )
         raise ToolArgumentError(
             "Cette recette provient d'un paiement d'honoraires du "
             "fidéicommis : contre-passez l'écriture du fidéicommis "

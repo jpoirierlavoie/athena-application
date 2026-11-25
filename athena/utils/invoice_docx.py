@@ -69,6 +69,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Iterable, Optional
 
+from utils.format_en import (
+    format_cents_en,
+    format_cents_en_parens,
+    format_date_en,
+    format_hours_en,
+    format_rate_en,
+)
 from utils.format_fr import (
     format_cents_fr,
     format_cents_fr_parens,
@@ -80,6 +87,8 @@ from utils.template_fields import (
     CATALOG,
     CREDIT_NOTE_INVOICE_FIELDS,
     FLAT_ALIASES,
+    INTEREST_NOTICE_INVOICE_FIELDS,
+    normalize_lang,
     resolve_values,
 )
 
@@ -123,6 +132,17 @@ PAYMENT_SOURCE_LABELS = {
     "comptant": "Comptant",
     "autre": "Paiement",
 }
+PAYMENT_SOURCE_TRUST_EN = "Trust"
+PAYMENT_SOURCE_CREDIT_NOTE_EN = "Credit note"
+PAYMENT_SOURCE_LABELS_EN = {
+    "chèque": "Cheque",
+    "virement": "Wire transfer",
+    "prélèvement": "Direct debit",
+    "dépôt_direct": "Direct deposit",
+    "carte": "Card",
+    "comptant": "Cash",
+    "autre": "Payment",
+}
 #: The client's trust balance in the invoice's dossier, at generation —
 #: given, hence printable, only when a template names it
 #: (:func:`prints_trust_balance`).
@@ -140,6 +160,18 @@ CREDIT_NOTE_FIELDS = (
     "nc.tps",
     "nc.tvq",
     "nc.total",
+)
+
+INTEREST_NOTICE_FIELDS = (
+    "ai.numero",
+    "ai.date",
+    "ai.periode_debut",
+    "ai.periode_fin",
+    "ai.jours",
+    "ai.capital",
+    "ai.taux",
+    "ai.montant",
+    "ai.motif",
 )
 
 
@@ -190,9 +222,11 @@ def _as_date(value) -> Optional[date]:
     return None
 
 
-def _date_str(value) -> str:
+def _date_str(value, lang: str = "fr") -> str:
     d = _as_date(value)
-    return format_date_fr(d) if d else ""
+    if not d:
+        return ""
+    return format_date_en(d) if normalize_lang(lang) == "en" else format_date_fr(d)
 
 
 def _partie_from_billing_address(billing: dict) -> dict:
@@ -217,8 +251,16 @@ def _partie_from_billing_address(billing: dict) -> dict:
     }
 
 
-def _facture_values(invoice: dict, line_items: list[dict]) -> dict[str, str]:
+def _facture_values(
+    invoice: dict, line_items: list[dict], *, lang: str = "fr"
+) -> dict[str, str]:
     """The ``facture.*`` scalar fields (§6.2). All figures read, not computed."""
+    is_en = normalize_lang(lang) == "en"
+    fmt_cents = format_cents_en if is_en else format_cents_fr
+    fmt_cents_parens = format_cents_en_parens if is_en else format_cents_fr_parens
+    fmt_hours = format_hours_en if is_en else format_hours_fr
+    fmt_rate = format_rate_en if is_en else format_rate_fr
+
     fees = [li for li in line_items if li.get("type") == "fee"]
     expenses = [li for li in line_items if li.get("type") != "fee"]
     taxable = [e for e in expenses if e.get("taxable", True)]
@@ -230,54 +272,59 @@ def _facture_values(invoice: dict, line_items: list[dict]) -> dict[str, str]:
 
     total_hours = sum(float(f.get("hours") or 0) for f in fees)
     rates = {r for f in fees if (r := int(f.get("rate") or 0)) > 0}
-    taux_horaire = format_cents_fr(next(iter(rates))) if len(rates) == 1 else ""
+    taux_horaire = fmt_cents(next(iter(rates))) if len(rates) == 1 else ""
 
     return {
         "facture.numero": invoice.get("invoice_number", ""),
-        "facture.date": _date_str(invoice.get("date")),
-        "facture.date_echeance": _date_str(invoice.get("due_date")),
-        "facture.sous_total_honoraires": format_cents_fr(invoice.get("subtotal_fees", 0)),
-        "facture.sous_total_debours_tx": format_cents_fr(st_tx),
-        "facture.sous_total_debours_ntx": format_cents_fr(st_ntx),
-        "facture.total_honoraires": format_cents_fr(invoice.get("subtotal_fees", 0)),
-        "facture.total_debours_tx": format_cents_fr(st_tx),
-        "facture.total_debours_ntx": format_cents_fr(st_ntx),
-        "facture.total_avant_taxes": format_cents_fr(invoice.get("subtotal", 0)),
-        "facture.tps_taux": format_rate_fr(invoice.get("gst_rate", 500), _GST_SCALE),
+        "facture.date": _date_str(invoice.get("date"), lang=lang),
+        "facture.date_echeance": _date_str(invoice.get("due_date"), lang=lang),
+        "facture.sous_total_honoraires": fmt_cents(invoice.get("subtotal_fees", 0)),
+        "facture.sous_total_debours_tx": fmt_cents(st_tx),
+        "facture.sous_total_debours_ntx": fmt_cents(st_ntx),
+        "facture.total_honoraires": fmt_cents(invoice.get("subtotal_fees", 0)),
+        "facture.total_debours_tx": fmt_cents(st_tx),
+        "facture.total_debours_ntx": fmt_cents(st_ntx),
+        "facture.total_avant_taxes": fmt_cents(invoice.get("subtotal", 0)),
+        "facture.tps_taux": fmt_rate(invoice.get("gst_rate", 500), _GST_SCALE),
         "facture.tps_numero": invoice.get("gst_number", ""),
-        "facture.tps_montant": format_cents_fr(invoice.get("gst_amount", 0)),
-        "facture.tvq_taux": format_rate_fr(invoice.get("qst_rate", 9975), _QST_SCALE),
+        "facture.tps_montant": fmt_cents(invoice.get("gst_amount", 0)),
+        "facture.tvq_taux": fmt_rate(invoice.get("qst_rate", 9975), _QST_SCALE),
         "facture.tvq_numero": invoice.get("qst_number", ""),
-        "facture.tvq_montant": format_cents_fr(invoice.get("qst_amount", 0)),
-        "facture.total_apres_taxes": format_cents_fr(invoice.get("total", 0)),
-        "facture.avances_fideicommis": format_cents_fr_parens(
+        "facture.tvq_montant": fmt_cents(invoice.get("qst_amount", 0)),
+        "facture.total_apres_taxes": fmt_cents(invoice.get("total", 0)),
+        "facture.avances_fideicommis": fmt_cents_parens(
             invoice.get("retainer_applied", 0)
         ),
-        "facture.solde": format_cents_fr(invoice.get("amount_due", 0)),
-        "facture.nombre_heures": format_hours_fr(total_hours),
+        "facture.solde": fmt_cents(invoice.get("amount_due", 0)),
+        "facture.nombre_heures": fmt_hours(total_hours),
         "facture.taux_horaire": taux_horaire,
     }
 
 
-def _build_rows(line_items: list[dict]) -> dict[str, list[dict[str, str]]]:
+def _build_rows(
+    line_items: list[dict], *, lang: str = "fr"
+) -> dict[str, list[dict[str, str]]]:
     """Split line items into the three region row-lists, in line-item order."""
+    is_en = normalize_lang(lang) == "en"
+    fmt_cents = format_cents_en if is_en else format_cents_fr
+    fmt_hours = format_hours_en if is_en else format_hours_fr
     honoraire: list[dict] = []
     debours_tx: list[dict] = []
     debours_ntx: list[dict] = []
     for li in line_items:
-        date_str = _date_str(li.get("date"))
+        date_str = _date_str(li.get("date"), lang=lang)
         description = li.get("description", "") or ""
         if li.get("type") == "fee":
             honoraire.append({
                 "h.date": date_str,
                 "h.description": description,
-                "h.temps": format_hours_fr(li.get("hours") or 0),
+                "h.temps": fmt_hours(li.get("hours") or 0),
             })
         else:
             row = {
                 "d.date": date_str,
                 "d.description": description,
-                "d.cout": format_cents_fr(li.get("amount", 0)),
+                "d.cout": fmt_cents(li.get("amount", 0)),
             }
             (debours_tx if li.get("taxable", True) else debours_ntx).append(row)
     return {
@@ -287,25 +334,31 @@ def _build_rows(line_items: list[dict]) -> dict[str, list[dict[str, str]]]:
     }
 
 
-def _payment_source(receipt: dict) -> str:
-    """« Fidéicommis » for a fee payment's encaissement, else its method's
-    client-facing wording."""
+def _payment_source(receipt: dict, *, lang: str = "fr") -> str:
+    """« Fidéicommis » / « Trust » for a trust receipt, else its method wording."""
+    is_en = normalize_lang(lang) == "en"
     if receipt.get("trust_transaction_id"):
-        return PAYMENT_SOURCE_TRUST
-    return PAYMENT_SOURCE_LABELS.get(
-        receipt.get("method") or "", PAYMENT_SOURCE_LABELS["autre"])
+        return PAYMENT_SOURCE_TRUST_EN if is_en else PAYMENT_SOURCE_TRUST
+    labels = PAYMENT_SOURCE_LABELS_EN if is_en else PAYMENT_SOURCE_LABELS
+    return labels.get(receipt.get("method") or "", labels["autre"])
 
 
-def _write_off_source(write_off: dict) -> str:
-    """« Note de crédit 2026-NC001 » — a standing radiation's row source
-    (lot 3b). The caller passes the events the model validated
-    (``models.invoice.standing_write_offs``), each numbered: a radiation
-    without its number never reaches this row — the model raises first."""
-    return f"{PAYMENT_SOURCE_CREDIT_NOTE} {write_off['credit_note_number']}"
+def _write_off_source(write_off: dict, *, lang: str = "fr") -> str:
+    """« Note de crédit 2026-NC001 » / « Credit note 2026-NC001 »."""
+    prefix = (
+        PAYMENT_SOURCE_CREDIT_NOTE_EN
+        if normalize_lang(lang) == "en"
+        else PAYMENT_SOURCE_CREDIT_NOTE
+    )
+    return f"{prefix} {write_off['credit_note_number']}"
 
 
 def _payment_rows(
-    invoice: dict, receipts: list[dict], write_offs: Iterable[dict] = (),
+    invoice: dict,
+    receipts: list[dict],
+    write_offs: Iterable[dict] = (),
+    *,
+    lang: str = "fr",
 ) -> list[dict[str, str]]:
     """The ``ligne_paiement`` rows, oldest first.
 
@@ -322,22 +375,32 @@ def _payment_rows(
     day, and a write-off follows the encaissements of its day. Dates are the
     UTC calendar day (date-only values at UTC midnight, never ``to_mtl``).
     """
+    is_en = normalize_lang(lang) == "en"
+    fmt_date = format_date_en if is_en else format_date_fr
+    fmt_cents_parens = format_cents_en_parens if is_en else format_cents_fr_parens
+    trust_label = PAYMENT_SOURCE_TRUST_EN if is_en else PAYMENT_SOURCE_TRUST
     entries = []
     retainer = int(invoice.get("retainer_applied", 0) or 0)
     if retainer > 0:
-        entries.append((_as_date(invoice.get("date")), PAYMENT_SOURCE_TRUST, retainer))
+        entries.append((_as_date(invoice.get("date")), trust_label, retainer))
     for receipt in receipts:
-        entries.append((_as_date(receipt.get("date")), _payment_source(receipt),
-                        int(receipt.get("amount", 0) or 0)))
+        entries.append((
+            _as_date(receipt.get("date")),
+            _payment_source(receipt, lang=lang),
+            int(receipt.get("amount", 0) or 0),
+        ))
     for write_off in write_offs:
-        entries.append((_as_date(write_off.get("date")), _write_off_source(write_off),
-                        int(write_off.get("amount", 0) or 0)))
+        entries.append((
+            _as_date(write_off.get("date")),
+            _write_off_source(write_off, lang=lang),
+            int(write_off.get("amount", 0) or 0),
+        ))
     entries.sort(key=lambda entry: entry[0] or date.min)
     return [
         {
-            "p.date": format_date_fr(day) if day else "",
+            "p.date": fmt_date(day) if day else "",
             "p.source": source,
-            "p.montant": format_cents_fr_parens(amount),
+            "p.montant": fmt_cents_parens(amount),
         }
         for day, source, amount in entries
     ]
@@ -350,6 +413,7 @@ def _header_values(
     destinataire: Optional[dict],
     dossier: Optional[dict],
     today: date,
+    lang: str = "fr",
 ) -> dict[str, str]:
     """The header fields of a document an invoice fills — the note
     d'honoraires and, since lot 3d, the credit note: ONE resolution.
@@ -371,6 +435,7 @@ def _header_values(
         destinataire=dest,
         firm=firm or {},
         today=today,
+        lang=lang,
     )
 
 
@@ -384,6 +449,7 @@ def build_invoice_context(
     today: date,
     payments: Optional[InvoicePayments] = None,
     trust_balance_cents: Optional[int] = None,
+    lang: str = "fr",
 ) -> InvoiceContext:
     """Build the note-d'honoraires context from a stored invoice (§6).
 
@@ -394,29 +460,32 @@ def build_invoice_context(
     ``facture.solde_fideicommis`` (module docstring). Left ``None``, each
     leaves the context exactly as it was before it.
     """
+    is_en = normalize_lang(lang) == "en"
+    fmt_cents = format_cents_en if is_en else format_cents_fr
     values = _header_values(invoice, firm=firm, destinataire=destinataire,
-                            dossier=dossier, today=today)
-    values.update(_facture_values(invoice, line_items))
+                            dossier=dossier, today=today, lang=lang)
+    values.update(_facture_values(invoice, line_items, lang=lang))
 
     # Hourly rate: prefer the uniform billed rate; when the line items are
     # mixed or rateless, fall back to the dossier's configured rate so the
     # note still shows a rate (§6.2).
     if not values.get("facture.taux_horaire") and dossier and dossier.get("hourly_rate"):
-        values["facture.taux_horaire"] = format_cents_fr(int(dossier["hourly_rate"]))
+        values["facture.taux_horaire"] = fmt_cents(int(dossier["hourly_rate"]))
 
-    rows = _build_rows(line_items)
+    rows = _build_rows(line_items, lang=lang)
     conditions = {
         "si_honoraires": bool(rows["ligne_honoraire"]),
         "si_debours_tx": bool(rows["ligne_debours_tx"]),
         "si_debours_ntx": bool(rows["ligne_debours_ntx"]),
     }
     if payments is not None:
-        values[BALANCE_FIELD] = format_cents_fr(payments.balance_cents)
-        rows[PAYMENT_REGION] = _payment_rows(invoice, payments.receipts,
-                                             payments.write_offs)
+        values[BALANCE_FIELD] = fmt_cents(payments.balance_cents)
+        rows[PAYMENT_REGION] = _payment_rows(
+            invoice, payments.receipts, payments.write_offs, lang=lang
+        )
         conditions[PAYMENT_FLAG] = bool(rows[PAYMENT_REGION])
     if trust_balance_cents is not None:
-        values[TRUST_BALANCE_FIELD] = format_cents_fr(trust_balance_cents)
+        values[TRUST_BALANCE_FIELD] = fmt_cents(trust_balance_cents)
     return InvoiceContext(values=values, rows=rows, conditions=conditions)
 
 
@@ -429,6 +498,7 @@ def build_credit_note_context(
     dossier: Optional[dict],
     today: date,
     balance_cents: int,
+    lang: str = "fr",
 ) -> InvoiceContext:
     """Build the credit note's context (lot 3d, module docstring) for one
     radiation *write_off* of *invoice* — an event the model validated
@@ -445,22 +515,61 @@ def build_credit_note_context(
     its balance after the credit (``models.invoice.balance_of``). No row and
     no condition: the note d'honoraires' tables are not the credit note's.
     """
+    is_en = normalize_lang(lang) == "en"
+    fmt_cents = format_cents_en if is_en else format_cents_fr
     values = _header_values(invoice, firm=firm, destinataire=destinataire,
-                            dossier=dossier, today=today)
-    from_invoice = _facture_values(invoice, [])
+                            dossier=dossier, today=today, lang=lang)
+    from_invoice = _facture_values(invoice, [], lang=lang)
     values.update({name: from_invoice[name]
                    for name in CREDIT_NOTE_INVOICE_FIELDS if name in from_invoice})
-    values[BALANCE_FIELD] = format_cents_fr(balance_cents)
+    values[BALANCE_FIELD] = fmt_cents(balance_cents)
     amount = int(write_off["amount"])
     gst = int(write_off["gst_amount"])
     qst = int(write_off["qst_amount"])
     values.update({
         "nc.numero": str(write_off["credit_note_number"]),
-        "nc.date": _date_str(write_off.get("date")),
+        "nc.date": _date_str(write_off.get("date"), lang=lang),
         "nc.motif": str(write_off.get("reason") or ""),
-        "nc.montant_avant_taxes": format_cents_fr(amount - gst - qst),
-        "nc.tps": format_cents_fr(gst),
-        "nc.tvq": format_cents_fr(qst),
-        "nc.total": format_cents_fr(amount),
+        "nc.montant_avant_taxes": fmt_cents(amount - gst - qst),
+        "nc.tps": fmt_cents(gst),
+        "nc.tvq": fmt_cents(qst),
+        "nc.total": fmt_cents(amount),
+    })
+    return InvoiceContext(values=values, rows={}, conditions={})
+
+
+def build_interest_notice_context(
+    invoice: dict,
+    interest_charge: dict,
+    *,
+    firm: dict,
+    destinataire: Optional[dict],
+    dossier: Optional[dict],
+    today: date,
+    balance_cents: int,
+    lang: str = "fr",
+) -> InvoiceContext:
+    """Build the overdue interest notice's context (lot 4a) for one standing
+    ``avis_interets`` event of *invoice*.
+    """
+    is_en = normalize_lang(lang) == "en"
+    fmt_cents = format_cents_en if is_en else format_cents_fr
+    fmt_rate = format_rate_en if is_en else format_rate_fr
+    values = _header_values(invoice, firm=firm, destinataire=destinataire,
+                            dossier=dossier, today=today, lang=lang)
+    from_invoice = _facture_values(invoice, [], lang=lang)
+    values.update({name: from_invoice[name]
+                   for name in INTEREST_NOTICE_INVOICE_FIELDS if name in from_invoice})
+    values[BALANCE_FIELD] = fmt_cents(balance_cents)
+    values.update({
+        "ai.numero": str(interest_charge["interest_notice_number"]),
+        "ai.date": _date_str(interest_charge.get("date"), lang=lang),
+        "ai.periode_debut": _date_str(interest_charge.get("period_start"), lang=lang),
+        "ai.periode_fin": _date_str(interest_charge.get("period_end"), lang=lang),
+        "ai.jours": str(int(interest_charge["days"])),
+        "ai.capital": fmt_cents(int(interest_charge["principal"])),
+        "ai.taux": fmt_rate(int(interest_charge["rate_bps"]), _GST_SCALE),
+        "ai.montant": fmt_cents(int(interest_charge["amount"])),
+        "ai.motif": str(interest_charge.get("reason") or ""),
     })
     return InvoiceContext(values=values, rows={}, conditions={})

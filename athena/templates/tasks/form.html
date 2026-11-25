@@ -6,14 +6,16 @@
      x-data="{
        dossierId: '{{ (task.dossier_id or '') if task else '' }}',
        dossierDisplay: {{ ((task.dossier_file_number or '') + (' — ' + task.dossier_title if task and task.dossier_title else '') if task else '') | jsattr }},
+       hearingId: {{ ((task.hearing_id or '') if task else '') | jsattr }},
        searchOpen: false
      }">
 
   {# ── Back ──────────────────────────────────────────────────── #}
   <a href="{{ return_to or url_for('tasks.task_list') }}"
-     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
-    {{ ms('chevron_left', 16) }}
-    {{ 'Retour' if return_to else 'Tâches' }}
+     class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 mb-6"
+     aria-label="{{ 'Retour' if return_to else 'Retour aux tâches' }}"
+     title="{{ 'Retour' if return_to else 'Tâches' }}">
+    {{ ms('arrow_back', 20) }}<span class="sr-only">{{ 'Retour' if return_to else 'Tâches' }}</span>
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
@@ -42,6 +44,23 @@
     {{ etag_field(task) }}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
     <input type="hidden" name="related_note_id" value="{{ task.related_note_id if task and task.related_note_id else '' }}">
+    <input type="hidden" name="hearing_id" value="{{ task.hearing_id if task and task.hearing_id else '' }}" :value="hearingId">
+
+    {% if linked_hearing %}
+    <div x-show="hearingId"
+         class="flex items-center justify-between gap-2 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-700">
+      <span>
+        Tâche liée à l'événement : {{ linked_hearing.title }}{% if linked_hearing.start_datetime and linked_hearing.start_datetime.strftime is defined %} ({{ (linked_hearing.start_datetime if linked_hearing.all_day else (linked_hearing.start_datetime|to_mtl)).strftime('%Y-%m-%d') }}){% endif %}.
+      </span>
+      <button type="button"
+              @click="hearingId = ''"
+              aria-label="Dissocier de l'événement"
+              title="Dissocier de l'événement"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-indigo-700 hover:text-indigo-900 hover:bg-gray-100 flex-shrink-0">
+        {{ ms('link_off', 20) }}<span class="sr-only">Dissocier de l'événement</span>
+      </button>
+    </div>
+    {% endif %}
 
     {% if task and task.related_note_id %}
     <div class="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-700">
@@ -88,20 +107,21 @@
                 @click="dossierId = ''; dossierDisplay = ''"
                 x-cloak
                 title="Effacer le dossier sélectionné" aria-label="Effacer le dossier sélectionné"
-                class="px-3 py-2 text-sm text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50">
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-sm text-gray-500 hover:text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50">
           {{ ms('close', 16) }}
         </button>
       </div>
       <div id="dossier-results"
            x-show="searchOpen"
            @click.outside="searchOpen = false"
+           @pointerdown.prevent @mousedown.prevent
            x-cloak
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto"
            @click="
-             let li = $event.target.closest('li');
-             if (li) {
-               dossierId = li.dataset.dossierId;
-               dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle;
+             let b = $event.target.closest('button[data-dossier-id]');
+             if (b) {
+               dossierId = b.dataset.dossierId;
+               dossierDisplay = b.dataset.dossierFileNumber + ' — ' + b.dataset.dossierTitle;
                searchOpen = false;
              }
            ">
@@ -159,6 +179,23 @@
           {% endfor %}
         </select>
       </div>
+    </div>
+
+    {# Confidentialité (CLASS) #}
+    <div>
+      <label for="classification" class="block text-sm font-medium text-gray-700 mb-1">Confidentialité (CLASS)</label>
+      {% set current_cls = effective_classification(task) if task else ('CONFIDENTIAL' if request.args.get('dossier_id') else 'PRIVATE') %}
+      <select id="classification" name="classification"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for key in valid_classifications %}
+        <option value="{{ key }}"
+                {% if key == 'PUBLIC' %}:disabled="Boolean(dossierId)"{% endif %}
+                {{ 'selected' if current_cls == key }}>
+          {{ classification_labels.get(key, key) }}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-500 mt-1">Une tâche liée à un dossier ne peut jamais être publique.</p>
     </div>
 
     {# Actions #}

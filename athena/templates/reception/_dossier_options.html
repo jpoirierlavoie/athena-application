@@ -1,0 +1,9 @@
+{# Fragment HTML <option> pour le sélecteur de sous-dossier cible au versement. #}
+{% if unreadable %}
+<option value="">Autres › Reçus du portail (lecture des sous-dossiers impossible)</option>
+{% else %}
+<option value="">Autres › Reçus du portail (par défaut)</option>
+{% for fid, flabel in options %}
+<option value="{{ fid }}">{{ flabel }}</option>
+{% endfor %}
+{% endif %}

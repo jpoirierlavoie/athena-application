@@ -75,15 +75,14 @@ class Column(NamedTuple):
 # budgeted past the widest value they can hold.
 COLUMNS: tuple[Column, ...] = (
     Column("Date", 0.070, False, "date"),
-    Column("Client", 0.140, False, "client", clip=True),
+    Column("Client", 0.155, False, "client", clip=True),
     Column("N/Réf", 0.070, False, "n_ref"),
-    Column("Somme reçue de / Bénéficiaire", 0.150, False, "counterparty", clip=True),
-    Column("Objet", 0.130, False, "objet", clip=True),
-    Column("Mode", 0.075, False, "mode"),
-    Column("N° de chèque", 0.085, False, "cheque", clip=True),
-    Column("Recette", 0.093, True, "recette"),
-    Column("Débours", 0.093, True, "debours"),
-    Column("Solde", 0.094, True, "solde"),
+    Column("Somme reçue de / Bénéficiaire", 0.175, False, "counterparty", clip=True),
+    Column("Objet", 0.150, False, "objet", clip=True),
+    Column("N° de chèque", 0.095, False, "cheque", clip=True),
+    Column("Recette", 0.095, True, "recette"),
+    Column("Déboursé", 0.095, True, "debours"),
+    Column("Solde", 0.095, True, "solde"),
 )
 
 MONEY_KEYS: tuple[str, ...] = tuple(c.key for c in COLUMNS if c.money)

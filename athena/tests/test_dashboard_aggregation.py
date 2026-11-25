@@ -131,7 +131,9 @@ if not _module_available("firebase_admin"):
 # patched so no credentials/emulator are required in any environment
 # (models/__init__.py instantiates the client at import time).
 with mock.patch("google.cloud.firestore.Client"):
+    import models.admin_ledger as admin_ledger_model
     import models.dossier as dossier_model
+    import models.expense as expense_model
     import models.full_reads as full_reads
     import models.hearing as hearing_model
     import models.invoice as invoice_model
@@ -644,67 +646,124 @@ def test_list_urgent_steps_failure_returns_empty(monkeypatch):
 
 
 def test_quick_stats_shape_and_passthrough(monkeypatch):
-    monkeypatch.setattr(dossier_model, "count_open", lambda: 7)
     monkeypatch.setattr(
-        time_entry_model, "get_unbilled_totals",
+        invoice_model, "get_dashboard_invoice_pulse_strict",
+        lambda _today=None: {
+            "billed": {"month": 120000, "quarter": 350000},
+            "outstanding": {"envoyée": 200000, "en_retard": 50075},
+        },
+    )
+    monkeypatch.setattr(
+        time_entry_model, "get_unbilled_totals_strict",
         lambda: {"hours": 12.3, "amount": 45678},
     )
-    # Lot 0: ONE call of the per-status sums feeds the tile — its total and
-    # its two links (rewritten deliberately: the route no longer calls
-    # get_outstanding_total, it sums the same figures).
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict",
-                        lambda: {"envoyée": 200000, "en_retard": 50075})
+    monkeypatch.setattr(
+        expense_model, "get_unbilled_totals_strict",
+        lambda: {"amount": 8000},
+    )
+    monkeypatch.setattr(
+        admin_ledger_model, "get_firm_admin_snapshot",
+        lambda: {
+            "accounts": [
+                {"account_type": "opérations", "ledger_balance": 900000, "reconciliation_overdue": False},
+                {"account_type": "carte_crédit", "ledger_balance": 12345, "reconciliation_overdue": True},
+            ],
+        },
+    )
     monkeypatch.setattr(
         trust_model, "get_firm_trust_snapshot",
         lambda: {"total_held_cents": 333, "reconciliation_overdue": True},
     )
 
-    stats = dashboard._get_quick_stats()
+    stats = dashboard._get_quick_stats(today=date(2026, 6, 11))
     assert stats == {
-        "open_dossiers": 7,
+        "billed_month": 120000,
+        "billed_quarter": 350000,
+        "billed_unavailable": False,
         "unbilled_hours": 12.3,
-        "unbilled_amount": 45678,
+        "unbilled_time_amount": 45678,
+        "unbilled_expenses": 8000,
+        "unbilled_amount": 53678,
+        "unbilled_unavailable": False,
         "outstanding_invoices": 250075,
         "outstanding_unavailable": False,
         "outstanding_links": [
             {"status": "envoyée", "label": "Envoyées", "amount": 200000},
             {"status": "en_retard", "label": "En retard", "amount": 50075},
         ],
+        "admin_ops_total": 900000,
+        "admin_reconciliation_overdue": False,
+        "admin_unavailable": False,
         "trust_total": 333,
         "trust_reconciliation_overdue": True,
+        "trust_unavailable": False,
     }
 
 
 def test_quick_stats_degrades_per_stat(monkeypatch):
-    def _boom() -> int:
+    def _boom(*_a, **_k):
         raise RuntimeError("aggregation failed")
 
-    monkeypatch.setattr(dossier_model, "count_open", _boom)
     monkeypatch.setattr(
-        time_entry_model, "get_unbilled_totals",
+        invoice_model, "get_dashboard_invoice_pulse_strict",
+        lambda _today=None: {
+            "billed": {"month": 500, "quarter": 1500},
+            "outstanding": {"envoyée": 150, "en_retard": 50},
+        },
+    )
+    monkeypatch.setattr(
+        time_entry_model, "get_unbilled_totals_strict",
         lambda: {"hours": 1.5, "amount": 100},
     )
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict",
-                        lambda: {"envoyée": 150, "en_retard": 50})
+    monkeypatch.setattr(expense_model, "get_unbilled_totals_strict", _boom)
+    monkeypatch.setattr(
+        admin_ledger_model, "get_firm_admin_snapshot", _boom,
+    )
+    monkeypatch.setattr(
+        trust_model, "get_firm_trust_snapshot",
+        lambda: {"total_held_cents": 777, "reconciliation_overdue": False},
+    )
 
-    stats = dashboard._get_quick_stats()
-    # The failed stat keeps its safe default; the others still populate.
-    assert stats["open_dossiers"] == 0
-    assert stats["unbilled_hours"] == 1.5
-    assert stats["unbilled_amount"] == 100
+    stats = dashboard._get_quick_stats(today=date(2026, 6, 11))
+    # Failed stats mark unavailable explicitly rather than surfacing partial/0 figures;
+    # healthy tiles still populate.
+    assert stats["unbilled_unavailable"] is True
+    assert stats["admin_unavailable"] is True
+    assert stats["billed_unavailable"] is False
+    assert stats["billed_month"] == 500
     assert stats["outstanding_invoices"] == 200
     assert [link["amount"] for link in stats["outstanding_links"]] == [150, 50]
+    assert stats["trust_unavailable"] is False
+    assert stats["trust_total"] == 777
 
 
 def test_quick_stats_keep_the_invoice_links_when_the_sums_fail(monkeypatch):
     """The tile's links are the way to the lists: they stand when its sums
     raised, and the tile is marked unavailable — it shows « indisponible »,
     never a 0 that reads « nothing is owed »."""
-    def _boom() -> dict:
+    def _boom(*_a, **_k) -> dict:
         raise RuntimeError("sums failed")
 
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict", _boom)
-    stats = dashboard._get_quick_stats()
+    monkeypatch.setattr(invoice_model, "get_dashboard_invoice_pulse_strict", _boom)
+    monkeypatch.setattr(
+        time_entry_model, "get_unbilled_totals_strict",
+        lambda: {"hours": 0.0, "amount": 0},
+    )
+    monkeypatch.setattr(
+        expense_model, "get_unbilled_totals_strict",
+        lambda: {"amount": 0},
+    )
+    monkeypatch.setattr(
+        admin_ledger_model, "get_firm_admin_snapshot",
+        lambda: {"accounts": []},
+    )
+    monkeypatch.setattr(
+        trust_model, "get_firm_trust_snapshot",
+        lambda: {"total_held_cents": 0, "reconciliation_overdue": False},
+    )
+
+    stats = dashboard._get_quick_stats(today=date(2026, 6, 11))
+    assert stats["billed_unavailable"] is True
     assert stats["outstanding_unavailable"] is True
     assert stats["outstanding_invoices"] == 0
     assert stats["outstanding_links"] == [

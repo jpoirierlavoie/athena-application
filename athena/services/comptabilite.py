@@ -37,6 +37,7 @@ from __future__ import annotations
 from typing import Optional
 
 from models import admin_ledger as al
+from models import advance_transfer
 from models import fee_payment
 from models import invoice as invoice_model
 from models import trust
@@ -48,6 +49,7 @@ __all__ = [
     "STALE_REASON",
     "invoice_payment_block",
     "comptes_operations_actifs",
+    "comptes_fideicommis_actifs",
     "resolve_fee_invoice",
     "enregistrer_ecriture_fideicommis",
     "enregistrer_paiement_honoraires",
@@ -66,6 +68,12 @@ __all__ = [
     "contrepasser_ecriture_administration",
     "enregistrer_paiement_carte",
     "record_card_payment",
+    "enregistrer_virement_comptes_admin",
+    "record_admin_transfer",
+    "enregistrer_virement_avances",
+    "record_advance_transfer",
+    "contrepasser_virement_avances",
+    "reverse_advance_transfer",
     "REGISTERS",
     "OUTCOME_UNCERTAIN_REASON",
     "ADMIN_KIND_LABELS",
@@ -202,6 +210,15 @@ def comptes_operations_actifs() -> tuple[list[dict], bool]:
         ], True
     except Exception:
         log_unexpected("comptabilite: admin accounts read failed")
+        return [], False
+
+
+def comptes_fideicommis_actifs() -> tuple[list[dict], bool]:
+    """Active TRUST accounts (display list, fail-open with readability flag)."""
+    try:
+        return list(trust.list_accounts(status="actif")), True
+    except Exception:
+        log_unexpected("comptabilite: trust accounts read failed")
         return [], False
 
 
@@ -448,6 +465,25 @@ def contrepasser_ecriture_fideicommis(
                       for _iid, before, after in result["invoices"]],
             client_cleared_after=cleared_after,
         )
+    if original.get("admin_transaction_id"):
+        report: dict = {}
+        result, errors = advance_transfer.reverse_advance_transfer(
+            tx_id, reason, expected_etag=expected_etag, _report_out=report)
+        if errors:
+            return _refused(errors, report.get("reason"), side=report.get("side"),
+                            stale=report.get("reason") == STALE_REASON,
+                            **_empty_reversal())
+        cleared_after = result["client_cleared_after"]
+        codes += _negative_cleared(cleared_after)
+        return _report(
+            True, warnings=[WARNING_MESSAGES[c] for c in codes], warning_codes=codes,
+            reversal=result["trust_reversal"],
+            reversals=result["trust_reversals"],
+            original={"id": tx_id, "status_after": result["original_status_after"]},
+            admin_reversals=result["admin_reversals"],
+            invoices=[],
+            client_cleared_after=cleared_after,
+        )
 
     report = {}
     reversal, errors = trust.reverse_transaction(
@@ -625,6 +661,105 @@ def enregistrer_paiement_carte(
 
 #: The name the lot's plan gives the card payment (step text « record_card_payment »).
 record_card_payment = enregistrer_paiement_carte
+
+
+def enregistrer_virement_comptes_admin(
+    from_account_id: str, to_account_id: str, amount, date_value, method: str,
+    reference: str = "", description: str = "",
+) -> dict:
+    """Transfer between any two active firm Admin accounts — two linked legs
+    born ``status="compensée"`` immediately in one transaction."""
+    report: dict = {}
+    leg, errors = al.create_account_transfer(
+        from_account_id=from_account_id, to_account_id=to_account_id,
+        amount=amount, date_value=date_value, method=method,
+        reference=reference, description=description, _report_out=report,
+    )
+    if errors:
+        return _refused(errors, report.get("reason"), entry=None, counter_leg=None)
+    legs = report.get("legs") or [leg]
+    return _report(
+        True, entry=legs[0],
+        counter_leg=legs[1] if len(legs) > 1 else None,
+        is_card_payment=bool(report.get("is_card_payment")),
+    )
+
+
+record_admin_transfer = enregistrer_virement_comptes_admin
+
+
+def enregistrer_virement_avances(
+    *,
+    admin_account_id: str,
+    trust_account_id: str,
+    dossier_id: str,
+    client_id: str,
+    amount,
+    date_value,
+    method: str = "virement",
+    reference: str = "",
+    description: str = "",
+) -> dict:
+    """Move client advances from an active ``opérations`` account into an
+    active ``trust`` account in ONE transaction, both legs born
+    ``status="compensée"`` immediately."""
+    report: dict = {}
+    result, errors = advance_transfer.create_advance_transfer(
+        admin_account_id=admin_account_id,
+        trust_account_id=trust_account_id,
+        dossier_id=dossier_id,
+        client_id=client_id,
+        amount=amount,
+        date_value=date_value,
+        method=method,
+        reference=reference,
+        description=description,
+        _report_out=report,
+    )
+    if errors:
+        return _refused(
+            errors, report.get("reason"), side=report.get("side"),
+            trust_entry=None, admin_entry=None, client_balance=None,
+        )
+    return _report(
+        True,
+        trust_entry=result["trust_entry"],
+        admin_entry=result["admin_entry"],
+        client_balance=result["client_balance"],
+    )
+
+
+record_advance_transfer = enregistrer_virement_avances
+
+
+def contrepasser_virement_avances(
+    trust_tx_id: str, reason: str, *, expected_etag: Optional[str] = None,
+) -> dict:
+    """Reverse BOTH legs of an Operations -> Trust client-advance bridge."""
+    report: dict = {}
+    result, errors = advance_transfer.reverse_advance_transfer(
+        trust_tx_id, reason, expected_etag=expected_etag, _report_out=report,
+    )
+    if errors:
+        return _refused(
+            errors, report.get("reason"), side=report.get("side"),
+            stale=report.get("reason") == STALE_REASON,
+            **_empty_reversal(),
+        )
+    cleared_after = result["client_cleared_after"]
+    codes = _negative_cleared(cleared_after)
+    return _report(
+        True, warnings=[WARNING_MESSAGES[c] for c in codes], warning_codes=codes,
+        reversal=result["trust_reversal"],
+        reversals=result["trust_reversals"],
+        original={"id": trust_tx_id, "status_after": result["original_status_after"]},
+        admin_reversals=result["admin_reversals"],
+        invoices=[],
+        client_cleared_after=cleared_after,
+    )
+
+
+reverse_advance_transfer = contrepasser_virement_avances
 
 
 # ── Reads the connector's accounting tools stand on (lot 5b) ───────────────

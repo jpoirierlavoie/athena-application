@@ -31,9 +31,21 @@ from datetime import date
 from typing import Callable, Optional
 
 from utils import civilite, contact_roles, taxonomie
+from utils.format_en import (
+    format_cents_en,
+    format_date_en,
+    format_rate_en,
+)
 from utils.format_fr import format_cents_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
+
+VALID_LANGUAGES = ("fr", "en")
+
+
+def normalize_lang(lang: object) -> str:
+    """Return ``'en'`` when *lang* selects English, else ``'fr'``."""
+    return "en" if str(lang or "").strip().lower() == "en" else "fr"
 
 # ── Vocabulary ──────────────────────────────────────────────────────────
 
@@ -95,6 +107,141 @@ _FEE_TYPE_LABEL = {
     "aide_juridique": "Aide juridique",
 }
 
+_ROLE_LABEL_EN = {
+    "demandeur": "Plaintiff",
+    "défendeur": "Defendant",
+    "demandeur reconventionnel": "Plaintiff in cross-demand",
+    "défendeur reconventionnel": "Defendant in cross-demand",
+    "mis en cause": "Impleaded party",
+    "intervenant": "Intervenor",
+    "appelant": "Appellant",
+    "intimé": "Respondent",
+    "requérant": "Applicant",
+    "autre": "Other",
+}
+
+_MANDATE_TYPE_LABEL_EN = {
+    "judiciaire": "Litigation (ad litem)",
+    "service_conseils": "Advisory",
+    "general": "General",
+    "special": "Special",
+}
+
+_FEE_TYPE_LABEL_EN = {
+    "hourly": "Hourly",
+    "flat": "Flat fee",
+    "contingency": "Contingency",
+    "mixed": "Mixed",
+    "pro_bono": "Pro bono",
+    "aide_juridique": "Legal aid",
+}
+
+_PRESCRIPTION_LABEL_EN = {
+    "": "Undefined",
+    "5_jours": "5 days",
+    "10_jours": "10 days",
+    "15_jours": "15 days",
+    "30_jours": "30 days",
+    "45_jours": "45 days",
+    "60_jours": "60 days",
+    "90_jours": "90 days",
+    "3_mois": "3 months",
+    "6_mois": "6 months",
+    "9_mois": "9 months",
+    "1_an": "1 year",
+    "2_ans": "2 years",
+    "3_ans": "3 years",
+    "5_ans": "5 years",
+    "7_ans": "7 years",
+    "10_ans": "10 years",
+    "30_ans": "30 years",
+    "imprescriptible": "Imprescriptible",
+    "autre": "Other / to be determined",
+}
+
+_PREFIX_EN = {
+    "M.": "Mr.",
+    "Mme": "Ms.",
+    "Me": "Mtre",
+    "Dr": "Dr.",
+    "Dre": "Dr.",
+    "Pr": "Prof.",
+    "Pre": "Prof.",
+    "L'hon.": "The Hon.",
+}
+
+_COURT_EN = {
+    "Cour supérieure": "Superior Court",
+    "Cour du Québec": "Court of Québec",
+    "Cour d'appel": "Court of Appeal",
+    "Cour des petites créances": "Small Claims Division",
+    "Tribunal administratif": "Administrative Tribunal",
+    # Administrative & federal forums (models/reference._FORUMS)
+    "Tribunal administratif du Québec": "Administrative Tribunal of Québec",
+    "Tribunal administratif du travail": "Administrative Labour Tribunal",
+    "Tribunal administratif du logement": "Administrative Housing Tribunal",
+    "Tribunal administratif des marchés financiers": "Financial Markets Administrative Tribunal",
+    "Tribunal administratif de déontologie policière": "Administrative Tribunal of Police Ethics",
+    "Commission d'accès à l'information": "Commission on Access to Information",
+    "Commission de la fonction publique": "Public Service Commission",
+    "Commission de protection du territoire agricole du Québec": "Québec Agricultural Land Protection Commission",
+    "Commission des transports du Québec": "Québec Transport Commission",
+    "Commission municipale du Québec": "Québec Municipal Commission",
+    "Commission québécoise des libérations conditionnelles": "Québec Parole Board",
+    "Bureau des présidents des conseils de discipline": "Office of the Chairs of Disciplinary Councils",
+    "Régie de l'énergie": "Régie de l'énergie",
+    "Régie des alcools, des courses et des jeux": "Régie des alcools, des courses et des jeux",
+    "Régie des marchés agricoles et alimentaires du Québec": "Régie des marchés agricoles et alimentaires du Québec",
+    "Régie du bâtiment du Québec": "Régie du bâtiment du Québec",
+    "Cour fédérale": "Federal Court",
+    "Cour d'appel fédérale": "Federal Court of Appeal",
+    "Cour canadienne de l'impôt": "Tax Court of Canada",
+    "Cour suprême du Canada": "Supreme Court of Canada",
+}
+
+_COMPETENCE_EN = {
+    "Chambre civile": "Civil Division",
+    "Chambre familiale": "Family Division",
+    "Division générale": "General Division",
+    "Recours collectifs": "Class Actions",
+    "Tribunal des professions": "Professions Tribunal",
+    "Chambre criminelle et pénale": "Criminal and Penal Division",
+    "Chambre criminelle": "Criminal Division",
+    "Chambre commerciale": "Commercial Division",
+    "Procédures non contentieuses": "Non-Contentious Proceedings",
+    "Division des petites créances": "Small Claims Division",
+    "Procès de novo": "Trials De Novo",
+    "Appels divers": "Miscellaneous Appeals",
+    "Tribunal des droits de la personne": "Human Rights Tribunal",
+    "Appel en matière administrative": "Administrative Appeals",
+    "Infractions statutaires fédérales": "Federal Statutory Offences",
+    "Dossiers G.R.C.": "R.C.M.P. Files",
+    "Shérif": "Sheriff",
+}
+
+_DOMAINE_LABEL_EN = {
+    "REC": "Debt recovery",
+    "CON": "Contractual liability",
+    "RCV": "Civil liability",
+    "RES": "Restitution and quasi-contracts",
+    "GAG": "Creditor protection",
+    "IMM": "Real and immovable property",
+    "CST": "Construction",
+    "COR": "Corporate and commercial",
+    "HYP": "Security and hypothecary recourses",
+    "FAI": "Bankruptcy and insolvency",
+    "FAM": "Family law",
+    "SUC": "Successions and persons",
+    "DEC": "Declaratory, homologation, recognition",
+    "CJP": "Judicial review and extraordinary remedies",
+    "INJ": "Injunctions and provisional measures",
+    "EXE": "Execution and post-judgment",
+    "TRN": "Transport and cargo",
+    "ADM": "Administrative and statutory recourses",
+    "TRV": "Labour and employment",
+    "APP": "Appeals",
+}
+
 # Professional and supplier roles whose work address is preferred when
 # present (§6.4) — one list, utils/contact_roles.py.
 _WORK_PREFERRED_ROLES = contact_roles.WORK_PREFERRED_ROLES
@@ -144,6 +291,27 @@ MANUAL_FIELDS: dict[str, dict] = {
     "référence_externe": {"default": "", "options": None},
 }
 
+_MANUAL_FIELDS_EN: dict[str, dict] = {
+    "privilège": {
+        "default": "",
+        "options": [
+            "UNDER ALL RESERVATIONS",
+            "WITHOUT PREJUDICE",
+            "WITHOUT PREJUDICE AND UNDER ALL RESERVATIONS",
+            "PRIVATE AND CONFIDENTIAL",
+            "CONFIDENTIAL",
+            "PRIVILEGED AND CONFIDENTIAL",
+            "—",
+            ("(none)", EMPTY_OPTION_VALUE),
+        ],
+    },
+    "transmission_lettre": {
+        "default": "",
+        "options": ["email", "bailiff", "registered mail", "fax"],
+    },
+    "pièces_jointes": {"default": "None", "options": None},
+}
+
 # Case-insensitive index over MANUAL_FIELDS, mirroring _CATALOG_CI/_ALIAS_CI
 # below. Before it existed, `classify_placeholders` matched manual fields by
 # exact equality while auto fields matched case-insensitively — so a gabarit
@@ -154,7 +322,7 @@ MANUAL_FIELDS: dict[str, dict] = {
 _MANUAL_CI: dict[str, str] = {name.lower(): name for name in MANUAL_FIELDS}
 
 
-def manual_spec(name: str) -> Optional[dict]:
+def manual_spec(name: str, lang: str = "fr") -> Optional[dict]:
     """The :data:`MANUAL_FIELDS` spec for *name*, matched case-insensitively.
 
     ``None`` when *name* is not a manual field. Every reader goes through
@@ -162,15 +330,19 @@ def manual_spec(name: str) -> Optional[dict]:
     spellings the case-insensitive classifier now accepts.
     """
     canonical = _MANUAL_CI.get(name.lower())
-    return MANUAL_FIELDS[canonical] if canonical else None
+    if not canonical:
+        return None
+    if normalize_lang(lang) == "en" and canonical in _MANUAL_FIELDS_EN:
+        return _MANUAL_FIELDS_EN[canonical]
+    return MANUAL_FIELDS[canonical]
 
 
-def manual_options(name: str) -> Optional[list[tuple[str, str]]]:
+def manual_options(name: str, lang: str = "fr") -> Optional[list[tuple[str, str]]]:
     """The ``(label, value)`` choices for *name*, or ``None`` when free text.
 
     Normalizes the two accepted shapes so callers never branch on them.
     """
-    spec = manual_spec(name)
+    spec = manual_spec(name, lang=lang)
     if spec is None or not spec["options"]:
         return None
     return [
@@ -179,9 +351,14 @@ def manual_options(name: str) -> Optional[list[tuple[str, str]]]:
     ]
 
 
-def manual_value(name: str, raw: str = "") -> str:
+def manual_default(name: str, lang: str = "fr") -> str:
+    """Default value for manual field *name* in *lang*."""
+    return (manual_spec(name, lang=lang) or {}).get("default", "") or ""
+
+
+def manual_value(name: str, raw: str = "", lang: str = "fr") -> str:
     """The value a manual placeholder should print: *raw*, else its default,
-    else the visible ``[À COMPLÉTER : …]`` marker.
+    else the visible ``[À COMPLÉTER : …]`` / ``[TO COMPLETE : …]`` marker.
 
     Applies the ALL-CAPS rule that :func:`resolve_values` applies to auto
     fields, so ``{{TRANSMISSION_LETTRE}}`` prints ``COURRIEL`` and
@@ -192,13 +369,14 @@ def manual_value(name: str, raw: str = "") -> str:
     rather than ``""``: an untouched field submits ``""`` too, and that means
     « not filled in », not « no mention applies ».
     """
+    norm_lang = normalize_lang(lang)
     value = (raw or "").strip()
     if value == EMPTY_OPTION_VALUE:
         return ""
     if not value:
-        value = (manual_spec(name) or {}).get("default", "") or ""
+        value = manual_default(name, lang=norm_lang)
     if not value:
-        return fallback_value(name, is_auto=False)
+        return fallback_value(name, is_auto=False, lang=norm_lang)
     return value.upper() if is_uppercase_name(name) else value
 
 
@@ -217,13 +395,22 @@ def french_long_date(d: date) -> str:
     return f"{day} {_FRENCH_MONTHS[d.month - 1]} {d.year}"
 
 
-def fallback_value(name: str, is_auto: bool) -> str:
-    """Visible French placeholder for a missing value (§6.7 — exact strings).
+def long_date(d: date, lang: str = "fr") -> str:
+    """Locale-aware long date (French or English)."""
+    return format_date_en(d) if normalize_lang(lang) == "en" else french_long_date(d)
+
+
+def fallback_value(name: str, is_auto: bool, lang: str = "fr") -> str:
+    """Visible placeholder for a missing value (§6.7 — exact strings).
 
     Auto-resolvable field left empty → data was missing; anything else
     (manual, block, unknown) left empty → the user must complete it.
     Generation never fails because of a missing value.
     """
+    if normalize_lang(lang) == "en":
+        if is_auto:
+            return f"[MISSING FIELD: {name}]"
+        return f"[TO COMPLETE: {name}]"
     if is_auto:
         return f"[CHAMP MANQUANT : {name}]"
     return f"[À COMPLÉTER : {name}]"
@@ -231,13 +418,37 @@ def fallback_value(name: str, is_auto: bool) -> str:
 
 # ── Partie helpers ──────────────────────────────────────────────────────
 
-def _display_name(partie: dict) -> str:
+def _prefix_for_lang(prefix: object, lang: str) -> str:
+    text = civilite.as_text(prefix)
+    if not text or normalize_lang(lang) != "en":
+        return text
+    return _PREFIX_EN.get(text, text)
+
+
+def _translate_prefixed_name(name: str, lang: str) -> str:
+    """Translate the leading civility prefix of a stored snapshot name for EN."""
+    if not name or normalize_lang(lang) != "en":
+        return name
+    prefix, rest = civilite.split_prefix(name)
+    if not prefix:
+        return name
+    en_prefix = _PREFIX_EN.get(prefix, prefix)
+    return f"{en_prefix} {rest}".strip() if rest else en_prefix
+
+
+def _display_name(partie: dict, lang: str = "fr") -> str:
     """Full name WITH the honorific — what models.partie.display_name
     returns (both read ``utils.civilite.full_name``).
 
     Used only by the ``…_avec_civilite`` twin fields; the default name
     fields use :func:`_nom_bare`. Never the honorific suffix.
     """
+    if normalize_lang(lang) == "en" and partie.get("type") != "organization":
+        prefix = _prefix_for_lang(partie.get("prefix", ""), "en")
+        first = civilite.as_text(partie.get("first_name", ""))
+        last = civilite.as_text(partie.get("last_name", ""))
+        parts = [p for p in (prefix, first, last) if p]
+        return " ".join(parts)
     return civilite.full_name(partie, honorific=True)
 
 
@@ -433,6 +644,7 @@ class _Context:
     # and injects them — this module must not import models.*. Absent or empty
     # simply degrades a party block to names alone; it never raises.
     parties: dict = field(default_factory=dict)
+    lang: str = "fr"
 
 
 def _dossier_field(key: str) -> Callable[[_Context], Optional[str]]:
@@ -444,34 +656,77 @@ def _dossier_field(key: str) -> Callable[[_Context], Optional[str]]:
     return resolver
 
 
+def _dossier_translated(
+    key: str, en_map: dict[str, str]
+) -> Callable[[_Context], Optional[str]]:
+    def resolver(ctx: _Context) -> Optional[str]:
+        if not ctx.dossier:
+            return None
+        value = ctx.dossier.get(key) or ""
+        if not value:
+            return None
+        if normalize_lang(ctx.lang) == "en":
+            return en_map.get(value, value)
+        return value
+
+    return resolver
+
+
+def _dossier_court_file_number(ctx: _Context) -> Optional[str]:
+    if not ctx.dossier:
+        return None
+    value = ctx.dossier.get("court_file_number") or ""
+    if not value:
+        return None
+    if normalize_lang(ctx.lang) == "en" and value == "Préjudiciaire":
+        return "Pre-litigation"
+    return value
+
+
+def _dossier_role(ctx: _Context) -> Optional[str]:
+    if not ctx.dossier:
+        return None
+    role = ctx.dossier.get("role") or ""
+    if not role:
+        return None
+    if normalize_lang(ctx.lang) == "en":
+        label = _ROLE_LABEL_EN.get(role)
+        return label.lower() if label else role
+    return role
+
+
 def _dossier_money(key: str) -> Callable[[_Context], Optional[str]]:
-    """Resolver for a dossier money field (integer cents) → fr-CA string."""
+    """Resolver for a dossier money field (integer cents) → fr-CA or en-CA string."""
     def resolver(ctx: _Context) -> Optional[str]:
         if not ctx.dossier:
             return None
         cents = ctx.dossier.get(key)
         if cents is None:
             return None
+        if normalize_lang(ctx.lang) == "en":
+            return format_cents_en(int(cents))
         return format_cents_fr(int(cents))
 
     return resolver
 
 
 def _dossier_percent(key: str) -> Callable[[_Context], Optional[str]]:
-    """Resolver for a dossier rate field (basis points) → fr-CA percent."""
+    """Resolver for a dossier rate field (basis points) → fr-CA or en-CA percent."""
     def resolver(ctx: _Context) -> Optional[str]:
         if not ctx.dossier:
             return None
         bps = ctx.dossier.get(key)
         if bps is None:
             return None
+        if normalize_lang(ctx.lang) == "en":
+            return format_rate_en(int(bps), 100)
         return format_rate_fr(int(bps), 100)
 
     return resolver
 
 
 def _dossier_date(key: str) -> Callable[[_Context], Optional[str]]:
-    """Resolver for a dossier date field (midnight-UTC datetime) → French long
+    """Resolver for a dossier date field (midnight-UTC datetime) → long
     date, using the stored UTC calendar date (no Montréal shift)."""
     def resolver(ctx: _Context) -> Optional[str]:
         if not ctx.dossier:
@@ -479,7 +734,7 @@ def _dossier_date(key: str) -> Callable[[_Context], Optional[str]]:
         value = ctx.dossier.get(key)
         if value is None or not hasattr(value, "year"):
             return None
-        return french_long_date(value)
+        return long_date(value, ctx.lang)
 
     return resolver
 
@@ -492,19 +747,27 @@ def _dossier_classe(ctx: _Context) -> Optional[str]:
 
 
 def _dossier_prescription(ctx: _Context) -> Optional[str]:
-    """French label of the dossier's prescription type (unset → unresolved)."""
+    """Label of the dossier's prescription type (unset → unresolved)."""
     if not ctx.dossier:
         return None
     ptype = ctx.dossier.get("prescription_type") or ""
-    return PRESCRIPTION_LABELS.get(ptype) if ptype else None
+    if not ptype:
+        return None
+    if normalize_lang(ctx.lang) == "en":
+        return _PRESCRIPTION_LABEL_EN.get(ptype)
+    return PRESCRIPTION_LABELS.get(ptype)
 
 
 def _dossier_domaine(ctx: _Context) -> Optional[str]:
-    """French label of the dossier's domaine (unset → unresolved)."""
+    """Label of the dossier's domaine (unset → unresolved)."""
     if not ctx.dossier:
         return None
     code = ctx.dossier.get("domaine") or ""
-    return taxonomie.DOMAINE_LABELS.get(code) if code else None
+    if not code:
+        return None
+    if normalize_lang(ctx.lang) == "en":
+        return _DOMAINE_LABEL_EN.get(code) or taxonomie.DOMAINE_LABELS.get(code)
+    return taxonomie.DOMAINE_LABELS.get(code)
 
 
 def _dossier_action(ctx: _Context) -> Optional[str]:
@@ -529,29 +792,41 @@ def _action_attr(attr: str) -> Callable[[_Context], Optional[str]]:
 def _role_feminin(ctx: _Context) -> Optional[str]:
     if not ctx.dossier:
         return None
-    return _ROLE_FEMININ.get(ctx.dossier.get("role") or "")
+    role = ctx.dossier.get("role") or ""
+    if normalize_lang(ctx.lang) == "en":
+        label = _ROLE_LABEL_EN.get(role)
+        return label.lower() if label else None
+    return _ROLE_FEMININ.get(role)
 
 
 def _role_label(ctx: _Context) -> Optional[str]:
     """Capitalized display label of the client's litigation role."""
     if not ctx.dossier:
         return None
-    return _ROLE_LABEL.get(ctx.dossier.get("role") or "")
+    role = ctx.dossier.get("role") or ""
+    if normalize_lang(ctx.lang) == "en":
+        return _ROLE_LABEL_EN.get(role)
+    return _ROLE_LABEL.get(role)
 
 
 def _dossier_labelled(
-    key: str, labels: dict[str, str]
+    key: str, labels: dict[str, str], en_labels: Optional[dict[str, str]] = None,
 ) -> Callable[[_Context], Optional[str]]:
-    """Resolver mapping a dossier enum field to its French label (unset → None)."""
+    """Resolver mapping a dossier enum field to its label (unset → None)."""
     def resolver(ctx: _Context) -> Optional[str]:
         if not ctx.dossier:
             return None
-        return labels.get(ctx.dossier.get(key) or "") or None
+        raw = ctx.dossier.get(key) or ""
+        if normalize_lang(ctx.lang) == "en" and en_labels is not None:
+            return en_labels.get(raw) or None
+        return labels.get(raw) or None
 
     return resolver
 
 
-def format_honoraires_parts(dossier: Optional[dict]) -> Optional[tuple[str, str]]:
+def format_honoraires_parts(
+    dossier: Optional[dict], *, lang: str = "fr"
+) -> Optional[tuple[str, str]]:
     """(type label, rate part) for the fee arrangement, or None.
 
     ("Horaire", "250,00 $/h"), ("Mixte", "250,00 $/h + 5 000,00 $ + 25 %"),
@@ -562,24 +837,28 @@ def format_honoraires_parts(dossier: Optional[dict]) -> Optional[tuple[str, str]
     """
     if not dossier:
         return None
+    is_en = normalize_lang(lang) == "en"
     fee_type = dossier.get("fee_type") or ""
-    label = _FEE_TYPE_LABEL.get(fee_type)
+    label = (_FEE_TYPE_LABEL_EN if is_en else _FEE_TYPE_LABEL).get(fee_type)
     if not label:
         return None
     parts: list[str] = []
     hourly = dossier.get("hourly_rate")
     flat = dossier.get("flat_fee")
     percent = dossier.get("contingency_percent")
+    fmt_cents = format_cents_en if is_en else format_cents_fr
+    fmt_rate = format_rate_en if is_en else format_rate_fr
+    per_hour = "/hr" if is_en else "/h"
     if fee_type in ("hourly", "mixed") and hourly:
-        parts.append(f"{format_cents_fr(int(hourly))}/h")
+        parts.append(f"{fmt_cents(int(hourly))}{per_hour}")
     if fee_type in ("flat", "mixed") and flat:
-        parts.append(format_cents_fr(int(flat)))
+        parts.append(fmt_cents(int(flat)))
     if fee_type in ("contingency", "mixed") and percent:
-        parts.append(format_rate_fr(int(percent), 100))
+        parts.append(fmt_rate(int(percent), 100))
     return label, " + ".join(parts)
 
 
-def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
+def format_honoraires(dossier: Optional[dict], *, lang: str = "fr") -> Optional[str]:
     """« Type d'honoraires et taux » as one string, or None.
 
     « Horaire — 250,00 $/h », « Forfaitaire — 5 000,00 $ »,
@@ -588,7 +867,7 @@ def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
     label alone. This joined form is the gabarit {{dossier.honoraires}} —
     keep its format stable; the detail card composes the parts itself.
     """
-    parts = format_honoraires_parts(dossier)
+    parts = format_honoraires_parts(dossier, lang=lang)
     if parts is None:
         return None
     label, rate = parts
@@ -611,14 +890,14 @@ def retention_date(closed_date):
 
 
 def _dossier_honoraires(ctx: _Context) -> Optional[str]:
-    return format_honoraires(ctx.dossier)
+    return format_honoraires(ctx.dossier, lang=ctx.lang)
 
 
 def _dossier_retention(ctx: _Context) -> Optional[str]:
     if not ctx.dossier:
         return None
     rd = retention_date(ctx.dossier.get("closed_date"))
-    return french_long_date(rd) if rd else None
+    return long_date(rd, ctx.lang) if rd else None
 
 
 def _sides(ctx: _Context) -> tuple[Optional[list], Optional[list], Optional[dict], Optional[dict]]:
@@ -642,28 +921,34 @@ def _sides(ctx: _Context) -> tuple[Optional[list], Optional[list], Optional[dict
     return None, None, None, None
 
 
-def _joined_names(entries: Optional[list], *, with_civility: bool = False) -> Optional[str]:
+def _joined_names(
+    entries: Optional[list], *, with_civility: bool = False, lang: str = "fr"
+) -> Optional[str]:
     """Join a side's party names for {{dossier.demandeur}}/{{…defendeur}}.
 
     The stored snapshot name carries the honorific (models.partie.display_name
     prepends the prefix). By DEFAULT a procedure intitulé names the party
     bare, so the civility is stripped; the ``…_avec_civilite`` twin passes
-    ``with_civility=True`` to keep it.
+    ``with_civility=True`` to keep (and translate for EN) it.
     """
     if not entries:
         return None
-    names = [
-        (e.get("name", "") if with_civility else _strip_civility_prefix(e.get("name", "")))
-        for e in entries
-        if e.get("name")
-    ]
+    names = []
+    for e in entries:
+        raw = e.get("name", "")
+        if not raw:
+            continue
+        if with_civility:
+            names.append(_translate_prefixed_name(raw, lang))
+        else:
+            names.append(_strip_civility_prefix(raw))
     names = [n.strip() for n in names if n and n.strip()]
     return ", ".join(names) if names else None
 
 
 def _side_names(index: int, *, with_civility: bool = False) -> Callable[[_Context], Optional[str]]:
     def resolver(ctx: _Context) -> Optional[str]:
-        return _joined_names(_sides(ctx)[index], with_civility=with_civility)
+        return _joined_names(_sides(ctx)[index], with_civility=with_civility, lang=ctx.lang)
 
     return resolver
 
@@ -715,18 +1000,24 @@ _POSITIONAL_ROLES = {"demandeur": 0, "défendeur": 1}
 _BLOCK_SEPARATOR = chr(10) * 2
 
 
+def _enumerate_names(names: list[str], lang: str = "fr") -> Optional[str]:
+    """``["A", "B", "C"]`` → ``"A, B et C"`` (FR) or ``"A, B and C"`` (EN)."""
+    names = [n.strip() for n in names if n and n.strip()]
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0]
+    conj = "and" if normalize_lang(lang) == "en" else "et"
+    return f"{', '.join(names[:-1])} {conj} {names[-1]}"
+
+
 def _enumerate_fr(names: list[str]) -> Optional[str]:
     """``["A", "B", "C"]`` → ``"A, B et C"`` — the French enumeration.
 
     A bare ``", ".join`` is not how a procedure names several parties; the
     last one takes « et ». One name yields itself, none yields ``None``.
     """
-    names = [n.strip() for n in names if n and n.strip()]
-    if not names:
-        return None
-    if len(names) == 1:
-        return names[0]
-    return f"{', '.join(names[:-1])} et {names[-1]}"
+    return _enumerate_names(names, lang="fr")
 
 
 def _dedupe_entries(entries) -> list[dict]:
@@ -798,8 +1089,9 @@ def _role_names(role: str) -> Callable[[_Context], Optional[str]]:
 
     def resolver(ctx: _Context) -> Optional[str]:
         entries = _role_entries(ctx, role)
-        return _enumerate_fr(
-            [_strip_civility_prefix(e.get("name", "")) for e in entries]
+        return _enumerate_names(
+            [_strip_civility_prefix(e.get("name", "")) for e in entries],
+            lang=ctx.lang,
         )
 
     return resolver
@@ -884,11 +1176,23 @@ def _firm_field(key: str) -> Callable[[_Context], Optional[str]]:
     return resolver
 
 
+def _partie_ctx(slot: str, fn: Callable[[dict, _Context], Optional[str]]) -> Callable[[_Context], Optional[str]]:
+    def resolver(ctx: _Context) -> Optional[str]:
+        partie = getattr(ctx, slot)
+        if not partie:
+            return None
+        return fn(partie, ctx) or None
+
+    return resolver
+
+
 def _partie_fields(slot: str) -> dict[str, tuple[Optional[str], Callable]]:
     return {
-        # Bare by default; the twin keeps the honorific title.
+        # Bare by default; the twin keeps the honorific title (translated in EN).
         f"{slot}.nom_complet": (slot, _partie(slot, _nom_bare)),
-        f"{slot}.nom_complet_avec_civilite": (slot, _partie(slot, _display_name)),
+        f"{slot}.nom_complet_avec_civilite": (
+            slot, _partie_ctx(slot, lambda p, ctx: _display_name(p, lang=ctx.lang))
+        ),
         f"{slot}.prenom": (slot, _partie(slot, _individual_field("first_name"))),
         f"{slot}.nom": (slot, _partie(slot, _individual_field("last_name"))),
         f"{slot}.organisation": (slot, _partie(slot, _organisation)),
@@ -917,13 +1221,13 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     # Free-text case summary. May hold several paragraphs — fill_docx expands
     # blank-line-separated chunks into cloned paragraphs (value-driven).
     "dossier.sommaire": ("dossier", _dossier_field("sommaire")),
-    "dossier.numero_cour": ("dossier", _dossier_field("court_file_number")),
+    "dossier.numero_cour": ("dossier", _dossier_court_file_number),
     "dossier.reference_interne": ("dossier", _dossier_field("file_number")),
-    "dossier.tribunal": ("dossier", _dossier_field("tribunal")),
-    "dossier.chambre": ("dossier", _dossier_field("competence")),
+    "dossier.tribunal": ("dossier", _dossier_translated("tribunal", _COURT_EN)),
+    "dossier.chambre": ("dossier", _dossier_translated("competence", _COMPETENCE_EN)),
     "dossier.district": ("dossier", _dossier_field("district_judiciaire")),
     "dossier.palais": ("dossier", _dossier_field("palais_de_justice")),
-    "dossier.role": ("dossier", _dossier_field("role")),
+    "dossier.role": ("dossier", _dossier_role),
     "dossier.role_feminin": ("dossier", _role_feminin),
     "dossier.role_label": ("dossier", _role_label),
     # Derived party positions (§6.2) — bare by default, "_avec_civilite" twin
@@ -961,11 +1265,11 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     # Acte interruptif posé (art. 2892 C.c.Q.) — manuel, jamais calculé.
     "dossier.prise_action": ("dossier", _dossier_date("prise_action_date")),
     # dossier.* mandate / fees / lifecycle (« Mandat » card)
-    "dossier.type_mandat": ("dossier", _dossier_labelled("mandate_type", _MANDATE_TYPE_LABEL)),
+    "dossier.type_mandat": ("dossier", _dossier_labelled("mandate_type", _MANDATE_TYPE_LABEL, _MANDATE_TYPE_LABEL_EN)),
     # « Type de dossier » became « Domaine » (July 2026); the old placeholder
     # keeps resolving, now to the domaine label.
     "dossier.type_dossier": ("dossier", _dossier_domaine),
-    "dossier.type_honoraires": ("dossier", _dossier_labelled("fee_type", _FEE_TYPE_LABEL)),
+    "dossier.type_honoraires": ("dossier", _dossier_labelled("fee_type", _FEE_TYPE_LABEL, _FEE_TYPE_LABEL_EN)),
     "dossier.honoraires": ("dossier", _dossier_honoraires),
     "dossier.taux_horaire": ("dossier", _dossier_money("hourly_rate")),
     "dossier.forfait": ("dossier", _dossier_money("flat_fee")),
@@ -992,7 +1296,7 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "cabinet.telecopieur": (None, _firm_field("telecopieur")),
     "cabinet.courriel": (None, _firm_field("courriel")),
     # date.* (§6.5)
-    "date.aujourdhui": (None, lambda ctx: french_long_date(ctx.today)),
+    "date.aujourdhui": (None, lambda ctx: long_date(ctx.today, ctx.lang)),
     "date.aujourdhui_iso": (None, lambda ctx: ctx.today.isoformat()),
     # Partie slots (§6.3)
     **_partie_fields("client"),
@@ -1166,6 +1470,7 @@ def resolve_values(
     firm: dict,
     today: date,
     parties: Optional[dict] = None,
+    lang: str = "fr",
 ) -> dict[str, str]:
     """Resolve every auto-resolvable name that has non-empty source data.
 
@@ -1173,8 +1478,7 @@ def resolve_values(
     placeholder is upper-cased so it matches a legal-heading style
     (``{{TRIBUNAL}}`` → ``COUR SUPÉRIEURE``). Names absent from the result
     are unresolved — the popup shows them as empty inputs, and a blank
-    submission yields the visible French placeholder from
-    :func:`fallback_value`.
+    submission yields the visible placeholder from :func:`fallback_value`.
     """
     ctx = _Context(
         dossier=dossier,
@@ -1184,6 +1488,7 @@ def resolve_values(
         firm=firm or {},
         today=today,
         parties=parties or {},
+        lang=normalize_lang(lang),
     )
     resolved: dict[str, str] = {}
     for name in names:
@@ -1222,6 +1527,7 @@ def resolve_values(
 FLOW_PREFIXES: dict[str, tuple[str, ...]] = {
     "note_honoraires": ("facture.", "h.", "d.", "p."),
     "note_credit": ("nc.",),
+    "avis_interets": ("ai.",),
     "note": ("note.",),
 }
 
@@ -1237,9 +1543,21 @@ CREDIT_NOTE_INVOICE_FIELDS = (
     "facture.solde_restant",
 )
 
+#: The invoice fields an overdue interest notice (« avis_interets ») prints
+#: beside its own ``ai.*`` (lot 4a).
+INTEREST_NOTICE_INVOICE_FIELDS = (
+    "facture.numero",
+    "facture.date",
+    "facture.date_echeance",
+    "facture.tps_numero",
+    "facture.tvq_numero",
+    "facture.solde_restant",
+)
+
 #: The single fields a flow fills OUTSIDE its namespaces.
 FLOW_NAMES: dict[str, tuple[str, ...]] = {
     "note_credit": CREDIT_NOTE_INVOICE_FIELDS,
+    "avis_interets": INTEREST_NOTICE_INVOICE_FIELDS,
 }
 
 

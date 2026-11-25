@@ -39,7 +39,10 @@ names a failed build by its class alone.
 
 from __future__ import annotations
 
-from flask import Blueprint, redirect, render_template, request, url_for
+import csv
+import io
+
+from flask import Blueprint, Response, redirect, render_template, request, url_for
 
 from auth import login_required
 from models import financial_statements as fs
@@ -52,7 +55,7 @@ from routes.invoices import (
 )
 from services import financial_statements as statements_service
 from utils import deadlines, periods
-from utils.format_fr import format_date_fr
+from utils.format_fr import format_date_fr, format_rate_fr
 
 journal_radiations_bp = Blueprint("journal_radiations", __name__,
                                   url_prefix="/comptabilite/radiations")
@@ -128,11 +131,31 @@ def _rows(journal: fs.WriteOffJournal) -> list[dict]:
     } for e in journal.entries]
 
 
-def _band() -> list[tuple[str, int]]:
+def _interest_rows(journal: fs.WriteOffJournal) -> list[dict]:
+    """The journal's overdue-interest rows, oldest first."""
+    return [{
+        "date": e.day.isoformat(),
+        "interest_notice_number": e.interest_notice_number,
+        "invoice_number": e.invoice_number,
+        "invoice_id": e.invoice_id,
+        "client": e.client_name,
+        "kind": "Avis d'intérêts" if e.kind == "avis_interets" else "Contre-passation",
+        "period": f"{e.period_start.isoformat()} → {e.period_end.isoformat()} ({e.days} j)",
+        "principal": e.principal,
+        "rate": format_rate_fr(e.rate_bps, 100),
+        "receivables": e.receivables,
+        "interest_revenue": e.interest_revenue,
+        "state": CREDIT_NOTE_STANDING if e.standing else "annulé",
+        "standing": e.standing,
+        "reason": e.reason,
+    } for e in journal.interest_entries]
+
+
+def _band(columns=fs.JOURNAL_COLUMNS) -> list[tuple[str, int]]:
     """The heading band of the page's table: ``(side, colspan)`` for each
     run of columns on one side of the entry (« Débit », « Crédit », '')."""
     runs: list[list] = []
-    for _key, _label, side in fs.JOURNAL_COLUMNS:
+    for _key, _label, side in columns:
         if runs and runs[-1][0] == side:
             runs[-1][1] += 1
         else:
@@ -145,6 +168,7 @@ def _context(journal: fs.WriteOffJournal, period) -> dict:
     rows, pagination = paginate(rows, request.args.get("page", 1, type=int))
     pagination.update(url=url_for("journal_radiations.index"),
                       target=_ROWS_TARGET, extra_vals={"periode": period.slug})
+    interest_rows = list(reversed(_interest_rows(journal)))
     return {
         "journal": journal,
         "heading": _heading(journal),
@@ -152,11 +176,16 @@ def _context(journal: fs.WriteOffJournal, period) -> dict:
         "pagination": pagination,
         "count": len(journal.entries),
         "columns": fs.JOURNAL_COLUMNS,
-        "band": _band(),
+        "band": _band(fs.JOURNAL_COLUMNS),
         # No total over a journal that could not be read (« indisponible »).
         "totals": [] if journal.unavailable else [
             {"label": label, "side": side, "value": journal.totals[key]}
             for key, label, side in fs.JOURNAL_COLUMNS if side],
+        "interest_rows": interest_rows,
+        "interest_columns": fs.INTEREST_JOURNAL_COLUMNS,
+        "interest_band": _band(fs.INTEREST_JOURNAL_COLUMNS),
+        "interest_count": len(journal.interest_entries),
+        "interest_total": journal.interest_total,
         "slug": period.slug,
         "entry_sentence": fs.JOURNAL_ENTRY_SENTENCE,
         "totals_sentence": fs.JOURNAL_TOTALS_SENTENCE,
@@ -206,14 +235,47 @@ def export(fmt: str):
         return redirect(url_for("journal_radiations.index", periode=period.slug,
                                 erreur="export_indisponible"))
     rows = _rows(journal)
+    interest_rows = _interest_rows(journal)
     if fmt == "csv":
-        from utils.export_csv import export_csv
+        from utils.export_csv import export_csv, neutralize_formula
 
-        return export_csv(
-            rows=rows,
-            columns=[(key, label) for key, label, _side in fs.JOURNAL_COLUMNS],
-            filename=f"journal-radiations_{period.slug}.csv",
-            cents_fields=list(fs.JOURNAL_MONEY_KEYS),
+        if not interest_rows:
+            return export_csv(
+                rows=rows,
+                columns=[(key, label) for key, label, _side in fs.JOURNAL_COLUMNS],
+                filename=f"journal-radiations_{period.slug}.csv",
+                cents_fields=list(fs.JOURNAL_MONEY_KEYS),
+            )
+        out = io.StringIO()
+        out.write("\ufeff")
+        writer = csv.writer(out, quoting=csv.QUOTE_MINIMAL)
+        rad_cols = [(key, label) for key, label, _side in fs.JOURNAL_COLUMNS]
+        rad_cents = set(fs.JOURNAL_MONEY_KEYS)
+        writer.writerow([label for _k, label in rad_cols])
+        for row in rows:
+            writer.writerow([
+                f"{int(row[k] or 0) / 100:.2f}" if k in rad_cents
+                else neutralize_formula(str(row.get(k) or ""))
+                for k, _l in rad_cols
+            ])
+        writer.writerow([])
+        ai_cols = [(key, label) for key, label, _side in fs.INTEREST_JOURNAL_COLUMNS]
+        ai_cents = {"principal", *fs.INTEREST_JOURNAL_MONEY_KEYS}
+        writer.writerow([label for _k, label in ai_cols])
+        for row in interest_rows:
+            writer.writerow([
+                f"{int(row[k] or 0) / 100:.2f}" if k in ai_cents
+                else neutralize_formula(str(row.get(k) or ""))
+                for k, _l in ai_cols
+            ])
+        return Response(
+            out.getvalue(),
+            mimetype="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="journal-radiations_{period.slug}.csv"'
+                )
+            },
         )
     # Lazy: the builder imports reportlab.
     from utils.journal_radiations_pdf import build_write_off_journal_pdf
@@ -227,4 +289,6 @@ def export(fmt: str):
             fs.JOURNAL_TOTALS_SENTENCE, fs.JOURNAL_INTEREST_SENTENCE],
         generated_at=deadlines.now_utc(),
         filename=f"journal-radiations_{period.slug}.pdf",
+        interest_rows=interest_rows,
+        interest_columns=fs.INTEREST_JOURNAL_COLUMNS,
     )

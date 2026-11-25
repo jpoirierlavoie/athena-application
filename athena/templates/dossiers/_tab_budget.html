@@ -19,9 +19,9 @@
   <div class="flex items-center justify-between">
     <h2 class="text-sm font-semibold text-gray-900">Budget</h2>
     <a href="{{ url_for('budgets.budget_form', dossier_id=dossier.id, return_to=tab_return_to) }}"
-       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-      {{ ms('edit', 16) }}
-      Modifier le budget
+       aria-label="Modifier le budget" title="Modifier le budget"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ ms('edit', 20) }}<span class="sr-only">Modifier le budget</span>
     </a>
   </div>
 
@@ -126,15 +126,15 @@
   </div>
 
   {# Exports #}
-  <div class="flex flex-wrap gap-4">
+  <div class="flex flex-wrap gap-3">
     <a href="{{ url_for('budgets.budget_export', budget_id=budget.id, variante='estimation') }}"
-       class="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700">
-      {{ ms('picture_as_pdf', 16) }}
+       class="inline-flex items-center gap-1.5 min-h-[44px] px-3 py-2 text-xs font-medium text-indigo-600 bg-white border border-gray-300 rounded-lg hover:bg-indigo-50 hover:text-indigo-700">
+      {{ ms('picture_as_pdf', 20) }}
       Estimation des frais et honoraires (PDF)
     </a>
     <a href="{{ url_for('budgets.budget_export', budget_id=budget.id, variante='suivi') }}"
-       class="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700">
-      {{ ms('picture_as_pdf', 16) }}
+       class="inline-flex items-center gap-1.5 min-h-[44px] px-3 py-2 text-xs font-medium text-indigo-600 bg-white border border-gray-300 rounded-lg hover:bg-indigo-50 hover:text-indigo-700">
+      {{ ms('picture_as_pdf', 20) }}
       Suivi budgétaire (PDF)
     </a>
   </div>

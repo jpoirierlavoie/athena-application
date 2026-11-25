@@ -556,8 +556,8 @@ def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
     fidéicommis il ne s'affiche qu'en bannière APRÈS le retrait des fonds —
     un nouvel appelant fautif doit tomber ici, avant le déploiement.
 
-    Et les appelants du MOT-CLÉ sont exactement les deux que nomme la
-    docstring de `models/admin_ledger.create_transaction` : un troisième
+    Et les appelants du MOT-CLÉ sont exactement les trois que nomme la
+    docstring de `models/admin_ledger.create_transaction` : un quatrième
     doit la mettre à jour en même temps
     (preuve, aussi, que le balayage voit de vrais appels).
 
@@ -581,7 +581,11 @@ def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
     # The model's own create composes its phases (it forwards the keyword
     # to _prepare_create): the definition, not a caller.
     keyworded.discard("models/admin_ledger.py")
-    assert keyworded == {"models/fee_payment.py", "scripts/reprise_encaissements.py"}
+    assert keyworded == {
+        "models/fee_payment.py",
+        "models/advance_transfer.py",
+        "scripts/reprise_encaissements.py",
+    }
 
 
 @pytest.mark.parametrize("source, offending", [

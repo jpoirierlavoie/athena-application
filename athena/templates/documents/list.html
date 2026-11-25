@@ -8,9 +8,9 @@
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Bibliothèque</h1>
     <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
-       class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-      {{ ms('upload', 16) }}
-      Téléverser
+       aria-label="Téléverser un document" title="Téléverser"
+       class="hidden md:inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ ms('upload', 20) }}<span class="sr-only">Téléverser</span>
     </a>
   </div>
 

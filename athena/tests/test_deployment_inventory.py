@@ -2343,6 +2343,9 @@ def test_exported_modules_declare_complete_literal_all():
         ("utils.occupations", pathlib.Path(_ATHENA, "utils", "occupations.py")),
         ("utils.contact_roles", pathlib.Path(_ATHENA, "utils", "contact_roles.py")),
         ("services.comptabilite", pathlib.Path(_ATHENA, "services", "comptabilite.py")),
+        ("utils.receipts", pathlib.Path(_ATHENA, "utils", "receipts.py")),
+        ("utils.dav_classification", pathlib.Path(_ATHENA, "utils", "dav_classification.py")),
+        ("utils.ical_tz", pathlib.Path(_ATHENA, "utils", "ical_tz.py")),
     )
     for mod_name, path in targets:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

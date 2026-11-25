@@ -610,6 +610,15 @@ def _step_row(extra: Optional[dict[str, Any]] = None) -> dict:
             "Equivalent to `status == \"en_retard\"` — both come from one "
             "predicate, so they can never contradict each other."
         ),
+        "actor": _str(
+            "Statutory actor key (demandeur, défendeur, commun, greffe) or '' "
+            "on custom/legacy steps."
+        ),
+        "actor_label": _str(
+            "Role-aware French actor badge (Notre délai, Délai adverse, "
+            "Délai du greffe / tribunal, Commun, or '' if unannotated)."
+        ),
+        "key_milestone": _str("« reponse » | « inscription » | ''."),
         **_phase_pair(),
         **_stamps(),
         # After _stamps: the step etag's one exception (the overdue stamp).
@@ -1301,8 +1310,8 @@ def _protocol_sync_keys() -> dict[str, Any]:
 # package) pinned to models.doc_template.VALID_KINDS by
 # tests/test_mcp_template_reads.py — a description, never an enum: an
 # output schema never forbids growth.
-_TEMPLATE_KIND_NAMES = ("gabarit", "note_honoraires", "note_credit", "note",
-                        "modele")
+_TEMPLATE_KIND_NAMES = ("gabarit", "note_honoraires", "note_credit",
+                        "avis_interets", "note", "modele")
 
 
 def _template_summary() -> dict:
@@ -2255,6 +2264,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                         "write refuses until one remains; unreadable = the "
                         "lookup failed — NOT « absent »."),
                 },
+                "conflict_check": _str(
+                    "non_vérifié | vérifié | conflit_détecté — dossier-level conflict status."),
+                "conflict_check_presumed": _bool(
+                    "true when inscribed by an automated path and awaiting lawyer confirmation."),
+                "conflict_check_notes": _str(),
             }, optional=_PROVENANCE_KEYS),
             "summaries": _obj({
                 "tasks": _model_summary("Model-owned task summary."),
@@ -2742,6 +2756,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "Model-owned entries {id, kind, notes}.",
                 ),
                 "notes": _str(),
+                "numero_tps": _str("Fournisseur/professionnel seulement."),
+                "numero_tvq": _str("Fournisseur/professionnel seulement."),
+                "categorie_depense_defaut": _str("Fournisseur/professionnel seulement."),
+                "numero_compte_fournisseur": _str("Fournisseur/professionnel seulement."),
                 **_stamps(),
             }, optional=_PROVENANCE_KEYS),
             "dossiers": _arr(_obj({
@@ -3488,7 +3506,13 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "id": _str(),
             "title": _str(),
             "protocol_type": _str(),
+            "track": _str("instance | ouverture."),
             "status": _str(),
+            "inscription_variation": _str(
+                "Selected setting-down variation (defaut, commune, "
+                "unilaterale, greffier) or ''."
+            ),
+            "inscription_variation_label": _str(),
             "court": _str(),
             "dossier_tribunal": _str(
                 "The dossier's current tribunal, for context."),

@@ -3,7 +3,9 @@
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-6">
-    <a href="{{ url_for('admin_ledger.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('admin_ledger.journal') }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour au journal" title="Retour au journal">{{ ms('arrow_back', 20) }}</a>
     <h1 class="text-xl font-semibold text-gray-900">{% if mode == 'edit' %}Modifier l'écriture n<sup>o</sup> {{ entry.sequence }}{% else %}Nouvelle écriture d'administration{% endif %}</h1>
   </div>
 
@@ -64,9 +66,17 @@
              (admin_ledger.SUPPLIER_REF_KINDS). #}
           supplierRefKinds: {{ supplier_ref_kinds | join(',') | jsattr }}.split(','),
           accountType: 'opérations',
+          method: {{ selected_method | jsattr }},
+          methodTouched: {{ ('true' if entry and entry.get('method') else 'false') | safe }},
           dossierId: {{ ((entry.dossier_id if entry else '') or '') | jsattr }},
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
           dossierOpen: false,
+          dossierEmpty: true,
+          stagedObjet: {{ (staged_receipt_objet or '') | jsattr }},
+          stagedName: {{ (staged_receipt_name or '') | jsattr }},
+          receiptBusy: false,
+          receiptError: '',
+          stageReceipt: function (f) { return window._athenaStageReceipt(this, '{{ url_for('admin_ledger.api_televersement') }}', f); },
           {# Le champ de contrepartie (D6) : le profil de chaque type, lu
              du bloc de données ci-dessus ; lastPrefill, la dernière valeur
              qu'un préremplissage a posée — un nom saisi, ou arrivé avec la
@@ -87,7 +97,7 @@
         }"
         x-init="let sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; } $watch('kind', function (k) { applyPrefill(prefillFor(k)); }); applyPrefill(prefillFor(kind));"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" x-ref="csrf">
     {% if mode == 'edit' %}{{ etag_field(entry) }}{% endif %}
 
     <div>
@@ -97,10 +107,10 @@
       <input type="text" disabled value="{{ (accounts | selectattr('id', 'equalto', entry.account_id) | map(attribute='name') | first) or 'Compte' }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
       {% else %}
       <select id="compte-select" name="account_id" required
-              @change="accountType = $event.target.selectedOptions[0].dataset.accountType || 'opérations'; if (accountType === 'carte_crédit' &amp;&amp; kind === 'encaissement_facture') { kind = 'dépense'; }"
+              @change="accountType = $event.target.selectedOptions[0].dataset.accountType || 'opérations'; if (accountType === 'carte_crédit' &amp;&amp; kind === 'encaissement_facture') { kind = 'dépense'; } if (!methodTouched) { method = (accountType === 'carte_crédit') ? 'carte' : 'virement'; }"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for a in accounts %}
-        <option value="{{ a.id }}" data-account-type="{{ a.account_type }}" {% if entry and entry.account_id == a.id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
+        <option value="{{ a.id }}" data-account-type="{{ a.account_type }}" {% if a.id == selected_account_id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
         {% endfor %}
       </select>
       {% endif %}
@@ -172,7 +182,7 @@
         <option value="{{ value }}"{% if value == form_sens_value %} selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
-      <p class="text-xs text-gray-500 mt-1">Un virement interne relie ce compte à un compte hors de ce registre — le fidéicommis, un compte d'épargne. Le paiement de la carte de crédit est un <a href="{{ url_for('admin_ledger.card_payment') }}" class="text-indigo-600 hover:underline">« Paiement de carte »</a>, jamais un virement interne ; des honoraires tirés du fidéicommis s'inscrivent au registre du fidéicommis (paiement d'honoraires).</p>
+      <p class="text-xs text-gray-500 mt-1">Un virement interne relie ce compte à un autre compte : utilisez <a href="{{ url_for('admin_ledger.account_transfer') }}" class="text-indigo-600 hover:underline">« Virement entre comptes »</a> pour déplacer des fonds entre deux comptes du cabinet, <a href="{{ url_for('admin_ledger.card_payment') }}" class="text-indigo-600 hover:underline">« Paiement de carte »</a> pour régler la carte de crédit, ou <a href="{{ url_for('admin_ledger.advance_transfer') }}" class="text-indigo-600 hover:underline">« Avances au fidéicommis »</a> pour transférer des avances d'un client vers le fidéicommis. Des honoraires tirés du fidéicommis s'inscrivent au registre du fidéicommis (paiement d'honoraires).</p>
     </div>
     {% endif %}
 
@@ -195,9 +205,9 @@
     <div class="grid grid-cols-2 gap-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Mode</label>
-        <select name="method" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <select name="method" required x-model="method" @change="methodTouched = true" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
           {% for m in valid_methods %}
-          <option value="{{ m }}" {% if entry and entry.method == m %}selected{% endif %}>{{ method_labels[m] }}</option>
+          <option value="{{ m }}" {% if m == selected_method %}selected{% endif %}>{{ method_labels[m] }}</option>
           {% endfor %}
         </select>
       </div>
@@ -241,17 +251,19 @@
        natures sans dossier (noDossierKinds : l'argent de l'avocat, la
        TPS/TVQ du cabinet) n'en portent aucun : le bloc est masqué et son
        champ désactivé. Un virement interne peut en porter un. #}
-    <div x-show="kind !== 'encaissement_facture' &amp;&amp; !noDossierKinds.includes(kind)" x-cloak class="relative" @click.outside="dossierOpen = false">
+    <div x-show="kind !== 'encaissement_facture' &amp;&amp; !noDossierKinds.includes(kind)" x-cloak class="relative" @click.outside="dossierOpen = false"
+         @htmx:after-swap="if ($event.detail.target.id === 'dossier-results') { var inp = $el.querySelector('input[name=q]'); if (inp &amp;&amp; !inp.value.trim()) { $event.detail.target.innerHTML = ''; dossierEmpty = true; dossierOpen = false; } else { dossierEmpty = !$event.detail.target.firstElementChild; } }">
       <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(facultatif)</span></label>
       <input type="hidden" name="dossier_id" :value="dossierId" :disabled="noDossierKinds.includes(kind)">
       {# name="q" is load-bearing : hx-include="this" sérialise l'élément par
          son nom — sans lui, dossier_search ne reçoit aucune requête. #}
       <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
-             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''"
+             @focus="if (!dossierEmpty) { dossierOpen = true; }" @input="dossierId = ''; if ($el.value.trim().length === 0) { document.getElementById('dossier-results').innerHTML = ''; dossierEmpty = true; dossierOpen = false; } else { dossierOpen = true; }"
              hx-get="{{ url_for('admin_ledger.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      <div id="dossier-results" x-show="dossierOpen" x-cloak
-           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; }"
+      <div id="dossier-results" x-show="dossierOpen &amp;&amp; !dossierEmpty" x-cloak
+           @pointerdown.prevent @mousedown.prevent
+           @click="let b = $event.target.closest('button[data-dossier-id]'); if (b) { dossierId = b.dataset.dossierId; dossierDisplay = b.dataset.dossierFileNumber + ' — ' + b.dataset.dossierTitle; dossierOpen = false; }"
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       <p class="text-xs text-gray-400 mt-1">Un déboursé refacturable au client s'inscrit aussi dans Dépenses (/temps) — ce registre ne crée pas la dépense au dossier.</p>
     </div>
@@ -331,6 +343,30 @@
     </div>
 
     {% if mode != 'edit' %}
+    <div class="p-3 border border-gray-200 rounded-xl space-y-2">
+      <input type="hidden" name="staged_receipt_objet" :value="stagedObjet">
+      <input type="hidden" name="staged_receipt_name" :value="stagedName">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p class="text-sm font-medium text-gray-700">Pièce justificative <span class="text-gray-400 font-normal">(facultatif)</span></p>
+          <p class="text-xs text-gray-500">{{ receipt_hint }}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" x-show="stagedObjet" x-cloak
+                  @click="stagedObjet = ''; stagedName = ''; receiptError = ''"
+                  class="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Retirer</button>
+          <span x-show="receiptBusy" x-cloak class="px-3 py-2 text-xs text-gray-500">Envoi…</span>
+          <label x-show="!receiptBusy" class="px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
+            <span x-text="stagedObjet ? 'Remplacer' : 'Joindre un fichier'"></span>
+            <input type="file" accept="{{ receipt_accept }}" class="hidden"
+                   @change="stageReceipt($event.target.files[0]); $event.target.value = '';">
+          </label>
+        </div>
+      </div>
+      <p x-show="stagedObjet" x-cloak class="text-xs text-gray-700">Fichier prêt : <span class="font-medium" x-text="stagedName"></span></p>
+      <p x-show="receiptError" x-cloak class="text-xs text-red-600" x-text="receiptError"></p>
+    </div>
+
     <label class="flex items-center gap-2 text-sm text-gray-700">
       <input type="checkbox" name="deja_compensee" value="1" class="rounded border-gray-300">
       Déjà compensée <span class="text-gray-400">(figure déjà au relevé — un virement instantané, un prélèvement préautorisé)</span>
@@ -339,8 +375,40 @@
 
     <div class="flex justify-end gap-2 pt-2">
       <a href="{% if mode == 'edit' %}{{ url_for('admin_ledger.entry_detail', tx_id=entry.id) }}{% else %}{{ url_for('admin_ledger.journal') }}{% endif %}" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
-      <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Enregistrer</button>
+      <button type="submit" :disabled="receiptBusy" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Enregistrer</button>
     </div>
   </form>
 </div>
+<script nonce="{{ csp_nonce }}">
+window._athenaStageReceipt = async function (vm, uploadUrl, fichier) {
+  if (!fichier || vm.receiptBusy) { return; }
+  vm.receiptBusy = true;
+  vm.receiptError = '';
+  try {
+    var hdrs = { 'Content-Type': 'application/json', 'X-CSRFToken': vm.$refs.csrf.value };
+    var ouverture = await fetch(uploadUrl, {
+      method: "POST",
+      headers: hdrs,
+      body: JSON.stringify({ name: fichier.name, size: fichier.size })
+    });
+    var donnees = await ouverture.json().catch(function () { return {}; });
+    if (!ouverture.ok) {
+      vm.receiptError = donnees.erreur || 'refusé';
+      vm.receiptBusy = false;
+      return;
+    }
+    var put = await fetch(donnees.url, { method: "PUT", body: fichier });
+    if (!put.ok) {
+      vm.receiptError = 'transfert interrompu — réessayez';
+      vm.receiptBusy = false;
+      return;
+    }
+    vm.stagedObjet = donnees.objet || '';
+    vm.stagedName = fichier.name || 'recu';
+  } catch (e) {
+    vm.receiptError = 'erreur réseau — réessayez';
+  }
+  vm.receiptBusy = false;
+};
+</script>
 {% endblock %}

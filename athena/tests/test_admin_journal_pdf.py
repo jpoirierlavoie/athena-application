@@ -25,15 +25,15 @@ def test_ratios_sum_to_one():
     assert round(sum(c.ratio for c in ajp.COLUMNS), 6) == 1.0
 
 
-def test_eleven_columns_in_the_pinned_order():
+def test_ten_columns_in_the_pinned_order():
     assert [c.key for c in ajp.COLUMNS] == [
-        "date", "counterparty", "categorie", "facture", "mode",
+        "date", "counterparty", "categorie", "facture",
         "net", "tps", "tvq", "recette", "debours", "solde",
     ]
 
 
 def test_only_free_text_columns_may_clip():
-    """A date, a mode, an amount or the running balance is never ellipsised —
+    """A date, an amount or the running balance is never ellipsised —
     in a book of account a truncated figure or identifier is a FALSE one."""
     clippable = {c.key for c in ajp.COLUMNS if c.clip}
     assert clippable == {"counterparty", "categorie", "facture"}
@@ -42,7 +42,7 @@ def test_only_free_text_columns_may_clip():
 
 def test_money_columns_are_the_six_amounts():
     assert ajp.MONEY_KEYS == ("net", "tps", "tvq", "recette", "debours", "solde")
-    assert ajp.TEXT_COLUMN_COUNT == 5
+    assert ajp.TEXT_COLUMN_COUNT == 4
 
 
 # ═══════════════════════════════════════════════════════════════════════════

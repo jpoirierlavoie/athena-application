@@ -18,7 +18,6 @@ The bench: the real routes, models, templates and CardDAV handlers on
 ``tests/_fake_firestore.py``. Every name and number here is invented.
 """
 
-import json
 import os
 import pathlib
 import re
@@ -40,6 +39,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import dav.carddav as carddav
     import dav.sync as dav_sync
     import mcp.handlers as handlers
+    import mcp.tools as tools
     import mcp.write_support as write_support
     from models import admin_ledger
     from models import partie as pm
@@ -364,10 +364,63 @@ def test_a_professionals_phone_edit_keeps_the_record(db, monkeypatch):
     assert stored["numero_tps"] == TPS and stored["numero_compte_fournisseur"] == "H-1"
 
 
-def test_the_connector_serves_none_of_the_record(db):
+def test_the_connector_reads_and_hides_dormant_supplier_record(db):
     db.seed("parties/fou", _contact("fou", "fournisseur", numero_tps=TPS,
                                     numero_tvq=TVQ, numero_compte_fournisseur="A-9",
                                     categorie_depense_defaut=CATEGORY))
-    payload = json.dumps(handlers.get_partie({"partie_id": "fou"}), default=str)
-    assert all(field not in payload for field in pm.SUPPLIER_RECORD_FIELDS)
-    assert TPS not in payload and "A-9" not in payload
+    card = handlers.get_partie({"partie_id": "fou"})["partie"]
+    assert card["numero_tps"] == TPS
+    assert card["numero_tvq"] == TVQ
+    assert card["numero_compte_fournisseur"] == "A-9"
+    assert card["categorie_depense_defaut"] == CATEGORY
+
+    # A dormant supplier record on a non-payee contact stays masked on read.
+    db.seed("parties/cli", _contact("cli", "client", numero_tps=TPS,
+                                    numero_tvq=TVQ, numero_compte_fournisseur="A-9",
+                                    categorie_depense_defaut=CATEGORY))
+    cli_card = handlers.get_partie({"partie_id": "cli"})["partie"]
+    assert all(cli_card[f] == "" for f in pm.SUPPLIER_RECORD_FIELDS)
+
+
+def test_the_connector_creates_updates_and_validates_supplier_record(db):
+    created = handlers.create_partie({
+        "type": "organization",
+        "organization_name": "Imprimeur Test inc.",
+        "contact_role": "fournisseur",
+        "numero_tps": "123456789 rt 0001",
+        "numero_tvq": "1234567890 tq 0001",
+        "categorie_depense_defaut": CATEGORY,
+        "numero_compte_fournisseur": "CLI-77",
+    })
+    assert created["created"] is True
+    assert created["dav_synced"] is False  # fournisseur stays out of CardDAV
+    pid = created["entity"]["id"]
+    stored = db.peek(f"parties/{pid}")
+    assert stored["numero_tps"] == TPS
+    assert stored["numero_tvq"] == TVQ
+    assert stored["categorie_depense_defaut"] == CATEGORY
+    assert stored["numero_compte_fournisseur"] == "CLI-77"
+
+    # Update + clear one field via empty string
+    updated = handlers.update_partie({
+        "partie_id": pid,
+        "expected_etag": created["entity"]["etag"],
+        "numero_compte_fournisseur": "CLI-88",
+        "categorie_depense_defaut": "",
+    })
+    assert updated["updated"] is True
+    after = db.peek(f"parties/{pid}")
+    assert after["numero_compte_fournisseur"] == "CLI-88"
+    assert after["categorie_depense_defaut"] == ""
+
+    # Invalid TPS, HTML in account number, and supplier fields on a client refuse
+    for bad in (
+        {"type": "organization", "organization_name": "Bad TPS", "contact_role": "fournisseur",
+         "numero_tps": "123"},
+        {"type": "organization", "organization_name": "Bad HTML", "contact_role": "fournisseur",
+         "numero_compte_fournisseur": "<script>x</script>"},
+        {"type": "individual", "last_name": "Client", "contact_role": "client",
+         "numero_tps": TPS},
+    ):
+        with pytest.raises(tools.ToolArgumentError):
+            handlers.create_partie(bad)

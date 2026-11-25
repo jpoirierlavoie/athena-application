@@ -168,6 +168,63 @@
     </div>
   </form>
 
+  {# ── Flux iCalendar partagé (lecture seule, assaini) ────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Calendrier partagé (lecture seule, assaini)</h2>
+    <p class="text-xs text-gray-500 mb-4">
+      Lien d'abonnement <code>.ics</code> protégé par jeton secret. Seule
+      l'empreinte SHA-256 du jeton est enregistrée. Tout événement lié à un
+      dossier ou classé « Confidentiel » / « Privé » est servi uniquement comme
+      plage occupée (<code>Occupé</code>, sans nom, dossier, lieu ni description).
+      Seuls les événements sans dossier marqués « Public » paraissent en clair.
+    </p>
+
+    {% if partage_nouvelle_url %}
+    <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
+      <p class="text-sm font-medium text-green-800 mb-2">
+        Nouveau lien d'abonnement généré — copiez-le maintenant (il ne sera plus affiché) :
+      </p>
+      <p class="text-xs break-all text-green-800">
+        <code>{{ partage_nouvelle_url }}</code>
+      </p>
+    </div>
+    {% elif partage_revoque %}
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+      <p class="text-sm text-amber-800">
+        Le lien d'abonnement a été révoqué. Les abonnements existants ne reçoivent plus l'agenda.
+      </p>
+    </div>
+    {% endif %}
+
+    <p class="text-sm text-gray-700 mb-4">
+      État du flux :
+      {% if partage_actif %}
+        <span class="font-medium text-green-700">Actif</span>
+      {% else %}
+        <span class="font-medium text-gray-500">Désactivé</span>
+      {% endif %}
+    </p>
+
+    <div class="flex flex-wrap gap-3">
+      <form method="post" action="{{ url_for('settings.calendrier_partage_generer') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" {% if not partage_lisible %}disabled{% endif %}
+                class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          {{ 'Régénérer le lien (révoque l\'ancien)' if partage_actif else 'Activer et générer un lien' }}
+        </button>
+      </form>
+      {% if partage_actif %}
+      <form method="post" action="{{ url_for('settings.calendrier_partage_revoquer') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" {% if not partage_lisible %}disabled{% endif %}
+                class="px-4 py-2 text-sm font-medium text-red-700 bg-white border border-red-200 rounded-lg hover:bg-red-50">
+          Révoquer le lien
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
   {# ── Fixés au déploiement ──────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-6">
     <h2 class="text-sm font-semibold text-gray-900 mb-2">Réglages fixés au déploiement</h2>

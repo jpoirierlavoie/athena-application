@@ -9,6 +9,7 @@ from typing import Any, Optional
 from flask import (
     Blueprint,
     Response,
+    current_app,
     jsonify,
     redirect,
     render_template,
@@ -26,7 +27,7 @@ from models.audit_event import record_deletion
 from models.document import format_file_size, get_file_icon
 from tz import to_mtl
 from utils import civilite, contact_roles, kyc, occupations, storage_identity
-from utils.format_fr import format_date_fr
+from utils.format_fr import format_cents_fr, format_date_fr
 from utils.logging_setup import (
     log_partie_event,
     log_unexpected,
@@ -66,6 +67,7 @@ from models.dossier import (
     STATUS_LABELS as DOSSIER_STATUS_LABELS,
     DOMAINE_LABELS as DOSSIER_DOMAINE_LABELS,
     list_dossiers_for_partie,
+    list_dossiers_for_partie_strict,
 )
 from routes import edit_conflict
 from routes._helpers import is_htmx, redirect_after_post
@@ -531,6 +533,170 @@ def _kyc_view(partie: dict) -> dict:
     return view
 
 
+def _trust_card_url(dossier_id: str, client_id: str) -> str:
+    if "trust.card" in current_app.view_functions:
+        return url_for("trust.card", dossier_id=dossier_id, client_id=client_id)
+    return f"/fideicommis/carte/{dossier_id}/{client_id}"
+
+
+def _client_financial_situation(partie_id: str, is_client_role: bool) -> dict:
+    """Fail-closed financial summary for a client's detail card (1g).
+
+    Reads client dossiers strictly so outages report « indisponible » rather
+    than 0. Lists trust balance + clickable Carte-client links, total fees
+    billed + unpaid balance, and unbilled WIP (billable hours + unbilled
+    disbursements).
+    """
+    out: dict[str, Any] = {
+        "visible": is_client_role,
+        "dossiers_available": True,
+        "has_client_dossiers": False,
+        "trust_available": True,
+        "trust_total_cents": 0,
+        "trust_total_display": format_cents_fr(0),
+        "trust_cards": [],
+        "billing_available": True,
+        "fees_billed_cents": 0,
+        "fees_billed_display": format_cents_fr(0),
+        "unpaid_cents": 0,
+        "unpaid_display": format_cents_fr(0),
+        "wip_available": True,
+        "unbilled_hours": 0.0,
+        "unbilled_time_cents": 0,
+        "unbilled_time_display": format_cents_fr(0),
+        "unbilled_expenses_cents": 0,
+        "unbilled_expenses_display": format_cents_fr(0),
+        "unbilled_total_cents": 0,
+        "unbilled_total_display": format_cents_fr(0),
+    }
+    try:
+        strict_dossiers = list_dossiers_for_partie_strict(partie_id)
+    except Exception as exc:
+        log_unexpected(
+            "client financial situation: dossiers read failed",
+            exc_info=False,
+            partie_id=partie_id,
+            error_type=type(exc).__name__,
+        )
+        out["dossiers_available"] = False
+        return out
+
+    client_dossiers = [
+        d for d in strict_dossiers
+        if partie_id in (d.get("client_ids") or [])
+    ]
+    if not client_dossiers and not is_client_role:
+        return out
+
+    out["visible"] = True
+    out["has_client_dossiers"] = bool(client_dossiers)
+    client_dossiers.sort(
+        key=lambda d: str(d.get("file_number") or ""), reverse=True
+    )
+    trust_cards = []
+    trust_total = 0
+    dossier_ids = []
+    for d in client_dossiers:
+        did = str(d.get("id") or "")
+        if did:
+            dossier_ids.append(did)
+    try:
+        for d in client_dossiers:
+            did = str(d.get("id") or "")
+            if not did:
+                continue
+            raw_map = d.get("trust_balance_by_client")
+            if raw_map is None:
+                book = 0
+            elif not isinstance(raw_map, dict):
+                raise TypeError("invalid trust_balance_by_client")
+            elif partie_id not in raw_map:
+                book = 0
+            else:
+                raw_val = raw_map[partie_id]
+                if raw_val is None or isinstance(raw_val, bool):
+                    raise TypeError("invalid client trust balance")
+                book = int(raw_val)
+            trust_total += book
+            trust_cards.append({
+                "dossier_id": did,
+                "file_number": d.get("file_number", ""),
+                "title": d.get("title", ""),
+                "book_cents": book,
+                "book_display": format_cents_fr(book),
+                "card_url": _trust_card_url(did, partie_id),
+            })
+        out["trust_total_cents"] = trust_total
+        out["trust_total_display"] = format_cents_fr(trust_total)
+        out["trust_cards"] = trust_cards
+    except Exception as exc:
+        log_unexpected(
+            "client financial situation: trust balance read failed",
+            exc_info=False,
+            partie_id=partie_id,
+            error_type=type(exc).__name__,
+        )
+        out["trust_available"] = False
+        out["trust_cards"] = []
+
+    from models import expense as expense_model
+    from models import invoice as invoice_model
+    from models import time_entry as time_entry_model
+
+    try:
+        invoices = invoice_model.list_client_invoices_strict(partie_id, dossier_ids)
+        fees_billed = sum(
+            int(inv.get("subtotal_fees") or 0)
+            for inv in invoices
+            if inv.get("status") in invoice_model.REVENUE_STATUSES
+        )
+        unpaid = sum(
+            invoice_model.balance_of(inv)
+            for inv in invoices
+            if inv.get("status") in invoice_model._ISSUED_STATUSES
+        )
+        out["fees_billed_cents"] = fees_billed
+        out["fees_billed_display"] = format_cents_fr(fees_billed)
+        out["unpaid_cents"] = unpaid
+        out["unpaid_display"] = format_cents_fr(unpaid)
+    except Exception as exc:
+        log_unexpected(
+            "client financial situation: invoices read failed",
+            exc_info=False,
+            partie_id=partie_id,
+            error_type=type(exc).__name__,
+        )
+        out["billing_available"] = False
+
+    try:
+        total_hours = 0.0
+        total_time_cents = 0
+        total_exp_cents = 0
+        for did in dossier_ids:
+            for te in time_entry_model.get_unbilled_time_entries_strict(did):
+                total_hours += float(te.get("hours") or 0)
+                total_time_cents += int(te.get("amount") or 0)
+            for ex in expense_model.get_unbilled_expenses_strict(did):
+                total_exp_cents += int(ex.get("amount") or 0)
+        out["unbilled_hours"] = round(total_hours, 1)
+        out["unbilled_time_cents"] = total_time_cents
+        out["unbilled_time_display"] = format_cents_fr(total_time_cents)
+        out["unbilled_expenses_cents"] = total_exp_cents
+        out["unbilled_expenses_display"] = format_cents_fr(total_exp_cents)
+        out["unbilled_total_cents"] = total_time_cents + total_exp_cents
+        out["unbilled_total_display"] = format_cents_fr(total_time_cents + total_exp_cents)
+    except Exception as exc:
+        log_unexpected(
+            "client financial situation: wip read failed",
+            exc_info=False,
+            partie_id=partie_id,
+            error_type=type(exc).__name__,
+        )
+        out["wip_available"] = False
+
+    return out
+
+
 @parties_bp.route("/<partie_id>")
 @login_required
 def partie_detail(partie_id: str) -> str:
@@ -594,10 +760,14 @@ def partie_detail(partie_id: str) -> str:
             ("N° de compte du cabinet",
              partie.get("numero_compte_fournisseur", "")),
         ]
+    situation_financiere = _client_financial_situation(
+        partie_id, partie.get("contact_role") == "client"
+    )
     return render_template(
         "parties/detail.html",
         partie=partie,
         fiche_fournisseur=fiche_fournisseur,
+        situation_financiere=situation_financiere,
         conformite_kyc=conformite_kyc,
         preuves=preuves,
         preuves_config=_id_proofs_config(partie_id, preuves["ouvert"]),

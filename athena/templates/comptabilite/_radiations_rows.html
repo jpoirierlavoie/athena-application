@@ -31,8 +31,18 @@
 <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
   <p class="text-sm text-gray-500">{{ count }} écriture{% if count > 1 %}s{% endif %} dans la période</p>
   <div class="flex flex-wrap items-center gap-2">
-    <a href="{{ url_for('journal_radiations.export', fmt='csv', periode=slug) }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
-    <a href="{{ url_for('journal_radiations.export', fmt='pdf', periode=slug) }}" class="inline-flex items-center gap-1 px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">{{ ms('picture_as_pdf', 16) }} PDF</a>
+    <a href="{{ url_for('journal_radiations.export', fmt='csv', periode=slug) }}"
+       aria-label="Exporter en CSV"
+       class="inline-flex items-center gap-1.5 px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      {{ ms('table_view', 20) }}
+      CSV
+    </a>
+    <a href="{{ url_for('journal_radiations.export', fmt='pdf', periode=slug) }}"
+       aria-label="Exporter en PDF"
+       class="inline-flex items-center gap-1.5 px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      {{ ms('picture_as_pdf', 20) }}
+      PDF
+    </a>
   </div>
 </div>
 
@@ -86,5 +96,58 @@
   </table>
 </div>
 {% include "components/pagination.html" %}
+{% endif %}
+
+<div class="mt-8 mb-3 flex flex-wrap items-center justify-between gap-2">
+  <h2 class="text-sm font-semibold text-gray-900">Avis d'intérêts de la période ({{ interest_count }})</h2>
+  <p class="text-sm text-gray-500">Intérêts facturés nets : <span class="font-semibold text-gray-900">{{ interest_total | cents_fr }}</span></p>
+</div>
+{% if not interest_rows %}
+<div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucun avis d'intérêts ni annulation d'avis d'intérêts dans cette période.</div>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead>
+      <tr class="text-xs text-gray-500">
+        {% for side, span in interest_band %}
+        {% if side %}
+        <th colspan="{{ span }}" scope="colgroup" class="px-3 pt-2 font-medium text-center border-b border-gray-200">{{ side }}</th>
+        {% else %}
+        <td colspan="{{ span }}"></td>
+        {% endif %}
+        {% endfor %}
+        <td></td>
+      </tr>
+      <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+        {% for key, label, side in interest_columns %}
+        <th scope="col" class="px-3 py-2 font-medium{% if side or key == 'principal' %} text-right{% endif %}">{{ label }}</th>
+        {% endfor %}
+        <th scope="col" class="px-3 py-2 font-medium">Note</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for r in interest_rows %}
+      <tr>
+        {% for key, label, side in interest_columns %}
+        {% if side %}
+        <td class="px-3 py-2 text-right whitespace-nowrap {% if r[key] < 0 %}text-red-600{% else %}text-gray-900{% endif %}">{{ r[key] | cents_fr }}</td>
+        {% elif key == 'principal' %}
+        <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ r[key] | cents_fr }}</td>
+        {% elif key == 'invoice_number' %}
+        <td class="px-3 whitespace-nowrap"><a href="{{ url_for('invoices.invoice_detail', invoice_id=r.invoice_id) }}" class="inline-block py-3 text-indigo-600 hover:underline">{{ r[key] }}</a></td>
+        {% elif key == 'state' %}
+        <td class="px-3 py-2 whitespace-nowrap"><span class="text-xs px-2 py-0.5 rounded-full {{ 'bg-amber-100 text-amber-800' if r.standing else 'bg-gray-200 text-gray-600' }}">{{ r[key] }}</span></td>
+        {% elif key == 'client' %}
+        <td class="px-3 py-2 text-gray-900">{{ r[key] }}</td>
+        {% else %}
+        <td class="px-3 py-2 whitespace-nowrap text-gray-900">{{ r[key] }}</td>
+        {% endif %}
+        {% endfor %}
+        <td class="px-3 py-2 text-gray-700 min-w-[12rem] whitespace-pre-line wrap-anywhere">{{ r.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
 {% endif %}

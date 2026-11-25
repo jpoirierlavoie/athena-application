@@ -81,6 +81,7 @@ def _ev_conforme(h=None, **over):
         "isReminderOn": True,
         "reminderMinutesBeforeStart": h["reminder_minutes"],
         "showAs": "busy",
+        "sensitivity": gm.graph_sensitivity(h),
         "categories": [MIROIR_CATEGORIE],
         "singleValueExtendedProperties": [
             {"id": MIROIR_PROP_ID, "value": f"{h['id']}|{h['etag']}"}

@@ -4,12 +4,16 @@
 <div class="max-w-3xl mx-auto px-4 py-6">
   <div class="flex items-center justify-between mb-6">
     <div class="flex items-center gap-2">
-      <a href="{{ url_for('admin_ledger.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+      <a href="{{ url_for('admin_ledger.journal') }}"
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+         aria-label="Retour au journal" title="Retour au journal">{{ ms('arrow_back', 20) }}</a>
       <h1 class="text-xl font-semibold text-gray-900">Comptes d'administration</h1>
     </div>
-    <div class="flex items-center gap-3">
-      <a href="{{ url_for('comptabilite.hub') }}" class="text-sm text-indigo-600 hover:underline">Vue d'ensemble</a>
-      <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('comptabilite.hub') }}" class="inline-flex items-center min-h-[44px] px-2 text-sm text-indigo-600 hover:underline">Vue d'ensemble</a>
+      <a href="{{ url_for('admin_ledger.account_new') }}"
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800"
+         aria-label="Nouveau compte" title="Nouveau compte">{{ ms('add', 20) }}<span class="sr-only">Nouveau compte</span></a>
     </div>
   </div>
 

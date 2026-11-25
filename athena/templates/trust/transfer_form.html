@@ -3,7 +3,9 @@
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-6">
-    <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('trust.journal') }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour au journal" title="Retour au journal">{{ ms('arrow_back', 20) }}</a>
     <h1 class="text-xl font-semibold text-gray-900">Virement inter-dossiers</h1>
   </div>
 
@@ -19,8 +21,8 @@
 
   <form method="post" class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4"
         x-data="{
-          fromDossierId:'', fromDossierDisplay:'', fromClientId:'', fromClients:[], fromDOpen:false,
-          toDossierId:'', toDossierDisplay:'', toClientId:'', toClients:[], toDOpen:false
+          fromDossierId:'', fromDossierDisplay:'', fromClientId:'', fromClients:[], fromDOpen:false, fromDEmpty:true,
+          toDossierId:'', toDossierDisplay:'', toClientId:'', toClients:[], toDOpen:false, toDEmpty:true
         }">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -33,14 +35,16 @@
 
     <fieldset class="border border-gray-200 rounded-xl p-3 space-y-3">
       <legend class="text-xs font-semibold text-gray-500 px-1">Source</legend>
-      <div class="relative" @click.outside="fromDOpen=false">
+      <div class="relative" @click.outside="fromDOpen=false"
+           @htmx:after-swap="if ($event.detail.target.id === 'from-d-res') { var inp = $el.querySelector('input[name=q]'); if (inp &amp;&amp; !inp.value.trim()) { $event.detail.target.innerHTML = ''; fromDEmpty = true; fromDOpen = false; } else { fromDEmpty = !$event.detail.target.firstElementChild; } }">
         <label class="block text-sm font-medium text-gray-700 mb-1">Dossier source</label>
         <input type="hidden" name="from_dossier_id" :value="fromDossierId">
-        <input type="text" name="q" x-model="fromDossierDisplay" autocomplete="off" placeholder="Rechercher…" @focus="fromDOpen=true" @input="fromDOpen=true; fromDossierId=''"
+        <input type="text" name="q" x-model="fromDossierDisplay" autocomplete="off" placeholder="Rechercher…" @focus="if (!fromDEmpty) { fromDOpen=true; }" @input="fromDossierId=''; if ($el.value.trim().length === 0) { document.getElementById('from-d-res').innerHTML=''; fromDEmpty=true; fromDOpen=false; } else { fromDOpen=true; }"
                hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#from-d-res" hx-include="this"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <div id="from-d-res" x-show="fromDOpen" x-cloak
-             @click="let li=$event.target.closest('li'); if(li){fromDossierId=li.dataset.dossierId; fromDossierDisplay=li.dataset.dossierFileNumber+' — '+li.dataset.dossierTitle; fromDOpen=false; fromClientId=''; fromClients=JSON.parse(li.dataset.clients || '[]');}"
+        <div id="from-d-res" x-show="fromDOpen &amp;&amp; !fromDEmpty" x-cloak
+             @pointerdown.prevent @mousedown.prevent
+             @click="let b=$event.target.closest('button[data-dossier-id]'); if(b){fromDossierId=b.dataset.dossierId; fromDossierDisplay=b.dataset.dossierFileNumber+' — '+b.dataset.dossierTitle; fromDOpen=false; fromClientId=''; fromClients=JSON.parse(b.dataset.clients || '[]');}"
              class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       </div>
       <div x-show="fromDossierId" x-cloak>
@@ -57,14 +61,16 @@
 
     <fieldset class="border border-gray-200 rounded-xl p-3 space-y-3">
       <legend class="text-xs font-semibold text-gray-500 px-1">Destination</legend>
-      <div class="relative" @click.outside="toDOpen=false">
+      <div class="relative" @click.outside="toDOpen=false"
+           @htmx:after-swap="if ($event.detail.target.id === 'to-d-res') { var inp = $el.querySelector('input[name=q]'); if (inp &amp;&amp; !inp.value.trim()) { $event.detail.target.innerHTML = ''; toDEmpty = true; toDOpen = false; } else { toDEmpty = !$event.detail.target.firstElementChild; } }">
         <label class="block text-sm font-medium text-gray-700 mb-1">Dossier destinataire</label>
         <input type="hidden" name="to_dossier_id" :value="toDossierId">
-        <input type="text" name="q" x-model="toDossierDisplay" autocomplete="off" placeholder="Rechercher…" @focus="toDOpen=true" @input="toDOpen=true; toDossierId=''"
+        <input type="text" name="q" x-model="toDossierDisplay" autocomplete="off" placeholder="Rechercher…" @focus="if (!toDEmpty) { toDOpen=true; }" @input="toDossierId=''; if ($el.value.trim().length === 0) { document.getElementById('to-d-res').innerHTML=''; toDEmpty=true; toDOpen=false; } else { toDOpen=true; }"
                hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#to-d-res" hx-include="this"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <div id="to-d-res" x-show="toDOpen" x-cloak
-             @click="let li=$event.target.closest('li'); if(li){toDossierId=li.dataset.dossierId; toDossierDisplay=li.dataset.dossierFileNumber+' — '+li.dataset.dossierTitle; toDOpen=false; toClientId=''; toClients=JSON.parse(li.dataset.clients || '[]');}"
+        <div id="to-d-res" x-show="toDOpen &amp;&amp; !toDEmpty" x-cloak
+             @pointerdown.prevent @mousedown.prevent
+             @click="let b=$event.target.closest('button[data-dossier-id]'); if(b){toDossierId=b.dataset.dossierId; toDossierDisplay=b.dataset.dossierFileNumber+' — '+b.dataset.dossierTitle; toDOpen=false; toClientId=''; toClients=JSON.parse(b.dataset.clients || '[]');}"
              class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       </div>
       <div x-show="toDossierId" x-cloak>
@@ -87,7 +93,7 @@
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Mode</label>
         <select name="method" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-          {% for m in valid_methods %}<option value="{{ m }}">{{ method_labels[m] }}</option>{% endfor %}
+          {% for m in valid_methods %}<option value="{{ m }}" {% if m == 'virement' %}selected{% endif %}>{{ method_labels[m] }}</option>{% endfor %}
         </select>
       </div>
     </div>

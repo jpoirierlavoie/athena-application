@@ -2,10 +2,15 @@
    them out-of-band (the trust _export_links.html pattern): they sit OUTSIDE
    #admin-rows, the only region an HTMX filter change swaps. Args: account,
    filters. #}
-<a href="{{ url_for('admin_ledger.journal_export', fmt='csv', account_id=account.id, status=filters.status, kind=filters.kind, category=filters.category, date_from=filters.date_from, date_to=filters.date_to) }}"
-   class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+{% set export_account_id = account.id if account else filters.account_id %}
+<a href="{{ url_for('admin_ledger.journal_export', fmt='csv', account_id=export_account_id, status=filters.status, kind=filters.kind, category=filters.category, date_from=filters.date_from, date_to=filters.date_to) }}"
+   aria-label="Exporter en CSV"
+   title="Exporter en CSV"
+   class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">{{ ms('table_view', 20) }}<span class="sr-only">CSV</span></a>
 {# The PDF register deliberately drops the content filters (a book of account
    is complete) but MUST carry the period — it prints it, and carries a
    balance forward into it. #}
-<a href="{{ url_for('admin_ledger.journal_export', fmt='pdf', account_id=account.id, date_from=filters.date_from, date_to=filters.date_to) }}"
-   class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
+<a href="{{ url_for('admin_ledger.journal_export', fmt='pdf', account_id=export_account_id, date_from=filters.date_from, date_to=filters.date_to) }}"
+   aria-label="Exporter en PDF"
+   title="Exporter en PDF"
+   class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">{{ ms('picture_as_pdf', 20) }}<span class="sr-only">PDF</span></a>

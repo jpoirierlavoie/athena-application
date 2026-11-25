@@ -42,14 +42,13 @@ for both families).
 Sous-ensemble variable (axes `opsz 20..48`, `wght 100..700`, `FILL 0..1` —
 GRAD exclu, app exclusivement claire) contenant EXACTEMENT les glyphes de
 `utils/icons.MATERIAL_ICONS`, épinglé par `tests/test_icons.py`. Téléchargé
-2026-11-11 via l'API css2 (User-Agent navigateur obligatoire), version
-gstatic **v383**, **47 glyphes** (ajout de `local_library`, le menu
-« Bibliothèque » ; `monitoring`, le menu « Finances », le 2026-11-10) —
-27 648 octets :
+2026-11-24 via l'API css2 (User-Agent navigateur obligatoire), version
+gstatic **v387**, **51 glyphes** (ajout de `link`, `link_off`, `send`,
+`table_view`) — 30 188 octets :
 
 | Fichier | SHA-256 |
 |---|---|
-| `material-symbols-outlined-v383-fd3578ec.woff2` | `fd3578ec604362878c29c25a96c2f7ad7c743eb41356ecc95c2b540c60edb731` |
+| `material-symbols-outlined-v387-3a6b1e1d.woff2` | `3a6b1e1dad176962f9e81c2ddb3c96392b3cc742b3cb28f67cbae3ed750b7afd` |
 
 URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
 

@@ -70,6 +70,8 @@ from models.invoice import (
     BALANCE_FIELD_LABELS,
     DRAFT_FIELDS,
     DRAFT_NOTES_MAX_LENGTH,
+    INTEREST_NOTICE_PREFIX,
+    InterestChargesUnreadable,
     STATUS_LABELS,
     VALID_STATUSES,
     WRITE_OFF_REASON_MAX_LENGTH,
@@ -80,6 +82,8 @@ from models.invoice import (
     available_transitions,
     balance_of,
     billing_address_from,
+    charge_overdue_interest,
+    compute_simple_interest,
     count_invoices_page,
     create_invoice,
     days_overdue,
@@ -88,14 +92,22 @@ from models.invoice import (
     expense_split,
     first_overdue_day,
     get_invoice,
+    get_invoice_strict,
     get_invoice_with_items,
+    interest_charge_events,
+    interest_charge_refusal,
+    interest_charged_of,
+    interest_period_start,
     list_invoices,
     list_invoices_page,
     list_line_items,
     number_year_warning,
+    reverse_interest_charge,
     reverse_write_off,
     settlement_label,
+    standing_interest_charges,
     standing_write_offs,
+    unpaid_principal_of,
     unreadable_amount_message,
     unreadable_balance_field,
     update_invoice_draft,
@@ -111,16 +123,19 @@ from models.admin_ledger import (
     METHOD_LABELS,
     TX_STATUS_LABELS,
     list_invoice_receipts,
+    list_invoice_receipts_strict,
 )
 from models.audit_event import record_deletion
+from models.doc_template import active_template_has_en
 from models.trust import list_invoice_fee_payments
 from models.dossier import get_dossier, list_dossiers
 from models.folder import get_folder
 from models.partie import get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
+from models import settings as settings_model
 from routes import edit_conflict
-from services import note_credit, note_honoraires
+from services import avis_interets, note_credit, note_honoraires
 from routes._helpers import is_htmx, parse_date_input, redirect_after_post
 
 invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
@@ -505,6 +520,73 @@ WRITE_OFF_KIND_LABELS = {
 CREDIT_NOTE_STANDING, CREDIT_NOTE_CANCELLED = "en vigueur", "annulée"
 
 
+_INTEREST_KIND_LABELS = {
+    "avis_interets": "Avis d'intérêts",
+    "contre_passation": "Annulation",
+}
+
+
+def _interest_rows(invoice: dict, *, can_cancel: bool) -> Optional[list[dict]]:
+    """The sheet's « Avis d'intérêts » rows in stored order (``None`` if unreadable)."""
+    try:
+        events = interest_charge_events(invoice)
+        standing_list = standing_interest_charges(invoice)
+        standing = {e["id"] for e in standing_list}
+    except InterestChargesUnreadable:
+        return None
+    latest_standing_id = standing_list[-1]["id"] if standing_list else None
+    has_standing_radiation = False
+    paid = due = total_interest = 0
+    if can_cancel:
+        has_standing_radiation = bool(standing_write_offs(invoice))
+        paid = int(invoice.get("amount_paid") or 0)
+        due = int(invoice.get("amount_due") or 0)
+        total_interest = interest_charged_of(invoice)
+    numbers = {
+        e["id"]: e["interest_notice_number"]
+        for e in events
+        if e["kind"] == "avis_interets"
+    }
+    rates = {
+        e["id"]: int(e["rate_bps"])
+        for e in events
+        if e["kind"] == "avis_interets"
+    }
+    rows = []
+    for event in events:
+        is_notice = event["kind"] == "avis_interets"
+        stands = is_notice and event["id"] in standing
+        target_id = event["id"] if is_notice else event["reverses_id"]
+        bps = rates.get(target_id, 0)
+        amt = int(event["amount"])
+        can_cancel_row = (
+            can_cancel
+            and stands
+            and event["id"] == latest_standing_id
+            and not has_standing_radiation
+            and paid <= due + (total_interest - amt)
+        )
+        rows.append({
+            "id": event["id"],
+            "is_notice": is_notice,
+            "kind_label": _INTEREST_KIND_LABELS[event["kind"]],
+            "date": event["date"].strftime("%Y-%m-%d"),
+            "period_start": event["period_start"].strftime("%Y-%m-%d") if is_notice else "",
+            "period_end": event["period_end"].strftime("%Y-%m-%d") if is_notice else "",
+            "days": int(event["days"]) if is_notice else 0,
+            "principal": int(event["principal"]) if is_notice else 0,
+            "rate_text": format_rate_fr(bps, 100) if bps else "",
+            "amount": amt,
+            "interest_notice_number": numbers.get(target_id, ""),
+            "state": ("en vigueur" if stands else "annulé") if is_notice else "",
+            "standing": stands,
+            "can_cancel": can_cancel_row,
+            "can_generate": can_cancel and stands,
+            "reason": str(event.get("reason") or ""),
+        })
+    return rows
+
+
 def _write_off_rows(invoice: dict, *, can_cancel: bool) -> Optional[list[dict]]:
     """The sheet's « Radiations » rows (lot 3b), in stored order — every
     event, as the model validated it (``invoice.write_off_events``): its
@@ -630,15 +712,20 @@ def invoice_detail(invoice_id: str) -> str:
         status_label = settlement_label(invoice)
         written_off = written_off_of(invoice)
         can_write_off = not write_off_refusal(invoice, today=today)
+        interest_charged = interest_charged_of(invoice)
+        can_charge_interest = not interest_charge_refusal(
+            invoice, today=today, admin_rows=paiements)
     else:
         transitions, retard_jours, retard_depuis, balance = (), 0, None, None
         status_label = STATUS_LABELS.get(invoice.get("status", ""),
                                          invoice.get("status", ""))
         written_off, can_write_off = 0, False
+        interest_charged, can_charge_interest = 0, False
     # Chaque radiation et chaque annulation, lues par le modèle ; « Annuler
     # la radiation » sur chaque radiation en vigueur, quand la fiche peut
     # juger la facture (la porte refuse un montant illisible).
     radiations = _write_off_rows(invoice, can_cancel=illisible is None)
+    interest_notices = _interest_rows(invoice, can_cancel=illisible is None)
 
     ctx = _template_context()
     ctx.update(
@@ -653,8 +740,9 @@ def invoice_detail(invoice_id: str) -> str:
         written_off=written_off,
         can_write_off=can_write_off,
         radiations=radiations,
-        # Une radiation en vigueur ferme la porte à tout encaissement
-        # (facture_radiee) : la fiche ne renvoie pas à « Administration ».
+        interest_charged=interest_charged,
+        can_charge_interest=can_charge_interest,
+        interest_notices=interest_notices,
         radiation_debout=any(r["standing"] for r in radiations or ()),
         # The unreadable amount, when there is one: the notice names it in
         # French; the « Retard » line says « illisible » where the model
@@ -677,6 +765,10 @@ def invoice_detail(invoice_id: str) -> str:
         paiements=paiements,
         method_labels=METHOD_LABELS,
         tx_status_labels=TX_STATUS_LABELS,
+        note_template_has_en=_active_template_has_en("note_honoraires"),
+        credit_note_template_has_en=_active_template_has_en("note_credit"),
+        interest_template_has_en=_active_template_has_en("avis_interets"),
+        default_doc_lang=_client_doc_lang(invoice),
         # A brouillon is corrected on its own page (notes, due date, billing
         # address) — never its figures.
         can_edit_draft=not draft_edit_refusal(invoice),
@@ -833,6 +925,27 @@ def _note_location(doc: dict, folder: Optional[dict]) -> dict:
     return {"folder_path": path, "at_root": not doc.get("folder_id")}
 
 
+def _active_template_has_en(kind: str) -> bool:
+    """Fail-open display helper: whether the designated active template has an EN stream."""
+    return active_template_has_en(kind)
+
+
+def _client_doc_lang(invoice: dict) -> str:
+    """Default document language for *invoice* (« en » when client.language == 'en')."""
+    client_id = invoice.get("client_id") or ""
+    if not client_id:
+        return "fr"
+    client = get_partie(client_id)
+    return "en" if (client or {}).get("language") == "en" else "fr"
+
+
+def _submitted_doc_lang() -> tuple[str, Optional[str]]:
+    raw = (request.form.get("lang") or "fr").strip().lower() or "fr"
+    if raw not in ("fr", "en"):
+        return "", "Langue de document non valide."
+    return raw, None
+
+
 @invoices_bp.route("/<invoice_id>/note-docx", methods=["POST"])
 @login_required
 def invoice_note_docx(invoice_id: str) -> Response | str:
@@ -847,11 +960,16 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
     keeps it so. The note is filed under the SESSION's uid
     (``request_uid``), obtained only once the note is filled.
     """
+    lang, lang_err = _submitted_doc_lang()
+    if lang_err:
+        return _note_error(lang_err) if _is_htmx() else _back_to_detail(invoice_id, erreur=lang_err)
+    lang_kw = {"lang": "en"} if lang == "en" else {}
     try:
         note = note_honoraires.generer_note_honoraires(
             invoice_id,
             regenerate=True,
             resolve_uid=storage_identity.request_uid,
+            **lang_kw,
         )
     except note_honoraires.NoteRefusee as refusal:
         return _note_error(refusal.message)
@@ -888,9 +1006,13 @@ def invoice_credit_note_docx(invoice_id: str, event_id: str) -> Response | str:
     JavaScript the success opens the document, a refusal returns to the
     sheet with ``?erreur=``.
     """
+    lang, lang_err = _submitted_doc_lang()
+    if lang_err:
+        return _note_error(lang_err) if _is_htmx() else _back_to_detail(invoice_id, erreur=lang_err)
+    lang_kw = {"lang": "en"} if lang == "en" else {}
     try:
         note = note_credit.generer_note_credit(
-            invoice_id, event_id, resolve_uid=storage_identity.request_uid)
+            invoice_id, event_id, resolve_uid=storage_identity.request_uid, **lang_kw)
     except note_credit.NoteRefusee as refusal:
         if _is_htmx():
             return _note_error(refusal.message)
@@ -908,6 +1030,39 @@ def invoice_credit_note_docx(invoice_id: str, event_id: str) -> Response | str:
             "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
             "download_url": url_for("documents.document_download", document_id=doc["id"]),
             **_note_location(doc, note.folder),
+        },
+    )
+
+
+@invoices_bp.route("/<invoice_id>/interets/<event_id>/avis", methods=["POST"])
+@login_required
+def invoice_interest_notice_docx(invoice_id: str, event_id: str) -> Response | str:
+    """« Générer l'avis d'intérêts » — fill the active avis_interets template
+    and file the .docx in « Mandat › Factures »."""
+    lang, lang_err = _submitted_doc_lang()
+    if lang_err:
+        return _note_error(lang_err) if _is_htmx() else _back_to_detail(invoice_id, erreur=lang_err)
+    lang_kw = {"lang": "en"} if lang == "en" else {}
+    try:
+        generated = avis_interets.generer_avis_interets(
+            invoice_id, event_id, resolve_uid=storage_identity.request_uid, **lang_kw)
+    except avis_interets.NoteRefusee as refusal:
+        if _is_htmx():
+            return _note_error(refusal.message)
+        return _back_to_detail(invoice_id, erreur=refusal.message)
+    doc = generated.document
+    if not _is_htmx():
+        return redirect(url_for("documents.document_detail", document_id=doc["id"]))
+    number = str(generated.interest_charge.get("interest_notice_number") or "")
+    return render_template(
+        "invoices/_note_generated.html",
+        generated={
+            "heading": (f"Avis d'intérêts {number} déjà versé au dossier"
+                        if generated.reused else f"Avis d'intérêts {number} généré"),
+            "display_name": doc.get("display_name", ""),
+            "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
+            "download_url": url_for("documents.document_download", document_id=doc["id"]),
+            **_note_location(doc, generated.folder),
         },
     )
 
@@ -1016,8 +1171,10 @@ def _render_write_off_form(
     reserved here. The caller has checked the remainder may be written off
     (:func:`_write_off_unavailable`)."""
     remainder = balance_of(invoice)
+    receipts = list_invoice_receipts(invoice["id"])
+    taxable_remainder = min(remainder, unpaid_principal_of(invoice, receipts))
     try:
-        gst_part, qst_part = write_off_tax_parts(invoice, remainder)
+        gst_part, qst_part = write_off_tax_parts(invoice, taxable_remainder)
     except ValueError:
         gst_part = qst_part = None
     ctx = _template_context()
@@ -1137,6 +1294,202 @@ def invoice_write_off_reversal(invoice_id: str, event_id: str) -> str:
         invoice_id,
         message=(f"Radiation annulée : la note de crédit {number} est annulée, "
                  f"et la facture est « {label} »."))
+
+
+# ── Avis d'intérêts (lot 4a) ─────────────────────────────────────────────
+
+
+def _interest_unavailable(invoice: dict, today) -> str:
+    illisible = unreadable_balance_field(invoice)
+    if illisible is not None:
+        return unreadable_amount_message(
+            illisible, "les intérêts ne peuvent pas être calculés")
+    try:
+        receipts = list_invoice_receipts_strict(invoice["id"])
+    except Exception:
+        return (
+            "Les paiements inscrits sur cette facture n'ont pas pu être lus : "
+            "les intérêts ne peuvent pas être calculés."
+        )
+    return interest_charge_refusal(invoice, today=today, admin_rows=receipts)
+
+
+def _render_interest_form(
+    invoice: dict,
+    form: dict,
+    *,
+    today,
+    errors: Optional[list[str]] = None,
+    conflict: Optional[dict] = None,
+) -> str:
+    form_errors = list(errors or [])
+    try:
+        receipts = list_invoice_receipts_strict(invoice["id"])
+        principal = unpaid_principal_of(invoice, receipts)
+    except Exception:
+        principal = 0
+        form_errors.append(
+            "Les paiements inscrits sur cette facture n'ont pas pu être lus : "
+            "le calcul du capital impayé est indisponible."
+        )
+    p_start = interest_period_start(invoice)
+    parsed = parse_date_input(form.get("notice_date") or "")
+    n_date = parsed.date() if parsed else today
+    rate_unreadable = False
+    try:
+        rate_bps = settings_model.cabinet_interest_rate_bps()
+    except settings_model.CabinetIllisible:
+        rate_bps = 0
+        rate_unreadable = True
+        form_errors.append(
+            "Le profil du cabinet n'a pas pu être lu — impossible de lire le taux d'intérêt."
+        )
+    days = max(0, (n_date - p_start).days) if (p_start and n_date <= today) else 0
+    estimated = (
+        compute_simple_interest(principal, rate_bps, days)
+        if rate_bps > 0 and n_date <= today else 0
+    )
+    ctx = _template_context()
+    ctx.update(
+        invoice=invoice,
+        form=form,
+        errors=form_errors,
+        conflict=conflict,
+        today=today.strftime("%Y-%m-%d"),
+        principal=principal,
+        period_start=p_start.strftime("%Y-%m-%d") if p_start else "",
+        notice_date=n_date.strftime("%Y-%m-%d"),
+        days=days,
+        rate_bps=1 if rate_unreadable else rate_bps,
+        rate_text=(
+            "Indisponible" if rate_unreadable
+            else (format_rate_fr(rate_bps, 100) if rate_bps > 0 else "")
+        ),
+        estimated_amount=estimated,
+        interest_series=f"{n_date.year:04d}-{INTEREST_NOTICE_PREFIX}",
+        reason_max=WRITE_OFF_REASON_MAX_LENGTH,
+    )
+    return render_template("invoices/interets.html", **ctx)
+
+
+@invoices_bp.route("/<invoice_id>/interets")
+@login_required
+def invoice_interest_form(invoice_id: str) -> str:
+    """« Facturer des intérêts » — manual overdue simple interest form."""
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return redirect(url_for("invoices.invoice_list"))
+    invoice = {**invoice, "id": invoice_id}
+    today = today_mtl()
+    refusal = _interest_unavailable(invoice, today)
+    if refusal:
+        return _back_to_detail(invoice_id, erreur=refusal)
+    try:
+        settings_model.cabinet_interest_rate_bps()
+    except settings_model.CabinetIllisible:
+        return _back_to_detail(
+            invoice_id,
+            erreur="Le profil du cabinet n'a pas pu être lu — impossible de lire le taux d'intérêt.",
+        )
+    requested_date = (request.args.get("notice_date") or "").strip()
+    parsed = parse_date_input(requested_date)
+    notice_day_str = parsed.strftime("%Y-%m-%d") if parsed else today.strftime("%Y-%m-%d")
+    form = {
+        "id": invoice_id,
+        "etag": invoice.get("etag") or "",
+        "notice_date": notice_day_str,
+        "reason": "",
+    }
+    return _render_interest_form(invoice, form, today=today)
+
+
+@invoices_bp.route("/<invoice_id>/interets", methods=["POST"])
+@login_required
+def invoice_interest_charge(invoice_id: str) -> str:
+    """Issue a manual overdue interest notice (``invoice.charge_overdue_interest``)."""
+    expected = edit_conflict.submitted_etag()
+    f = request.form
+    notice_date_raw = (f.get("notice_date") or "").strip()
+    reason = f.get("reason", "")
+    parsed = parse_date_input(notice_date_raw)
+    if not parsed:
+        try:
+            current = get_invoice_strict(invoice_id)
+        except Exception:
+            return _back_to_detail(
+                invoice_id,
+                erreur="La facture n'a pas pu être lue — réessayez.")
+        if not current:
+            return redirect_after_post(
+                url_for("invoices.invoice_list"),
+                erreur="Facture introuvable.")
+        current = {**current, "id": invoice_id}
+        today = today_mtl()
+        unavailable = _interest_unavailable(current, today)
+        if unavailable:
+            return _back_to_detail(invoice_id, erreur=unavailable)
+        return _render_interest_form(
+            current,
+            {"id": invoice_id, "etag": expected, "notice_date": notice_date_raw, "reason": reason},
+            today=today,
+            errors=["Une date d'avis valide (AAAA-MM-JJ) est requise."],
+        )
+
+    report, errors = charge_overdue_interest(
+        invoice_id,
+        expected_etag=expected,
+        notice_date=parsed.date(),
+        reason=reason,
+    )
+    if not errors:
+        number = str(report["interest_charge"].get("interest_notice_number") or "")
+        return _back_to_detail(
+            invoice_id, message=f"Avis d'intérêts {number} facturé.")
+
+    errors, conflict, etag = edit_conflict.resolve_refusal(
+        errors,
+        submitted=expected,
+        reread=lambda: get_invoice(invoice_id),
+        compare_url=url_for("invoices.invoice_detail", invoice_id=invoice_id),
+    )
+    current = get_invoice(invoice_id)
+    if not current:
+        return _back_to_detail(invoice_id, erreur=" ".join(errors))
+    current = {**current, "id": invoice_id}
+    today = today_mtl()
+    unavailable = _interest_unavailable(current, today)
+    if unavailable:
+        return _back_to_detail(
+            invoice_id, erreur=" ".join(dict.fromkeys([*errors, unavailable])))
+    return _render_interest_form(
+        current,
+        {"id": invoice_id, "etag": etag, "notice_date": notice_date_raw, "reason": reason},
+        today=today,
+        errors=errors,
+        conflict=conflict,
+    )
+
+
+@invoices_bp.route("/<invoice_id>/interets/<event_id>/annulation", methods=["POST"])
+@login_required
+def invoice_interest_reversal(invoice_id: str, event_id: str) -> str:
+    """« Annuler l'avis d'intérêts » — cancel one standing avis d'intérêts."""
+    expected = edit_conflict.submitted_etag()
+    report, errors = reverse_interest_charge(
+        invoice_id, event_id, expected_etag=expected,
+        reason=request.form.get("reason", ""))
+    if errors:
+        return _back_to_detail(invoice_id, erreur=" ".join(errors))
+    target_id = str(report["interest_charge"].get("reverses_id") or "")
+    number = next(
+        (str(e.get("interest_notice_number") or "")
+         for e in (report["invoice"].get("interest_charges") or [])
+         if isinstance(e, dict) and e.get("id") == target_id),
+        "",
+    )
+    return _back_to_detail(
+        invoice_id,
+        message=f"Avis d'intérêts {number} annulé.")
 
 
 @invoices_bp.route("/<invoice_id>/delete", methods=["POST"])

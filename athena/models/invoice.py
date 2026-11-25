@@ -139,6 +139,7 @@ from utils.deadlines import today_mtl, today_utc
 from utils.format_fr import format_cents_fr
 from utils.logging_setup import (
     log_invoice_event,
+    log_invoice_interest,
     log_invoice_write_off,
     log_unexpected,
     sanitize_log_value,
@@ -500,11 +501,15 @@ def available_transitions(
             allowed = tuple(s for s in allowed if s != "envoyée")
     paid = _payment_recorded(invoice)
     radiated = current in REVENUE_STATUSES and bool(standing_write_offs(invoice))
+    interest_standing = (
+        current in REVENUE_STATUSES and bool(standing_interest_charges(invoice))
+    )
     if current == "payée" and (paid or radiated):
         allowed = tuple(s for s in allowed if s != "envoyée")
     if (
         paid
         or radiated
+        or interest_standing
         or any(_standing_admin_encaissement(r) for r in (receipts or ()))
         or any(_standing_trust_fee_payment(r) for r in (trust_payments or ()))
     ):
@@ -1924,6 +1929,36 @@ def list_invoices_strict(transaction) -> list[dict]:
     return full_reads.stream_all(db.collection(COLLECTION), transaction=transaction)
 
 
+def list_client_invoices_strict(
+    partie_id: str, dossier_ids: list[str],
+) -> list[dict]:
+    """Every invoice attributable to *partie_id* (``client_id == partie_id``,
+    plus dossier-level legacy invoices with blank ``client_id`` on any of
+    *dossier_ids*) — STRICT and capped (``models/full_reads``). Uses single-field
+    equalities only (automatic single-field indexes, no composite index needed)."""
+    if not partie_id:
+        raise ValueError("list_client_invoices_strict needs a partie id")
+    by_id: dict[str, dict] = {}
+    q_client = db.collection(COLLECTION).where(
+        filter=FieldFilter("client_id", "==", partie_id)
+    )
+    for inv in full_reads.stream_all(q_client, transaction=None):
+        iid = inv.get("id")
+        if iid:
+            by_id[iid] = inv
+    for did in {d for d in dossier_ids if d}:
+        q_dossier = db.collection(COLLECTION).where(
+            filter=FieldFilter("dossier_id", "==", did)
+        )
+        for inv in full_reads.stream_all(q_dossier, transaction=None):
+            iid = inv.get("id")
+            if not iid or iid in by_id:
+                continue
+            if not str(inv.get("client_id") or "").strip():
+                by_id[iid] = inv
+    return list(by_id.values())
+
+
 def list_sent_invoices_strict() -> list[dict]:
     """Every « envoyée » invoice — STRICT and capped (``models/full_reads``),
     one plain query outside any transaction: the read of the daily
@@ -2162,6 +2197,21 @@ class WriteOffsUnreadable(ValueError):
     ``scripts/verify_admin_integrity`` (check 13) prints it to the lawyer."""
 
 
+#: Interest-notice event kinds (lot 4a): ``avis_interets`` appends a manual
+#: notice of overdue simple interest; ``contre_passation`` cancels ONE standing
+#: notice whole, repeating its amount.
+INTEREST_EVENT_KINDS = ("avis_interets", "contre_passation")
+_AVIS_INTERETS, _INTEREST_CONTRE_PASSATION = INTEREST_EVENT_KINDS
+INTEREST_NOTICE_PREFIX = "AI"
+INTEREST_NOTICE_COUNTER_PREFIX = "avis-interets-"
+INTEREST_NOTICE_NUMBER_RE = re.compile(r"[0-9]{4}-AI[0-9]{3,}")
+INTEREST_MAX_RATE_BPS = 10000
+
+
+class InterestChargesUnreadable(ValueError):
+    """The stored ``interest_charges`` is not the shape its two doors write."""
+
+
 def _is_cents(value: object, *, positive: bool = False) -> bool:
     """*value* is integer cents — never a bool, a float or a text — ``> 0``
     when *positive*, ``>= 0`` otherwise."""
@@ -2305,6 +2355,204 @@ def written_off_of(invoice: dict) -> int:
     return sum(e["amount"] for e in standing_write_offs(invoice))
 
 
+def interest_charge_events(invoice: dict) -> list[dict]:
+    """The overdue-interest notice events of *invoice*, in stored append order.
+
+    VALIDATED: ``[]`` when absent, :class:`InterestChargesUnreadable` when the
+    array or any element violates the door contract. PURE."""
+    events = invoice.get("interest_charges", [])
+    if not isinstance(events, list):
+        raise InterestChargesUnreadable("les avis d'intérêts ne sont pas une liste")
+    seen: set[str] = set()
+    numbers: set[str] = set()
+    notices: dict[str, tuple[date, dict]] = {}
+    cancelled: set[str] = set()
+    for position, event in enumerate(events, start=1):
+        where = f"avis d'intérêts n° {position}"
+        if not isinstance(event, dict):
+            raise InterestChargesUnreadable(f"{where} : ce n'est pas un enregistrement")
+        event_id = event.get("id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise InterestChargesUnreadable(f"{where} : identifiant absent")
+        if event_id in seen:
+            raise InterestChargesUnreadable(f"{where} : identifiant en double")
+        seen.add(event_id)
+        kind = event.get("kind")
+        if kind not in INTEREST_EVENT_KINDS:
+            raise InterestChargesUnreadable(f"{where} : nature inconnue")
+        day = _utc_midnight_day(event.get("date"))
+        if day is None:
+            raise InterestChargesUnreadable(
+                f"{where} : date illisible (un jour, à minuit UTC)")
+        if not _is_cents(event.get("amount"), positive=True):
+            raise InterestChargesUnreadable(
+                f"{where} : montant illisible (des cents entiers, positifs)")
+        reverses = event.get("reverses_id")
+        if not isinstance(reverses, str):
+            raise InterestChargesUnreadable(f"{where} : lien de contre-passation illisible")
+        if kind == _AVIS_INTERETS:
+            if reverses:
+                raise InterestChargesUnreadable(
+                    f"{where} : un avis d'intérêts ne contre-passe rien")
+            p_start = _utc_midnight_day(event.get("period_start"))
+            p_end = _utc_midnight_day(event.get("period_end"))
+            if p_start is None or p_end is None or p_start >= p_end or p_end > day:
+                raise InterestChargesUnreadable(
+                    f"{where} : période d'intérêts illisible ou incohérente")
+            if not _is_cents(event.get("principal"), positive=True):
+                raise InterestChargesUnreadable(
+                    f"{where} : capital illisible (des cents entiers, positifs)")
+            rate_bps = event.get("rate_bps")
+            if (not isinstance(rate_bps, int) or isinstance(rate_bps, bool)
+                    or rate_bps <= 0 or rate_bps > INTEREST_MAX_RATE_BPS):
+                raise InterestChargesUnreadable(
+                    f"{where} : taux annuel en points de base illisible")
+            days = event.get("days")
+            if (not isinstance(days, int) or isinstance(days, bool)
+                    or days <= 0 or days != (p_end - p_start).days):
+                raise InterestChargesUnreadable(
+                    f"{where} : nombre de jours illisible ou incohérent avec la période")
+            number = event.get("interest_notice_number")
+            if not (isinstance(number, str)
+                    and INTEREST_NOTICE_NUMBER_RE.fullmatch(number)):
+                raise InterestChargesUnreadable(
+                    f"{where} : numéro d'avis d'intérêts illisible (AAAA-AI###)")
+            if number[:4] != f"{day.year:04d}":
+                raise InterestChargesUnreadable(
+                    f"{where} : numéro d'avis d'intérêts d'une autre année que l'avis")
+            if number in numbers:
+                raise InterestChargesUnreadable(
+                    f"{where} : numéro d'avis d'intérêts en double")
+            numbers.add(number)
+            notices[event_id] = (day, event)
+            continue
+        if "interest_notice_number" in event:
+            raise InterestChargesUnreadable(
+                f"{where} : une contre-passation ne porte aucun numéro d'avis d'intérêts")
+        original = notices.get(reverses)
+        if original is None:
+            raise InterestChargesUnreadable(
+                f"{where} : contre-passation d'aucun avis d'intérêts antérieur")
+        if reverses in cancelled:
+            raise InterestChargesUnreadable(f"{where} : avis d'intérêts déjà contre-passé")
+        orig_day, orig_event = original
+        if event["amount"] != orig_event["amount"]:
+            raise InterestChargesUnreadable(
+                f"{where} : contre-passation dont le montant diffère de l'avis d'intérêts")
+        if day < orig_day:
+            raise InterestChargesUnreadable(
+                f"{where} : contre-passation antérieure à son avis d'intérêts")
+        cancelled.add(reverses)
+    return list(events)
+
+
+def standing_interest_charges(invoice: dict) -> list[dict]:
+    """The ``avis_interets`` events of *invoice* that STAND (not cancelled)."""
+    events = interest_charge_events(invoice)
+    cancelled = {
+        e["reverses_id"] for e in events if e["kind"] == _INTEREST_CONTRE_PASSATION
+    }
+    return [e for e in events
+            if e["kind"] == _AVIS_INTERETS and e["id"] not in cancelled]
+
+
+def interest_charged_of(invoice: dict) -> int:
+    """Total standing overdue interest charged on *invoice* (cents, TPS/TVQ exempt)."""
+    return sum(e["amount"] for e in standing_interest_charges(invoice))
+
+
+def principal_and_interest_paid(
+    invoice: dict,
+    admin_rows: Optional[list[dict]] = None,
+) -> tuple[int, int]:
+    """Impute *invoice*'s ``amount_paid`` per art. 1571 C.c.Q.: interest first,
+    then invoiced principal. Returns ``(principal_paid, interest_paid)``.
+
+    When *admin_rows* (the invoice's ledger receipts) is supplied and matches
+    ``amount_paid``, imputation runs chronologically so a subsequent
+    ``avis_interets`` never retroactively shifts capital extinguished by an
+    earlier payment back into unpaid principal. PURE."""
+    paid = _stored_cents(invoice, "amount_paid")
+    interest = interest_charged_of(invoice)
+    if admin_rows is not None and paid > 0:
+        standing_payments = [
+            r for r in admin_rows if _standing_admin_encaissement(r)
+        ]
+        if (all(_is_cents(r.get("amount")) for r in standing_payments)
+                and sum(int(r["amount"]) for r in standing_payments) == paid):
+            events: list[tuple[date, int, int, int, str]] = []
+            for idx, ev in enumerate(standing_interest_charges(invoice)):
+                day = (_utc_midnight_day(ev.get("date"))
+                       or _utc_midnight_day(ev.get("period_end"))
+                       or date.min)
+                events.append((day, 0, idx, int(ev["amount"]), "notice"))
+            for idx, tx in enumerate(standing_payments):
+                day = _due_day_of({"due_date": tx.get("date")}) or date.min
+                seq = int(tx.get("sequence") or idx)
+                events.append((day, 1, seq, int(tx["amount"]), "payment"))
+            events.sort(key=lambda item: (item[0], item[1], item[2]))
+            unpaid_interest = 0
+            principal_paid = 0
+            interest_paid = 0
+            for _, _, _, amt, kind in events:
+                if kind == "notice":
+                    unpaid_interest += amt
+                else:
+                    to_interest = min(amt, unpaid_interest)
+                    unpaid_interest -= to_interest
+                    interest_paid += to_interest
+                    principal_paid += amt - to_interest
+            return principal_paid, interest_paid
+    interest_paid = min(max(0, paid), interest)
+    return paid - interest_paid, interest_paid
+
+
+def unpaid_principal_of(
+    invoice: dict,
+    admin_rows: Optional[list[dict]] = None,
+) -> int:
+    """Unpaid invoiced principal (``amount_due`` net of principal paid and
+    standing write-offs, excluding overdue interest). Simple interest and
+    bad-debt TPS/TVQ relief accrue on this principal alone."""
+    due = _stored_cents(invoice, "amount_due")
+    written = written_off_of(invoice)
+    principal_paid, _ = principal_and_interest_paid(invoice, admin_rows)
+    return max(0, due - principal_paid - written)
+
+
+def _due_day_of(invoice: dict) -> Optional[date]:
+    """Calendar date of *invoice*'s ``due_date``, or ``None`` if absent/unreadable."""
+    raw = invoice.get("due_date")
+    if isinstance(raw, datetime):
+        return (raw.astimezone(timezone.utc) if raw.tzinfo else raw).date()
+    if isinstance(raw, date):
+        return raw
+    return None
+
+
+def interest_period_start(invoice: dict) -> Optional[date]:
+    """Start day for the next ``avis_interets`` on *invoice*: latest standing
+    notice's ``period_end`` if one stands, else *invoice*'s ``due_date``."""
+    standing = standing_interest_charges(invoice)
+    if standing:
+        return _utc_midnight_day(standing[-1].get("period_end"))
+    return _due_day_of(invoice)
+
+
+def compute_simple_interest(principal_cents: int, rate_bps: int, days: int) -> int:
+    """Simple annual interest: ``round_half_up(principal × rate_bps × days / (10000 × 365))``.
+    Exempt from TPS/TVQ; never compounded."""
+    if principal_cents <= 0 or rate_bps <= 0 or days <= 0:
+        return 0
+    raw = (
+        Decimal(principal_cents)
+        * Decimal(rate_bps)
+        * Decimal(days)
+        / (Decimal(10000) * Decimal(365))
+    )
+    return int(raw.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 class UnreadableAmount(ValueError):
     """A stored amount that cannot be read as integer cents. Its message
     is the FIELD NAME alone (the lawyer's decision of 2026-11-12):
@@ -2332,26 +2580,28 @@ def _stored_cents(invoice: dict, field: str) -> int:
 
 
 def balance_of(invoice: dict) -> int:
-    """The live balance in cents: what was due at issuance, less what came
-    in, less what stands written off (lot 3a, :func:`written_off_of`).
+    """The live balance in cents: what was due at issuance plus standing
+    overdue interest (:func:`interest_charged_of`), less what came in, less
+    what stands written off (lot 3a, :func:`written_off_of`).
 
     DERIVED, never stored — a stored balance drifts the moment either side
     of the subtraction is written without it. Note the trap it replaces:
     ``amount_due`` is frozen at issuance and stays non-zero on a fully paid
     invoice, so it has never been a balance despite reading like one. A
     stored amount it cannot read raises :class:`UnreadableAmount`, naming
-    the field, never the value; a malformed ``write_offs`` raises
-    :class:`WriteOffsUnreadable`, naming the event by its position
+    the field, never the value; malformed arrays raise
+    :class:`WriteOffsUnreadable` or :class:`InterestChargesUnreadable`
     (:func:`unreadable_balance_field` names which, beforehand).
     """
     return (_stored_cents(invoice, "amount_due")
             - _stored_cents(invoice, "amount_paid")
-            - written_off_of(invoice))
+            - written_off_of(invoice)
+            + interest_charged_of(invoice))
 
 
 #: What :func:`balance_of` reads, in the order it reads it: the two stored
-#: amounts, then the write-off events (lot 3a).
-_BALANCE_FIELDS = ("amount_due", "amount_paid", "write_offs")
+#: amounts, the write-off events (lot 3a), then interest charges (lot 4a).
+_BALANCE_FIELDS = ("amount_due", "amount_paid", "write_offs", "interest_charges")
 
 
 def _write_offs_unreadable(invoice: dict) -> bool:
@@ -2363,12 +2613,21 @@ def _write_offs_unreadable(invoice: dict) -> bool:
     return False
 
 
+def _interest_charges_unreadable(invoice: dict) -> bool:
+    """True when :func:`interest_charged_of` cannot read *invoice*'s array."""
+    try:
+        interest_charged_of(invoice)
+    except InterestChargesUnreadable:
+        return True
+    return False
+
+
 def unreadable_balance_field(invoice: dict) -> Optional[str]:
     """The first thing :func:`balance_of` cannot read — its FIELD NAME, in
-    balance_of's order (``amount_due``, then ``amount_paid``, then, since
-    lot 3a, ``write_offs``) — or ``None`` when it reads them all. PURE;
+    balance_of's order (``amount_due``, ``amount_paid``, ``write_offs``,
+    ``interest_charges``) — or ``None`` when it reads them all. PURE;
     ``None`` exactly when balance_of answers, on every type a Firestore
-    field can hold and every shape of the array (``tests/test_invoice_lateness``
+    field can hold and every shape of the arrays (``tests/test_invoice_lateness``
     pins the two together).
 
     The one way to say WHICH amount is unreadable: ``int()``'s own error
@@ -2377,6 +2636,10 @@ def unreadable_balance_field(invoice: dict) -> Optional[str]:
     for name in _BALANCE_FIELDS:
         if name == "write_offs":
             if _write_offs_unreadable(invoice):
+                return name
+            continue
+        if name == "interest_charges":
+            if _interest_charges_unreadable(invoice):
                 return name
             continue
         try:
@@ -2392,6 +2655,7 @@ _UNREADABLE_OPENINGS = {
     "amount_due": "Le montant dû enregistré sur {where} est illisible",
     "amount_paid": "Le montant payé enregistré sur {where} est illisible",
     "write_offs": "Les radiations enregistrées sur {where} sont illisibles",
+    "interest_charges": "Les avis d'intérêts enregistrés sur {where} sont illisibles",
 }
 
 
@@ -2427,8 +2691,11 @@ def unreadable_transition_field(invoice: dict) -> Optional[str]:
         _payment_recorded(invoice)
     except (TypeError, ValueError, OverflowError):
         return "amount_paid"
-    if status == "payée" and _write_offs_unreadable(invoice):
-        return "write_offs"
+    if status == "payée":
+        if _write_offs_unreadable(invoice):
+            return "write_offs"
+        if _interest_charges_unreadable(invoice):
+            return "interest_charges"
     return None
 
 
@@ -2502,10 +2769,12 @@ def _settled_status(
     status = invoice.get("status", "")
     recorded_before = (int(invoice.get("amount_paid", 0)) > 0
                        or written_off_of(invoice) > 0)
-    if paid + written_off >= int(invoice.get("amount_due", 0)):
+    total_due = int(invoice.get("amount_due", 0)) + interest_charged_of(invoice)
+    if paid + written_off >= total_due:
         return "payée" if status in _ISSUED_STATUSES else None
     if status == "payée" and recorded_before:
-        return "en_retard" if carries_write_off else "envoyée"
+        carries_late = carries_write_off or bool(interest_charge_events(invoice))
+        return "en_retard" if carries_late else "envoyée"
     return None
 
 
@@ -2599,7 +2868,8 @@ def payment_updates(
     # here would silently corrupt the balance rather than report it. What
     # stands written off is no longer owed either (lot 3a).
     written_off = written_off_of(invoice)
-    cap = int(invoice.get("amount_due", 0)) - written_off
+    interest = interest_charged_of(invoice)
+    cap = int(invoice.get("amount_due", 0)) + interest - written_off
     if amount > cap:
         raise PaymentRefused(
             "Le montant encaissé ne peut pas dépasser le solde dû "
@@ -2802,7 +3072,7 @@ def _lateness_refusal(invoice: dict, new_status: str) -> Optional[_StatusRefused
 #: by the refusals below, the invoice sheet and list, and the connector
 #: (2026-11-12).
 BALANCE_FIELD_LABELS = {"amount_due": "montant dû", "amount_paid": "montant payé",
-                        "write_offs": "radiations"}
+                        "write_offs": "radiations", "interest_charges": "avis d'intérêts"}
 
 
 def unreadable_amount_message(field: str, consequence: str, *,
@@ -3146,6 +3416,23 @@ def void_invoice_report(
                 "d'abord (« Annuler la radiation », sur sa fiche), puis "
                 "annulez la facture. Rien n'a été annulé.",
                 "radiation_inscrite",
+            )
+        try:
+            standing_interest = standing_interest_charges(invoice)
+        except InterestChargesUnreadable:
+            raise _VoidRefused(
+                unreadable_amount_message(
+                    "interest_charges",
+                    "l'annulation ne peut pas être jugée, et rien n'a été "
+                    "annulé"),
+                "interets_illisibles",
+            ) from None
+        if standing_interest:
+            raise _VoidRefused(
+                "Un avis d'intérêts est inscrit sur cette facture : annulez-le "
+                "d'abord (« Annuler l'avis d'intérêts », sur sa fiche), puis "
+                "annulez la facture. Rien n'a été annulé.",
+                "avis_interets_inscrit",
             )
         if status == "payée":
             raise _VoidRefused(
@@ -3788,10 +4075,11 @@ def write_off_remainder(
         if drift is not None:
             raise drift
         remainder = balance_of(invoice)
+        taxable_remainder = min(remainder, unpaid_principal_of(invoice, admin_rows))
         gst = qst = 0
         if claim_tax:
             try:
-                gst, qst = write_off_tax_parts(invoice, remainder)
+                gst, qst = write_off_tax_parts(invoice, taxable_remainder)
             except ValueError:
                 raise _WriteOffRefused(
                     "Le total, la TPS ou la TVQ enregistrés sur cette facture "
@@ -3978,6 +4266,384 @@ def reverse_write_off(
             return None, errors
     provenance.note_commit(COLLECTION, invoice_id)
     _log_write_off_committed("invoice_write_off_reversed", invoice_id, report)
+    return report, []
+
+
+# ── Overdue interest notices (« Avis d'intérêts », lot 4a) ───────────────
+
+INTEREST_NOT_WRITTEN = (
+    "Une erreur technique a empêché l'enregistrement de l'avis d'intérêts. "
+    "Rien n'a été modifié.")
+INTEREST_REVERSAL_NOT_WRITTEN = (
+    "Une erreur technique a empêché l'annulation de l'avis d'intérêts. "
+    "Rien n'a été modifié.")
+
+
+def _interest_notice_counter_ref(year: int):
+    """The transactional counter of *year*'s « AAAA-AI » series."""
+    return db.collection(COUNTERS_COLLECTION).document(
+        f"{INTEREST_NOTICE_COUNTER_PREFIX}{year:04d}")
+
+
+def _next_interest_notice_number(counter_snapshot, year: int) -> tuple[str, int]:
+    """``(number, next_seq)`` from *year*'s counter read INSIDE the transaction."""
+    return _next_invoice_number(counter_snapshot, 0, f"{year:04d}-{INTEREST_NOTICE_PREFIX}")
+
+
+def _carries_interest_event(invoice: dict, event_id: str) -> bool:
+    return any(isinstance(e, dict) and e.get("id") == event_id
+               for e in invoice.get("interest_charges") or [])
+
+
+def _interest_landed_report(invoice: dict, event_id: str) -> dict:
+    event = next(e for e in invoice.get("interest_charges") or []
+                 if isinstance(e, dict) and e.get("id") == event_id)
+    return {"invoice": invoice, "interest_charge": event}
+
+
+def _settle_failed_interest(
+    ref, event_id: str, *, attempted: bool, not_written: str,
+) -> tuple[Optional[dict], list[str]]:
+    if not attempted:
+        return None, [not_written]
+    try:
+        snap = ref.get()
+    except Exception:
+        return None, [concurrency.WRITE_OUTCOME_UNCERTAIN_ERROR]
+    stored = {**(snap.to_dict() or {}), "id": snap.id} if snap.exists else None
+    if stored is not None and _carries_interest_event(stored, event_id):
+        return _interest_landed_report(stored, event_id), []
+    return None, [not_written]
+
+
+def _log_interest_committed(event: str, invoice_id: str, report: dict) -> None:
+    written, entry = report["invoice"], report["interest_charge"]
+    log_invoice_interest(
+        event, invoice_id,
+        interest_id=str(entry.get("id") or ""),
+        reverses_id=str(entry.get("reverses_id") or "") or None,
+        via=str(entry.get("created_via") or ""),
+        status=str(written.get("status") or ""),
+        dossier_id=str(written.get("dossier_id") or ""),
+    )
+
+
+def interest_charge_refusal(
+    invoice: dict,
+    *,
+    today: date,
+    notice_date: Optional[date] = None,
+    admin_rows: Optional[list[dict]] = None,
+) -> str:
+    """``''`` EXACTLY when a manual ``avis_interets`` may be issued on *invoice*
+    as of *today* (through *notice_date*, defaulting to *today*). PURE."""
+    _montreal_day(today)
+    if notice_date is not None:
+        _montreal_day(notice_date)
+    status = invoice.get("status", "")
+    if status == "brouillon":
+        return ("Cette facture est encore un brouillon : seuls les intérêts d'une "
+                "facture en retard peuvent être facturés.")
+    if status == "annulée":
+        return "Cette facture est annulée : aucun intérêt ne peut être facturé."
+    if status == "payée":
+        return (f"Cette facture est « {settlement_label(invoice)} » : il n'y "
+                "a plus de solde en souffrance.")
+    if status != "en_retard":
+        return ("Seule une facture marquée « en retard » peut faire l'objet "
+                "d'un avis d'intérêts.")
+    if not is_overdue(invoice, today=today):
+        first = first_overdue_day(invoice)
+        if first is None:
+            return ("Cette facture n'a pas de date d'échéance : aucun intérêt "
+                    "contractuel ne peut être calculé.")
+        return (f"L'échéance de cette facture n'est pas encore passée (en retard "
+                f"à compter du {first.isoformat()}).")
+    if standing_write_offs(invoice):
+        return ("Cette facture porte une radiation active : annulez d'abord la "
+                "radiation avant de facturer des intérêts.")
+    if unpaid_principal_of(invoice, admin_rows) <= 0:
+        return ("Le capital de cette facture est déjà soldé : aucun intérêt "
+                "supplémentaire ne peut courir.")
+    p_start = interest_period_start(invoice)
+    if p_start is None:
+        return ("Cette facture n'a pas de date d'échéance lisible : impossible "
+                "de déterminer le point de départ des intérêts.")
+    n_date = notice_date if notice_date is not None else today
+    if n_date > today:
+        return "La date de l'avis d'intérêts ne peut pas être dans le futur."
+    if n_date <= p_start:
+        return (f"Aucun jour d'intérêt à courir : la date de l'avis "
+                f"({n_date.isoformat()}) doit être postérieure au {p_start.isoformat()}.")
+    return ""
+
+
+def _standing_interest(invoice: dict, event_id: object) -> dict:
+    for event in standing_interest_charges(invoice):
+        if event["id"] == event_id:
+            return event
+    if any(e["kind"] == _AVIS_INTERETS and e["id"] == event_id
+           for e in interest_charge_events(invoice)):
+        raise _WriteOffRefused(
+            "Cet avis d'intérêts est déjà annulé : un avis ne s'annule "
+            "qu'une fois. Rien n'a été écrit.", "interet_deja_annule")
+    raise _WriteOffRefused(
+        "Cet avis d'intérêts est introuvable sur la facture (seul un avis "
+        "actif s'annule). Rien n'a été écrit.", "interet_introuvable")
+
+
+def charge_overdue_interest(
+    invoice_id: str,
+    *,
+    expected_etag: str,
+    notice_date: Optional[date] = None,
+    reason: str = "",
+    rate_bps: Optional[int] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Issue a manual TPS/TVQ-exempt overdue interest notice (« Avis d'intérêts »).
+
+    Computes simple annual interest on ``unpaid_principal_of(invoice)`` from
+    ``interest_period_start(invoice)`` through *notice_date* (defaulting to
+    ``today_mtl()``), mints ``AAAA-AI###`` from ``counters/avis-interets-{year}``
+    inside the transaction, and appends to ``invoice.interest_charges``.
+    """
+    operation = "interest_charge"
+    if notice_date is not None:
+        _montreal_day(notice_date)
+    if rate_bps is not None:
+        if (not isinstance(rate_bps, int) or isinstance(rate_bps, bool)
+                or rate_bps < 0 or rate_bps > INTEREST_MAX_RATE_BPS):
+            return None, ["Le taux annuel d'intérêts est invalide."]
+    text, reason_errors = _write_off_reason_text(
+        reason, label="La note de l'avis d'intérêts")
+    if not isinstance(expected_etag, str):
+        _log_write_off_refusal(invoice_id, operation, "version_requise")
+        return None, [WRITE_OFF_VERSION_REQUIRED]
+    if reason_errors:
+        _log_write_off_refusal(invoice_id, operation, "motif_invalide")
+        return None, reason_errors
+    if not is_addressable_id(invoice_id):
+        _log_write_off_refusal(invoice_id, operation, "introuvable")
+        return None, ["Facture introuvable."]
+
+    from models import settings as settings_model
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+    settings_ref = db.collection(settings_model.COLLECTION).document(settings_model.DOC_ID)
+    event_id = str(uuid.uuid4())
+    attempted = {"commit": False}
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _WriteOffRefused("Facture introuvable.", "introuvable")
+        invoice = {**(snap.to_dict() or {}), "id": snap.id}
+        if _carries_interest_event(invoice, event_id):
+            raise _WriteOffLanded(invoice)
+        if not concurrency.matches(invoice, expected_etag):
+            raise concurrency.StaleWrite()
+        admin_rows, trust_rows = _register_rows(invoice_id, transaction)
+        today = today_mtl()
+        n_date = notice_date if notice_date is not None else today
+        _refuse_unreadable(invoice)
+        refusal = interest_charge_refusal(
+            invoice, today=today, notice_date=n_date, admin_rows=admin_rows)
+        if refusal:
+            raise _WriteOffRefused(refusal, "non_admissible")
+        drift = _register_drift(invoice, admin_rows, trust_rows)
+        if drift is not None:
+            raise drift
+        if rate_bps is None:
+            cfg_snap = settings_ref.get(transaction=transaction)
+            cfg_doc = (cfg_snap.to_dict() or {}) if cfg_snap.exists else {}
+            applied_rate_bps = settings_model.interest_rate_bps_from(cfg_doc)
+        else:
+            applied_rate_bps = rate_bps
+        if applied_rate_bps <= 0:
+            raise _WriteOffRefused(
+                "Aucun taux d'intérêt de retard n'est configuré : configurez-le "
+                "d'abord dans Paramètres → Profil du cabinet.",
+                "taux_non_configure",
+            )
+        p_start = interest_period_start(invoice)
+        if p_start is None:
+            raise _WriteOffRefused(
+                "La date d'échéance de la facture est illisible.",
+                "non_admissible",
+            )
+        days = (n_date - p_start).days
+        principal = unpaid_principal_of(invoice, admin_rows)
+        amount = compute_simple_interest(principal, applied_rate_bps, days)
+        if amount <= 0:
+            raise _WriteOffRefused(
+                "Les intérêts calculés pour cette période sont inférieurs à 0,01 $.",
+                "montant_nul",
+            )
+        counter_ref = _interest_notice_counter_ref(n_date.year)
+        number, next_seq = _next_interest_notice_number(
+            counter_ref.get(transaction=transaction), n_date.year)
+        now = datetime.now(timezone.utc)
+        event = {
+            "id": event_id,
+            "kind": _AVIS_INTERETS,
+            "date": _write_off_day(n_date),
+            "period_start": _write_off_day(p_start),
+            "period_end": _write_off_day(n_date),
+            "principal": principal,
+            "rate_bps": applied_rate_bps,
+            "days": days,
+            "amount": amount,
+            "interest_notice_number": number,
+            "reason": text,
+            "reverses_id": "",
+            "created_at": now,
+            "created_via": provenance.current_via(),
+        }
+        events = list(invoice.get("interest_charges") or []) + [event]
+        interest_charge_events({"interest_charges": events})
+        updates: dict = {"interest_charges": events, **provenance.update_fields(now)}
+        transaction.set(counter_ref, {"seq": next_seq, "updated_at": now})
+        transaction.update(ref, updates)
+        attempted["commit"] = True
+        return {"invoice": {**invoice, **updates}, "interest_charge": event}
+
+    try:
+        report = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        _log_write_off_refusal(invoice_id, operation, "stale_etag")
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except _WriteOffRefused as refusal:
+        _log_write_off_refusal(invoice_id, operation, refusal.reason)
+        return None, [str(refusal)]
+    except _WriteOffLanded as landed:
+        report = _interest_landed_report(landed.invoice, event_id)
+    except Exception as exc:
+        log_unexpected("invoice interest charge failed", exc_info=False,
+                       invoice_id=invoice_id, error_type=type(exc).__name__,
+                       commit_attempted=attempted["commit"])
+        report, errors = _settle_failed_interest(
+            ref, event_id, attempted=attempted["commit"],
+            not_written=INTEREST_NOT_WRITTEN)
+        if errors:
+            return None, errors
+    provenance.note_commit(COLLECTION, invoice_id)
+    _log_interest_committed("invoice_interest_charged", invoice_id, report)
+    return report, []
+
+
+def reverse_interest_charge(
+    invoice_id: str,
+    event_id: str,
+    *,
+    expected_etag: str,
+    reason: str = "",
+) -> tuple[Optional[dict], list[str]]:
+    """Cancel one standing ``avis_interets`` by a ``contre_passation`` dated today."""
+    operation = "interest_reversal"
+    text, reason_errors = _write_off_reason_text(
+        reason, label="Le motif de l'annulation de l'avis d'intérêts")
+    if not isinstance(expected_etag, str):
+        _log_write_off_refusal(invoice_id, operation, "version_requise")
+        return None, [WRITE_OFF_VERSION_REQUIRED]
+    if reason_errors:
+        _log_write_off_refusal(invoice_id, operation, "motif_invalide")
+        return None, reason_errors
+    if not is_addressable_id(invoice_id):
+        _log_write_off_refusal(invoice_id, operation, "introuvable")
+        return None, ["Facture introuvable."]
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+    reversal_id = str(uuid.uuid4())
+    attempted = {"commit": False}
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _WriteOffRefused("Facture introuvable.", "introuvable")
+        invoice = {**(snap.to_dict() or {}), "id": snap.id}
+        if _carries_interest_event(invoice, reversal_id):
+            raise _WriteOffLanded(invoice)
+        if not concurrency.matches(invoice, expected_etag):
+            raise concurrency.StaleWrite()
+        _refuse_unreadable(invoice)
+        notice = _standing_interest(invoice, event_id)
+        if standing_write_offs(invoice):
+            raise _WriteOffRefused(
+                "Une radiation est inscrite sur cette facture : annulez d'abord "
+                "la radiation avant d'annuler un avis d'intérêts. Rien n'a été écrit.",
+                "radiation_inscrite",
+            )
+        standing = standing_interest_charges(invoice)
+        if standing and standing[-1]["id"] != notice["id"]:
+            raise _WriteOffRefused(
+                "Un avis d'intérêts plus récent est encore actif : annulez "
+                "d'abord le dernier avis d'intérêts avant celui-ci. Rien n'a "
+                "été écrit.",
+                "avis_posterieur_actif",
+            )
+        remaining_interest = interest_charged_of(invoice) - notice["amount"]
+        if int(invoice.get("amount_paid", 0)) > int(invoice.get("amount_due", 0)) + remaining_interest:
+            raise _WriteOffRefused(
+                "Un paiement déjà encaissé couvre cet avis d'intérêts : contre-passez "
+                "d'abord le paiement au registre. Rien n'a été écrit.",
+                "paiement_couvre_interets",
+            )
+        today = today_mtl()
+        if today < _utc_midnight_day(notice["date"]):
+            raise _WriteOffRefused(
+                "La date de contre-passation ne peut pas être antérieure à celle "
+                "de l'avis d'intérêts.",
+                "date_anterieure",
+            )
+        now = datetime.now(timezone.utc)
+        event = {
+            "id": reversal_id,
+            "kind": _INTEREST_CONTRE_PASSATION,
+            "date": _write_off_day(today),
+            "amount": notice["amount"],
+            "reason": text,
+            "reverses_id": notice["id"],
+            "created_at": now,
+            "created_via": provenance.current_via(),
+        }
+        events = list(invoice.get("interest_charges") or []) + [event]
+        interest_charge_events({"interest_charges": events})
+        settled = _settled_status(
+            {**invoice, "interest_charges": events},
+            paid=int(invoice.get("amount_paid", 0)),
+            written_off=written_off_of(invoice),
+            carries_write_off=bool(write_off_events(invoice)),
+        )
+        updates: dict = {"interest_charges": events, **provenance.update_fields(now)}
+        if settled is not None:
+            updates["status"] = settled
+        transaction.update(ref, updates)
+        attempted["commit"] = True
+        return {"invoice": {**invoice, **updates}, "interest_charge": event}
+
+    try:
+        report = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        _log_write_off_refusal(invoice_id, operation, "stale_etag")
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except _WriteOffRefused as refusal:
+        _log_write_off_refusal(invoice_id, operation, refusal.reason)
+        return None, [str(refusal)]
+    except _WriteOffLanded as landed:
+        report = _interest_landed_report(landed.invoice, reversal_id)
+    except Exception as exc:
+        log_unexpected("invoice interest reversal failed", exc_info=False,
+                       invoice_id=invoice_id, error_type=type(exc).__name__,
+                       commit_attempted=attempted["commit"])
+        report, errors = _settle_failed_interest(
+            ref, reversal_id, attempted=attempted["commit"],
+            not_written=INTEREST_REVERSAL_NOT_WRITTEN)
+        if errors:
+            return None, errors
+    provenance.note_commit(COLLECTION, invoice_id)
+    _log_interest_committed("invoice_interest_reversed", invoice_id, report)
     return report, []
 
 
@@ -4337,6 +5003,69 @@ def delete_invoice(invoice_id: str) -> tuple[bool, str]:
 _aggregation_values = aggregation_values
 
 
+def _invoice_calendar_day(inv: dict) -> Optional[date]:
+    """Return the invoice's stored date-only calendar day (midnight UTC)."""
+    raw = inv.get("date")
+    if isinstance(raw, datetime):
+        return raw.astimezone(timezone.utc).date() if raw.tzinfo else raw.date()
+    if isinstance(raw, date):
+        return raw
+    return None
+
+
+def billed_totals_from(invoices: list[dict], *, today: date) -> dict[str, int]:
+    """Sum before-tax billed revenue (``subtotal_fees`` + ``subtotal_expenses``)
+    across ``REVENUE_STATUSES`` for the Montréal calendar month and quarter
+    containing *today* (same billed-basis rule as ``models/financial_statements``)."""
+    month_start = today.replace(day=1)
+    if today.month == 12:
+        month_end = date(today.year, 12, 31)
+    else:
+        month_end = date(today.year, today.month + 1, 1) - timedelta(days=1)
+    q_first = 3 * ((today.month - 1) // 3) + 1
+    quarter_start = date(today.year, q_first, 1)
+    if q_first + 2 == 12:
+        quarter_end = date(today.year, 12, 31)
+    else:
+        quarter_end = date(today.year, q_first + 3, 1) - timedelta(days=1)
+
+    month_cents = 0
+    quarter_cents = 0
+    for inv in invoices:
+        if inv.get("status") not in REVENUE_STATUSES:
+            continue
+        inv_day = _invoice_calendar_day(inv)
+        if inv_day is None:
+            continue
+        net_billed = (
+            int(inv.get("subtotal_fees") or 0)
+            + int(inv.get("subtotal_expenses") or 0)
+        )
+        if month_start <= inv_day <= month_end:
+            month_cents += net_billed
+        if quarter_start <= inv_day <= quarter_end:
+            quarter_cents += net_billed
+    return {"month": month_cents, "quarter": quarter_cents}
+
+
+def outstanding_totals_from(invoices: list[dict]) -> dict[str, int]:
+    """Sum live unpaid balances (``balance_of``) per issued status over *invoices*."""
+    return {
+        status: sum(balance_of(inv) for inv in invoices if inv.get("status") == status)
+        for status in _ISSUED_STATUSES
+    }
+
+
+def get_dashboard_invoice_pulse_strict(today: date) -> dict:
+    """Single strict invoice read feeding both dashboard invoice tiles:
+    billed revenue (month / quarter) and outstanding balances by status."""
+    invoices = list_invoices_strict(None)
+    return {
+        "billed": billed_totals_from(invoices, today=today),
+        "outstanding": outstanding_totals_from(invoices),
+    }
+
+
 def get_outstanding_totals_strict() -> dict[str, int]:
     """The live balance (cents) still owed on the issued invoices, PER issued
     status: ``{status: Σ balance_of}`` for each status of
@@ -4378,11 +5107,7 @@ def get_outstanding_totals_strict() -> dict[str, int]:
     the financial statements' posture); :func:`get_outstanding_totals` is
     its fail-open twin.
     """
-    invoices = list_invoices_strict(None)
-    return {
-        status: sum(balance_of(inv) for inv in invoices if inv.get("status") == status)
-        for status in _ISSUED_STATUSES
-    }
+    return outstanding_totals_from(list_invoices_strict(None))
 
 
 def get_outstanding_totals() -> dict[str, int]:

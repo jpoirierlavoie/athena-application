@@ -837,35 +837,30 @@ def delete_time_entry(entry_id: str) -> tuple[bool, str]:
 _aggregation_values = aggregation_values
 
 
-def get_unbilled_totals() -> dict:
+def get_unbilled_totals_strict() -> dict:
     """Return unbilled billable totals across all dossiers via aggregation.
 
-    Issues a single server-side Firestore aggregation query (two SUMs in one
-    request) over ``billable == True AND invoiced == False`` instead of
-    materializing the whole collection — O(1) payload for the dashboard.
-    Requires the ``timeentries`` composite index
-    (billable ASC, invoiced ASC, amount ASC, hours ASC) — Firestore matches
-    aggregations only when the aggregated fields trail the index in
-    alphabetical order; see ``firestore.indexes.json``.
-
-    Returns ``{"hours": float, "amount": int}`` with hours rounded to one
-    decimal (matching the dashboard's historical display) and amount in
-    integer cents. On any failure, returns safe zeros — a failed stat must
-    never break the dashboard.
+    STRICT: propagates Firestore / index errors rather than masking them as
+    zero (used by the dashboard's fail-closed « Travail non facturé » tile).
+    Uses the ``timeentries`` composite index
+    ``(billable ASC, invoiced ASC, amount ASC, hours ASC)``.
     """
+    query = (
+        db.collection(COLLECTION)
+        .where(filter=FieldFilter("billable", "==", True))
+        .where(filter=FieldFilter("invoiced", "==", False))
+    )
+    agg_query = query.sum("hours", alias="hours").sum("amount", alias="amount")
+    values = _aggregation_values(agg_query.get())
+    hours = float(values.get("hours", 0) or 0)
+    amount = values.get("amount", 0) or 0
+    return {"hours": round(hours, 1), "amount": int(round(amount))}
+
+
+def get_unbilled_totals() -> dict:
+    """Fail-open counterpart of :func:`get_unbilled_totals_strict` (display/MCP)."""
     try:
-        query = (
-            db.collection(COLLECTION)
-            .where(filter=FieldFilter("billable", "==", True))
-            .where(filter=FieldFilter("invoiced", "==", False))
-        )
-        # Both SUMs ride in one aggregation query — google-cloud-firestore
-        # 2.27 supports multiple aggregations per RunAggregationQuery.
-        agg_query = query.sum("hours", alias="hours").sum("amount", alias="amount")
-        values = _aggregation_values(agg_query.get())
-        hours = float(values.get("hours", 0) or 0)
-        amount = values.get("amount", 0) or 0
-        return {"hours": round(hours, 1), "amount": int(round(amount))}
+        return get_unbilled_totals_strict()
     except Exception as exc:
         logger.warning("get_unbilled_totals: aggregation query failed: %s", exc)
         return {"hours": 0.0, "amount": 0}

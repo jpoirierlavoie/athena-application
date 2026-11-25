@@ -14,21 +14,22 @@
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('modeles.modele_list') if modele else url_for('doc_templates.template_list') }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      {{ 'Modèles' if modele else 'Gabarits' }}
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+       aria-label="{{ 'Retour aux modèles' if modele else 'Retour aux gabarits' }}"
+       title="{{ 'Modèles' if modele else 'Gabarits' }}">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">{{ 'Modèles' if modele else 'Gabarits' }}</span>
     </a>
     <div class="flex items-center gap-2">
       <a href="{{ url_for('doc_templates.template_edit', template_id=template.id) }}"
          title="Modifier"
          aria-label="Modifier"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('edit', 20) }}
       </a>
       <button @click="$dispatch('open-confirm-delete-gabarit')"
               title="Supprimer"
               aria-label="Supprimer"
-              class="inline-flex items-center justify-center p-2 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50"
               x-data>
         {{ ms('delete', 20) }}
       </button>
@@ -62,32 +63,80 @@
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">Actif</span>
       {% endif %}
       <span class="text-xs text-gray-400">v{{ template.version }}</span>
+      {% if has_en %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+        FR / EN v{{ template.en_version or 1 }}
+      </span>
+      {% endif %}
     </div>
     {% if template.description %}
     <p class="text-sm text-gray-600 mb-3">{{ template.description }}</p>
     {% endif %}
-    <p class="text-xs text-gray-500 mb-4">
-      {{ template.original_filename }} ·
+    <p class="text-xs text-gray-500 {{ 'mb-1' if has_en else 'mb-4' }}">
+      {% if has_en %}Version FR : {% endif %}{{ template.original_filename }} ·
       {{ '%.1f'|format(template.file_size / 1024) }} Ko
       {% if template.updated_at %} · mis à jour le {{ (template.updated_at|to_mtl).strftime('%Y-%m-%d') }}{% endif %}
     </p>
+    {% if has_en %}
+    <p class="text-xs text-gray-500 mb-4">
+      Version EN : {{ template.en_original_filename or template.en_filename }} ·
+      {{ '%.1f'|format((template.en_file_size or 0) / 1024) }} Ko
+    </p>
+    {% endif %}
     <div class="flex items-center gap-2 flex-wrap">
       {% if modele %}
+      {% if has_en %}
+      <a href="{{ url_for('doc_templates.template_download', template_id=template.id) }}"
+         class="inline-flex items-center gap-1.5 min-h-[44px] px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('download', 16) }}<span>Télécharger le modèle (FR)</span>
+      </a>
+      <a href="{{ url_for('doc_templates.template_download', template_id=template.id, lang='en') }}"
+         class="inline-flex items-center gap-1.5 min-h-[44px] px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        {{ ms('download', 16) }}<span>Télécharger (EN)</span>
+      </a>
+      {% else %}
       <a href="{{ url_for('doc_templates.template_download', template_id=template.id) }}"
          class="px-4 py-3 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
         Télécharger le modèle
+      </a>
+      {% endif %}
+      {% elif has_en %}
+      <button type="button"
+              hx-get="{{ url_for('doc_templates.generate_modal', template_id=template.id, fixed=1, lang='fr') }}"
+              hx-target="#gabarit-modal"
+              hx-swap="innerHTML"
+              class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Générer (FR)
+      </button>
+      <button type="button"
+              hx-get="{{ url_for('doc_templates.generate_modal', template_id=template.id, fixed=1, lang='en') }}"
+              hx-target="#gabarit-modal"
+              hx-swap="innerHTML"
+              class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium text-indigo-700 bg-white border border-indigo-300 rounded-lg hover:bg-indigo-50">
+        Générer (EN)
+      </button>
+      <a href="{{ url_for('doc_templates.template_download', template_id=template.id) }}"
+         class="inline-flex items-center justify-center gap-1 min-h-[44px] min-w-[44px] px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+         aria-label="Télécharger le gabarit (FR)" title="Télécharger le gabarit (FR)">
+        {{ ms('download', 16) }}<span>FR</span>
+      </a>
+      <a href="{{ url_for('doc_templates.template_download', template_id=template.id, lang='en') }}"
+         class="inline-flex items-center justify-center gap-1 min-h-[44px] min-w-[44px] px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+         aria-label="Télécharger le gabarit (EN)" title="Télécharger le gabarit (EN)">
+        {{ ms('download', 16) }}<span>EN</span>
       </a>
       {% else %}
       <button type="button"
               hx-get="{{ url_for('doc_templates.generate_modal', template_id=template.id, fixed=1) }}"
               hx-target="#gabarit-modal"
               hx-swap="innerHTML"
-              class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+              class="inline-flex items-center min-h-[44px] px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
         Générer un document
       </button>
       <a href="{{ url_for('doc_templates.template_download', template_id=template.id) }}"
-         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        Télécharger le gabarit
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+         aria-label="Télécharger le gabarit" title="Télécharger le gabarit">
+        {{ ms('download', 20) }}<span class="sr-only">Télécharger le gabarit</span>
       </a>
       {% endif %}
     </div>
@@ -152,8 +201,19 @@
   {# ── Split-run warnings (fields to fill: none on a modèle) ──────── #}
   {% if template.validation_warnings and not modele %}
   <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    {% if has_en %}<p class="text-xs font-semibold text-amber-800 mb-1">Avertissements (FR)</p>{% endif %}
     <ul class="text-sm text-gray-700 space-y-1">
       {% for w in template.validation_warnings %}
+      <li>{{ w }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if has_en and template.en_validation_warnings and not modele %}
+  <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    <p class="text-xs font-semibold text-amber-800 mb-1">Avertissements (EN)</p>
+    <ul class="text-sm text-gray-700 space-y-1">
+      {% for w in template.en_validation_warnings %}
       <li>{{ w }}</li>
       {% endfor %}
     </ul>
@@ -162,7 +222,7 @@
 
   {# ── Field inventory (a modèle: only a note if its file holds some) ── #}
   {% if modele %}
-  {% if template.placeholders %}
+  {% if template.placeholders or (has_en and template.en_placeholders) %}
   <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     Ce modèle contient des champs {{ '{{…}}' }} qui ne seront jamais
     remplis. Pour les remplir, changez son type pour « Gabarit » (Modifier).
@@ -171,7 +231,7 @@
   {% else %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-3">
-      Champs ({{ template.placeholders|length }})
+      {{ 'Champs FR (' if has_en else 'Champs (' }}{{ template.placeholders|length }})
     </h2>
 
     {% if auto_fields %}
@@ -216,6 +276,54 @@
     <p class="text-sm text-gray-500">Aucun champ détecté dans ce gabarit.</p>
     {% endif %}
   </div>
+
+  {% if has_en %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">
+      Champs EN ({{ (template.en_placeholders or [])|length }})
+    </h2>
+
+    {% if en_auto_fields %}
+    <p class="text-xs text-gray-500 mb-1">Remplis automatiquement (en anglais)</p>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      {% for name in en_auto_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if en_flow_fields %}
+    <p class="text-xs text-gray-500 mb-1">Remplis depuis {{ flow_source }} (en anglais)</p>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      {% for name in en_flow_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if en_manual_fields %}
+    <p class="text-xs text-gray-500 mb-1">À saisir à la génération</p>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      {% for name in en_manual_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if en_passthrough_fields %}
+    <p class="text-xs text-gray-500 mb-1">À compléter dans Word (laissés tels quels)</p>
+    <div class="flex items-center gap-2 flex-wrap">
+      {% for name in en_passthrough_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not template.en_placeholders %}
+    <p class="text-sm text-gray-500">Aucun champ détecté dans la version anglaise.</p>
+    {% endif %}
+  </div>
+  {% endif %}
   {% endif %}
 
   {# ── Versions (D11) — un remplacement ne détruit plus rien : chaque
@@ -223,7 +331,7 @@
        version (l'historique ne fait que croître). ────────────────── #}
   {% if versions %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Versions</h2>
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">{{ 'Versions — FR' if has_en else 'Versions' }}</h2>
     <div class="divide-y divide-gray-100">
       {% for v in versions %}
       <div class="flex items-center justify-between gap-3 py-2">
@@ -246,8 +354,10 @@
         {% if v.version != current_version %}
         <div class="flex items-center gap-2 flex-shrink-0">
           <a href="{{ url_for('doc_templates.template_version_download', template_id=template.id, version=v.version) }}"
-             class="text-sm font-medium text-indigo-600 hover:text-indigo-700">
-            Télécharger
+             aria-label="Télécharger la version {{ v.version }}"
+             title="Télécharger"
+             class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg">
+            {{ ms('download', 20) }}<span class="sr-only">Télécharger</span>
           </a>
           <form method="POST"
                 action="{{ url_for('doc_templates.template_version_restore', template_id=template.id, version=v.version) }}">
@@ -255,7 +365,55 @@
             {{ etag_field(template) }}
             <button type="submit"
                     title="Rétablir cette version (elle devient une nouvelle version)"
-                    class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                    class="inline-flex items-center min-h-[44px] px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+              Rétablir
+            </button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if has_en and en_versions %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Versions — EN</h2>
+    <div class="divide-y divide-gray-100">
+      {% for v in en_versions %}
+      <div class="flex items-center justify-between gap-3 py-2">
+        <div class="min-w-0">
+          <p class="text-sm text-gray-900">
+            Version {{ v.version }}
+            {%- if v.version == en_current_version %}
+            <span class="text-xs text-gray-500">— en vigueur</span>
+            {%- endif %}
+          </p>
+          <p class="text-xs text-gray-500">
+            {{ v.original_filename or v.filename }}
+            {%- if v.created_at %} · installée le {{ (v.created_at|to_mtl).strftime('%Y-%m-%d') }}
+            {%- else %} · date d'installation inconnue
+            {%- endif %}
+            {%- if v.restored_from %} · rétablie depuis la version {{ v.restored_from }}{% endif %}
+          </p>
+        </div>
+        {% if v.version != en_current_version %}
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <a href="{{ url_for('doc_templates.template_version_download', template_id=template.id, version=v.version, lang='en') }}"
+             aria-label="Télécharger la version EN {{ v.version }}"
+             title="Télécharger (EN)"
+             class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg">
+            {{ ms('download', 20) }}<span class="sr-only">Télécharger</span>
+          </a>
+          <form method="POST"
+                action="{{ url_for('doc_templates.template_version_restore', template_id=template.id, version=v.version) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="lang" value="en">
+            {{ etag_field(template) }}
+            <button type="submit"
+                    title="Rétablir cette version anglaise (elle devient une nouvelle version)"
+                    class="inline-flex items-center min-h-[44px] px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
               Rétablir
             </button>
           </form>

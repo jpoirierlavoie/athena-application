@@ -1,0 +1,46 @@
+{# Carte d'une divergence Bookings (événement confirmé modifié/annulé côté client). #}
+{% set d = h.bookings_divergence or {} %}
+<div class="bg-amber-50 rounded-xl border border-amber-200 p-4">
+  <div class="flex items-start justify-between gap-3 mb-2">
+    <div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <p class="text-sm font-semibold text-gray-900">{{ h.title }}</p>
+        {% if onglet is defined and onglet == 'tout' %}
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">RDV — Divergence</span>
+        {% endif %}
+      </div>
+      <p class="text-xs text-amber-800">
+        {% if d.motif == "modifié_côté_client" %}Modifié côté client&nbsp;: {{ d.detail }}
+        {% elif d.motif == "annulé_côté_client" %}Annulé côté client
+        {% else %}{{ d.detail }}{% endif %}
+      </p>
+    </div>
+    <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 flex-shrink-0">Confirmé</span>
+  </div>
+  <div class="flex flex-wrap items-center gap-2">
+    {% if d.motif == "modifié_côté_client" %}
+    <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='appliquer') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Appliquer la modification</button>
+    </form>
+    <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='ignorer') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Ignorer</button>
+    </form>
+    {% elif d.motif == "annulé_côté_client" %}
+    <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='annuler') }}"
+          data-confirm="Retirer ce rendez-vous de l'agenda et des appareils synchronisés ?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">Annuler dans Athéna</button>
+    </form>
+    <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='conserver') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if onglet is defined and onglet %}<input type="hidden" name="onglet" value="{{ onglet }}">{% endif %}
+      <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conserver</button>
+    </form>
+    {% endif %}
+  </div>
+</div>

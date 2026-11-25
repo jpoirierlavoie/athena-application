@@ -695,8 +695,9 @@ def test_the_page_names_the_flow_fields_apart(store, web):
 def test_the_form_offers_the_kind_and_the_refusal_names_it():
     assert "Note de crédit (radiation)" in tpl.KIND_LABELS.values()
     assert tpl.NOT_SPECIAL_ERROR == (
-        "Seuls les gabarits « Note d'honoraires », « Note de crédit » et "
-        "« Note (impression) » se désignent comme gabarit actif.")
+        "Seuls les gabarits « Note d'honoraires », « Note de crédit », "
+        "« Avis d'intérêts » et « Note (impression) » se désignent comme "
+        "gabarit actif.")
     assert set(rdt.FLOW_SOURCES_FR) == set(tpl.SPECIAL_KINDS)
 
 

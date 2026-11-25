@@ -166,15 +166,36 @@ def test_dashboard_exception_sanitization(monkeypatch):
             logged_warnings.append(msg % args)
 
     monkeypatch.setattr(dash, "logger", MockLogger())
-    monkeypatch.setattr(dossier_model, "count_open", lambda: (_ for _ in ()).throw(ValueError("Secret Dossier Data")))
-    monkeypatch.setattr(time_entry_model, "get_unbilled_totals", lambda: (_ for _ in ()).throw(RuntimeError("Secret Billing Data")))
-    monkeypatch.setattr(invoice_model, "get_outstanding_totals_strict", lambda: (_ for _ in ()).throw(TypeError("Secret Invoice Data")))
-    monkeypatch.setattr(trust, "get_firm_trust_snapshot", lambda: (_ for _ in ()).throw(KeyError("Secret Trust Data")))
+    monkeypatch.setattr(
+        invoice_model,
+        "get_dashboard_invoice_pulse_strict",
+        lambda _today=None: (_ for _ in ()).throw(TypeError("Secret Invoice Data")),
+    )
+    monkeypatch.setattr(
+        time_entry_model,
+        "get_unbilled_totals_strict",
+        lambda: (_ for _ in ()).throw(RuntimeError("Secret Billing Data")),
+    )
+    monkeypatch.setattr(
+        expense_model,
+        "get_unbilled_totals_strict",
+        lambda: {"amount": 0},
+    )
+    monkeypatch.setattr(
+        admin_ledger,
+        "get_firm_admin_snapshot",
+        lambda: (_ for _ in ()).throw(ValueError("Secret Admin Data")),
+    )
+    monkeypatch.setattr(
+        trust,
+        "get_firm_trust_snapshot",
+        lambda: (_ for _ in ()).throw(KeyError("Secret Trust Data")),
+    )
 
     dash._get_quick_stats()
-    assert any("open dossiers stat failed: ValueError" in w for w in logged_warnings)
-    assert any("unbilled time stat failed: RuntimeError" in w for w in logged_warnings)
     assert any("outstanding invoices stat failed: TypeError" in w for w in logged_warnings)
+    assert any("unbilled work stat failed: RuntimeError" in w for w in logged_warnings)
+    assert any("admin stat failed: ValueError" in w for w in logged_warnings)
     assert any("trust stat failed: KeyError" in w for w in logged_warnings)
     # Ensure no raw exception strings with secret data leaked into logs
     assert not any("Secret" in w for w in logged_warnings)

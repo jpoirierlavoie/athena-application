@@ -217,6 +217,8 @@ design (spec L1 §8.1 — it cannot call Graph at all).
 | `COURRIER_GRAPH_CLIENT_SECRET` → secret `courrier-graph-client-secret` | ○ | `""` | Client secret for Courrier's Entra app registration (Secret Manager in prod, `required=False`) |
 | `COURRIER_UPN` | ○ | `""` | Target mailbox and OneDrive UPN for Courrier (scoped via Exchange RBAC) |
 | `COURRIER_ONEDRIVE_ROOT` | ○ | `Dossiers` | Top-level OneDrive folder under which Courrier files emails and attachments |
+| `MIROIR_ONEDRIVE_ACTIF` | ○ | `false` | Kill switch for the one-way `Athena → OneDrive` mirror (`app.yaml` ships `"false"`, requires `courrier_configured()`) |
+| `MIROIR_ONEDRIVE_QUEUE` | ○ | `portail` | Cloud Tasks queue name used for asynchronous post-commit OneDrive mirror events |
 | `FEATURE_INTAKE` | ○ | `false` | Offers the portal's intake (dossier-opening) form when confirming a Bookings rendez-vous whose email matches no contact |
 
 ⚠ **Two Bookings settings have no environment variable at all.**
@@ -1767,6 +1769,14 @@ while leaving `portail.yourdomain.example` public for clients:
      `yourdomain.example/.well-known/oauth-protected-resource`,
      `yourdomain.example/.well-known/assetlinks.json`,
      `yourdomain.example/privacy`, `yourdomain.example/terms`.
+   - Sanitized read-only `.ics` calendar feed (active only after generating a
+     link in **Paramètres → Intégrations**):
+     `yourdomain.example/calendrier-partage/*` (`decision: bypass`,
+     `Everyone`). Protected by a 256-bit token stored solely as its SHA-256
+     hash (`hmac.compare_digest`), GET-only, rate-limited (`30 req/min` in
+     Flask), `Cache-Control: no-store`, token-redacted in logs/traces
+     (`RedactionFilter`), and anonymized to `SUMMARY:Occupé` free/busy blocks
+     for every dossier-linked and non-`PUBLIC` item.
    - **Never bypass** `/oauth/authorize`, `/dav/*`, `/.well-known/carddav`, or
      `/.well-known/caldav`.
 5. **Root `yourdomain.example` Access application:** attach two reusable

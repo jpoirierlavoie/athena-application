@@ -148,8 +148,8 @@ def test_template_step_mapping_is_pinned():
 
     cq = [(s["order"], s["sous_phase"]) for s in protocol_model.CQ_TEMPLATE_STEPS]
     assert cq == [
-        (1, "INT-02"), (2, "MEE-01"), (3, "PRL-00"), (4, "CTS-01"),
-        (5, "MEE-03"), (6, "PRD-03"), (7, "INS-01"),
+        (1, "INT-02"), (2, "CTS-00"), (3, "MEE-01"), (4, "PRL-00"),
+        (5, "CTS-01"), (6, "MEE-03"), (7, "PRD-03"), (8, "INS-01"),
     ]
     cs = [(s["order"], s["sous_phase"]) for s in protocol_model.CS_TEMPLATE_STEPS]
     assert cs == [

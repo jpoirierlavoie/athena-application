@@ -1151,10 +1151,30 @@ def test_dark_tokens_are_in_srgb_and_warm_statuses_stay_apart():
 # colours are inline by necessity, and an email never follows the app's
 # theme. Each must still write a colour (else the exemption is stale).
 EMAIL_BODIES = {
+    "templates/reception/_courriel_cadre.html":
+        "Graph email wrapper layout: inline styles only",
     "templates/reception/_accuse_bordereau.html":
         "Graph email body (accusé de réception): inline styles only",
     "templates/reception/_confirmation_intake.html":
         "Graph email body (confirmation d'ouverture): inline styles only",
+    "templates/reception/_invitation_documents.html":
+        "Graph email body (invitation documents): inline styles only",
+    "templates/reception/_invitation_ouverture.html":
+        "Graph email body (invitation ouverture): inline styles only",
+    "templates/reception/_invitation_rdv.html":
+        "Graph email body (invitation rdv): inline styles only",
+    "templates/reception/_invitation_rdv_gestion.html":
+        "Graph email body (invitation rdv gestion): inline styles only",
+    "templates/reception/_invitation_rdv_verification.html":
+        "Graph email body (invitation rdv vérification): inline styles only",
+    "templates/reception/_accuse_rdv_public.html":
+        "Graph email body (accusé rdv public): inline styles only",
+    "templates/reception/_annulation_rdv_portail.html":
+        "Graph email body (annulation rdv portail): inline styles only",
+    "templates/reception/_confirmation_rdv_portail.html":
+        "Graph email body (confirmation rdv portail): inline styles only",
+    "templates/reception/_refus_rdv_portail.html":
+        "Graph email body (refus rdv portail): inline styles only",
 }
 # offline.html is served by the service worker without the stylesheet: its
 # own <style> is its only CSS (section 8 holds its dark block to the tokens).

@@ -143,6 +143,21 @@
         </p>
       </div>
 
+      {# ── Intérêts sur factures échues ───────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 mt-5">Intérêts de retard</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label for="overdue_interest_rate" class="block text-sm text-gray-700 mb-1">Taux d'intérêt annuel (%)</label>
+          <input id="overdue_interest_rate" type="text" name="overdue_interest_rate" inputmode="decimal"
+                 value="{{ form.overdue_interest_rate }}"
+                 placeholder="Ex. : 12"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="text-xs text-gray-500 mt-1">
+            Taux contractuel annuel appliqué manuellement lors de l'émission d'un avis d'intérêts sur une facture en retard (exonéré de TPS/TVQ). Laissez vide si aucun taux contractuel n'est convenu.
+          </p>
+        </div>
+      </div>
+
       {# ── La limite honnête ───────────────────────────────────────── #}
       <div class="mt-5 pt-4 border-t border-gray-100">
         <p class="text-xs text-gray-500">

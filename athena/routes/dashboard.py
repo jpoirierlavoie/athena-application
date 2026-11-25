@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint("dashboard", __name__)
 
 _DASHBOARD_POOL = ThreadPoolExecutor(max_workers=6, thread_name_prefix="dash")
-_STATS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dash-stats")
+_STATS_POOL = ThreadPoolExecutor(max_workers=5, thread_name_prefix="dash-stats")
 
 # The « Factures impayées » tile's links: one per issued status — the pair
 # invoice.get_outstanding_totals sums (its _ISSUED_STATUSES, pinned equal by
@@ -211,85 +211,123 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
         return []
 
 
-def _get_quick_stats() -> dict:
-    """Return counts and amounts for the dashboard stats cards.
+def _get_quick_stats(today: date | None = None) -> dict:
+    """Return financial pulse amounts for the 4 top dashboard tiles (1b).
 
-    The counts and the unbilled time are server-side aggregations (COUNT/
-    SUM); the outstanding invoices are a Python sum of their live balances
-    (``invoice.get_outstanding_totals``, which says why). Each stat degrades
-    independently: a failure leaves its safe default in place.
-    ``outstanding_links`` — one ``{status, label, amount}`` per issued
-    status — always holds the tile's links; ``outstanding_unavailable``
-    says the sums failed, and the tile then shows « indisponible » instead
-    of any amount — never a 0 that reads « nothing is owed ».
+    Every tile fails CLOSED to an explicit ``*_unavailable`` flag so the
+    UI renders « indisponible » rather than a false « 0,00 $ »:
+    (1) Facturé ce mois / trimestre,
+    (2) Travail non facturé (hours + $ including unbilled disbursements),
+    (3) Factures impayées (Envoyées vs En retard),
+    (4) Solde opérations & Fidéicommis (strictly separated, never merged).
     """
+    today = today or deadlines.today_mtl()
     stats: dict = {
-        "open_dossiers": 0,
+        "billed_month": 0,
+        "billed_quarter": 0,
+        "billed_unavailable": False,
         "unbilled_hours": 0.0,
+        "unbilled_time_amount": 0,
+        "unbilled_expenses": 0,
         "unbilled_amount": 0,
+        "unbilled_unavailable": False,
         "outstanding_invoices": 0,
+        "outstanding_unavailable": False,
+        "outstanding_links": [],
+        "admin_ops_total": 0,
+        "admin_reconciliation_overdue": False,
+        "admin_unavailable": False,
         "trust_total": 0,
         "trust_reconciliation_overdue": False,
+        "trust_unavailable": False,
     }
-    def _load_open():
-        from models.dossier import count_open
-        return count_open()
 
-    def _load_unbilled():
-        from models.time_entry import get_unbilled_totals
-        return get_unbilled_totals()
+    def _load_invoices():
+        from models.invoice import get_dashboard_invoice_pulse_strict
+        return get_dashboard_invoice_pulse_strict(today)
 
-    def _load_outstanding():
-        from models.invoice import get_outstanding_totals_strict
-        return get_outstanding_totals_strict()
+    def _load_unbilled_time():
+        from models.time_entry import get_unbilled_totals_strict
+        return get_unbilled_totals_strict()
+
+    def _load_unbilled_expenses():
+        from models.expense import get_unbilled_totals_strict
+        return get_unbilled_totals_strict()
+
+    def _load_admin():
+        from models import admin_ledger
+        return admin_ledger.get_firm_admin_snapshot()
 
     def _load_trust():
         from models import trust
         return trust.get_firm_trust_snapshot()
 
-    f_open = _STATS_POOL.submit(_load_open)
-    f_unbilled = _STATS_POOL.submit(_load_unbilled)
-    f_inv = _STATS_POOL.submit(_load_outstanding)
+    f_inv = _STATS_POOL.submit(_load_invoices)
+    f_time = _STATS_POOL.submit(_load_unbilled_time)
+    f_exp = _STATS_POOL.submit(_load_unbilled_expenses)
+    f_admin = _STATS_POOL.submit(_load_admin)
     f_trust = _STATS_POOL.submit(_load_trust)
 
-    try:
-        stats["open_dossiers"] = f_open.result()
-    except Exception as exc:
-        logger.warning("dashboard: open dossiers stat failed: %s", type(exc).__name__)
-
-    try:
-        totals = f_unbilled.result()
-        stats["unbilled_hours"] = totals.get("hours", 0.0)
-        stats["unbilled_amount"] = totals.get("amount", 0)
-    except Exception as exc:
-        logger.warning("dashboard: unbilled time stat failed: %s", type(exc).__name__)
-
     by_status: dict = {}
-    stats["outstanding_unavailable"] = False
     try:
-        # ONE call for the whole tile: its total and each link's own figure
-        # are the same sums, so they never disagree — and the total is what
-        # get_outstanding_total gives the connector's get_agenda.
-        by_status = f_inv.result()
+        pulse = f_inv.result()
+        billed = pulse.get("billed") or {}
+        stats["billed_month"] = int(billed.get("month", 0))
+        stats["billed_quarter"] = int(billed.get("quarter", 0))
+        by_status = pulse.get("outstanding") or {}
         stats["outstanding_invoices"] = sum(by_status.values())
     except Exception as exc:
-        # A failed read never passes for « nothing is owed »: the tile says
-        # « indisponible » (the lawyer's choice of 2026-11-11). The type
-        # only: an exception's text may quote a stored value.
+        # A failed read never passes for « nothing is billed/owed »: log the
+        # exception type only and render « indisponible » on both tiles.
+        stats["billed_unavailable"] = True
         stats["outstanding_unavailable"] = True
-        logger.warning("dashboard: outstanding invoices stat failed: %s",
-                       type(exc).__name__)
-    # The links stand even when the sums failed: the way to the lists.
+        logger.warning(
+            "dashboard: outstanding invoices stat failed: %s",
+            type(exc).__name__,
+        )
     stats["outstanding_links"] = [
         {"status": status, "label": label, "amount": by_status.get(status, 0)}
         for status, label in _OUTSTANDING_LINK_LABELS.items()
     ]
 
     try:
+        t_totals = f_time.result()
+        e_totals = f_exp.result()
+        time_cents = int(t_totals.get("amount", 0) or 0)
+        exp_cents = int(e_totals.get("amount", 0) or 0)
+        stats["unbilled_hours"] = t_totals.get("hours", 0.0)
+        stats["unbilled_time_amount"] = time_cents
+        stats["unbilled_expenses"] = exp_cents
+        stats["unbilled_amount"] = time_cents + exp_cents
+    except Exception as exc:
+        stats["unbilled_unavailable"] = True
+        logger.warning(
+            "dashboard: unbilled work stat failed: %s",
+            type(exc).__name__,
+        )
+
+    try:
+        admin_snap = f_admin.result()
+        ops_accounts = [
+            a for a in (admin_snap.get("accounts") or [])
+            if a.get("account_type") == "opérations"
+        ]
+        stats["admin_ops_total"] = sum(
+            int(a.get("ledger_balance", 0)) for a in ops_accounts
+        )
+        stats["admin_reconciliation_overdue"] = any(
+            bool(a.get("reconciliation_overdue")) for a in ops_accounts
+        )
+    except Exception as exc:
+        stats["admin_unavailable"] = True
+        logger.warning("dashboard: admin stat failed: %s", type(exc).__name__)
+
+    try:
         snapshot = f_trust.result()
-        stats["trust_total"] = snapshot.get("total_held_cents", 0)
+        stats["trust_total"] = int(snapshot.get("total_held_cents", 0))
         stats["trust_reconciliation_overdue"] = snapshot.get("reconciliation_overdue", False)
     except Exception as exc:
+        stats["trust_unavailable"] = True
         logger.warning("dashboard: trust stat failed: %s", type(exc).__name__)
 
     return stats

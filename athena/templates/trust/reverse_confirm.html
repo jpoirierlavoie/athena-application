@@ -4,7 +4,9 @@
 {% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-lg mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-6">
-    <a href="{{ url_for('trust.entry_detail', tx_id=entry.id) }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('trust.entry_detail', tx_id=entry.id) }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour à l'écriture" title="Retour à l'écriture">{{ ms('arrow_back', 20) }}</a>
     <h1 class="text-xl font-semibold text-gray-900">Contre-passer l'écriture n<sup>o</sup> {{ entry.sequence }}</h1>
   </div>
 
@@ -36,6 +38,10 @@
     La recette que ce paiement d'honoraires a inscrite au compte d'administration est
     contre-passée <strong>dans la même opération</strong>, et le paiement porté sur la facture
     réduit d'autant — si l'une ne peut pas suivre, rien n'est contre-passé.
+    {% elif entry.admin_transaction_id %}
+    Le virement sortant inscrit au compte d'opérations sera contre-passé
+    <strong>dans la même opération</strong> — les fonds compensés du client doivent
+    toujours couvrir le montant (art. 59).
     {% endif %}
     {% endif %}
     L'écriture n'est jamais modifiée ni supprimée.

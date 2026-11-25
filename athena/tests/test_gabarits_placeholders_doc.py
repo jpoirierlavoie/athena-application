@@ -28,8 +28,10 @@ import pytest
 
 from utils.invoice_docx import (
     CREDIT_NOTE_FIELDS,
+    INTEREST_NOTICE_FIELDS,
     InvoicePayments,
     build_credit_note_context,
+    build_interest_notice_context,
     build_invoice_context,
 )
 from utils.note_docx import build_note_context
@@ -37,6 +39,7 @@ from utils.template_fields import (
     CATALOG,
     CREDIT_NOTE_INVOICE_FIELDS,
     FLAT_ALIASES,
+    INTEREST_NOTICE_INVOICE_FIELDS,
     MANUAL_FIELDS,
     _FEE_TYPE_LABEL,
     _MANDATE_TYPE_LABEL,
@@ -184,6 +187,37 @@ def test_credit_note_fields_match_the_builder(doc, cited):
     section = doc.split("## 7. Note de crédit seulement", 1)[1].split("\n## ", 1)[0]
     in_section = {n for n in _TOKEN_RE.findall(section) if n.startswith("facture.")}
     assert in_section == set(CREDIT_NOTE_INVOICE_FIELDS)
+    assert ctx.rows == {} and ctx.conditions == {}
+
+
+def test_interest_notice_fields_match_the_builder(cited, doc):
+    ctx = build_interest_notice_context(
+        {"invoice_number": "2031-F001",
+         "date": datetime.datetime(2031, 1, 3, tzinfo=datetime.timezone.utc),
+         "due_date": datetime.datetime(2031, 2, 3, tzinfo=datetime.timezone.utc),
+         "amount_due": 100000,
+         "gst_number": "123", "qst_number": "456",
+         "billing_address": {"name": "Cliente Exemple"}},
+        {"interest_notice_number": "2031-AI001",
+         "date": datetime.datetime(2031, 3, 10, tzinfo=datetime.timezone.utc),
+         "period_start": datetime.datetime(2031, 2, 3, tzinfo=datetime.timezone.utc),
+         "period_end": datetime.datetime(2031, 3, 10, tzinfo=datetime.timezone.utc),
+         "days": 35, "principal": 100000, "rate_bps": 1200, "amount": 1151,
+         "reason": "Avis 1"},
+        firm={}, destinataire=None,
+        dossier={"id": "d1", "file_number": "2031-001", "title": "Dossier"},
+        today=datetime.date(2031, 3, 10), balance_cents=101151,
+    )
+    produced = {k for k in ctx.values if k.startswith("ai.")}
+    documented = {n for n in cited if n.startswith("ai.")}
+    assert produced == documented == set(INTEREST_NOTICE_FIELDS), (
+        f"non documentés : {sorted(produced - documented)} ; "
+        f"documentés mais jamais produits : {sorted(documented - produced)}"
+    )
+    assert set(INTEREST_NOTICE_INVOICE_FIELDS) <= set(ctx.values)
+    section = doc.split("## 10. Avis d'intérêts seulement", 1)[1].split("\n## ", 1)[0]
+    in_section = {n for n in _TOKEN_RE.findall(section) if n.startswith("facture.")}
+    assert in_section == set(INTEREST_NOTICE_INVOICE_FIELDS)
     assert ctx.rows == {} and ctx.conditions == {}
 
 

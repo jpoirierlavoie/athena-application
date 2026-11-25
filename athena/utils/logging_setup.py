@@ -153,6 +153,8 @@ def _derive_auth_context(path: str) -> str:
     """
     if path.startswith(_DAV_PREFIX):
         return "dav_basic"
+    if path.startswith("/calendrier-partage/"):
+        return "public_feed"
     if path == _MCP_PATH or path.startswith(_MCP_PATH + "/"):
         return "mcp_bearer"
     for prefix in _ANON_PREFIXES:
@@ -216,6 +218,7 @@ class RedactionFilter(logging.Filter):
     EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
     POSTAL_RE = re.compile(r"\b[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d\b")
     COURT_FILE_RE = re.compile(r"\b\d{3}-\d{2}-\d{6}-\d{3}\b")
+    SHARED_FEED_RE = re.compile(r"/calendrier-partage/[^\s/?#]+")
     PHONE_RE = re.compile(
         r"\+\d{10,15}"
         r"|\(\d{3}\)\s*\d{3}[-.\s]?\d{4}"
@@ -313,6 +316,9 @@ class RedactionFilter(logging.Filter):
         if not isinstance(url, str):
             return
         stripped = url.split("?", 1)[0].split("#", 1)[0]
+        stripped = RedactionFilter.SHARED_FEED_RE.sub(
+            "/calendrier-partage/<redacted>", stripped
+        )
         if stripped == url:
             return
         record._http_request = {**http_request, "requestUrl": stripped}
@@ -367,6 +373,7 @@ class RedactionFilter(logging.Filter):
         # matching raw control whitespace (a phone split across "\n" must
         # still redact), and the \x00 court-file placeholder tokens below
         # are restored before the controls pass ever sees the string.
+        s = self.SHARED_FEED_RE.sub("/calendrier-partage/<redacted>", s)
         if REDACT_COURT_FILE_NUMBERS:
             s = self.COURT_FILE_RE.sub("<court-file>", s)
             s = self.EMAIL_RE.sub("<email>", s)
@@ -565,6 +572,7 @@ _PALLAS_INVOICE = logging.getLogger("pallas.invoice")
 _PALLAS_PROTOCOL = logging.getLogger("pallas.protocol")
 _PALLAS_PARTIE = logging.getLogger("pallas.partie")
 _PALLAS_COURRIER = logging.getLogger("pallas.courrier")
+_PALLAS_ONEDRIVE = logging.getLogger("pallas.onedrive")
 
 
 AuthEvent = Literal[
@@ -783,6 +791,10 @@ SettingsEvent = Literal[
     # ou ordres du jour.
     "rendez_vous_reglages_updated",
     "rendez_vous_reglages_refused",
+    # Flux .ics partagé assaini (1j) : événements sans jeton ni PII.
+    "shared_calendar_token_rotated",
+    "shared_calendar_token_revoked",
+    "shared_calendar_rejected",
 ]
 TemplateEvent = Literal[
     "template_uploaded",
@@ -813,6 +825,7 @@ TrustEvent = Literal[
     # (models/releve_conciliation): ids, size and type, never a file name.
     "trust_reconciliation_statement_attached",
     "trust_reconciliation_statement_removed",
+    "trust_receipt_attached",
     "trust_export",
 ]
 TrustOutcome = Literal["success", "refused"]
@@ -865,9 +878,12 @@ InvoiceEvent = Literal[
     "invoice_overdue_sweep",
     "invoice_written_off",
     "invoice_write_off_reversed",
+    "invoice_interest_charged",
+    "invoice_interest_reversed",
 ]
 InvoiceOutcome = Literal["success", "refused"]
 InvoiceWriteOffEvent = Literal["invoice_written_off", "invoice_write_off_reversed"]
+InvoiceInterestEvent = Literal["invoice_interest_charged", "invoice_interest_reversed"]
 InvoiceSweepOutcome = Literal["success", "failure"]
 # Protocol steps and their linked-task cascade (lot 0b, 2026-09-26). A step
 # status change rewrites a DAV-exposed task behind the caller's back; before
@@ -991,6 +1007,23 @@ CourrierEvent = Literal[
     "courrier_classement",
 ]
 CourrierOutcome = Literal["success", "failure", "refused"]
+# One-way OneDrive mirror (Athena -> OneDrive, 2b). Entity IDs, action codes,
+# HTTP status codes, and counts ONLY — never filenames, folder names, client
+# names, or amounts.
+MiroirOneDriveEvent = Literal[
+    "miroir_onedrive_doc_sync",
+    "miroir_onedrive_doc_delete",
+    "miroir_onedrive_folder_sync",
+    "miroir_onedrive_folder_delete",
+    "miroir_onedrive_template_sync",
+    "miroir_onedrive_template_delete",
+    "miroir_onedrive_receipt_sync",
+    "miroir_onedrive_statement_sync",
+    "miroir_onedrive_sweep",
+    "miroir_onedrive_dispatch_error",
+    "miroir_onedrive_excluded_skipped",
+]
+MiroirOneDriveOutcome = Literal["success", "failure", "refused"]
 
 
 def _emit(
@@ -1447,6 +1480,39 @@ def log_invoice_write_off(
     _emit(_PALLAS_INVOICE, logging.INFO, event, fields)
 
 
+def log_invoice_interest(
+    event: InvoiceInterestEvent,
+    invoice_id: str,
+    *,
+    interest_id: str,
+    via: str,
+    status: str,
+    dossier_id: str = "",
+    reverses_id: Optional[str] = None,
+) -> None:
+    """Emit a committed interest-notice door's ONE line — logger
+    ``pallas.invoice``, at INFO (lot 4a, ``models/invoice``):
+    ``invoice_interest_charged`` (« Facturer des intérêts ») or
+    ``invoice_interest_reversed`` (« Annuler l'avis d'intérêts »).
+
+    IDs, writer path, and invoice status only: NEVER amounts, rates, or
+    free-text reasons (zero PII).
+    """
+    fields: dict[str, Any] = {
+        "event": event,
+        "outcome": "success",
+        "invoice_id": invoice_id,
+        "interest_id": interest_id,
+        "via": via,
+        "status": status,
+    }
+    if dossier_id:
+        fields["dossier_id"] = dossier_id
+    if reverses_id:
+        fields["reverses_id"] = reverses_id
+    _emit(_PALLAS_INVOICE, logging.INFO, event, fields)
+
+
 def log_protocol_event(
     event: ProtocolEvent,
     protocol_id: str,
@@ -1499,6 +1565,25 @@ def log_courrier_event(
     _emit(_PALLAS_COURRIER, level, event, fields)
 
 
+def log_onedrive_mirror_event(
+    event: MiroirOneDriveEvent,
+    outcome: MiroirOneDriveOutcome = "success",
+    *,
+    reason: Optional[str] = None,
+    **counts: Any,
+) -> None:
+    """Emit a OneDrive mirror event — logger ``pallas.onedrive`` (zero PII)."""
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **counts}
+    if reason is not None:
+        fields["reason"] = reason
+    level = {
+        "success": logging.INFO,
+        "refused": logging.WARNING,
+        "failure": logging.ERROR,
+    }[outcome]
+    _emit(_PALLAS_ONEDRIVE, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -1542,6 +1627,7 @@ __all__: Iterable[str] = (
     "log_dossier_event",
     "log_hearing_series_event",
     "log_mcp_event",
+    "log_onedrive_mirror_event",
     "log_portail_event",
     "log_protocol_event",
     "log_security_event",

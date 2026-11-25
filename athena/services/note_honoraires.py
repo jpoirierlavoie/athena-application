@@ -101,7 +101,9 @@ from models.admin_ledger import list_invoice_receipts_strict, receipt_stands
 from models.doc_template import (
     TemplateReadError,
     get_active_template,
+    has_en,
     template_file_bytes,
+    template_placeholders_for,
 )
 from models.document import find_generated_for_invoice
 from models.dossier import get_dossier_strict
@@ -137,7 +139,13 @@ from utils.invoice_docx import (
     prints_trust_balance,
 )
 from utils.logging_setup import log_template_event, log_unexpected
-from utils.template_fields import classify_placeholders, fallback_value, manual_value
+from utils.template_fields import (
+    VALID_LANGUAGES,
+    classify_placeholders,
+    fallback_value,
+    manual_value,
+    normalize_lang,
+)
 from utils.tracing_setup import add_attributes, span
 
 NOTE_KIND = "note_honoraires"
@@ -260,34 +268,43 @@ class NoteGeneree:
     write_off: dict = field(default_factory=dict)
 
 
-def assemble_note_values(template: dict, ctx) -> dict[str, str]:
+def assemble_note_values(
+    template: dict, ctx, *, lang: str = "fr"
+) -> dict[str, str]:
     """One value per template placeholder: ctx (facture.* + resolved header
     fields) → auto fallback → manual default. Row-scoped (h./d.) and
     passthrough names are omitted (rows fill the former; the latter stay
     literal). Moved verbatim from ``routes/invoices._assemble_note_values``.
     """
-    placeholders = template.get("placeholders", [])
+    norm_lang = normalize_lang(lang)
+    placeholders = template_placeholders_for(template, norm_lang)
     classification = classify_placeholders(placeholders)
     values: dict[str, str] = {}
     for name in placeholders:
         if name in ctx.values:
             values[name] = ctx.values[name]
         elif name in classification.auto:
-            values[name] = fallback_value(name, is_auto=True)
+            values[name] = fallback_value(name, is_auto=True, lang=norm_lang)
         elif name in classification.manual:
             # manual_value(), never MANUAL_FIELDS[name]: manual names match
             # case-insensitively since Sept. 2026, so a {{PRIVILÈGE}} in a note
             # template would KeyError on the bare index — on a path that never
             # prompts, so nothing would hint at the cause.
-            values[name] = manual_value(name)
+            values[name] = manual_value(name, lang=norm_lang)
         # else: passthrough / row-scoped → omit
     return values
 
 
-def fill_fingerprint(template: dict, values: dict, ctx, *,
-                     subject: Optional[dict] = None) -> str:
-    """The SHA-256 of what a note prints: the template's id and version,
-    and every value, row and condition the fill receives.
+def fill_fingerprint(
+    template: dict,
+    values: dict,
+    ctx,
+    *,
+    subject: Optional[dict] = None,
+    lang: str = "fr",
+) -> str:
+    """The SHA-256 of what a note prints: the template's id, language and
+    version, and every value, row and condition the fill receives.
 
     Two generations with the same fingerprint produce the same document:
     the same bytes of the same template (a replaced file is a new version),
@@ -297,20 +314,26 @@ def fill_fingerprint(template: dict, values: dict, ctx, *,
     decided by the CONTENT here.
 
     *subject* (lot 3d) — what a document of another kind is OF, beyond what
-    it prints: a credit note names its kind and its radiation, so that two
-    credit notes of one invoice that print the same values (a gabarit
-    without ``{{nc.numero}}``) are never each other's document, and no
-    credit note is ever a note d'honoraires'. Absent (the note
-    d'honoraires), the payload — hence every fingerprint already stored —
-    is exactly what it always was.
+    it prints. For FR (the historical default), ``lang`` is omitted so every
+    existing fingerprint matches byte-for-byte; ``lang="en"`` always adds
+    ``"lang": "en"`` and reads ``en_version``, preventing FR/EN reuse
+    collisions.
     """
+    norm_lang = normalize_lang(lang)
+    version = (
+        template.get("en_version", 1)
+        if norm_lang == "en"
+        else template.get("version", 1)
+    )
     payload = {
         "template_id": str(template.get("id") or ""),
-        "template_version": template.get("version", 1),
+        "template_version": version,
         "values": values,
         "rows": ctx.rows,
         "conditions": ctx.conditions,
     }
+    if norm_lang == "en":
+        payload["lang"] = "en"
     if subject is not None:
         payload["subject"] = subject
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False,
@@ -330,6 +353,7 @@ def generer_note_honoraires(
     resolve_uid: Optional[Callable[[], str]] = None,
     today: Optional[date] = None,
     generated_by: str = "",
+    lang: str = "fr",
 ) -> NoteGeneree:
     """Generate *invoice_id*'s note d'honoraires into « Mandat › Factures ».
 
@@ -343,6 +367,9 @@ def generer_note_honoraires(
     the phrase its INSTRUCTIONS promise every document it generates
     carries; the web passes nothing (lot 3b).
     """
+    lang_clean = str(lang or "fr").strip().lower()
+    if lang_clean not in VALID_LANGUAGES:
+        raise _refuse("invalid_lang", "Langue de document non valide.")
     try:
         invoice, items = get_invoice_with_items_strict(invoice_id)
     except Exception:
@@ -369,6 +396,13 @@ def generer_note_honoraires(
     if not template:
         raise _refuse("no_note_template", NO_ACTIVE_NOTE_HONORAIRES)
     template_id = template["id"]
+    if lang_clean == "en" and not has_en(template):
+        raise _refuse(
+            "no_en_version",
+            "Le gabarit actif « Note d'honoraires » n'a pas de version anglaise.",
+            template_id=template_id,
+            invoice_id=invoice_id,
+        )
 
     dossier_id = invoice.get("dossier_id", "")
     # STRICT: this read decides what a client-facing document prints, and
@@ -392,8 +426,9 @@ def generer_note_honoraires(
     # printed balance (models.invoice.payments_print_defect). The standing
     # write-offs print beside them (lot 3a, D2): balance_of subtracts the
     # very events these rows print.
+    placeholders = template_placeholders_for(template, lang_clean)
     payments = None
-    if prints_payments(template.get("placeholders")):
+    if prints_payments(placeholders):
         try:
             standing = [row for row in list_invoice_receipts_strict(invoice_id)
                         if receipt_stands(row)]
@@ -416,19 +451,20 @@ def generer_note_honoraires(
     # dossier the save below refuses anyway (« Factures » has none to live
     # in).
     trust_balance = None
-    if dossier is not None and prints_trust_balance(template.get("placeholders")):
+    if dossier is not None and prints_trust_balance(placeholders):
         trust_client = invoice_trust_client(invoice, dossier)
         if not trust_client:
             raise _refuse("trust_balance_unavailable", TRUST_BALANCE_UNAVAILABLE,
                           template_id=template_id, invoice_id=invoice_id)
         trust_balance = client_book_balance(dossier, trust_client)
 
+    ctx_kw = {"lang": "en"} if lang_clean == "en" else {}
     ctx = build_invoice_context(
         invoice, items,
         firm=cabinet_dict(), destinataire=client, dossier=dossier, today=day,
-        payments=payments, trust_balance_cents=trust_balance,
+        payments=payments, trust_balance_cents=trust_balance, **ctx_kw,
     )
-    values = assemble_note_values(template, ctx)
+    values = assemble_note_values(template, ctx, **ctx_kw)
     counts = {
         "rows_honoraire": len(ctx.rows["ligne_honoraire"]),
         "rows_debours_tx": len(ctx.rows["ligne_debours_tx"]),
@@ -437,7 +473,7 @@ def generer_note_honoraires(
     if PAYMENT_REGION in ctx.rows:
         counts["rows_paiement"] = len(ctx.rows[PAYMENT_REGION])
     add_attributes(template_id=template_id, invoice_id=invoice_id, **counts)
-    fingerprint = fill_fingerprint(template, values, ctx)
+    fingerprint = fill_fingerprint(template, values, ctx, **ctx_kw)
 
     if not regenerate:
         try:
@@ -454,7 +490,7 @@ def generer_note_honoraires(
                                    fingerprint=fingerprint, reused=True,
                                    counts=counts, invoice=invoice)
 
-    docx_bytes = template_file_bytes(template)
+    docx_bytes = template_file_bytes(template, **ctx_kw)
     if docx_bytes is None:
         raise _refuse("template_file_unavailable", TEMPLATE_FILE_UNAVAILABLE,
                       template_id=template_id)
@@ -483,8 +519,9 @@ def generer_note_honoraires(
 
     invoice_number = invoice.get("invoice_number", "")
     tmpl_base = template.get("name") or "Note d'honoraires"
+    lang_suffix = " (EN)" if lang_clean == "en" else ""
     display, out_name = projet_names(
-        dossier, f"{tmpl_base} {invoice_number}".strip(), day)
+        dossier, f"{tmpl_base} {invoice_number}{lang_suffix}".strip(), day)
     try:
         # « Mandat › Factures », found by its ROLE at its deterministic id
         # (the default folder tree): a failure REFUSES
@@ -499,7 +536,7 @@ def generer_note_honoraires(
             category="correspondance",
             genere_depuis=" ".join(
                 part for part in (
-                    f"Générée depuis la facture {invoice_number}".strip(),
+                    f"Générée depuis la facture {invoice_number}{lang_suffix}".strip(),
                     generated_by.strip(),
                 ) if part),
             tags=("note_honoraires",),

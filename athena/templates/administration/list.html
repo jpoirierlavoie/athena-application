@@ -13,11 +13,15 @@
     <div class="flex flex-wrap items-center gap-2">
       <a href="{{ url_for('admin_ledger.accounts_list') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
       <a href="{{ url_for('admin_ledger.reconciliations_list') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
-      {% if account %}
-      <a href="{{ url_for('admin_ledger.card_payment') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Paiement de carte</a>
-      <a href="{{ url_for('admin_ledger.entry_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        {{ ms('add', 16) }}
-        Nouvelle écriture
+      {% if accounts %}
+      <a href="{{ url_for('admin_ledger.account_transfer') }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Virement entre comptes</a>
+      <a href="{{ url_for('admin_ledger.advance_transfer') }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Avances au fidéicommis</a>
+      <a href="{{ url_for('admin_ledger.card_payment') }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Paiement de carte</a>
+      <a id="admin-new-entry" href="{{ url_for('admin_ledger.entry_new', account_id=account.id if (account and account.status == 'actif') else none) }}"
+         aria-label="Nouvelle écriture"
+         title="Nouvelle écriture"
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('add', 20) }}
       </a>
       {% endif %}
     </div>
@@ -46,8 +50,9 @@
         <select name="account_id" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
                 class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
           {% for a in accounts %}
-          <option value="{{ a.id }}" {% if a.id == account.id %}selected{% endif %}>{{ a.name }}</option>
+          <option value="{{ a.id }}" {% if account and a.id == account.id %}selected{% endif %}>{{ a.name }}</option>
           {% endfor %}
+          <option value="tous" {% if filters.account_id == 'tous' %}selected{% endif %}>Tous les comptes</option>
         </select>
       </div>
       <div>
@@ -108,8 +113,8 @@
   <div id="admin-rows">{% include "administration/_transaction_rows.html" %}</div>
   {% endif %}
 
-  {% if account %}
-  <a href="{{ url_for('admin_ledger.entry_new') }}" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
+  {% if accounts %}
+  <a id="admin-new-entry-fab" href="{{ url_for('admin_ledger.entry_new', account_id=account.id if (account and account.status == 'actif') else none) }}" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
     {{ ms('add', 24) }}
   </a>
   {% endif %}

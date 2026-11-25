@@ -1,18 +1,22 @@
 {# Export dropdown button — include with: csv_url, pdf_url #}
 <div x-data="{ exportOpen: false }" class="relative">
-  <button @click="exportOpen = !exportOpen"
-          class="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 inline-flex items-center gap-1.5">
-    {{ ms('download', 16) }}
-    Exporter
+  <button type="button"
+          @click="exportOpen = !exportOpen"
+          aria-label="Exporter"
+          title="Exporter"
+          class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+    {{ ms('download', 20) }}
   </button>
   <div x-show="exportOpen" @click.outside="exportOpen = false" x-cloak
        class="absolute right-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 py-1 w-36 z-10">
     <a href="{{ csv_url }}"
-       class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+       class="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-100">
+      {{ ms('table_view', 16) }}
       CSV
     </a>
     <a href="{{ pdf_url }}"
-       class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+       class="flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-100">
+      {{ ms('picture_as_pdf', 16) }}
       PDF
     </a>
   </div>

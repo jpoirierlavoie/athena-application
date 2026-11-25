@@ -4,7 +4,9 @@
 {% from "components/_champ_contrepartie.html" import champ_contrepartie %}
 <div class="max-w-2xl mx-auto px-4 py-6">
   <div class="flex items-center gap-2 mb-6">
-    <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <a href="{{ url_for('trust.journal') }}"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+       aria-label="Retour au journal" title="Retour au journal">{{ ms('arrow_back', 20) }}</a>
     <h1 class="text-xl font-semibold text-gray-900">Nouvelle écriture en fidéicommis</h1>
   </div>
 
@@ -52,7 +54,7 @@
           {# Sens + mode drive the art. 57/72 cash block below. |jsattr: a
              re-render echoes what the form POSTED, never raw into JS. #}
           direction: {{ (entry.direction if entry and entry.direction else valid_directions[0]) | jsattr }},
-          method: {{ (entry.method if entry and entry.method else valid_methods[0]) | jsattr }},
+          method: {{ (selected_method if selected_method is defined and selected_method else (entry.method if entry and entry.method else 'virement')) | jsattr }},
           {# The counterparty (D6, 2026-11-11): the data block above; the
              account's bank (read at load and on a change of account);
              lastPrefill, the last value a pre-fill set — a name typed,
@@ -65,11 +67,17 @@
              a row picked writes its name, never replaced by a pre-fill. #}
           cpSkip: false, cpEmpty: true, cpStatus: '',
           pickCounterparty: function (b) { let f = this.$refs.counterparty; f.value = b.dataset.counterparty; this.lastPrefill = null; this.cpOpen = false; this.cpSkip = true; f.focus(); },
-          dossierOpen: false, cpOpen: false
+          dossierOpen: false, dossierEmpty: true, cpOpen: false,
+          stagedObjet: {{ (staged_receipt_objet or '') | jsattr }},
+          stagedName: {{ (staged_receipt_name or '') | jsattr }},
+          receiptBusy: false,
+          receiptError: '',
+          feePayeeTouched: {{ ('true' if entry and entry.get('counterparty') else 'false') | safe }},
+          stageReceipt: function (f) { return window._athenaStageReceipt(this, '{{ url_for('trust.api_televersement') }}', f); }
         }"
         x-init="$watch('purpose', function (p) { if (implied[p]) { direction = implied[p]; } applyPrefill(); }); $watch('clientId', function () { applyPrefill(); }); institution = ($refs.account && $refs.account.selectedOptions.length) ? ($refs.account.selectedOptions[0].dataset.institution || '') : ''; applyPrefill();"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" x-ref="csrf">
     {% if locked %}<input type="hidden" name="locked" value="1">{% endif %}
 
     <div>
@@ -78,7 +86,7 @@
               @change="institution = $event.target.selectedOptions.length ? ($event.target.selectedOptions[0].dataset.institution || '') : ''; applyPrefill()"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for a in accounts %}
-        <option value="{{ a.id }}" data-institution="{{ a.institution or '' }}" {% if entry and entry.account_id == a.id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
+        <option value="{{ a.id }}" data-institution="{{ a.institution or '' }}" {% if a.id == selected_account_id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
         {% endfor %}
       </select>
     </div>
@@ -119,9 +127,11 @@
       </div>
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Mode</label>
-        <select name="method" required x-model="method" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <select name="method" required x-model="method"
+                @change="if (!feePayeeTouched &amp;&amp; $refs.feePayee) { if ($event.target.value === 'chèque' &amp;&amp; $refs.feePayee.options.length > 1) { $refs.feePayee.selectedIndex = 1; } else { $refs.feePayee.selectedIndex = 0; } }"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
           {% for m in valid_methods %}
-          <option value="{{ m }}" {% if entry and entry.method == m %}selected{% endif %}>{{ method_labels[m] }}</option>
+          <option value="{{ m }}" {% if m == (selected_method or 'virement') %}selected{% endif %}>{{ method_labels[m] }}</option>
           {% endfor %}
         </select>
       </div>
@@ -162,7 +172,8 @@
        bank fees (trust.NO_DOSSIER_PURPOSES, the route's list) may leave it
        empty; every other purpose needs it, with its client. The server
        renders the hint of the purpose shown. #}
-    <div class="relative" @click.outside="dossierOpen = false">
+    <div class="relative" @click.outside="dossierOpen = false"
+         @htmx:after-swap="if ($event.detail.target.id === 'dossier-results') { var inp = $el.querySelector('input[name=q]'); if (inp &amp;&amp; !inp.value.trim()) { $event.detail.target.innerHTML = ''; dossierEmpty = true; dossierOpen = false; } else { dossierEmpty = !$event.detail.target.firstElementChild; } }">
       <label class="block text-sm font-medium text-gray-700 mb-1">Dossier{% if not (locked and dossier) %} <span class="text-gray-400 font-normal" x-show="(entryTypes.optional_dossier || []).includes(purpose)"{% if not dossier_optional %} x-cloak{% endif %}>(laisser vide pour intérêts / frais bancaires)</span><span class="text-gray-400 font-normal" x-show="!(entryTypes.optional_dossier || []).includes(purpose)"{% if dossier_optional %} x-cloak{% endif %}>(obligatoire, avec son client)</span>{% endif %}</label>
       <input type="hidden" name="dossier_id" :value="dossierId">
       {% if locked and dossier %}
@@ -171,13 +182,14 @@
       {# name="q" is load-bearing: hx-include="this" serializes the element by
          its name, so without it dossier_search never receives a query. #}
       <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
-             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''; clientId = ''; $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); })"
+             @focus="if (!dossierEmpty) { dossierOpen = true; }" @input="dossierOpen = true; dossierId=''; clientId = ''; if (!$el.value.trim()) { document.getElementById('dossier-results').innerHTML = ''; dossierEmpty = true; dossierOpen = false; } $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); })"
              hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
       {# Picking a dossier also loads ITS clients into the select below, straight
          off the row — no second request, nothing to race. #}
-      <div id="dossier-results" x-show="dossierOpen" x-cloak
-           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; clientId = ''; clients = JSON.parse(li.dataset.clients || '[]'); $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); }); }"
+      <div id="dossier-results" x-show="dossierOpen &amp;&amp; !dossierEmpty" x-cloak
+           @pointerdown.prevent @mousedown.prevent
+           @click="let b = $event.target.closest('button[data-dossier-id]'); if (b) { dossierId = b.dataset.dossierId; dossierDisplay = b.dataset.dossierFileNumber + ' — ' + b.dataset.dossierTitle; dossierOpen = false; clientId = ''; clients = JSON.parse(b.dataset.clients || '[]'); $nextTick(function () { document.body.dispatchEvent(new CustomEvent('rafraichir-factures')); }); }"
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       {% endif %}
     </div>
@@ -231,7 +243,7 @@
       <label class="block text-sm font-medium text-gray-700 mb-1">Bénéficiaire du paiement d'honoraires</label>
       {% if fee_payees %}
       {% set chosen_payee = entry.counterparty if entry and entry.counterparty in fee_payees else default_fee_payee %}
-      <select name="counterparty" :disabled="purpose !== 'virement_honoraires'" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      <select name="counterparty" x-ref="feePayee" @change="feePayeeTouched = true" :disabled="purpose !== 'virement_honoraires'" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for name in fee_payees %}
         <option value="{{ name }}" {% if name == chosen_payee %}selected{% endif %}>{{ name }}</option>
         {% endfor %}
@@ -321,10 +333,66 @@
       <textarea name="description" rows="2" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">{{ entry.description if entry else '' }}</textarea>
     </div>
 
+    <div class="p-3 border border-gray-200 rounded-xl space-y-2">
+      <input type="hidden" name="staged_receipt_objet" :value="stagedObjet">
+      <input type="hidden" name="staged_receipt_name" :value="stagedName">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p class="text-sm font-medium text-gray-700">Pièce justificative <span class="text-gray-400 font-normal">(facultatif)</span></p>
+          <p class="text-xs text-gray-500">{{ receipt_hint }}</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" x-show="stagedObjet" x-cloak
+                  @click="stagedObjet = ''; stagedName = ''; receiptError = ''"
+                  class="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Retirer</button>
+          <span x-show="receiptBusy" x-cloak class="px-3 py-2 text-xs text-gray-500">Envoi…</span>
+          <label x-show="!receiptBusy" class="px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
+            <span x-text="stagedObjet ? 'Remplacer' : 'Joindre un fichier'"></span>
+            <input type="file" accept="{{ receipt_accept }}" class="hidden"
+                   @change="stageReceipt($event.target.files[0]); $event.target.value = '';">
+          </label>
+        </div>
+      </div>
+      <p x-show="stagedObjet" x-cloak class="text-xs text-gray-700">Fichier prêt : <span class="font-medium" x-text="stagedName"></span></p>
+      <p x-show="receiptError" x-cloak class="text-xs text-red-600" x-text="receiptError"></p>
+    </div>
+
     <div class="flex justify-end gap-2 pt-2">
       <a href="{{ url_for('trust.journal') }}" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
-      <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Enregistrer</button>
+      <button type="submit" :disabled="receiptBusy" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Enregistrer</button>
     </div>
   </form>
 </div>
+<script nonce="{{ csp_nonce }}">
+window._athenaStageReceipt = async function (vm, uploadUrl, fichier) {
+  if (!fichier || vm.receiptBusy) { return; }
+  vm.receiptBusy = true;
+  vm.receiptError = '';
+  try {
+    var hdrs = { 'Content-Type': 'application/json', 'X-CSRFToken': vm.$refs.csrf.value };
+    var ouverture = await fetch(uploadUrl, {
+      method: "POST",
+      headers: hdrs,
+      body: JSON.stringify({ name: fichier.name, size: fichier.size })
+    });
+    var donnees = await ouverture.json().catch(function () { return {}; });
+    if (!ouverture.ok) {
+      vm.receiptError = donnees.erreur || 'refusé';
+      vm.receiptBusy = false;
+      return;
+    }
+    var put = await fetch(donnees.url, { method: "PUT", body: fichier });
+    if (!put.ok) {
+      vm.receiptError = 'transfert interrompu — réessayez';
+      vm.receiptBusy = false;
+      return;
+    }
+    vm.stagedObjet = donnees.objet || '';
+    vm.stagedName = fichier.name || 'recu';
+  } catch (e) {
+    vm.receiptError = 'erreur réseau — réessayez';
+  }
+  vm.receiptBusy = false;
+};
+</script>
 {% endblock %}

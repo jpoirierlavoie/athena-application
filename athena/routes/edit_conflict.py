@@ -65,7 +65,7 @@ MALFORMED_MESSAGE = (
 )
 
 
-def submitted_etag() -> Optional[str]:
+def submitted_etag(field: str = FIELD) -> Optional[str]:
     """The etag the submitted form was rendered from, or ``None``.
 
     ``None`` — the field is absent (a page rendered before the field
@@ -73,7 +73,7 @@ def submitted_etag() -> Optional[str]:
     unchecked path. A present but malformed value aborts the request with a
     French 400; nothing downstream runs.
     """
-    raw = request.form.get(FIELD)
+    raw = request.form.get(field)
     if raw is None:
         return None
     if not _ETAG_SHAPE.fullmatch(raw):

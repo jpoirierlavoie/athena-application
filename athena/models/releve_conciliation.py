@@ -983,6 +983,20 @@ def _file(staging, register: str, rec_id: str, uid: str, statement_id: str,
         erase_statement_object(register, previous)
     _log_attached(register, rec_id, statement_id, size, sniffed,
                   catch_up=bool(staged.get("catch_up")))
+    if staged.get("catch_up"):
+        try:
+            from services import miroir_onedrive
+
+            miroir_onedrive.enqueue_event(
+                "sync_reconciliation",
+                register="trust" if register == TRUST else "admin",
+                reconciliation_id=rec_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "releve_conciliation onedrive dispatch failed: %s",
+                type(exc).__name__,
+            )
     return Outcome({**fields, "id": rec_id}, [], CODE_JOINT)
 
 

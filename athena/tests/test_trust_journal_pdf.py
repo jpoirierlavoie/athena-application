@@ -54,10 +54,10 @@ def _widths() -> list[float]:
 # ── The sheet's shape (art. 38) ─────────────────────────────────────────────
 
 
-def test_ten_columns_in_the_article_38_order():
+def test_nine_columns_in_the_article_38_order():
     assert [c.label for c in J.COLUMNS] == [
         "Date", "Client", "N/Réf", "Somme reçue de / Bénéficiaire", "Objet",
-        "Mode", "N° de chèque", "Recette", "Débours", "Solde",
+        "N° de chèque", "Recette", "Déboursé", "Solde",
     ]
 
 
@@ -81,7 +81,7 @@ def test_only_free_text_columns_may_clip():
 
 def test_money_columns_are_the_three_amounts():
     assert J.MONEY_KEYS == ("recette", "debours", "solde")
-    assert J.TEXT_COLUMN_COUNT == 7
+    assert J.TEXT_COLUMN_COUNT == 6
 
 
 def test_title_block_carries_the_regulation():
@@ -107,9 +107,10 @@ def test_each_value_lands_under_its_own_column():
     assert by_label["N/Réf"] == "REF-M"
     assert by_label["Somme reçue de / Bénéficiaire"] == "TIERS-M"
     assert by_label["Objet"] == "OBJET-M"
-    assert by_label["Mode"] == "MODE-M"
+    assert "Mode" not in by_label
     assert by_label["N° de chèque"] == "CHQ-M"
     assert by_label["Recette"] == format_cents_fr(101)
+    assert by_label["Déboursé"] == ""
     assert by_label["Solde"] == format_cents_fr(303)
 
 
@@ -118,11 +119,11 @@ def test_recette_and_debours_are_mutually_exclusive_and_blank_not_zero():
     labels = [c.label for c in J.COLUMNS]
     recette = dict(zip(labels, J._row_cells(_row(), widths)))
     assert recette["Recette"] == format_cents_fr(500000)
-    assert recette["Débours"] == ""          # blank, never « 0,00 $ »
+    assert recette["Déboursé"] == ""         # blank, never « 0,00 $ »
     debours = dict(zip(labels, J._row_cells(
         _row(recette=None, debours=25000), widths)))
     assert debours["Recette"] == ""
-    assert debours["Débours"] == format_cents_fr(25000)
+    assert debours["Déboursé"] == format_cents_fr(25000)
 
 
 def test_uncleared_entry_is_starred_on_the_date():
@@ -178,7 +179,7 @@ def test_totals_row_reconciles_opening_and_closing():
                      cells[J.TEXT_COLUMN_COUNT:]))
     assert cells[0].startswith("TOTAUX — 2 inscriptions")
     assert money["Recette"] == format_cents_fr(500000)
-    assert money["Débours"] == format_cents_fr(25000)
+    assert money["Déboursé"] == format_cents_fr(25000)
     assert money["Solde"] == format_cents_fr(closing)
     assert opening + 500000 - 25000 == closing
 

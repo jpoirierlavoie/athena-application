@@ -8,18 +8,29 @@ exemption is needed (ordinary form POSTs).
 """
 
 import json
+import logging
+import uuid
 from datetime import datetime, timezone
 
+from firebase_admin import storage
 from flask import (
     Blueprint,
+    jsonify,
     redirect,
     render_template,
     request,
     url_for,
 )
 from markupsafe import escape
+from werkzeug.utils import secure_filename
 
 from auth import login_required
+from config import Config
+from models.document import (
+    build_attachment_disposition,
+    is_canonical_uuid4,
+    sign_blob_url,
+)
 from models.dossier import get_dossier
 from models import trust
 from models import releve_conciliation as rc
@@ -31,8 +42,15 @@ from models.trust import (
     ACCOUNT_TYPE_LABELS,
     BARREAU_COLUMNS,
     DIRECTION_LABELS,
+    MAX_RECEIPT_SIZE,
     METHOD_LABELS,
     PURPOSE_LABELS,
+    RECEIPT_ACCEPT,
+    RECEIPT_EXTENSIONS,
+    RECEIPT_HINT_FR,
+    RECEIPT_MIME_TYPES,
+    RECEIPT_SIZE_REFUSED_FR,
+    RECEIPT_TYPE_REFUSED_FR,
     RECONCILIATION_STATUS_LABELS,
     TX_STATUS_LABELS,
     VALID_ACCOUNT_TYPES,
@@ -51,9 +69,12 @@ from pagination import (
 )
 from security import safe_internal_redirect
 from utils import contreparties as cp
+from utils import storage_identity
 from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
+
+logger = logging.getLogger(__name__)
 from routes._helpers import (
     counterparty_suggestions,
     dossier_search_fragment,
@@ -126,9 +147,9 @@ def _entry_form_extras(method: str = "", *, entry=None, errors=()) -> dict:
     always a déboursé) so the form sets the sens when the objet is chosen;
     the payees a fee payment may name — the lawyer and his firm, as the
     firm profile names them (art. 58) — with the one preselected: the
-    model's default for *method*, the mode the form shows (its first,
-    « chèque », when none was posted) — the lawyer on a cheque, since art.
-    58 draws a fee cheque « à l'ordre de l'avocat ».
+    model's default for *method*, the mode the form shows (« virement »
+    when none was posted) — the firm on a transfer, the lawyer on a
+    cheque (art. 58).
 
     And the counterparty field (2026-11-11): its label by direction
     (``trust.PAYEE_LABELS``), the purposes whose field a NEW entry
@@ -150,7 +171,7 @@ def _entry_form_extras(method: str = "", *, entry=None, errors=()) -> dict:
         "purpose_directions": directions,
         "fee_payees": comptabilite.beneficiaires_honoraires(),
         "default_fee_payee": comptabilite.beneficiaire_honoraires_par_defaut(
-            method or VALID_METHODS[0]),
+            method or "virement"),
         # The page's JSON data block for the counterparty field.
         "entry_types": {
             "prefill_on": (not errors
@@ -497,17 +518,28 @@ def factures_du_dossier() -> str:
 @login_required
 def entry_new():
     accounts = trust.list_accounts(status="actif")
+    requested_account_id = request.args.get("account_id", "").strip()
+    selected_account_id = (
+        requested_account_id
+        if requested_account_id and any(a["id"] == requested_account_id for a in accounts)
+        else (accounts[0]["id"] if accounts else "")
+    )
     dossier_id = request.args.get("dossier_id", "").strip() or None
     locked = request.args.get("locked") == "1"
     dossier = get_dossier(dossier_id) if dossier_id else None
     admin_accounts, admin_lisible = comptabilite.comptes_operations_actifs()
     return render_template(
         "trust/form.html", accounts=accounts, entry=None, dossier=dossier,
+        selected_account_id=selected_account_id, selected_method="virement",
         locked=locked, errors=[],
         factures=_factures_emises(dossier["id"] if dossier else None),
         admin_accounts=admin_accounts, admin_lisible=admin_lisible,
         admin_account_id="",
-        **_entry_form_extras(),
+        receipt_accept=RECEIPT_ACCEPT,
+        receipt_hint=RECEIPT_HINT_FR,
+        staged_receipt_objet="",
+        staged_receipt_name="",
+        **_entry_form_extras("virement"),
         **_labels(),
     )
 
@@ -516,6 +548,11 @@ def entry_new():
 @login_required
 def entry_create():
     data = _entry_form_data()
+    staged_objet = request.form.get("staged_receipt_objet", "").strip()
+    staged_name = (
+        request.form.get("staged_receipt_name", "").strip()
+        or (staged_objet.rsplit("/", 1)[-1] if "/" in staged_objet else "recu")
+    )
     # correction is reserved for reversals — refuse it at the route (spec §7).
     # (virement_inter_dossiers is reserved too since D24, and refused by the
     # MODEL with its own message, naming the transfer screen.)
@@ -551,23 +588,57 @@ def entry_create():
             entry = report["entry"]
         errors = report["errors"]
         entry_id = entry["id"] if entry else None
-        warning_codes = report.get("warning_codes") or []
+        warning_codes = list(report.get("warning_codes") or [])
     if errors:
         accounts = trust.list_accounts(status="actif")
         dossier = get_dossier(data["dossier_id"]) if data.get("dossier_id") else None
         admin_accounts, admin_lisible = comptabilite.comptes_operations_actifs()
         return render_template(
             "trust/form.html", accounts=accounts, entry=data, dossier=dossier,
+            selected_account_id=data.get("account_id") or (accounts[0]["id"] if accounts else ""),
+            selected_method=data.get("method") or "virement",
             locked=request.form.get("locked") == "1", errors=errors,
             factures=_factures_emises(dossier["id"] if dossier else None),
             admin_accounts=admin_accounts, admin_lisible=admin_lisible,
             admin_account_id=admin_account_id,
-            **_entry_form_extras(data.get("method") or "", entry=data,
+            receipt_accept=RECEIPT_ACCEPT,
+            receipt_hint=RECEIPT_HINT_FR,
+            staged_receipt_objet=staged_objet,
+            staged_receipt_name=(
+                request.form.get("staged_receipt_name", "").strip()
+                or (staged_objet.rsplit("/", 1)[-1] if "/" in staged_objet else "")
+            ),
+            **_entry_form_extras(data.get("method") or "virement", entry=data,
                                  errors=errors),
             **_labels(),
         ), 400
+    if staged_objet and entry_id:
+        attached = False
+        try:
+            user_id = storage_identity.request_uid()
+        except storage_identity.StorageIdentityUnavailable:
+            user_id = None
+        seg_uuid = _staged_receipt_uuid(staged_objet, user_id) if user_id else None
+        if user_id and seg_uuid:
+            safe = secure_filename("".join(ch for ch in staged_name if ch.isprintable())) or "recu"
+            dest_path = f"users/{user_id}/fideicommis/{entry_id}/{seg_uuid}/{safe}"
+            updated, err_msg, _code = _copy_and_attach_staged_receipt(
+                entry_id, staged_objet, staged_name, dest_path,
+            )
+            attached = err_msg is None and updated is not None
+        if not attached:
+            warning_codes.append("recu_joint")
     return redirect(url_for("trust.entry_detail", tx_id=entry_id,
                             **_warning_param(warning_codes)))
+
+
+_TRUST_LOCAL_WARNINGS = {
+    "recu_joint": (
+        "L'écriture est enregistrée, mais la pièce justificative n'a pas pu "
+        "être jointe — vous pouvez la joindre ci-dessous."
+    ),
+    "recu": "La pièce justificative n'a pas pu être servie — réessayez dans un instant.",
+}
 
 
 def _warning_param(codes: list) -> dict:
@@ -577,7 +648,10 @@ def _warning_param(codes: list) -> dict:
     the invoiced client's own funds was no check at all). Codes only: the
     texts are ``comptabilite.WARNING_MESSAGES``, and a URL never carries a
     client's name."""
-    known = [c for c in codes if c in comptabilite.WARNING_MESSAGES]
+    known = [
+        c for c in codes
+        if c in comptabilite.WARNING_MESSAGES or c in _TRUST_LOCAL_WARNINGS
+    ]
     return {"avertissement": ",".join(known)} if known else {}
 
 
@@ -586,7 +660,8 @@ def _warnings_from_args() -> list[str]:
     unknown or forged code shows nothing (the page never echoes the URL)."""
     texts: list[str] = []
     for code in request.args.get("avertissement", "").split(",")[:5]:
-        text = comptabilite.WARNING_MESSAGES.get(code.strip())
+        c = code.strip()
+        text = comptabilite.WARNING_MESSAGES.get(c) or _TRUST_LOCAL_WARNINGS.get(c)
         if text and text not in texts:
             texts.append(text)
     return texts
@@ -612,9 +687,12 @@ def entry_detail(tx_id: str):
     # tests/test_admin_integration.py), strictly, only for those entries; a
     # failed read says « indisponible » and the page still answers (lot 8).
     fee_tx_id = None
-    if entry.get("purpose") == trust.FEE_PAYMENT_PURPOSE:
+    if entry.get("purpose") == trust.FEE_PAYMENT_PURPOSE or entry.get("admin_transaction_id"):
         fee_tx_id = entry.get("id")
-    elif reverses and reverses.get("purpose") == trust.FEE_PAYMENT_PURPOSE:
+    elif reverses and (
+        reverses.get("purpose") == trust.FEE_PAYMENT_PURPOSE
+        or reverses.get("admin_transaction_id")
+    ):
         fee_tx_id = reverses.get("id")
     recettes: list = []
     recettes_indisponibles = False
@@ -632,8 +710,187 @@ def entry_detail(tx_id: str):
         # The counterparty's label by direction; a correction, its
         # original's (``trust.payee_label_of``).
         payee_label=trust.payee_label_of(entry),
+        receipt_accept=RECEIPT_ACCEPT,
+        receipt_hint=RECEIPT_HINT_FR,
         avertissements=_warnings_from_args(), **_labels(),
     )
+
+
+def _staged_receipt_uuid(objet: str, user_id: str) -> str | None:
+    """Validate staging/{uid}/{uuid4}/{name} ownership and return the uuid4."""
+    user_id = storage_identity.require_uid(user_id)
+    if not objet.startswith(f"staging/{user_id}/"):
+        return None
+    segments = objet.split("/")
+    if (len(segments) != 4 or not segments[3]
+            or not is_canonical_uuid4(segments[2])):
+        return None
+    return segments[2]
+
+
+def _copy_and_attach_staged_receipt(
+    tx_id: str, objet: str, nom: str, dest_path: str,
+):
+    """Verify staged bytes, GCS-copy to *dest_path*, attach trust receipt metadata."""
+    bucket = storage.bucket()
+    try:
+        blob = bucket.blob(objet)
+        blob.reload()
+    except Exception as exc:
+        logger.error("trust: staging blob reload failed: %s", type(exc).__name__)
+        return None, "Fichier téléversé introuvable. Réessayez.", 422
+
+    def _consume_staging():
+        try:
+            blob.delete()
+        except Exception:
+            logger.warning("trust: staging cleanup failed")
+
+    ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
+    if ext not in RECEIPT_EXTENSIONS or int(blob.size or 0) > MAX_RECEIPT_SIZE:
+        _consume_staging()
+        return None, "Type ou taille de fichier non autorisé.", 422
+    try:
+        header = blob.download_as_bytes(start=0, end=511)
+    except Exception:
+        _consume_staging()
+        return None, "Lecture du fichier impossible. Réessayez.", 422
+    content_type, refus = trust.receipt_content_type(nom, int(blob.size or 0), header)
+    if content_type is None:
+        _consume_staging()
+        return None, refus, 422
+
+    try:
+        dest = bucket.blob(dest_path)
+        token, _, _ = dest.rewrite(blob)
+        while token is not None:
+            token, _, _ = dest.rewrite(blob, token=token)
+        dest.content_type = content_type
+        dest.content_disposition = "attachment"
+        dest.patch()
+    except Exception as exc:
+        logger.error("trust: receipt rewrite failed: %s", type(exc).__name__)
+        _consume_staging()
+        return None, "Erreur lors de la sauvegarde. Réessayez.", 422
+
+    md5 = blob.md5_hash if isinstance(blob.md5_hash, str) else ""
+    updated, errors = trust.attach_receipt(
+        tx_id, dest_path, nom, content_type, int(blob.size or 0), md5=md5,
+    )
+    _consume_staging()
+    if errors or updated is None:
+        return None, " ".join(errors) or "Sauvegarde impossible.", 422
+    previous = updated.get("_previous_receipt_path")
+    if previous and previous != dest_path:
+        try:
+            bucket.blob(previous).delete()
+        except Exception:
+            logger.warning("trust: previous receipt cleanup failed")
+    return updated, None, 200
+
+
+@trust_bp.route("/api/televersement", methods=["POST"])
+@login_required
+def api_televersement():
+    """Open a resumable GCS session for a trust supporting receipt."""
+    donnees = request.get_json(silent=True) or {}
+    nom = str(donnees.get("name") or "")
+    try:
+        size = int(donnees.get("size"))
+    except (TypeError, ValueError):
+        size = -1
+
+    ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
+    if ext not in RECEIPT_EXTENSIONS:
+        return jsonify({"erreur": RECEIPT_TYPE_REFUSED_FR}), 422
+    if size <= 0 or size > MAX_RECEIPT_SIZE:
+        return jsonify({"erreur": RECEIPT_SIZE_REFUSED_FR}), 422
+
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
+    printable = "".join(ch for ch in nom if ch.isprintable())
+    safe = secure_filename(printable) or "recu"
+    objet = f"staging/{user_id}/{uuid.uuid4()}/{safe}"
+    scheme = "https" if Config.ENV == "production" else (request.scheme or "http")
+    try:
+        blob = storage.bucket().blob(objet)
+        url = blob.create_resumable_upload_session(
+            content_type=RECEIPT_MIME_TYPES[ext], size=size,
+            origin=f"{scheme}://{request.host}",
+        )
+    except Exception:
+        logger.exception("trust: resumable-session open failed")
+        return jsonify({
+            "erreur": "Erreur lors de l'ouverture du téléversement. Réessayez."
+        }), 503
+    return jsonify({"url": url, "objet": objet})
+
+
+@trust_bp.route("/<tx_id>/api/recu", methods=["POST"])
+@login_required
+def api_recu(tx_id: str):
+    """Finalize a supporting receipt on an existing trust transaction."""
+    donnees = request.get_json(silent=True) or {}
+    objet = str(donnees.get("objet") or "")
+    nom = (
+        str(donnees.get("name") or "").strip()
+        or (objet.rsplit("/", 1)[-1] if "/" in objet else "recu")
+    )
+
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": storage_identity.public_message(exc)}), 503
+    seg_uuid = _staged_receipt_uuid(objet, user_id)
+    if not seg_uuid:
+        return jsonify({"erreur": "Requête invalide."}), 400
+    try:
+        entry = trust.get_transaction_strict(tx_id)
+    except Exception:
+        log_unexpected("trust: transaction read failed on receipt upload", tx_id=tx_id)
+        return jsonify({"erreur": "Écriture impossible à lire. Réessayez."}), 503
+    if entry is None:
+        return jsonify({"erreur": "Écriture introuvable."}), 404
+
+    safe = secure_filename("".join(ch for ch in nom if ch.isprintable())) or "recu"
+    dest_path = f"users/{user_id}/fideicommis/{tx_id}/{seg_uuid}/{safe}"
+    updated, err_msg, status_code = _copy_and_attach_staged_receipt(
+        tx_id, objet, nom, dest_path,
+    )
+    if err_msg or updated is None:
+        return jsonify({"erreur": err_msg}), status_code
+    return jsonify({
+        "ok": True,
+        "suivant": url_for("trust.entry_detail", tx_id=tx_id),
+    })
+
+
+@trust_bp.route("/<tx_id>/recu")
+@login_required
+def recu(tx_id: str):
+    try:
+        entry = trust.get_transaction_strict(tx_id)
+    except Exception:
+        log_unexpected("trust: transaction read failed on receipt view", tx_id=tx_id)
+        return "Service temporairement indisponible. Réessayez dans un instant.", 503
+    if not entry or not entry.get("receipt_storage_path"):
+        return render_template("errors/404.html"), 404
+    try:
+        blob = storage.bucket().blob(entry["receipt_storage_path"])
+        url = sign_blob_url(blob, {
+            "response-content-disposition": build_attachment_disposition(
+                entry.get("receipt_filename") or "recu"
+            ),
+            "response-content-type": entry.get("receipt_file_type")
+            or "application/octet-stream",
+        })
+    except Exception:
+        log_unexpected("trust: receipt signing failed")
+        return redirect(url_for("trust.entry_detail", tx_id=tx_id,
+                                avertissement="recu"))
+    return redirect(url)
 
 
 # ── Clearing ───────────────────────────────────────────────────────────────
@@ -1069,8 +1326,22 @@ def reconciliation_statement_consult(rec_id: str):
 # the two back together — these widths and BARREAU_COLUMNS are pinned by
 # nine tests and still serve the carte.
 _CSV_COLUMNS = list(BARREAU_COLUMNS)
-_PDF_WIDTHS = [8, 10, 20, 20, 14, 10, 9, 9, 9]
-_PDF_COLUMNS = [(k, label, w) for (k, label), w in zip(BARREAU_COLUMNS, _PDF_WIDTHS)]
+# 1l: Carte-client PDF omits the « Mode » column (kept in web & CSV).
+_PDF_WIDTHS = {
+    "date": 9,
+    "n_ref": 10,
+    "counterparty": 22,
+    "client": 22,
+    "objet": 16,
+    "recette": 10,
+    "credit": 10,
+    "solde": 10,
+}
+_PDF_COLUMNS = [
+    (k, label, _PDF_WIDTHS[k])
+    for k, label in BARREAU_COLUMNS
+    if k != "mode"
+]
 _CENTS_KEYS = list(trust.BARREAU_CENTS_KEYS)
 
 

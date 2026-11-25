@@ -131,36 +131,46 @@ def _account_transactions(account_id: str) -> list[dict]:
 
 
 def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
-    """Check 13 (lot 3a; the credit note numbers since lot 3b) over
-    *invoices* — every invoice read, its document id in ``id``. PURE;
-    ``(problems, notes)`` — see the module docstring. Amounts print in
-    cents, as check 8's do; the reason of an event never prints."""
+    """Checks 12 & 13 (lot 3a/3b write-offs + lot 4a interest notices) over
+    *invoices*. PURE; returns ``(problems, notes)``."""
     problems: list[str] = []
     notes: list[str] = []
-    # Lot 3b: each credit note number, with the invoices whose radiations
-    # bear it — the model's judge already refuses a number twice within ONE
-    # invoice, so a number found twice here is borne by two invoices.
     bearers: dict[str, list[str]] = {}
+    ai_bearers: dict[str, list[str]] = {}
     for inv in invoices:
         label = f"facture {inv.get('invoice_number') or inv.get('id') or '?'}"
+        write_offs_ok = interest_ok = True
+        events: list[dict] = []
+        interest_events: list[dict] = []
         try:
             events = invoice_model.write_off_events(inv)
         except invoice_model.WriteOffsUnreadable as exc:
             problems.append(f"{label}: radiations mal formées — {exc}")
-            continue
+            write_offs_ok = False
+        try:
+            interest_events = invoice_model.interest_charge_events(inv)
+        except invoice_model.InterestChargesUnreadable as exc:
+            problems.append(f"{label}: avis d'intérêts mal formés — {exc}")
+            interest_ok = False
         for event in events:
             if event["kind"] == "radiation":
                 bearers.setdefault(event["credit_note_number"], []).append(label)
+        for event in interest_events:
+            if event["kind"] == "avis_interets":
+                ai_bearers.setdefault(event["interest_notice_number"], []).append(label)
+        if not (write_offs_ok and interest_ok):
+            continue
         try:
             due = int(inv.get("amount_due", 0))
             paid = int(inv.get("amount_paid", 0))
         except (TypeError, ValueError, OverflowError):
-            if events:
+            if events or interest_events:
                 problems.append(
-                    f"{label}: montant dû ou payé illisible — ses radiations ne "
-                    f"peuvent pas être contrôlées")
+                    f"{label}: montant dû ou payé illisible — ses radiations ou "
+                    f"avis d'intérêts ne peuvent pas être contrôlés")
             continue
         written_off = invoice_model.written_off_of(inv)
+        interest_charged = invoice_model.interest_charged_of(inv)
         status = inv.get("status", "")
         billed = status in invoice_model.REVENUE_STATUSES
         if written_off and not billed:
@@ -169,16 +179,22 @@ def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
                 f"{label}: radiation debout sur une facture « {shown} » — seule "
                 f"une facture émise ou payée se radie, et l'annulation refuse "
                 f"tant qu'une radiation tient")
-        if written_off + paid > due:
+        if interest_charged and not billed:
+            shown = status or "(sans statut)"
             problems.append(
-                f"{label}: radié {written_off} + payé {paid} > dû {due} (cents) — "
-                f"le radié dépasse ce qui restait dû")
-        if not billed or not (paid > 0 or events):
+                f"{label}: avis d'intérêts debout sur une facture « {shown} » — "
+                f"l'annulation refuse tant qu'un avis tient")
+        if written_off + paid > due + interest_charged:
+            problems.append(
+                f"{label}: radié {written_off} + payé {paid} > dû {due} + "
+                f"intérêts {interest_charged} (cents) — le radié dépasse ce "
+                f"qui restait dû")
+        if not billed or not (paid > 0 or events or interest_events):
             continue
         balance = invoice_model.balance_of(inv)
         if (status == "payée") == (balance == 0):
             continue
-        if status == "payée" and balance > 0 and not events:
+        if status == "payée" and balance > 0 and not events and not interest_events:
             notes.append(
                 f"{label}: « payée » posée à la main, mais l'encaissement inscrit "
                 f"({paid} cents) laisse un solde de {balance} cents — la "
@@ -195,6 +211,12 @@ def _check_write_offs(invoices: list[dict]) -> tuple[list[str], list[str]]:
                 f"note de crédit {number}: portée par les radiations de "
                 f"{len(labels)} factures ({', '.join(labels)}) — un numéro de "
                 f"note de crédit ne sert qu'une fois, même annulé")
+    for number, labels in sorted(ai_bearers.items()):
+        if len(labels) > 1:
+            problems.append(
+                f"avis d'intérêts {number}: porté par les avis de "
+                f"{len(labels)} factures ({', '.join(labels)}) — un numéro "
+                f"d'avis d'intérêts ne sert qu'une fois, même annulé")
     return problems, notes
 
 
@@ -336,33 +358,60 @@ def collect() -> tuple[list[str], list[str]]:
                     problems.append(
                         f"écriture {tid}: annulée mais sa contre-passation ne l'est pas"
                     )
-        # 4. Card-payment legs.
-        if t.get("kind") == "paiement_carte":
+        # 4. Two-leg transfer legs (paiement_carte or linked virement interne).
+        if t.get("kind") == "paiement_carte" or (
+            t.get("related_transaction_id")
+            and t.get("kind") in ("virement_interne_sortant", "virement_interne_entrant")
+        ):
             other = by_id.get(t.get("related_transaction_id") or "")
             if other is None:
-                problems.append(f"écriture {tid}: jambe de paiement de carte orpheline")
+                msg = (
+                    f"écriture {tid}: jambe de paiement de carte orpheline"
+                    if t.get("kind") == "paiement_carte"
+                    else f"écriture {tid}: jambe de virement entre comptes orpheline"
+                )
+                problems.append(msg)
             else:
                 if other.get("related_transaction_id") != tid:
-                    problems.append(f"écriture {tid}: jambes de carte asymétriques")
+                    problems.append(f"écriture {tid}: jambes de transfert asymétriques")
                 if int(other.get("amount", 0)) != int(t.get("amount", 0)):
                     problems.append(f"écriture {tid}: montants de jambes inégaux")
                 if other.get("direction") == t.get("direction"):
-                    problems.append(f"écriture {tid}: jambes de carte de même sens")
-                if other.get("kind") != "paiement_carte":
-                    problems.append(
-                        f"écriture {tid}: l'autre jambe ({other.get('id')}) n'est "
-                        f"pas un paiement de carte"
+                    problems.append(f"écriture {tid}: jambes de transfert de même sens")
+                if t.get("kind") == "paiement_carte":
+                    if other.get("kind") != "paiement_carte":
+                        problems.append(
+                            f"écriture {tid}: l'autre jambe ({other.get('id')}) n'est "
+                            f"pas un paiement de carte"
+                        )
+                else:
+                    expected_other_kind = (
+                        "virement_interne_entrant"
+                        if t.get("kind") == "virement_interne_sortant"
+                        else "virement_interne_sortant"
                     )
+                    if other.get("kind") != expected_other_kind:
+                        problems.append(
+                            f"écriture {tid}: l'autre jambe ({other.get('id')}) doit "
+                            f"être « {expected_other_kind} »"
+                        )
                 # The UTC DAY, as every reader takes it: a time of day on one
                 # leg is check 10's note, not a second date.
                 day, other_day = al._as_utc(t.get("date")), al._as_utc(other.get("date"))
                 if (isinstance(day, datetime) and isinstance(other_day, datetime)
                         and day.date() != other_day.date()):
-                    problems.append(
-                        f"écriture {tid}: jambes de carte à des jours différents "
-                        f"({day.date()} et {other_day.date()}) — un paiement, "
-                        f"une date"
-                    )
+                    if t.get("kind") == "paiement_carte":
+                        problems.append(
+                            f"écriture {tid}: jambes de carte à des jours différents "
+                            f"({day.date()} et {other_day.date()}) — un paiement, "
+                            f"une date"
+                        )
+                    else:
+                        problems.append(
+                            f"écriture {tid}: jambes de transfert à des jours différents "
+                            f"({day.date()} et {other_day.date()}) — un virement, "
+                            f"une date"
+                        )
         # 11. A kind the register knows; the natures outside the results
         # carry what their model writes (see the docstring).
         kind = t.get("kind") or ""
@@ -390,7 +439,9 @@ def collect() -> tuple[list[str], list[str]]:
                 )
             if t.get("invoice_id"):
                 problems.append(f"écriture {tid}: {label} liée à une facture")
-            if t.get("trust_transaction_id"):
+            if t.get("trust_transaction_id") and not (
+                kind == al.TRANSFER_PURPOSE_KIND and purpose == "avances"
+            ):
                 problems.append(f"écriture {tid}: {label} liée au fidéicommis")
             if kind in al.NO_DOSSIER_KINDS and t.get("dossier_id"):
                 problems.append(f"écriture {tid}: {label} rattachée à un dossier")

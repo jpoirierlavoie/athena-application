@@ -11,6 +11,7 @@ _SYNCING: set[str] = set()
 import icalendar
 
 from google.api_core.exceptions import AlreadyExists
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
 from models.record_ids import is_addressable_id
@@ -24,9 +25,9 @@ from models.dav_ids import (
     client_uid as _client_uid,
     valid_resource_id,
 )
-from tz import MTL
+from tz import TORONTO
 from security import sanitize
-from utils import deadlines, phases
+from utils import dav_classification, deadlines, ical_tz, phases
 from utils.dav_text import remove_served_block
 from utils.logging_setup import (
     log_protocol_event,
@@ -43,6 +44,7 @@ _PROTECTED_ON_UPDATE = frozenset({
     "id",
     "vtodo_uid",
     "dav_href",
+    "ical_sequence",
     "created_at",
     "created_via",
     "updated_at",
@@ -128,6 +130,9 @@ def _default_doc() -> dict:
         # Phase O — "" = non renseignée (legacy docs are never backfilled)
         "phase": "",
         "sous_phase": "",
+        "classification": "",
+        "ical_sequence": 0,
+        "dav_valarms": [],
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -136,6 +141,8 @@ def _default_doc() -> dict:
         "dav_href": "",
         # Optional link to a parent note (RELATED-TO)
         "related_note_id": None,
+        # Optional link to a calendar hearing/meeting (Lot B)
+        "hearing_id": None,
     }
 
 
@@ -143,7 +150,11 @@ def _sanitize_data(data: dict) -> dict:
     """Sanitize all string values in *data*."""
     out: dict = {}
     for key, val in data.items():
-        if isinstance(val, str):
+        if key == "classification" and isinstance(val, str):
+            out[key] = dav_classification.normalize_classification_value(val)
+        elif key == "dav_valarms" and isinstance(val, (list, tuple)):
+            out[key] = ical_tz.normalize_valarm_list(val)
+        elif isinstance(val, str):
             out[key] = sanitize(val, max_length=2000)
         else:
             out[key] = val
@@ -171,7 +182,50 @@ def _validate(data: dict) -> list[str]:
 
     errors.extend(phases.validate_pair(data))
 
+    cls_err = dav_classification.validation_error(
+        data.get("classification"),
+        has_dossier=dav_classification.has_dossier_link(data),
+    )
+    if cls_err:
+        errors.append(cls_err)
+
+    seq = data.get("ical_sequence", 0)
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        errors.append("Séquence iCalendar invalide.")
+
+    hearing_id = data.get("hearing_id")
+    if hearing_id is not None and (
+        not isinstance(hearing_id, str) or not is_addressable_id(hearing_id)
+    ):
+        errors.append("Événement du calendrier invalide.")
+
     return errors
+
+
+def _validate_hearing_target(
+    hearing_id: Optional[str],
+    dossier_id: Optional[str],
+    *,
+    allow_missing: bool = False,
+) -> tuple[Optional[str], list[str]]:
+    """Verify *hearing_id* exists (strictly) and matches *dossier_id*."""
+    if not hearing_id:
+        return None, []
+    from models.hearing import get_hearing_strict
+    try:
+        linked_hearing = get_hearing_strict(hearing_id)
+    except Exception:
+        return hearing_id, [concurrency.READ_UNAVAILABLE_ERROR]
+    if not linked_hearing:
+        if allow_missing:
+            return None, []
+        return hearing_id, ["Événement du calendrier introuvable."]
+    h_dossier = linked_hearing.get("dossier_id") or ""
+    if h_dossier and (dossier_id or "") != h_dossier:
+        return hearing_id, [
+            "Cette tâche n'appartient pas au même dossier que l'événement."
+        ]
+    return hearing_id, []
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
@@ -205,15 +259,31 @@ def create_task(
     data = dict(data)
     data.pop("id", None)
     data.pop("vtodo_uid", None)
+    data.pop("ical_sequence", None)
     if dav_id is not None and not valid_resource_id(dav_id):
         return None, [DAV_ID_INVALID]
 
     merged = {**_default_doc(), **_sanitize_data(data)}
+    if not merged.get("hearing_id"):
+        merged["hearing_id"] = None
+    if not merged.get("classification"):
+        merged["classification"] = dav_classification.default_classification(
+            has_dossier=dav_classification.has_dossier_link(merged)
+        )
+    merged["ical_sequence"] = 0
     phases.apply_sous_phase_default(merged)
 
     errors = _validate(merged)
     if errors:
         return None, errors
+
+    if merged.get("hearing_id"):
+        resolved_hid, hearing_errors = _validate_hearing_target(
+            merged["hearing_id"], merged.get("dossier_id")
+        )
+        if hearing_errors:
+            return None, hearing_errors
+        merged["hearing_id"] = resolved_hid
 
     now = datetime.now(timezone.utc)
     task_id = dav_id if dav_id is not None else str(uuid.uuid4())
@@ -371,6 +441,34 @@ def list_tasks_for_note(note_id: str) -> list[dict]:
         filter=FieldFilter("related_note_id", "==", note_id)
     )
     return [snap.to_dict() or {} for snap in query.stream()]
+
+
+def list_tasks_for_hearing_strict(hearing_id: str) -> list[dict]:
+    """Tasks whose ``hearing_id`` is *hearing_id* — STRICT.
+
+    Single-field equality query on ``hearing_id`` (automatic index; no composite
+    index required), ordered via :func:`sort_tasks_for_display`.
+    """
+    if not is_addressable_id(hearing_id):
+        return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("hearing_id", "==", hearing_id)
+    )
+    return sort_tasks_for_display([snap.to_dict() or {} for snap in query.stream()])
+
+
+def list_tasks_for_hearing(hearing_id: str) -> list[dict]:
+    """Fail-open wrapper of :func:`list_tasks_for_hearing_strict` for display."""
+    if not is_addressable_id(hearing_id):
+        return []
+    try:
+        return list_tasks_for_hearing_strict(hearing_id)
+    except Exception as exc:
+        logger.warning(
+            "list_tasks_for_hearing failed for %s: %s",
+            sanitize_log_value(hearing_id), type(exc).__name__,
+        )
+        return []
 
 
 def sort_tasks_for_display(tasks: list[dict]) -> list[dict]:
@@ -593,7 +691,20 @@ def update_task(
         key: value for key, value in _sanitize_data(data).items()
         if key not in _PROTECTED_ON_UPDATE
     }
+    if "hearing_id" in clean_data and not clean_data["hearing_id"]:
+        clean_data["hearing_id"] = None
     merged = {**existing, **clean_data}
+    if (
+        dav_classification.has_dossier_link(merged)
+        and "classification" not in clean_data
+        and merged.get("classification") == dav_classification.CLASS_PUBLIC
+    ):
+        merged["classification"] = dav_classification.CLASS_CONFIDENTIAL
+    if not merged.get("classification"):
+        merged["classification"] = dav_classification.default_classification(
+            has_dossier=dav_classification.has_dossier_link(merged)
+        )
+    merged["ical_sequence"] = max(0, int(existing.get("ical_sequence") or 0)) + 1
     phases.apply_sous_phase_default(merged)
 
     # Phase O coherence repair: a caller that supplies a phase WITHOUT a
@@ -610,6 +721,22 @@ def update_task(
     errors = _validate(merged)
     if errors:
         return None, errors
+
+    if merged.get("hearing_id") and (
+        (merged.get("hearing_id") or None) != (existing.get("hearing_id") or None)
+        or (merged.get("dossier_id") or "") != (existing.get("dossier_id") or "")
+    ):
+        resolved_hid, hearing_errors = _validate_hearing_target(
+            merged["hearing_id"],
+            merged.get("dossier_id"),
+            allow_missing=(
+                (merged.get("hearing_id") or None)
+                == (existing.get("hearing_id") or None)
+            ),
+        )
+        if hearing_errors:
+            return None, hearing_errors
+        merged["hearing_id"] = resolved_hid
 
     if (
         require_step_follow
@@ -744,6 +871,70 @@ def set_task_completion(
         expected_etag=concurrency.etag_of(existing),
     )
     return doc, errors, doc is not None and not errors
+
+
+class _TaskLinkRefused(Exception):
+    """Raised inside :func:`set_task_hearing` transaction to roll back with French errors."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__("refused")
+        self.errors = list(errors)
+
+
+def set_task_hearing(
+    task_id: str,
+    hearing_id: Optional[str],
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """Link or unlink *task_id* from a calendar hearing — partial transactional write.
+
+    Returns ``(doc, errors, changed)``. Updates only ``hearing_id`` and
+    provenance stamps via ``transaction.update()``, so linking never triggers
+    status transitions or overwrites concurrent edits.
+    """
+    if not is_addressable_id(task_id):
+        return None, ["Tâche introuvable."], False
+    target = (hearing_id or None)
+    if target is not None and (not isinstance(target, str) or not is_addressable_id(target)):
+        return None, ["Événement du calendrier invalide."], False
+    ref = db.collection(COLLECTION).document(task_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _TaskLinkRefused(["Tâche introuvable."])
+        existing = snap.to_dict() or {}
+        if not concurrency.matches(existing, expected_etag):
+            raise _TaskLinkRefused([concurrency.STALE_ETAG_ERROR])
+        if target is not None:
+            h_snap = db.collection("hearings").document(target).get(transaction=transaction)
+            if not h_snap.exists:
+                raise _TaskLinkRefused(["Événement du calendrier introuvable."])
+            h_dossier = (h_snap.to_dict() or {}).get("dossier_id") or ""
+            task_dossier = existing.get("dossier_id") or ""
+            if h_dossier and task_dossier != h_dossier:
+                raise _TaskLinkRefused([
+                    "Cette tâche n'appartient pas au même dossier que l'événement."
+                ])
+        if (existing.get("hearing_id") or None) == target:
+            return existing, False
+        stamp = provenance.update_fields(datetime.now(timezone.utc))
+        fields = {"hearing_id": target, **stamp}
+        transaction.update(ref, fields)
+        return {**existing, **fields}, True
+
+    try:
+        doc, changed = _apply(db.transaction())
+    except _TaskLinkRefused as refusal:
+        return None, refusal.errors, False
+    except Exception:
+        log_unexpected("task hearing link failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    if changed:
+        provenance.note_commit(COLLECTION, task_id)
+    return doc, [], changed
 
 
 def toggle_task_complete(task_id: str) -> tuple[Optional[dict], list[str]]:
@@ -956,26 +1147,28 @@ def task_to_vtodo(task: dict) -> str:
     }
     todo.add("status", status_map.get(task.get("status", ""), "NEEDS-ACTION"))
 
-    # DUE — emit in America/Montreal for datetime values
-    mtl = MTL  # the one tz authority (tz.py)
+    # DUE — emit in America/Toronto with standard VTIMEZONE for timed values
+    toronto = TORONTO
     due = task.get("due_date")
     if due:
         if hasattr(due, "hour") and due.hour == 0 and due.minute == 0:
             # Date-only stored as midnight — emit as date
             todo.add("due", due.date())
         elif hasattr(due, "hour"):
+            cal.add_component(ical_tz.build_america_toronto_vtimezone())
             if due.tzinfo is None or due.tzinfo == timezone.utc:
-                due = due.replace(tzinfo=timezone.utc).astimezone(mtl)
+                due = due.replace(tzinfo=timezone.utc).astimezone(toronto)
+            else:
+                due = due.astimezone(toronto)
             todo.add("due", due)
         else:
             todo.add("due", due)
 
-    # COMPLETED
+    # COMPLETED (UTC per RFC 5545 §3.8.2.1)
     completed = task.get("completed_date")
     if completed:
         if hasattr(completed, "hour"):
-            if completed.tzinfo is None or completed.tzinfo == timezone.utc:
-                completed = completed.replace(tzinfo=timezone.utc).astimezone(mtl)
+            completed = _to_utc(completed)
         todo.add("completed", completed)
 
     # CATEGORIES — the category's French label, plus (Phase O, D-7) the
@@ -992,10 +1185,16 @@ def task_to_vtodo(task: dict) -> str:
 
     # LAST-MODIFIED
     updated = task.get("updated_at")
-    if updated:
-        todo.add("last-modified", updated)
+    if updated and hasattr(updated, "hour"):
+        todo.add("last-modified", _to_utc(updated))
 
-    todo.add("sequence", 0)
+    todo.add("class", dav_classification.effective_classification(task))
+    todo.add("sequence", max(0, int(task.get("ical_sequence") or 0)))
+
+    for raw_alarm in task.get("dav_valarms") or []:
+        parsed_alarm = ical_tz.parse_valarm_text(raw_alarm)
+        if parsed_alarm is not None:
+            todo.add_component(parsed_alarm)
 
     # Custom X- properties for round-trip fidelity
     if task.get("dossier_id"):
@@ -1171,6 +1370,21 @@ def vtodo_to_task(ical_str: str) -> dict:
                     data["sous_phase"] = sp
                 # A sub-code contradicting the accepted phase is ignored —
                 # update_task's coherence repair re-imputes to the -00.
+
+        cls_prop = component.get("class")
+        if cls_prop:
+            cls_norm = dav_classification.normalize_classification_value(str(cls_prop))
+            if cls_norm in dav_classification.VALID_CLASSIFICATIONS:
+                data["classification"] = cls_norm
+
+        alarms: list[str] = []
+        for sub in component.subcomponents:
+            if sub.name == "VALARM":
+                ser = ical_tz.serialize_valarm(sub)
+                if ser:
+                    alarms.append(ser)
+        if alarms:
+            data["dav_valarms"] = alarms
 
         # RELATED-TO → resolve parent note link
         related_tos = component.get("related-to")

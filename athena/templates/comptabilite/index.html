@@ -25,8 +25,13 @@
       <div class="flex flex-wrap items-center justify-end gap-2">
         {# Le rattrapage des relevés bancaires (2026-11-10, art. 32) : un
            lien seulement — la liste des conciliations compte et filtre. #}
-        <a href="{{ url_for('trust.reconciliations_list', releve='manquant') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Relevés manquants</a>
-        <a href="{{ url_for('trust.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+        <a href="{{ url_for('trust.reconciliations_list', releve='manquant') }}" class="inline-flex items-center min-h-[44px] px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Relevés manquants</a>
+        <a href="{{ url_for('trust.account_new') }}"
+           aria-label="Nouveau compte en fidéicommis"
+           title="Nouveau compte en fidéicommis"
+           class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          {{ ms('add', 20) }}
+        </a>
       </div>
       {% endif %}
     </div>
@@ -58,14 +63,20 @@
             <p class="font-semibold text-gray-900">{{ a.book_balance | cents_fr }}</p>
           </div>
         </div>
-        <div class="flex items-center gap-2 mt-3">
-          <a href="{{ url_for('trust.journal', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
-          <a href="{{ url_for('trust.account_detail', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Détail</a>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+          <a href="{{ url_for('trust.journal', account_id=a.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
+          <a href="{{ url_for('trust.account_detail', account_id=a.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Détail</a>
           {# Un compte fermé est inconciliable (le formulaire ne liste que
              les actifs) : offrir l'action ferait retomber le select sur le
              PREMIER compte actif, en silence (revue 2026-08-15). #}
           {% if a.status != 'fermé' %}
-          <a href="{{ url_for('trust.reconciliation_new', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
+          <a href="{{ url_for('trust.entry_new', account_id=a.id) }}"
+             aria-label="Nouvelle écriture — {{ a.name }}"
+             title="Nouvelle écriture"
+             class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+            {{ ms('add', 20) }}
+          </a>
+          <a href="{{ url_for('trust.reconciliation_new', account_id=a.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
           {% endif %}
         </div>
       </div>
@@ -82,8 +93,13 @@
       <div class="flex flex-wrap items-center justify-end gap-2">
         {# Le rattrapage des relevés bancaires (2026-11-10, art. 32) : un
            lien seulement — la liste des conciliations compte et filtre. #}
-        <a href="{{ url_for('admin_ledger.reconciliations_list', releve='manquant') }}" class="inline-flex items-center px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Relevés manquants</a>
-        <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+        <a href="{{ url_for('admin_ledger.reconciliations_list', releve='manquant') }}" class="inline-flex items-center min-h-[44px] px-4 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Relevés manquants</a>
+        <a href="{{ url_for('admin_ledger.account_new') }}"
+           aria-label="Nouveau compte d'administration"
+           title="Nouveau compte d'administration"
+           class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          {{ ms('add', 20) }}
+        </a>
       </div>
       {% endif %}
     </div>
@@ -116,11 +132,17 @@
             <p class="font-semibold text-gray-900">{{ a.display_balance | cents_fr }}</p>
           </div>
         </div>
-        <div class="flex items-center gap-2 mt-3">
-          <a href="{{ url_for('admin_ledger.journal', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
-          <a href="{{ url_for('admin_ledger.account_detail', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Détail</a>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
+          <a href="{{ url_for('admin_ledger.journal', account_id=a.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
+          <a href="{{ url_for('admin_ledger.account_detail', account_id=a.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Détail</a>
           {% if a.status != 'fermé' %}
-          <a href="{{ url_for('admin_ledger.reconciliation_new', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
+          <a href="{{ url_for('admin_ledger.entry_new', account_id=a.id) }}"
+             aria-label="Nouvelle écriture — {{ a.name }}"
+             title="Nouvelle écriture"
+             class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+            {{ ms('add', 20) }}
+          </a>
+          <a href="{{ url_for('admin_ledger.reconciliation_new', account_id=a.id) }}" class="inline-flex items-center min-h-[44px] px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
           {% endif %}
         </div>
       </div>

@@ -501,13 +501,23 @@ _CANCELLED = [_RADIATION, {**{k: v for k, v in _RADIATION.items()
                               if k != "credit_note_number"},
                            "id": "cp-1", "kind": "contre_passation",
                            "date": _d(3, 6), "reverses_id": "rad-1"}]
+_INTEREST = {"id": "ai-1", "kind": "avis_interets", "date": _d(3, 5),
+             "period_start": _d(1, 5), "period_end": _d(3, 5),
+             "days": (_d(3, 5) - _d(1, 5)).days,
+             "rate_bps": 1200, "principal": DUE, "amount": 1000,
+             "reason": "", "reverses_id": "",
+             "interest_notice_number": f"{_d(3, 5).year:04d}-AI001"}
+_CANCELLED_INTEREST = [_INTEREST, {
+    "id": "ai-cp-1", "kind": "contre_passation", "date": _d(3, 6),
+    "amount": 1000, "reason": "", "reverses_id": "ai-1",
+}]
 
 
 @pytest.mark.parametrize("alter, reason", [
     (_alter_account(account_type="carte_crédit"), "s'encaisse au compte d'opérations"),
     (_alter_account(status="fermé"), "Ce compte est fermé."),
     (_alter_invoice(write_offs=_CANCELLED), "la facture porte une radiation"),
-    (_alter_invoice(interest_charges=[{"n": 1}]), "la facture porte un avis d'intérêts"),
+    (_alter_invoice(interest_charges=_CANCELLED_INTEREST), "la facture porte un avis d'intérêts"),
     (_alter_invoice(status="brouillon"), "La facture doit être émise"),
     (_alter_invoice(amount_paid=DUE - 100), "Le montant excède le solde dû"),
     (_alter_entry(trust_transaction_id="t-1"), "liée au fidéicommis"),

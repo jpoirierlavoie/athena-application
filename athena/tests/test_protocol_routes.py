@@ -253,7 +253,7 @@ def test_linked_tasks_leave_the_returned_etags_equal_to_the_stored_ones(fake):
     dossier = fake.peek("dossiers/d1")
     proto, errors, report = protocol_service.create_protocol(
         dossier, "cq_simplifié", WHEN, create_linked_tasks=True)
-    assert errors == [] and report["tasks_linked"] == 7
+    assert errors == [] and report["tasks_linked"] == 8
     stored = fake.peek(f"protocols/{proto['id']}")
     assert proto["etag"] == stored["etag"]
     for step in proto["steps"]:
@@ -266,7 +266,7 @@ def test_linked_tasks_leave_the_returned_etags_equal_to_the_stored_ones(fake):
     assert errors == []
 
 
-@pytest.mark.parametrize("checked, tasks", [(False, 0), (True, 7)])
+@pytest.mark.parametrize("checked, tasks", [(False, 0), (True, 8)])
 def test_the_wizard_checkbox_decides_the_linked_tasks(client, fake, checked,
                                                       tasks):
     data = {"dossier_id": "d1", "protocol_type": "cq_simplifié",
@@ -319,16 +319,16 @@ def test_a_new_start_date_moves_steps_and_tasks_and_says_so(client, fake):
         "start_date": "2026-10-05", "expected_etag": etag}))
 
     assert params["message"] == (
-        "Date de début modifiée : 6 échéances recalculées. 1 échéance "
-        "conservée (étape complétée ou date confirmée). 5 tâches liées ont "
+        "Date de début modifiée : 7 échéances recalculées. 1 échéance "
+        "conservée (étape complétée ou date confirmée). 6 tâches liées ont "
         "suivi leur étape. 1 tâche liée garde sa propre échéance, modifiée à "
         "la main : elle n'a pas été déplacée.")
     for step in steps[2:]:
         stored = fake.peek(f"protocols/{pid}/steps/{step['id']}")
         task = fake.peek(f"tasks/{step['linked_task_id']}")
         assert task["due_date"] == stored["deadline_date"]
-        assert stored["deadline_date"] == protocol_model._compute_deadline(
-            START2, step["deadline_offset_days"])
+        assert stored["deadline_date"] == protocol_model._compute_step_deadline(
+            START2, step)
     assert fake.peek(f"tasks/{task_by_hand}")["due_date"] == hand
     assert _ctag(fake) != ctag_before
 
@@ -708,14 +708,14 @@ def test_update_protocol_reports_what_moved_what_stayed_and_each_task(fake):
     _doc, errors, report = protocol_service.update_protocol(
         proto["id"], {"start_date": START2})
     assert errors == []
-    assert report["moved"] == len(report["moved_steps"]) == 6
+    assert report["moved"] == len(report["moved_steps"]) == 7
     assert report["preserved_steps"] == [{"step_id": first["id"],
                                           "reason": "completed"}]
     assert {t["step_id"] for t in report["tasks"]} == {
         m["step_id"] for m in report["moved_steps"]}
     assert all(t["outcome"] == "aligned" and t["ctag_bumped"]
                for t in report["tasks"])
-    assert report["aligned"] == 6        # the web's counts, unchanged
+    assert report["aligned"] == 7        # the web's counts, unchanged
 
 
 def test_update_step_reports_its_linked_task(fake):

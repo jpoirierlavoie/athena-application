@@ -69,6 +69,7 @@ from models.doc_template import (
     ACTIVE_KIND_NAMES,
     TemplateReadError,
     get_active_template,
+    has_en,
     template_file_bytes,
 )
 from models.document import CREDIT_NOTE_TAG, find_generated_for_invoice
@@ -108,6 +109,7 @@ from utils.deadlines import today_mtl
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.invoice_docx import build_credit_note_context
 from utils.logging_setup import log_template_event, log_unexpected
+from utils.template_fields import VALID_LANGUAGES
 from utils.tracing_setup import add_attributes, span
 
 NOTE_KIND = "note_credit"
@@ -199,6 +201,7 @@ def generer_note_credit(
     regenerate: bool = False,
     resolve_uid: Optional[Callable[[], str]] = None,
     today: Optional[date] = None,
+    lang: str = "fr",
 ) -> NoteGeneree:
     """Generate the credit note of the radiation *write_off_id* of
     *invoice_id* into « Mandat › Factures ».
@@ -210,6 +213,9 @@ def generer_note_credit(
     is filled — defaults to ``storage_identity.owner_uid``; *today* (the
     header's ``date.*`` and the document's name) defaults to Montréal's.
     """
+    lang_clean = str(lang or "fr").strip().lower()
+    if lang_clean not in VALID_LANGUAGES:
+        raise _refuse("invalid_lang", "Langue de document non valide.")
     try:
         invoice = get_invoice_strict(invoice_id)
     except Exception:
@@ -244,6 +250,13 @@ def generer_note_credit(
     if not template:
         raise _refuse("no_credit_note_template", NO_ACTIVE_NOTE_CREDIT, **ids)
     template_id = template["id"]
+    if lang_clean == "en" and not has_en(template):
+        raise _refuse(
+            "no_en_version",
+            "Le gabarit actif « Note de crédit » n'a pas de version anglaise.",
+            template_id=template_id,
+            **ids,
+        )
 
     dossier_id = invoice.get("dossier_id", "")
     # STRICT: a client-facing document is filed on this answer (the note
@@ -260,14 +273,16 @@ def generer_note_credit(
     client = get_partie(client_id) if client_id else None
     day = today or today_mtl()
 
+    lang_kw = {"lang": "en"} if lang_clean == "en" else {}
     ctx = build_credit_note_context(
         invoice, radiation, firm=cabinet_dict(), destinataire=client,
-        dossier=dossier, today=day, balance_cents=balance)
-    values = assemble_note_values(template, ctx)
+        dossier=dossier, today=day, balance_cents=balance, **lang_kw)
+    values = assemble_note_values(template, ctx, **lang_kw)
     add_attributes(template_id=template_id, invoice_id=invoice_id)
     fingerprint = fill_fingerprint(
         template, values, ctx,
-        subject={"kind": NOTE_KIND, "write_off_id": radiation["id"]})
+        subject={"kind": NOTE_KIND, "write_off_id": radiation["id"]},
+        **lang_kw)
 
     if not regenerate:
         try:
@@ -284,7 +299,7 @@ def generer_note_credit(
                                    fingerprint=fingerprint, reused=True,
                                    invoice=invoice, write_off=radiation)
 
-    docx_bytes = template_file_bytes(template)
+    docx_bytes = template_file_bytes(template, **lang_kw)
     if docx_bytes is None:
         raise _refuse("template_file_unavailable", TEMPLATE_FILE_UNAVAILABLE,
                       template_id=template_id, **ids)
@@ -311,7 +326,8 @@ def generer_note_credit(
     number = radiation["credit_note_number"]
     invoice_number = invoice.get("invoice_number", "")
     tmpl_base = template.get("name") or ACTIVE_KIND_NAMES[NOTE_KIND]
-    display, out_name = projet_names(dossier, f"{tmpl_base} {number}".strip(), day)
+    lang_suffix = " (EN)" if lang_clean == "en" else ""
+    display, out_name = projet_names(dossier, f"{tmpl_base} {number}{lang_suffix}".strip(), day)
     try:
         doc, landed = save_generated(
             dossier={"id": dossier_id,
@@ -322,7 +338,7 @@ def generer_note_credit(
             filename=out_name,
             category="correspondance",
             genere_depuis=(f"Générée depuis la radiation de la facture "
-                           f"{invoice_number} (note de crédit {number})"),
+                           f"{invoice_number} (note de crédit {number}){lang_suffix}"),
             tags=(TAG,),
             folder=FACTURES,
             generated_from_invoice={"invoice_id": invoice_id,

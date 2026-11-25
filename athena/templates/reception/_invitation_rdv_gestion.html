@@ -1,8 +1,15 @@
 {# Lien de secours pour consulter, reporter ou annuler un rendez-vous portail. #}
-<p>Bonjour,</p>
+{% extends "reception/_courriel_cadre.html" %}
+{% block email_kicker %}Gestion de rendez-vous{% endblock %}
+{% block email_body %}
+<p style="margin: 0 0 12px 0;">Bonjour,</p>
 
-<p>Vous avez demandé un nouveau lien sécurisé pour gérer votre rendez-vous
-(<strong>{{ display_label }}</strong>{% if quand_rdv %}, prévu le {{ quand_rdv }}{% endif %})&nbsp;:
-<a href="{{ lien }}">gérer mon rendez-vous</a>.</p>
+<p style="margin: 0 0 14px 0;">Vous avez demandé un nouveau lien sécurisé pour gérer votre rendez-vous
+(<strong>{{ display_label }}</strong>{% if quand_rdv %}, prévu le {{ quand_rdv }}{% endif %})&nbsp;:</p>
+
+<p style="margin: 16px 0;">
+  <a href="{{ lien }}" style="display: inline-block; background-color: #111827; color: #FFFFFF; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; font-size: 14px;">gérer mon rendez-vous</a>
+</p>
 
 {% include "reception/_invitation_pied.html" %}
+{% endblock %}

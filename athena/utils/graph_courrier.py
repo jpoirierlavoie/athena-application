@@ -570,8 +570,11 @@ def courrier_deposer_petit_fichier_onedrive(
     contenu: bytes,
     *,
     encoded_upn: str,
+    conflict_behavior: str = "fail",
 ) -> Optional[dict[str, Any]]:
-    """Upload a <= 4 MiB file into OneDrive with ``conflictBehavior=fail`` (None on 409)."""
+    """Upload a <= 4 MiB file into OneDrive (None on 409 when ``fail``)."""
+    if conflict_behavior not in ("fail", "replace", "rename"):
+        raise ValueError("conflict_behavior invalide.")
     encoded_parent = quote(parent_item_id, safe="")
     encoded_name = quote(nom_fichier, safe="")
     url = _resolve_graph_url(
@@ -584,7 +587,7 @@ def courrier_deposer_petit_fichier_onedrive(
         "PUT",
         url,
         headers=headers,
-        params={"@microsoft.graph.conflictBehavior": "fail"},
+        params={"@microsoft.graph.conflictBehavior": conflict_behavior},
         raw_bytes=contenu,
     )
     if response.status_code == 409:
@@ -602,8 +605,11 @@ def courrier_ouvrir_session_onedrive(
     nom_fichier: str,
     *,
     encoded_upn: str,
+    conflict_behavior: str = "fail",
 ) -> Optional[str]:
-    """Open a resumable OneDrive upload session (``conflictBehavior=fail``; None on 409)."""
+    """Open a resumable OneDrive upload session (None on 409 when ``fail``)."""
+    if conflict_behavior not in ("fail", "replace", "rename"):
+        raise ValueError("conflict_behavior invalide.")
     encoded_parent = quote(parent_item_id, safe="")
     encoded_name = quote(nom_fichier, safe="")
     url = _resolve_graph_url(
@@ -617,7 +623,7 @@ def courrier_ouvrir_session_onedrive(
         headers=headers,
         json_body={
             "item": {
-                "@microsoft.graph.conflictBehavior": "fail",
+                "@microsoft.graph.conflictBehavior": conflict_behavior,
                 "name": nom_fichier,
             }
         },
@@ -631,6 +637,79 @@ def courrier_ouvrir_session_onedrive(
         )
     payload = _parse_json_object(response, "session OneDrive")
     return _validate_upload_url(str(payload.get("uploadUrl") or ""))
+
+
+def courrier_mettre_a_jour_element_onedrive(
+    item_id: str,
+    *,
+    encoded_upn: str,
+    name: Optional[str] = None,
+    parent_item_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Rename and/or move a OneDrive item. Returns None on HTTP 404."""
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if parent_item_id is not None:
+        body["parentReference"] = {"id": parent_item_id}
+    if not body:
+        return None
+    encoded_item = quote(item_id, safe="")
+    url = _resolve_graph_url(f"/users/{encoded_upn}/drive/items/{encoded_item}")
+    info = jeton_courrier()
+    headers = _build_headers(info.access_token, immutable_id=False)
+    response = _request_with_retry("PATCH", url, headers=headers, json_body=body)
+    if response.status_code == 404:
+        return None
+    if response.status_code == 409:
+        raise CourrierGraphError(
+            "Conflit OneDrive lors de la mise à jour de l'élément.",
+            status_code=409,
+            reason="conflict",
+        )
+    if response.status_code != 200:
+        raise CourrierGraphError(
+            f"Échec de mise à jour OneDrive (HTTP {response.status_code}).",
+            status_code=response.status_code,
+        )
+    return _parse_json_object(response, "OneDrive")
+
+
+def courrier_supprimer_element_onedrive(
+    item_id: str,
+    *,
+    encoded_upn: str,
+) -> bool:
+    """Idempotently delete a OneDrive item (True on 200/204/404)."""
+    encoded_item = quote(item_id, safe="")
+    url = _resolve_graph_url(f"/users/{encoded_upn}/drive/items/{encoded_item}")
+    info = jeton_courrier()
+    headers = _build_headers(info.access_token, immutable_id=False)
+    response = _request_with_retry("DELETE", url, headers=headers)
+    if response.status_code in (200, 204, 404):
+        return True
+    raise CourrierGraphError(
+        f"Échec de suppression OneDrive (HTTP {response.status_code}).",
+        status_code=response.status_code,
+    )
+
+
+def courrier_lister_enfants_onedrive(
+    parent_item_id: str,
+    *,
+    encoded_upn: str,
+    select: str = "id,name,size,folder,file",
+) -> list[dict[str, Any]]:
+    """List child items of a OneDrive folder with @odata.nextLink pagination."""
+    encoded_parent = quote(parent_item_id, safe="")
+    res = courrier_get(
+        f"/users/{encoded_upn}/drive/items/{encoded_parent}/children",
+        params={"$select": select, "$top": 200},
+        immutable_id=False,
+        follow_next=True,
+    )
+    items = res.get("value") or []
+    return [it for it in items if isinstance(it, dict)]
 
 
 def courrier_televerser_tranche_onedrive(

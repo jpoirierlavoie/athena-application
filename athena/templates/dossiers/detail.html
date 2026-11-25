@@ -54,30 +54,30 @@
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('dossiers.dossier_list') }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      Dossiers
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+       aria-label="Retour aux dossiers" title="Retour aux dossiers">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">Dossiers</span>
     </a>
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       <button type="button"
               title="Générer depuis un gabarit"
               aria-label="Générer depuis un gabarit"
               hx-get="{{ url_for('doc_templates.generate_modal', dossier_id=dossier.id, locked=1) }}"
               hx-target="#gabarit-modal"
               hx-swap="innerHTML"
-              class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('draft', 20) }}
       </button>
       <a href="{{ url_for('reception.inviter_form', type='rdv', dossier_id=dossier.id) }}"
          title="Inviter à planifier un rendez-vous"
          aria-label="Inviter à planifier un rendez-vous"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('calendar_month', 20) }}
       </a>
       <a href="{{ url_for('reception.inviter_form', dossier_id=dossier.id) }}"
          title="Demander des documents"
          aria-label="Demander des documents"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('archive', 20) }}
       </a>
       {# Toujours offert : sur un dossier fermé, repose la pierre tombale de chaque élément ;
@@ -88,20 +88,20 @@
         <button type="submit"
                 title="Resynchroniser le téléphone"
                 aria-label="Resynchroniser le téléphone"
-                class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
           {{ ms('smartphone', 20) }}
         </button>
       </form>
       <a href="{{ url_for('dossiers.dossier_edit', dossier_id=dossier.id) }}"
          title="Modifier"
          aria-label="Modifier"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('edit', 20) }}
       </a>
       <button @click="deleteOpen = true"
               title="Supprimer"
               aria-label="Supprimer"
-              class="inline-flex items-center justify-center p-2 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
         {{ ms('delete', 20) }}
       </button>
     </div>

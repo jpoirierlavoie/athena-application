@@ -13,7 +13,7 @@ from models import aggregation_values, concurrency, db, provenance, reference
 from models.record_ids import is_addressable_id
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
-from utils import taxonomie
+from utils import deadlines, kyc, taxonomie
 from utils.deadlines import next_juridical_day
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils import deadlines
@@ -309,6 +309,15 @@ def _default_doc() -> dict:
         # des échéances de réponse est une phase ULTÉRIEURE — le tableau
         # est la couture.
         "significations": [],
+        # Dossier-level conflict check (Phase 5 Lot E): reuses utils/kyc
+        # conflict statuses + provenance (MCP writes stay « présumé » until
+        # confirmed in the web UI via confirm_dossier_conflict_check).
+        "conflict_check": kyc.NON_VERIFIE,
+        "conflict_check_date": None,
+        "conflict_check_notes": "",
+        "conflict_check_source": "",
+        "conflict_check_confirmed_at": None,
+        "conflict_check_confirmed_by": "",
         # Metadata
         # Identifiant de l'enregistrement dans le système d'origine,
         # posé par la reprise historique (août 2026) ; « » partout
@@ -335,6 +344,10 @@ _PROTECTED_ON_UPDATE = frozenset({
     "trust_balance",
     "trust_balance_by_client",
     "trust_cleared_by_client",
+    "conflict_check_date",
+    "conflict_check_source",
+    "conflict_check_confirmed_at",
+    "conflict_check_confirmed_by",
     "created_at",
     "created_via",
     "updated_at",
@@ -892,7 +905,9 @@ def _today_midnight_utc() -> datetime:
     return datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
 
 
-def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
+def create_dossier(
+    data: dict, *, kyc_source: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     clean_data = {
         k: v for k, v in _sanitize_data(data).items()
@@ -912,6 +927,14 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     if errors:
         return None, errors
 
+    now = datetime.now(timezone.utc)
+    conflict_refusal = kyc.apply_status_transition(
+        merged, None, clean_data, kyc.FIELD_CONFLICT,
+        source=kyc_source, now=now,
+    )
+    if conflict_refusal:
+        return None, [conflict_refusal]
+
     # Check file_number uniqueness
     try:
         existing = (
@@ -925,7 +948,6 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     except Exception as exc:
         logger.warning("create_dossier: duplicate-check query failed: %s", exc)
 
-    now = datetime.now(timezone.utc)
     dossier_id = str(uuid.uuid4())
     vjournal_uid = str(uuid.uuid4())
 
@@ -1016,6 +1038,10 @@ def _migrate_parties(doc: dict) -> dict:
     _migrate_mandate_type(doc)
     _migrate_forum_type(doc)
     _migrate_trust(doc)
+    if isinstance(doc.get(kyc.FIELD_CONFLICT), str):
+        doc[kyc.FIELD_CONFLICT] = kyc.canonical_status(
+            kyc.FIELD_CONFLICT, doc[kyc.FIELD_CONFLICT]
+        )
     return doc
 
 
@@ -1533,7 +1559,11 @@ def list_dossiers_for_picker() -> list[dict]:
 
 
 def update_dossier(
-    dossier_id: str, data: dict, *, expected_etag: Optional[str] = None
+    dossier_id: str,
+    data: dict,
+    *,
+    expected_etag: Optional[str] = None,
+    kyc_source: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing dossier. Returns (updated_doc, errors).
 
@@ -1560,12 +1590,18 @@ def update_dossier(
     * every link that leaves the dossier is journaled in ``audit_events``
       (``dossier_party``) after the commit (:func:`_journal_party_detaches`).
     """
-    doc, errors, _journaled = _update_dossier(dossier_id, data, expected_etag)
+    doc, errors, _journaled = _update_dossier(
+        dossier_id, data, expected_etag, kyc_source=kyc_source,
+    )
     return doc, errors
 
 
 def _update_dossier(
-    dossier_id: str, data: dict, guard: Optional[str]
+    dossier_id: str,
+    data: dict,
+    guard: Optional[str],
+    *,
+    kyc_source: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], int]:
     """:func:`update_dossier`'s body, plus the number of party detaches
     journaled — which the link helpers below report. *guard* is the public
@@ -1603,6 +1639,14 @@ def _update_dossier(
     if errors:
         return None, errors, 0
 
+    now = datetime.now(timezone.utc)
+    conflict_refusal = kyc.apply_status_transition(
+        merged, existing, clean_data, kyc.FIELD_CONFLICT,
+        source=kyc_source, now=now,
+    )
+    if conflict_refusal:
+        return None, [conflict_refusal], 0
+
     # Check file_number uniqueness (if changed)
     if merged["file_number"] != existing.get("file_number"):
         try:
@@ -1621,7 +1665,6 @@ def _update_dossier(
                 sanitize_log_value(dossier_id), exc,
             )
 
-    now = datetime.now(timezone.utc)
     provenance.stamp_update(merged, now)
 
     # Sync flat ID arrays
@@ -1699,7 +1742,105 @@ def _update_dossier(
     # AFTER the commit, best-effort: a journal failure never fails the save
     # (the audit_events doctrine — the write already happened).
     journaled = _journal_party_detaches(dossier_id, existing, merged)
+    if kyc.FIELD_CONFLICT in clean_data:
+        try:
+            from models import protocol as protocol_model
+            protocol_model.sync_ouverture_conflict_step(dossier_id, merged)
+        except Exception:
+            log_unexpected("ouverture conflict step sync failed",
+                           dossier_id=dossier_id)
+    if merged.get("file_number") != existing.get("file_number"):
+        _dispatch_onedrive("sync_dossier_tree", dossier_id=dossier_id)
     return merged, [], journaled
+
+
+def _dispatch_onedrive(action: str, **payload) -> None:
+    """Best-effort post-commit async mirror dispatch (never raises)."""
+    try:
+        from services import miroir_onedrive
+
+        miroir_onedrive.enqueue_event(action, **payload)
+    except Exception as exc:
+        logger.warning(
+            "dossier onedrive dispatch failed (%s): %s",
+            action,
+            type(exc).__name__,
+        )
+
+
+DOSSIER_NOT_FOUND = "Dossier introuvable."
+CONFLICT_NOTHING_TO_CONFIRM = (
+    "Rien à confirmer : cette vérification de conflits n'est pas une "
+    "inscription de Claude en attente de confirmation."
+)
+CONFLICT_CONFIRM_NEEDS_VERSION = (
+    "La version du dossier est requise pour confirmer : rechargez la page, "
+    "puis confirmez de nouveau."
+)
+CONFLICT_CONFIRM_APP_ONLY = (
+    "Une vérification de conflits ne se confirme que dans l'application."
+)
+
+
+def confirm_dossier_conflict_check(
+    dossier_id: str,
+    *,
+    par: str,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Lawyer confirmation of a dossier-level ``conflict_check`` (D7)."""
+    who = str(par or "").strip()
+    if not who:
+        raise ValueError("confirm_dossier_conflict_check needs the confirming party")
+    if provenance.current_via() == "mcp":
+        return None, [CONFLICT_CONFIRM_APP_ONLY]
+    if expected_etag is None:
+        return None, [CONFLICT_CONFIRM_NEEDS_VERSION]
+    if not is_addressable_id(dossier_id):
+        return None, [DOSSIER_NOT_FOUND]
+    try:
+        existing = get_dossier_strict(dossier_id)
+    except Exception as exc:
+        log_unexpected("dossier conflict confirmation: read failed", exc_info=False,
+                       dossier_id=sanitize_log_value(dossier_id),
+                       error_type=type(exc).__name__)
+        return None, [concurrency.READ_UNAVAILABLE_ERROR]
+    if not existing:
+        return None, [DOSSIER_NOT_FOUND]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
+    if not kyc.is_presumed(existing, kyc.FIELD_CONFLICT):
+        return None, [CONFLICT_NOTHING_TO_CONFIRM]
+
+    now = datetime.now(timezone.utc)
+    fields = {
+        kyc.confirmed_at_key(kyc.FIELD_CONFLICT): now,
+        kyc.confirmed_by_key(kyc.FIELD_CONFLICT): who[:100],
+        **provenance.update_fields(now),
+    }
+    try:
+        concurrency.commit_fields(
+            db.collection(COLLECTION).document(dossier_id), fields,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, [DOSSIER_NOT_FOUND]
+    except Exception:
+        log_unexpected("dossier conflict confirmation failed",
+                       dossier_id=dossier_id)
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, dossier_id)
+    saved = {**existing, **fields}
+    try:
+        from models import protocol as protocol_model
+        protocol_model.sync_ouverture_conflict_step(dossier_id, saved)
+    except Exception:
+        log_unexpected("ouverture conflict step sync failed",
+                       dossier_id=dossier_id)
+    return saved, []
 
 
 # ── Party links (lot 4a) ──────────────────────────────────────────────────
@@ -2433,12 +2574,51 @@ def delete_dossier(dossier_id: str) -> tuple[bool, str, dict]:
     @firestore.transactional
     def _delete(transaction) -> None:
         staged.clear()
+        auto_ouverture_refs: list = []
         try:
             snap = ref.get(transaction=transaction)
             exists = bool(snap.exists)
             remaining: list[str] = []
             if exists:
                 for collection_name, plural in _CHILD_COLLECTIONS:
+                    if collection_name == "protocols":
+                        proto_snaps = list(
+                            db.collection(collection_name)
+                            .where(filter=FieldFilter("dossier_id", "==", dossier_id))
+                            .stream(transaction=transaction)
+                        )
+                        blocking = False
+                        for psnap in proto_snaps:
+                            pdata = psnap.to_dict() or {}
+                            if (
+                                psnap.id == f"ouverture-{dossier_id}"
+                                and pdata.get("track") == "ouverture"
+                                and pdata.get("protocol_type") == "ouverture"
+                                and pdata.get("status") == "actif"
+                            ):
+                                step_snaps = list(
+                                    psnap.reference.collection("steps").stream(
+                                        transaction=transaction
+                                    )
+                                )
+                                untouched = all(
+                                    (s.to_dict() or {}).get("status") == "à_venir"
+                                    and not ((s.to_dict() or {}).get("notes") or "").strip()
+                                    and not (s.to_dict() or {}).get("linked_task_id")
+                                    and not (s.to_dict() or {}).get("linked_hearing_id")
+                                    and (s.to_dict() or {}).get("deadline_date") is None
+                                    for s in step_snaps
+                                )
+                                if untouched:
+                                    auto_ouverture_refs.extend(
+                                        s.reference for s in step_snaps
+                                    )
+                                    auto_ouverture_refs.append(psnap.reference)
+                                    continue
+                            blocking = True
+                        if blocking:
+                            remaining.append(plural)
+                        continue
                     query = db.collection(collection_name).where(
                         filter=FieldFilter("dossier_id", "==", dossier_id)
                     ).limit(1)
@@ -2462,6 +2642,8 @@ def delete_dossier(dossier_id: str) -> tuple[bool, str, dict]:
             log_unexpected("dossier delete: folder without id",
                            exc_info=False, dossier_id=dossier_id)
             raise _DeleteRefused(DELETE_READ_FAILED)
+        for doc_ref in auto_ouverture_refs:
+            transaction.delete(doc_ref)
         for folder_id in order:
             transaction.delete(
                 db.collection(folder_model.COLLECTION).document(folder_id))
@@ -2494,6 +2676,11 @@ def delete_dossier(dossier_id: str) -> tuple[bool, str, dict]:
 
     report["dossier"] = staged.get("dossier") or {}
     report["folders"] = list(staged.get("folders") or [])
+    _dispatch_onedrive(
+        "delete_dossier",
+        dossier_id=dossier_id,
+        folder_ids=report["folders"],
+    )
     return True, "", report
 
 

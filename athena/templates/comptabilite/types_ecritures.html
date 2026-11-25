@@ -8,7 +8,12 @@
    de type n'est écrit ici. Aucune lecture Firestore. #}
 <div class="max-w-3xl mx-auto px-4 py-6 space-y-6">
   <div class="flex items-center gap-2">
-    <a href="{{ url_for('comptabilite.hub') }}" class="text-gray-400 hover:text-gray-600" aria-label="Comptabilité" title="Comptabilité">&larr;</a>
+    <a href="{{ url_for('comptabilite.hub') }}"
+       aria-label="Comptabilité"
+       title="Comptabilité"
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
+      {{ ms('arrow_back', 20) }}
+    </a>
     <h1 class="text-xl font-semibold text-gray-900">Types d'écritures</h1>
   </div>
   <p class="text-sm text-gray-500">Ce que fait chaque type des deux registres, tiré des règles de l'application. Les phrases « Aux états financiers » sont à revoir avec votre comptable.</p>

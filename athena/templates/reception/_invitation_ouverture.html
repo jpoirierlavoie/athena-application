@@ -18,17 +18,24 @@
      lien          : lien de connexion Firebase (usage unique)
      + le contexte de _invitation_pied.html
 #}
-<p>Bonjour,</p>
+{% extends "reception/_courriel_cadre.html" %}
+{% block email_kicker %}Ouverture de dossier{% endblock %}
+{% block email_body %}
+<p style="margin: 0 0 12px 0;">Bonjour,</p>
 
-<p>Afin de préparer l'ouverture de votre dossier, nous vous invitons à remplir
-le formulaire sécurisé suivant :
-<a href="{{ lien }}">remplir le formulaire d'ouverture</a>.</p>
+<p style="margin: 0 0 14px 0;">Afin de préparer l'ouverture de votre dossier, nous vous invitons à remplir
+le formulaire sécurisé&nbsp;:</p>
 
-<p>Le formulaire recueille vos coordonnées ainsi que le nom des autres
+<p style="margin: 16px 0;">
+  <a href="{{ lien }}" style="display: inline-block; background-color: #111827; color: #FFFFFF; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; font-size: 14px;">remplir le formulaire d'ouverture</a>
+</p>
+
+<p style="margin: 0 0 12px 0;">Le formulaire recueille vos coordonnées ainsi que le nom des autres
 personnes ou entreprises concernées. Vous pouvez l'interrompre et le reprendre
 plus tard : vos réponses sont conservées.</p>
 
-<p>Vos renseignements demeurent confidentiels et ne seront versés à votre
+<p style="margin: 0 0 12px 0;">Vos renseignements demeurent confidentiels et ne seront versés à votre
 dossier qu'après examen.</p>
 
 {% include "reception/_invitation_pied.html" %}
+{% endblock %}

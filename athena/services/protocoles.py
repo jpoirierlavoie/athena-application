@@ -73,6 +73,7 @@ def create_protocol(
     *,
     title: str = "",
     notes: str = "",
+    inscription_variation: str = "",
     create_linked_tasks: bool = False,
 ) -> tuple[Optional[dict], list[str], dict]:
     """Create a protocol on a dossier the CALLER has resolved.
@@ -84,13 +85,19 @@ def create_protocol(
     Report: ``tasks_created``, ``tasks_linked``, ``tasks_failed``.
     """
     report = {"tasks_created": 0, "tasks_linked": 0, "tasks_failed": 0}
-    data = {
-        "title": (title or "").strip() or DEFAULT_TITLE,
+    default_title = (
+        "Protocole préjudiciaire" if protocol_type == "prejudiciaire"
+        else DEFAULT_TITLE
+    )
+    data: dict = {
+        "title": (title or "").strip() or default_title,
         "court": dossier.get("tribunal", "") or "",
         "dossier_file_number": dossier.get("file_number", "") or "",
         "dossier_title": dossier.get("title", "") or "",
         "notes": (notes or "").strip(),
     }
+    if inscription_variation:
+        data["inscription_variation"] = inscription_variation
     protocol, errors = protocol_model.create_protocol(
         dossier.get("id", ""), protocol_type, start_date, data,
         auto_create_tasks=False,

@@ -62,9 +62,12 @@ own money and the two TPS/TVQ natures never carry a dossier
 category and a split like a dépense and counts against it, never as a
 revenue. ``results_statement`` is the one authority for the
 revenue, expense and input-tax totals, ``owner_equity`` for the « Avoir de
-l'avocat » figures. A payment between two accounts OF this ledger stays
-``paiement_carte`` (two linked legs), and fees taken from trust stay the
-trust register's fee payment: neither is ever a virement interne.
+l'avocat » figures. A transfer from an ``opérations`` account to a
+``carte_crédit`` account writes two linked ``paiement_carte`` legs; any other
+transfer between two active firm Admin accounts writes linked
+``virement_interne_sortant`` / ``virement_interne_entrant`` legs, both born
+``compensée`` immediately; and fees taken from trust stay the trust
+register's fee payment.
 
 The first section is the pure, Firestore-free layer: the delta/display
 arithmetic, the TPS/TVQ ventilation (incl. ``extract_taxes_from_gross``) and
@@ -107,11 +110,22 @@ from tz import to_mtl
 from utils import contreparties as cp
 from utils import storage_identity
 from utils.deadlines import today_mtl
-from utils.format_fr import formats_label
 from utils.logging_setup import (
     log_admin_ledger_event,
     log_unexpected,
     sanitize_log_value,
+)
+from utils.receipts import (
+    MAX_RECEIPT_SIZE,
+    RECEIPT_ACCEPT,
+    RECEIPT_CONTENT_MISMATCH_FR,
+    RECEIPT_EXTENSIONS,
+    RECEIPT_HINT_FR,
+    RECEIPT_MD5_MAX as _RECEIPT_MD5_MAX,
+    RECEIPT_MIME_TYPES,
+    RECEIPT_SIZE_REFUSED_FR,
+    RECEIPT_TYPE_REFUSED_FR,
+    receipt_extension,
 )
 from utils.tracing_setup import span
 
@@ -574,44 +588,8 @@ def direction_labels_for(account_type: str) -> dict:
     return CARD_DIRECTION_LABELS if account_type == "carte_crédit" else DIRECTION_LABELS
 
 
-# ── Receipt (pièce justificative) constants ────────────────────────────────
-# Narrower than documents' ALLOWED_EXTENSIONS: a supplier's invoice or
-# receipt is a PDF, a photo or a scan, or the email that carried it (.eml,
-# .msg — added 2026-11-10 at the lawyer's request). Every type is decided by
-# the SHARED sniff, ``models/document._sniff_header``, on the documents' own
-# rules: magic bytes for PDF, JPEG, PNG and TIFF; the OLE2 container trusted
-# only under ``.msg``; an RFC 822 message recognised by its first header
-# line, only under ``.eml``. A file whose content disagrees with its
-# extension is refused. The extensions, the input's ``accept`` and the French
-# list of formats all derive from this one mapping.
-RECEIPT_MIME_TYPES = {
-    ".pdf": "application/pdf",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".tiff": "image/tiff",
-    ".tif": "image/tiff",
-    ".eml": "message/rfc822",
-    ".msg": "application/vnd.ms-outlook",
-}
-RECEIPT_EXTENSIONS = tuple(RECEIPT_MIME_TYPES)
-# The file input's ``accept``: the extensions, then the distinct types (the
-# pièces d'identité rule, ``models/piece_identite.ACCEPT``).
-RECEIPT_ACCEPT = ",".join(
-    RECEIPT_EXTENSIONS + tuple(dict.fromkeys(RECEIPT_MIME_TYPES.values()))
-)
-RECEIPT_FORMATS_FR = formats_label(RECEIPT_MIME_TYPES)
-MAX_RECEIPT_SIZE = 10 * 1024 * 1024  # 10 MB — kept by the lawyer, 2026-11-10
-RECEIPT_MAX_SIZE_FR = f"{MAX_RECEIPT_SIZE // (1024 * 1024)} Mo"
-# What the entry page says beside « Joindre », and the opening's refusals.
-RECEIPT_HINT_FR = f"{RECEIPT_FORMATS_FR}, {RECEIPT_MAX_SIZE_FR} max."
-RECEIPT_TYPE_REFUSED_FR = (
-    f"Type de fichier non autorisé. Formats acceptés : {RECEIPT_FORMATS_FR}."
-)
-RECEIPT_SIZE_REFUSED_FR = (
-    "Une pièce justificative doit faire entre 1 octet et "
-    f"{RECEIPT_MAX_SIZE_FR}."
-)
+# Receipt (pièce justificative) constants live in utils/receipts.py and are
+# imported at the top so admin_ledger and trust share one mapping.
 
 # Bounded on-document revisions trail (the editable-until-lock audit).
 _REVISIONS_CAP = 25
@@ -1156,12 +1134,20 @@ _ABORT_MESSAGES = {
         "fidéicommis lui-même."
     ),
     "écriture_liée_fideicommis": (
-        "Cette recette provient d'un paiement d'honoraires du fidéicommis. "
-        "Contre-passez plutôt le virement au fidéicommis — la recette suivra."
+        "Cette écriture est liée à une écriture du fidéicommis (paiement "
+        "d'honoraires ou virement d'avances). Contre-passez plutôt l'écriture "
+        "au fidéicommis — les deux registres suivront ensemble."
     ),
     "paiement_carte_indivisible": (
         "Un paiement de carte a deux jambes indissociables — supprimez ou "
         "contre-passez le paiement, jamais une seule jambe."
+    ),
+    "virement_lie_indivisible": (
+        "Ce virement entre comptes a deux jambes indissociables — "
+        "contre-passez le virement pour annuler les deux côtés."
+    ),
+    "virement_identique": (
+        "Les comptes source et destinataire doivent être différents."
     ),
     "encaissement_carte_interdit": (
         "Une facture s'encaisse au compte d'opérations, jamais à la carte de crédit."
@@ -1476,6 +1462,8 @@ def _entry_lock_reason(tx: dict, lock_floor: Optional[datetime]) -> Optional[str
         return "écriture_verrouillée"
     if tx.get("trust_transaction_id"):
         return "écriture_liée_fideicommis"
+    if tx.get("related_transaction_id") and tx.get("kind") != REVERSAL_KIND:
+        return "virement_lie_indivisible"
     if tx.get("invoice_id"):
         return "écriture_liée_facture"
     if lock_floor is not None:
@@ -2003,7 +1991,9 @@ def create_transaction(
     a tool argument can fill: ``request.form`` and MCP arguments build
     ``data`` and cannot reach a keyword. Its callers are the fee payment
     (``models/fee_payment``, through :func:`_prepare_create`, since lot 5a
-    step 3 — ONE transaction with the trust entry) and the reprise script
+    step 3 — ONE transaction with the trust entry), the advance-transfer
+    bridge (``models/advance_transfer``, through :func:`_stage_create` —
+    ONE transaction with the trust entry), and the reprise script
     (``scripts/reprise_encaissements``).
 
     ``_report_out``, when given, receives ``reason`` on a refusal, or the
@@ -2363,6 +2353,8 @@ def delete_transaction(tx_id: str) -> tuple[Optional[dict], list[str]]:
         "admin_transaction_deleted", transaction_id=tx_id,
         account_id=entry.get("account_id"),
     )
+    if entry.get("receipt_storage_path"):
+        _dispatch_onedrive("delete_receipt", register="admin", tx_id=tx_id)
     return entry, []
 
 
@@ -2436,6 +2428,8 @@ def delete_card_payment(tx_id: str) -> tuple[Optional[list[dict]], list[str]]:
             "admin_transaction_deleted", transaction_id=leg["id"],
             account_id=leg.get("account_id"),
         )
+        if leg.get("receipt_storage_path"):
+            _dispatch_onedrive("delete_receipt", register="admin", tx_id=leg["id"])
     return result["legs"], []
 
 
@@ -2903,7 +2897,7 @@ def reverse_transaction(
             raise _TxnAbort("écriture_liée_fideicommis")
 
         legs = [original]
-        if original.get("kind") == "paiement_carte" and original.get("related_transaction_id"):
+        if original.get("related_transaction_id") and original.get("kind") != REVERSAL_KIND:
             other_ref = db.collection(TRANSACTIONS_COLLECTION).document(
                 original["related_transaction_id"]
             )
@@ -2954,26 +2948,37 @@ def reverse_transaction(
 # ── create_card_payment — one event, two legs ──────────────────────────────
 
 
-def create_card_payment(
-    bank_account_id: str,
-    card_account_id: str,
+def _write_account_transfer(
+    from_account_id: str,
+    to_account_id: str,
     amount: int,
     date_value,
     method: str,
     reference: str = "",
     description: str = "",
     *,
+    card_only: bool,
     _report_out: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
-    """Pay the corporate card FROM the operations account: ONE Firestore
-    transaction writing leg A (bank, ``déboursé``) and leg B (card,
-    ``recette``), kind ``paiement_carte``, cross-linked via
-    ``related_transaction_id``, both ``en_circulation`` (each leg clears on
-    its OWN statement). Reversing or deleting one leg carries the other.
+    """Transfer *amount* between two active firm Admin accounts in ONE
+    Firestore transaction, writing two linked legs born ``status="compensée"``
+    immediately at ``cleared_date = date_value``.
 
-    ``_report_out``, when given, receives ``reason`` on a refusal, or both
-    legs under ``legs`` (bank first, card second)."""
+    When moving from an ``opérations`` account to a ``carte_crédit`` account
+    the legs use kind ``paiement_carte``; any other active pair
+    (``opérations`` ↔ ``opérations``, ``carte_crédit`` → ``opérations``,
+    ``carte_crédit`` ↔ ``carte_crédit``) writes linked
+    ``virement_interne_sortant`` + ``virement_interne_entrant`` legs.
+    """
     report = _report_out if _report_out is not None else {}
+    from_account_id = (from_account_id or "").strip()
+    to_account_id = (to_account_id or "").strip()
+    if not from_account_id or not to_account_id:
+        report["reason"] = "compte_introuvable"
+        return None, [_ABORT_MESSAGES["compte_introuvable"]]
+    if not card_only and from_account_id == to_account_id:
+        report["reason"] = "virement_identique"
+        return None, [_ABORT_MESSAGES["virement_identique"]]
     if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
         report["reason"] = "montant_invalide"
         return None, [_ABORT_MESSAGES["montant_invalide"]]
@@ -2990,7 +2995,6 @@ def create_card_payment(
 
     description = sanitize(description or "", max_length=2000)
     reference = sanitize(reference or "", max_length=2000)
-    now = datetime.now(timezone.utc)
     leg_a_id = str(uuid.uuid4())
     leg_b_id = str(uuid.uuid4())
     leg_a_ref = db.collection(TRANSACTIONS_COLLECTION).document(leg_a_id)
@@ -2999,14 +3003,16 @@ def create_card_payment(
     attempted: dict = {"commit": False}
 
     @firestore.transactional
-    def _pay(txn) -> None:
-        # FIRST read: the leg THIS call minted — an earlier attempt that
-        # landed with its answer lost (see _OwnCommitLanded). Re-run over it,
-        # the body moved both accounts' ledger balances a second time.
+    def _transfer(txn) -> None:
+        now = datetime.now(timezone.utc)
         if leg_a_ref.get(transaction=txn).exists:
             raise _OwnCommitLanded(leg_a_id)
         infos = {}
-        for aid in (bank_account_id, card_account_id):
+        seen_ids = (
+            (from_account_id, to_account_id)
+            if from_account_id != to_account_id else (from_account_id,)
+        )
+        for aid in seen_ids:
             aref = db.collection(ACCOUNTS_COLLECTION).document(aid)
             asnap = aref.get(transaction=txn)
             if not asnap.exists:
@@ -3018,10 +3024,16 @@ def create_card_payment(
                 "ref": aref, "doc": asnap.to_dict(), "counter_ref": cref,
                 "seq": seq, "floor": _read_lock_floor(aid, txn),
             }
-        bank = infos[bank_account_id]["doc"]
-        card = infos[card_account_id]["doc"]
-        if bank.get("account_type") != "opérations" or card.get("account_type") != "carte_crédit":
+        src = infos[from_account_id]["doc"]
+        dst = infos[to_account_id]["doc"]
+        is_card_payment = (
+            src.get("account_type") == "opérations"
+            and dst.get("account_type") == "carte_crédit"
+        )
+        if card_only and not is_card_payment:
             raise _TxnAbort("comptes_incompatibles")
+        if from_account_id == to_account_id:
+            raise _TxnAbort("virement_identique")
         for info in infos.values():
             if info["doc"].get("status") != "actif":
                 raise _TxnAbort("compte_fermé")
@@ -3029,34 +3041,46 @@ def create_card_payment(
                 raise _TxnAbort("période_verrouillée")
 
         zero = {"net_amount": 0, "gst_amount": 0, "qst_amount": 0}
-        infos[bank_account_id]["seq"] += 1
+        if is_card_payment:
+            kind_a = kind_b = "paiement_carte"
+            vent_a = zero
+            vent_b = zero
+        else:
+            kind_a = "virement_interne_sortant"
+            kind_b = "virement_interne_entrant"
+            vent_a = canonical_ventilation(kind_a, "déboursé", amount)
+            vent_b = canonical_ventilation(kind_b, "recette", amount)
+
+        infos[from_account_id]["seq"] += 1
         leg_a = _build_transaction_doc(
-            tx_id=leg_a_id, account_id=bank_account_id,
-            sequence=infos[bank_account_id]["seq"], date_value=d,
-            direction="déboursé", kind="paiement_carte", amount=amount,
-            method=method, counterparty=card.get("name", "Carte de crédit"),
-            category=None, ventilation=zero, description=description,
+            tx_id=leg_a_id, account_id=from_account_id,
+            sequence=infos[from_account_id]["seq"], date_value=d,
+            direction="déboursé", kind=kind_a, amount=amount,
+            method=method, counterparty=dst.get("name", "Compte destinataire"),
+            category=None, ventilation=vent_a, description=description,
             reference=reference, supplier_invoice_ref="",
             dossier=None, dossier_id=None, invoice_id=None, invoice_number="",
             trust_transaction_id=None, now=now,
+            status="compensée", cleared_date=d,
             related_transaction_id=leg_b_id,
         )
-        infos[card_account_id]["seq"] += 1
+        infos[to_account_id]["seq"] += 1
         leg_b = _build_transaction_doc(
-            tx_id=leg_b_id, account_id=card_account_id,
-            sequence=infos[card_account_id]["seq"], date_value=d,
-            direction="recette", kind="paiement_carte", amount=amount,
-            method=method, counterparty=bank.get("name", "Compte d'opérations"),
-            category=None, ventilation=zero, description=description,
+            tx_id=leg_b_id, account_id=to_account_id,
+            sequence=infos[to_account_id]["seq"], date_value=d,
+            direction="recette", kind=kind_b, amount=amount,
+            method=method, counterparty=src.get("name", "Compte source"),
+            category=None, ventilation=vent_b, description=description,
             reference=reference, supplier_invoice_ref="",
             dossier=None, dossier_id=None, invoice_id=None, invoice_number="",
             trust_transaction_id=None, now=now,
+            status="compensée", cleared_date=d,
             related_transaction_id=leg_a_id,
         )
 
         txn.set(leg_a_ref, leg_a)
         txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_b_id), leg_b)
-        for aid, leg in ((bank_account_id, leg_a), (card_account_id, leg_b)):
+        for aid, leg in ((from_account_id, leg_a), (to_account_id, leg_b)):
             info = infos[aid]
             txn.set(info["counter_ref"], {"seq": info["seq"], "updated_at": now})
             txn.update(info["ref"], {
@@ -3065,44 +3089,104 @@ def create_card_payment(
                 **provenance.update_fields(now),
             })
         result["legs"] = [leg_a, leg_b]
+        result["is_card_payment"] = is_card_payment
         attempted["commit"] = True
 
+    span_kind = "paiement_carte" if card_only else "virement_comptes"
+    op_label = "admin card payment" if card_only else "admin account transfer"
     try:
-        with span("admin.transaction", direction="transfer", kind="paiement_carte"):
-            _pay(transaction)
+        with span("admin.transaction", direction="transfer", kind=span_kind):
+            _transfer(transaction)
     except _OwnCommitLanded:
-        return _uncertain_create(report, "admin card payment: an earlier attempt "
-                                 "of the transaction landed",
-                                 account_id=bank_account_id)
+        return _uncertain_create(
+            report, f"{op_label}: an earlier attempt of the transaction landed",
+            account_id=from_account_id,
+        )
     except _TxnAbort as abort:
         report["reason"] = abort.reason
-        return None, [_ABORT_MESSAGES.get(abort.reason, "Paiement refusé.")]
+        return None, [_ABORT_MESSAGES.get(abort.reason, "Virement refusé.")]
     except Exception as exc:
         if attempted["commit"]:
-            return _uncertain_create(report, "admin card payment: transaction "
-                                     "failed after a commit attempt",
-                                     account_id=bank_account_id,
-                                     error_type=type(exc).__name__)
-        logger.error("admin card payment failed: %s", type(exc).__name__)
+            return _uncertain_create(
+                report, f"{op_label}: transaction failed after a commit attempt",
+                account_id=from_account_id, error_type=type(exc).__name__,
+            )
+        logger.error("%s failed: %s", op_label, type(exc).__name__)
         report["reason"] = "erreur"
-        return None, ["Erreur lors du paiement. Veuillez réessayer."]
+        return None, ["Erreur lors du virement. Veuillez réessayer."]
 
     for leg in result["legs"]:
         provenance.note_commit(TRANSACTIONS_COLLECTION, leg["id"])
-    log_admin_ledger_event(
-        "admin_card_payment_created", transaction_id=leg_a_id,
-        account_id=bank_account_id, card_account_id=card_account_id,
-    )
+    if result["is_card_payment"]:
+        log_admin_ledger_event(
+            "admin_card_payment_created", transaction_id=leg_a_id,
+            account_id=from_account_id, card_account_id=to_account_id,
+        )
+    else:
+        for leg in result["legs"]:
+            log_admin_ledger_event(
+                "admin_transaction_created", transaction_id=leg["id"],
+                account_id=leg["account_id"], direction=leg["direction"],
+                kind=leg["kind"], sequence=leg["sequence"],
+            )
+    for leg in result["legs"]:
+        log_admin_ledger_event(
+            "admin_transaction_cleared", transaction_id=leg["id"],
+            account_id=leg["account_id"],
+        )
     report["legs"] = list(result["legs"])
+    report["is_card_payment"] = result["is_card_payment"]
     return result["legs"][0], []
 
 
+def create_card_payment(
+    bank_account_id: str,
+    card_account_id: str,
+    amount: int,
+    date_value,
+    method: str,
+    reference: str = "",
+    description: str = "",
+    *,
+    _report_out: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Pay the corporate card FROM the operations account: ONE Firestore
+    transaction writing leg A (bank, ``déboursé``) and leg B (card,
+    ``recette``), kind ``paiement_carte``, cross-linked via
+    ``related_transaction_id``, both born ``status="compensée"`` immediately
+    at ``cleared_date = date_value``. Reversing one leg carries the other.
+
+    ``_report_out``, when given, receives ``reason`` on a refusal, or both
+    legs under ``legs`` (bank first, card second)."""
+    return _write_account_transfer(
+        bank_account_id, card_account_id, amount, date_value, method,
+        reference=reference, description=description, card_only=True,
+        _report_out=_report_out,
+    )
+
+
+def create_account_transfer(
+    from_account_id: str,
+    to_account_id: str,
+    amount: int,
+    date_value,
+    method: str,
+    reference: str = "",
+    description: str = "",
+    *,
+    _report_out: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Transfer between ANY two active firm Admin accounts in ONE Firestore
+    transaction, writing two linked legs both born ``status="compensée"``
+    immediately at ``cleared_date = date_value``."""
+    return _write_account_transfer(
+        from_account_id, to_account_id, amount, date_value, method,
+        reference=reference, description=description, card_only=False,
+        _report_out=_report_out,
+    )
+
+
 # ── attach_receipt — the pièce justificative metadata ──────────────────────
-
-
-# The receipt's MD5 as GCS reports it (base64 of 16 bytes — 24 characters).
-# Anything longer is not a digest and is stored as « unknown » ("").
-_RECEIPT_MD5_MAX = 64
 
 
 def attach_receipt(
@@ -3148,9 +3232,24 @@ def attach_receipt(
         "admin_receipt_attached", transaction_id=tx_id,
         account_id=existing.get("account_id"), size=int(size or 0),
     )
+    _dispatch_onedrive("sync_receipt", register="admin", tx_id=tx_id)
     merged = {**existing, **updates}
     merged["_previous_receipt_path"] = existing.get("receipt_storage_path")
     return merged, []
+
+
+def _dispatch_onedrive(action: str, **payload) -> None:
+    """Best-effort post-commit async mirror dispatch (never raises)."""
+    try:
+        from services import miroir_onedrive
+
+        miroir_onedrive.enqueue_event(action, **payload)
+    except Exception as exc:
+        logger.warning(
+            "admin_ledger onedrive dispatch failed (%s): %s",
+            action,
+            type(exc).__name__,
+        )
 
 
 # ── The receipt door of the CONNECTOR (2026-11-10) ─────────────────────────
@@ -3179,9 +3278,6 @@ def attach_receipt(
 #   uncertain — and the object is never deleted, even unreferenced (its ids
 #   are logged).
 
-RECEIPT_CONTENT_MISMATCH_FR = (
-    "Le contenu du fichier ne correspond pas à son extension."
-)
 RECEIPT_OBJECTS_SEGMENT = "pieces"
 RECEIPT_ATTACHED_MOTIF = "Pièce justificative jointe"
 RECEIPT_REPLACED_MOTIF = (
@@ -3207,12 +3303,6 @@ MSG_RECEIPT_OCCUPIED = (
     "été joint."
 )
 MSG_RECEIPT_UNAVAILABLE = "Erreur lors de la sauvegarde. Veuillez réessayer."
-
-
-def receipt_extension(filename: str) -> str:
-    """The lower-cased extension of *filename*, dot included, or ``""``."""
-    name = str(filename or "")
-    return "." + name.rsplit(".", 1)[1].lower() if "." in name else ""
 
 
 def receipt_content_type(
@@ -3455,6 +3545,7 @@ def attach_uploaded_receipt(
         account_id=result["entry"].get("account_id"), size=size,
         replaced=replaced,
     )
+    _dispatch_onedrive("sync_receipt", register="admin", tx_id=tx_id)
     return ReceiptOutcome(result["entry"], [], RECEIPT_ATTACHED, replaced)
 
 
@@ -4095,6 +4186,7 @@ def complete_reconciliation(
         "admin_reconciliation_completed", reconciliation_id=rec_id,
         account_id=account_id, cleared_count=result["cleared_count"],
     )
+    _dispatch_onedrive("sync_reconciliation", register="admin", reconciliation_id=rec_id)
     return result["reconciliation"], []
 
 

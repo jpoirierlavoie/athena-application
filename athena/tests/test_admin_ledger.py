@@ -875,15 +875,21 @@ def test_card_payment_refuses_wrong_account_types(store):
 
 
 def test_reverse_card_payment_reverses_both_legs(store):
-    al.create_card_payment("ops1", "carte1", 50000, _d(2026, 7, 15), "virement")
-    leg_id = next(iter(store["admin_transactions"]))
+    leg, errs = al.create_card_payment("ops1", "carte1", 50000, _d(2026, 7, 15), "virement")
+    assert errs == []
+    assert leg["status"] == "compensée"
+    assert leg["cleared_date"] == _d(2026, 7, 15)
+    leg_id = leg["id"]
     reversal, errs = al.reverse_transaction(leg_id, "NSF")
     assert errs == []
     assert len(store["admin_transactions"]) == 4  # 2 originals + 2 reversals
     assert store["admin_accounts"]["ops1"]["ledger_balance"] == 0
     assert store["admin_accounts"]["carte1"]["ledger_balance"] == 0
-    for t in store["admin_transactions"].values():
-        assert t["status"] == "annulée"  # both en_circulation pairs annulled
+    originals = [t for t in store["admin_transactions"].values() if t["kind"] == "paiement_carte"]
+    reversals = [t for t in store["admin_transactions"].values() if t["kind"] == al.REVERSAL_KIND]
+    assert len(originals) == 2 and len(reversals) == 2
+    assert all(t["status"] == "compensée" and t["reversed_by_id"] for t in originals)
+    assert all(t["status"] == "en_circulation" and t["reverses_id"] for t in reversals)
 
 
 def test_delete_card_payment_removes_both_legs(store):
@@ -892,9 +898,17 @@ def test_delete_card_payment_removes_both_legs(store):
     # A single leg refuses the plain delete…
     _, errs = al.delete_transaction(leg_id)
     assert "jambes" in errs[0]
-    # …the pair delete removes both and restores both ledgers.
+    # …and newly born compensée legs refuse deletion (must be reversed).
+    _, errs = al.delete_card_payment(leg_id)
+    assert errs and "verrouillée" in errs[0]
+    # Legacy en_circulation legs can still be pair-deleted cleanly.
+    for row in store["admin_transactions"].values():
+        row["status"] = "en_circulation"
+        row["cleared_date"] = None
+        row.pop("cleared_via", None)
     deleted, errs = al.delete_card_payment(leg_id)
     assert errs == []
+    assert len(deleted) == 2
     assert store["admin_transactions"] == {}
     assert store["admin_accounts"]["ops1"]["ledger_balance"] == 0
     assert store["admin_accounts"]["carte1"]["ledger_balance"] == 0

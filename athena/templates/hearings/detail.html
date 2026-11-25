@@ -8,21 +8,22 @@
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ return_to or url_for('hearings.hearing_list') }}"
-       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      {{ ms('chevron_left', 16) }}
-      {{ 'Retour' if return_to else 'Calendrier' }}
+       class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+       aria-label="{{ 'Retour' if return_to else 'Retour au calendrier' }}"
+       title="{{ 'Retour' if return_to else 'Calendrier' }}">
+      {{ ms('arrow_back', 20) }}<span class="sr-only">{{ 'Retour' if return_to else 'Calendrier' }}</span>
     </a>
     <div class="flex items-center gap-2">
       <a href="{{ url_for('hearings.hearing_edit', hearing_id=hearing.id, return_to=return_to or None) }}"
          title="Modifier"
          aria-label="Modifier"
-         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         {{ ms('edit', 20) }}
       </a>
       <button @click="deleteOpen = true"
               title="Supprimer"
               aria-label="Supprimer"
-              class="inline-flex items-center justify-center p-2 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
         {{ ms('delete', 20) }}
       </button>
     </div>
@@ -155,7 +156,7 @@
 
     {# Location & court #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-3">Lieu et tribunal</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">{{ 'Lieu et tribunal' if is_judiciaire else 'Lieu' }}</h2>
       <dl class="space-y-2 text-sm">
         {% if hearing.location %}
         <div>
@@ -163,13 +164,13 @@
           <dd class="text-gray-900">{{ hearing.location }}</dd>
         </div>
         {% endif %}
-        {% if hearing.court %}
+        {% if is_judiciaire and hearing.court %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Tribunal</dt>
           <dd class="text-gray-900">{{ hearing.court }}</dd>
         </div>
         {% endif %}
-        {% if hearing.judge %}
+        {% if is_judiciaire and hearing.judge %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Juge</dt>
           <dd class="text-gray-900">{{ hearing.judge }}</dd>
@@ -193,7 +194,7 @@
           </dd>
         </div>
         {% endif %}
-        {% if not hearing.location and not hearing.court and not hearing.judge %}
+        {% if not hearing.location and (not is_judiciaire or (not hearing.court and not hearing.judge)) and not (hearing.modalite == 'visioconférence' and hearing.conference_uri) %}
         <p class="text-gray-400 text-xs">Aucune information de lieu</p>
         {% endif %}
       </dl>
@@ -268,6 +269,318 @@
   </div>
   {% endif %}
 
+  {% from "components/_edit_conflict.html" import etag_field %}
+  {% set hearing_self_url = url_for('hearings.hearing_detail', hearing_id=hearing.id) %}
+
+  {# ── Documents liés (événements rattachés à un dossier) ─────── #}
+  {% if hearing.dossier_id %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4" x-data="{ uploadOpen: false, linkDocOpen: false }">
+    <div class="flex items-center justify-between gap-2 mb-3">
+      <h2 class="text-sm font-semibold text-gray-900">Documents liés</h2>
+      <div class="flex items-center gap-1">
+        {% if linkable_docs %}
+        <button type="button"
+                @click="linkDocOpen = !linkDocOpen; if (linkDocOpen) uploadOpen = false"
+                aria-label="Lier un document existant" title="Lier un document existant"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-700 bg-white border border-gray-300 hover:bg-gray-50">
+          {{ ms('link', 20) }}
+        </button>
+        {% endif %}
+        <button type="button"
+                @click="uploadOpen = !uploadOpen; if (uploadOpen) linkDocOpen = false"
+                aria-label="Téléverser un document" title="Téléverser un document"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-white bg-gray-900 hover:bg-gray-800">
+          {{ ms('upload', 20) }}
+        </button>
+      </div>
+    </div>
+
+    {% if docs_unavailable %}
+    <div role="alert" class="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+      Impossible de charger les documents liés — réessayez.
+    </div>
+    {% endif %}
+
+    {% if linked_docs %}
+    <div class="flex flex-col gap-2 mb-3">
+      {% for d in linked_docs %}
+      <div class="flex items-center justify-between gap-2 p-3 rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+        <a href="{{ d._detail_url or '#' }}"
+           class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-gray-900 truncate">{{ d.display_name or d.filename }}</p>
+          <p class="text-xs text-gray-500">
+            {{ doc_category_labels.get(d.category, d.category) }} · {{ d._file_size_fmt }}
+          </p>
+        </a>
+        <div class="flex items-center gap-1 flex-shrink-0">
+          {% if d._download_url %}
+          <a href="{{ d._download_url }}"
+             aria-label="Télécharger {{ d.display_name or d.filename }}" title="Télécharger"
+             class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-600 hover:text-gray-900 hover:bg-gray-100">
+            {{ ms('download', 20) }}
+          </a>
+          {% endif %}
+          <form method="post" action="{{ url_for('hearings.hearing_unlink_document', hearing_id=hearing.id, document_id=d.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+            {{ etag_field(d) }}
+            <button type="submit"
+                    aria-label="Dissocier {{ d.display_name or d.filename }}" title="Dissocier le document"
+                    class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50">
+              {{ ms('link_off', 20) }}
+            </button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif not docs_unavailable %}
+    <p class="text-xs text-gray-400 mb-3">Aucun document lié à cet événement.</p>
+    {% endif %}
+
+    {% if linkable_docs %}
+    <form x-show="linkDocOpen" x-cloak method="post"
+          action="{{ url_for('hearings.hearing_link_document', hearing_id=hearing.id) }}"
+          class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+      <select name="document_id" required
+              class="flex-1 min-w-0 max-w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">Choisir un document du dossier…</option>
+        {% for d in linkable_docs %}
+        <option value="{{ d.id }}">{{ d.display_name or d.filename }} ({{ doc_category_labels.get(d.category, d.category) }})</option>
+        {% endfor %}
+      </select>
+      <button type="submit"
+              aria-label="Lier ce document" title="Lier ce document"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-white bg-gray-900 hover:bg-gray-800">
+        {{ ms('link', 20) }}
+      </button>
+    </form>
+    {% endif %}
+
+    <div x-show="uploadOpen" x-cloak class="mt-3 pt-3 border-t border-gray-100" x-data="hearingDocUpload()">
+      <form @submit.prevent="soumettre()" class="space-y-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label for="hearing_upload_file" class="block text-xs font-medium text-gray-700 mb-1">Fichier *</label>
+            <input type="file" id="hearing_upload_file" name="file"
+                   accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.tiff,.tif,.zip,.eml,.msg"
+                   @change="choisirFichier($event)"
+                   class="block w-full text-xs text-gray-700 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200">
+          </div>
+          <div>
+            <label for="hearing_upload_name" class="block text-xs font-medium text-gray-700 mb-1">Nom d'affichage (optionnel)</label>
+            <input type="text" id="hearing_upload_name" name="display_name"
+                   placeholder="Ex: Procès-verbal d'audience"
+                   class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div>
+            <label for="hearing_upload_category" class="block text-xs font-medium text-gray-700 mb-1">Catégorie</label>
+            <select id="hearing_upload_category" name="category"
+                    class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              {% for val, label in doc_category_choices.items() %}
+              <option value="{{ val }}" {{ 'selected' if val == default_upload_category }}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="hearing_upload_folder" class="block text-xs font-medium text-gray-700 mb-1">Dossier de classement</label>
+            <select id="hearing_upload_folder" name="folder_id"
+                    class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">Racine du dossier</option>
+              {% for fid, flabel in folder_options %}
+              <option value="{{ fid }}" {{ 'selected' if fid == default_upload_folder_id }}>{{ flabel }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <template x-if="erreur">
+          <div role="alert" class="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700" x-text="erreur"></div>
+        </template>
+        <template x-if="statut">
+          <p class="text-xs text-gray-600" x-text="statut"></p>
+        </template>
+        <div class="flex justify-end gap-2">
+          <button type="button" @click="uploadOpen = false" :disabled="submitting"
+                  class="min-h-[44px] px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+            Annuler
+          </button>
+          <button type="submit" :disabled="submitting || !fichier || incertain"
+                  class="inline-flex items-center gap-2 min-h-[44px] px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50">
+            <span x-show="submitting" class="inline-block w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" aria-hidden="true"></span>
+            <span x-text="submitting ? 'Téléversement…' : 'Téléverser'"></span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Notes liées (tous les événements) ───────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4" x-data="{ linkNoteOpen: false }">
+    <div class="flex items-center justify-between gap-2 mb-3">
+      <h2 class="text-sm font-semibold text-gray-900">Notes liées</h2>
+      <div class="flex items-center gap-1">
+        {% if linkable_notes %}
+        <button type="button"
+                @click="linkNoteOpen = !linkNoteOpen"
+                aria-label="Lier une note existante" title="Lier une note existante"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-700 bg-white border border-gray-300 hover:bg-gray-50">
+          {{ ms('link', 20) }}
+        </button>
+        {% endif %}
+        {% if new_note_url %}
+        <a href="{{ new_note_url }}"
+           aria-label="Nouvelle note liée" title="Nouvelle note liée"
+           class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-white bg-gray-900 hover:bg-gray-800">
+          {{ ms('add', 20) }}<span class="sr-only">+ Nouvelle note</span>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if notes_unavailable %}
+    <div role="alert" class="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+      Impossible de charger les notes liées — réessayez.
+    </div>
+    {% endif %}
+
+    {% if linked_notes %}
+    <div class="flex flex-col gap-2">
+      {% for n in linked_notes %}
+      <div class="flex items-center justify-between gap-2 p-3 rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+        <a href="{{ n._detail_url or '#' }}"
+           class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5">
+            {% if n.pinned %}{{ ms('push_pin', 14, 'text-amber-500 flex-shrink-0') }}{% endif %}
+            <p class="text-sm font-medium text-gray-900 truncate">{{ n.title }}</p>
+          </div>
+          <p class="text-xs text-gray-500">{{ note_category_labels.get(n.category, n.category) }}</p>
+        </a>
+        <form method="post" action="{{ url_for('hearings.hearing_unlink_note', hearing_id=hearing.id, note_id=n.id) }}" class="flex-shrink-0">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+          {{ etag_field(n) }}
+          <button type="submit"
+                  aria-label="Dissocier {{ n.title }}" title="Dissocier la note"
+                  class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50">
+            {{ ms('link_off', 20) }}
+          </button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif not notes_unavailable %}
+    <p class="text-xs text-gray-400">Aucune note liée à cet événement.</p>
+    {% endif %}
+
+    {% if linkable_notes %}
+    <form x-show="linkNoteOpen" x-cloak method="post"
+          action="{{ url_for('hearings.hearing_link_note', hearing_id=hearing.id) }}"
+          class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+      <select name="note_id" required
+              class="flex-1 min-w-0 max-w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">Choisir une note existante…</option>
+        {% for n in linkable_notes %}
+        <option value="{{ n.id }}">{{ n.title }}{% if n.dossier_file_number %} ({{ n.dossier_file_number }}){% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="submit"
+              aria-label="Lier cette note" title="Lier cette note"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-white bg-gray-900 hover:bg-gray-800">
+        {{ ms('link', 20) }}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
+  {# ── Tâches liées (tous les événements) ──────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4" x-data="{ linkTaskOpen: false }">
+    <div class="flex items-center justify-between gap-2 mb-3">
+      <h2 class="text-sm font-semibold text-gray-900">Tâches liées</h2>
+      <div class="flex items-center gap-1">
+        {% if linkable_tasks %}
+        <button type="button"
+                @click="linkTaskOpen = !linkTaskOpen"
+                aria-label="Lier une tâche existante" title="Lier une tâche existante"
+                class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-700 bg-white border border-gray-300 hover:bg-gray-50">
+          {{ ms('link', 20) }}
+        </button>
+        {% endif %}
+        {% if new_task_url %}
+        <a href="{{ new_task_url }}"
+           aria-label="Nouvelle tâche liée" title="Nouvelle tâche liée"
+           class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-white bg-gray-900 hover:bg-gray-800">
+          {{ ms('add', 20) }}<span class="sr-only">+ Nouvelle tâche</span>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if tasks_unavailable %}
+    <div role="alert" class="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+      Impossible de charger les tâches liées — réessayez.
+    </div>
+    {% endif %}
+
+    {% if linked_tasks %}
+    <div class="flex flex-col gap-2">
+      {% for t in linked_tasks %}
+      <div class="flex items-center justify-between gap-2 p-3 rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+        <a href="{{ t._detail_url or '#' }}"
+           class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full flex-shrink-0 {{ task_priority_colors.get(t.priority, 'bg-gray-400') }}"></span>
+            <p class="text-sm font-medium {{ 'text-gray-500 line-through' if t.status == 'terminée' else 'text-gray-900' }} truncate">{{ t.title }}</p>
+          </div>
+          <p class="text-xs {{ 'text-red-600 font-medium' if t._overdue else 'text-gray-500' }}">
+            {{ task_status_labels.get(t.status, t.status) }}
+            {% if t.due_date and t.due_date.strftime is defined %} · Échéance {{ t.due_date.strftime('%Y-%m-%d') }}{% endif %}
+          </p>
+        </a>
+        <form method="post" action="{{ url_for('hearings.hearing_unlink_task', hearing_id=hearing.id, task_id=t.id) }}" class="flex-shrink-0">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+          {{ etag_field(t) }}
+          <button type="submit"
+                  aria-label="Dissocier {{ t.title }}" title="Dissocier la tâche"
+                  class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50">
+            {{ ms('link_off', 20) }}
+          </button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif not tasks_unavailable %}
+    <p class="text-xs text-gray-400">Aucune tâche liée à cet événement.</p>
+    {% endif %}
+
+    {% if linkable_tasks %}
+    <form x-show="linkTaskOpen" x-cloak method="post"
+          action="{{ url_for('hearings.hearing_link_task', hearing_id=hearing.id) }}"
+          class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+      <select name="task_id" required
+              class="flex-1 min-w-0 max-w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">Choisir une tâche existante…</option>
+        {% for t in linkable_tasks %}
+        <option value="{{ t.id }}">{{ t.title }}{% if t.dossier_file_number %} ({{ t.dossier_file_number }}){% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="submit"
+              aria-label="Lier cette tâche" title="Lier cette tâche"
+              class="inline-flex items-center justify-center min-h-[44px] min-w-[44px] p-2.5 rounded-lg text-white bg-gray-900 hover:bg-gray-800">
+        {{ ms('link', 20) }}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
   {# ── Delete confirmation dialog ──────────────────────────────── #}
   <div x-show="deleteOpen"
        @keydown.escape.window="deleteOpen = false"
@@ -331,4 +644,191 @@
   </div>
 
 </div>
+{% if hearing.dossier_id and upload_open_url and upload_finalize_url %}
+<script type="application/json" id="hearing-upload-config">{{ {
+  "incertain": televersement_config.incertain,
+  "openUrl": upload_open_url,
+  "finalizeUrl": upload_finalize_url,
+  "dossierId": hearing.dossier_id,
+  "hearingId": hearing.id
+} | tojson }}</script>
+<script nonce="{{ csp_nonce }}">
+function hearingDocUpload() {
+  const CHUNK = 4 * 1024 * 1024;
+  const CFG = JSON.parse(document.getElementById('hearing-upload-config').textContent);
+  return {
+    fichier: null,
+    submitting: false,
+    incertain: false,
+    erreur: '',
+    statut: '',
+    choisirFichier(e) {
+      this.fichier = (e.target.files && e.target.files[0]) || null;
+      this.incertain = false;
+      this.erreur = '';
+      this.statut = '';
+    },
+    champ(nom) {
+      const el = this.$root.querySelector('[name="' + nom + '"]');
+      return el ? el.value : '';
+    },
+    entetes() {
+      return {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': this.champ('csrf_token'),
+      };
+    },
+    putTranche(file, url, debut, onPct) {
+      return new Promise(function (resolve, reject) {
+        const fin = Math.min(debut + CHUNK, file.size);
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('Content-Range',
+          'bytes ' + debut + '-' + (fin - 1) + '/' + file.size);
+        xhr.upload.onprogress = function (ev) {
+          onPct(Math.min(99, Math.round(((debut + ev.loaded) / file.size) * 100)));
+        };
+        xhr.onload = function () { resolve(xhr); };
+        xhr.onerror = function () { reject(new Error('réseau')); };
+        xhr.send(file.slice(debut, fin));
+      });
+    },
+    interrogerDecalage(file, url) {
+      return new Promise(function (resolve) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', url);
+        xhr.setRequestHeader('Content-Range', 'bytes */' + file.size);
+        xhr.onload = function () {
+          if (xhr.status === 308) {
+            const range = xhr.getResponseHeader('Range');
+            resolve(range ? parseInt(range.split('-')[1], 10) + 1 : 0);
+          } else if (xhr.status === 200 || xhr.status === 201) {
+            resolve(file.size);
+          } else { resolve(0); }
+        };
+        xhr.onerror = function () { resolve(0); };
+        xhr.send();
+      });
+    },
+    async televerser(file, url) {
+      const self = this;
+      let debut = 0, tentatives = 0;
+      while (true) {
+        let xhr = null;
+        try {
+          xhr = await this.putTranche(file, url, debut, function (p) {
+            self.statut = 'Téléversement : ' + p + ' %';
+          });
+        } catch (e) { /* réseau */ }
+        if (xhr && (xhr.status === 200 || xhr.status === 201)) { return; }
+        if (xhr && xhr.status === 308) {
+          const range = xhr.getResponseHeader('Range');
+          debut = range ? parseInt(range.split('-')[1], 10) + 1 : debut + CHUNK;
+          tentatives = 0;
+          continue;
+        }
+        tentatives += 1;
+        if (tentatives > 3) { throw new Error('interrompu'); }
+        await new Promise(function (r) { setTimeout(r, 1000 * Math.pow(2, tentatives)); });
+        debut = await this.interrogerDecalage(file, url);
+        if (debut >= file.size && file.size > 0) { return; }
+      }
+    },
+    async finaliser(payload) {
+      let fin;
+      try {
+        fin = await fetch(CFG.finalizeUrl, {
+          method: 'POST',
+          headers: this.entetes(),
+          body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        return { ok: false, incertain: true, erreur: '' };
+      }
+      let illisible = false;
+      const res = await fin.json().catch(function (e) {
+        illisible = !(e instanceof SyntaxError);
+        return {};
+      });
+      if (fin.ok && illisible) { return { ok: false, incertain: true, erreur: '' }; }
+      if (fin.status >= 500 && !res.erreur) { return { ok: false, incertain: true, erreur: '' }; }
+      return {
+        ok: fin.ok && res.ok === true,
+        incertain: res.incertain === true,
+        erreur: res.erreur || '',
+      };
+    },
+    async soumettre() {
+      if (this.submitting || this.incertain || !this.fichier) { return; }
+      const file = this.fichier;
+      const category = this.champ('category');
+      const displayName = this.champ('display_name');
+      const folderId = this.champ('folder_id');
+      this.submitting = true;
+      this.erreur = '';
+      this.statut = 'Ouverture du téléversement…';
+      let objet = '';
+      try {
+        const ouv = await fetch(CFG.openUrl, {
+          method: 'POST',
+          headers: this.entetes(),
+          body: JSON.stringify({
+            name: file.name,
+            size: file.size,
+            content_type: file.type || 'application/octet-stream',
+            dossier_id: CFG.dossierId,
+            hearing_id: CFG.hearingId,
+            category: category,
+            display_name: displayName,
+          }),
+        });
+        const don = await ouv.json().catch(function () { return {}; });
+        if (!ouv.ok || !don.url) {
+          this.erreur = don.erreur || 'Téléversement refusé.';
+          this.statut = '';
+          this.submitting = false;
+          return;
+        }
+        objet = don.objet;
+        await this.televerser(file, don.url);
+      } catch (e) {
+        this.erreur = 'Erreur réseau pendant le transfert — réessayez.';
+        this.statut = '';
+        this.submitting = false;
+        return;
+      }
+      this.statut = 'Enregistrement au dossier…';
+      const payload = {
+        objet: objet,
+        name: file.name,
+        dossier_id: CFG.dossierId,
+        hearing_id: CFG.hearingId,
+        folder_id: folderId,
+        category: category,
+        display_name: displayName,
+      };
+      let res = await this.finaliser(payload);
+      if (res.incertain) {
+        await new Promise(function (r) { setTimeout(r, 2000); });
+        res = await this.finaliser(payload);
+        if (!res.ok) {
+          this.incertain = true;
+          this.erreur = CFG.incertain;
+          this.statut = '';
+          this.submitting = false;
+          return;
+        }
+      }
+      if (!res.ok) {
+        this.erreur = res.erreur || 'Finalisation refusée.';
+        this.statut = '';
+        this.submitting = false;
+        return;
+      }
+      window.location.reload();
+    },
+  };
+}
+</script>
+{% endif %}
 {% endblock %}

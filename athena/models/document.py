@@ -273,6 +273,8 @@ def _default_doc() -> dict:
         # upload date).
         "document_date": None,
         "folder_id": None,
+        # Optional link to a calendar hearing/meeting (Lot B).
+        "hearing_id": None,
         # Provenance du portail, en champs DÉDIÉS (2026-08-27). Elle vivait
         # dans `description` — le seul champ de texte libre offert au
         # juriste —, qu'elle rendait inutilisable. Vides sur tout document
@@ -358,9 +360,10 @@ TAGS_MAX_ITEMS = 30
 # three provenance fields travel through `portail=` (see above).
 _RECORD_METADATA_KEYS = (
     "display_name", "category", "tags", "document_date", "folder_id",
-    "notes_internes", "genere_depuis",
+    "hearing_id", "notes_internes", "genere_depuis",
 )
-# What an EDIT may change. The folder moves through `move_document` only.
+# What an EDIT may change. The folder moves through `move_document` only;
+# the linked calendar event changes through `set_document_hearing` only.
 _METADATA_EDIT_KEYS = (
     "display_name", "category", "tags", "document_date", "notes_internes",
 )
@@ -380,6 +383,7 @@ _FIELD_LABELS = {
     "tags": "Étiquettes",
     "document_date": "Date du document",
     "folder_id": "Dossier de classement",
+    "hearing_id": "Événement du calendrier",
 }
 
 DOCUMENT_DATE_ERROR = "Date du document invalide : attendu AAAA-MM-JJ."
@@ -622,11 +626,14 @@ def _metadata_input(data: dict, keys: tuple[str, ...]) -> tuple[dict, list[str]]
                 out[key] = list(value)
             else:
                 errors.append(f"{label} : une liste de textes est attendue.")
-        elif key == "folder_id":
+        elif key in ("folder_id", "hearing_id"):
             if value in (None, ""):
                 out[key] = None
             elif isinstance(value, str):
-                out[key] = value
+                if key == "hearing_id" and not is_addressable_id(value):
+                    errors.append(f"{label} invalide.")
+                else:
+                    out[key] = value
             else:
                 errors.append(f"{label} invalide.")
         elif value is None:
@@ -736,6 +743,9 @@ _GENERATED_FROM_INVOICE_ERROR = "Provenance de génération invalide."
 #: link as a note d'honoraires: what tells the two apart (the connector's
 #: « a note d'honoraires is filed », ``mcp.handlers._note_on_file``).
 CREDIT_NOTE_TAG = "note_credit"
+#: The tag of an OVERDUE INTEREST NOTICE (lot 4a / services.avis_interets),
+#: telling generated interest notices apart from notes d'honoraires and credit notes.
+INTEREST_NOTICE_TAG = "avis_interets"
 
 
 def _generated_from_invoice_fields(
@@ -1090,6 +1100,18 @@ def _prepare_document_record(
         if not folder:
             return None, ["Le dossier de destination est introuvable."]
 
+    hearing_id = merged.get("hearing_id")
+    if hearing_id:
+        from models.hearing import get_hearing_strict
+        try:
+            linked_hearing = get_hearing_strict(hearing_id)
+        except Exception:
+            return None, [concurrency.READ_UNAVAILABLE_ERROR]
+        if not linked_hearing:
+            return None, ["Événement du calendrier introuvable."]
+        if not dossier_id or (linked_hearing.get("dossier_id") or "") != dossier_id:
+            return None, ["Ce document n'appartient pas au même dossier que l'événement."]
+
     meta_errors = _validate_metadata(merged)
     if meta_errors:
         return None, meta_errors
@@ -1390,7 +1412,22 @@ def ingest_blob_as_document(
                               created_generation)
 
     provenance.note_commit(COLLECTION, document_id)
+    _dispatch_onedrive("sync_document", document_id=document_id)
     return merged, []
+
+
+def _dispatch_onedrive(action: str, **payload) -> None:
+    """Best-effort post-commit async mirror dispatch (never raises)."""
+    try:
+        from services import miroir_onedrive
+
+        miroir_onedrive.enqueue_event(action, **payload)
+    except Exception as exc:
+        logger.warning(
+            "document onedrive dispatch failed (%s): %s",
+            action,
+            type(exc).__name__,
+        )
 
 
 def _noted(result: tuple[Optional[dict], list[str]]) -> tuple[Optional[dict], list[str]]:
@@ -1402,6 +1439,7 @@ def _noted(result: tuple[Optional[dict], list[str]]) -> tuple[Optional[dict], li
     doc, _errors = result
     if doc is not None and doc.get("id"):
         provenance.note_commit(COLLECTION, doc["id"])
+        _dispatch_onedrive("sync_document", document_id=doc["id"])
     return result
 
 
@@ -1657,11 +1695,8 @@ def upload_document(
             return None, ["Erreur lors du téléversement. Veuillez réessayer."]
         return _uncertain(ref, dossier_id)
 
-    # The commit point (lot 2A, T8): the connector's generations reach this
-    # writer, and a failure AFTER it (the payload, the audit line) must be
-    # « ENREGISTRÉE — NE PAS RÉESSAYER », never a refusal a retry answers
-    # with a second document.
     provenance.note_commit(COLLECTION, document_id)
+    _dispatch_onedrive("sync_document", document_id=document_id)
     return merged, []
 
 
@@ -1749,6 +1784,42 @@ def find_receipt_copies(transaction_id: str) -> list[dict]:
         reverse=True,
     )
     return rows
+
+
+def list_documents_for_hearing_strict(hearing_id: str) -> list[dict]:
+    """Documents linked to calendar event *hearing_id*, newest first — STRICT.
+
+    Single-field equality query on ``hearing_id`` (automatic index; no composite
+    index required). Read failures propagate so callers do not mistake an outage
+    for an empty attachment list.
+    """
+    if not is_addressable_id(hearing_id):
+        return []
+    rows = [
+        _migrate_category(snap.to_dict() or {})
+        for snap in db.collection(COLLECTION)
+        .where(filter=FieldFilter("hearing_id", "==", hearing_id))
+        .stream()
+    ]
+    rows.sort(
+        key=lambda d: d.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return rows
+
+
+def list_documents_for_hearing(hearing_id: str) -> list[dict]:
+    """Fail-open wrapper of :func:`list_documents_for_hearing_strict` for display."""
+    if not is_addressable_id(hearing_id):
+        return []
+    try:
+        return list_documents_for_hearing_strict(hearing_id)
+    except Exception as exc:
+        logger.warning(
+            "list_documents_for_hearing failed for %s: %s",
+            sanitize_log_value(hearing_id), type(exc).__name__,
+        )
+        return []
 
 
 # Sentinel value: distinguishes "no folder filter" from "filter to root (None)"
@@ -2143,6 +2214,67 @@ def update_metadata(
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
     if changed:
         provenance.note_commit(COLLECTION, document_id)
+        _dispatch_onedrive("sync_document", document_id=document_id)
+    return doc, [], changed
+
+
+def set_document_hearing(
+    document_id: str,
+    hearing_id: Optional[str],
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """Link or unlink *document_id* from a calendar hearing — partial transactional write.
+
+    Returns ``(doc, errors, changed)``. Only ``hearing_id`` and provenance
+    stamps are written via ``transaction.update()``; no metadata or analysis
+    fields are touched. When *hearing_id* is non-empty, both records are read
+    in the same transaction and the hearing must exist and share the
+    document's non-empty ``dossier_id``.
+    """
+    if not is_addressable_id(document_id):
+        return None, ["Document introuvable."], False
+    target = (hearing_id or None)
+    if target is not None and (not isinstance(target, str) or not is_addressable_id(target)):
+        return None, ["Événement du calendrier invalide."], False
+    ref = db.collection(COLLECTION).document(document_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        if target is not None:
+            h_snap = db.collection("hearings").document(target).get(transaction=transaction)
+            if not h_snap.exists:
+                raise _Refused(["Événement du calendrier introuvable."])
+            h_dossier = (h_snap.to_dict() or {}).get("dossier_id") or ""
+            doc_dossier = existing.get("dossier_id") or ""
+            if not doc_dossier or doc_dossier != h_dossier:
+                raise _Refused([
+                    "Ce document n'appartient pas au même dossier que l'événement."
+                ])
+        if (existing.get("hearing_id") or None) == target:
+            return existing, False
+        fields = {
+            "hearing_id": target,
+            **provenance.update_fields(datetime.now(timezone.utc)),
+        }
+        transaction.update(ref, fields)
+        return {**existing, **fields}, True
+
+    try:
+        doc, changed = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors, False
+    except Exception:
+        log_unexpected("document hearing link failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    if changed:
+        provenance.note_commit(COLLECTION, document_id)
     return doc, [], changed
 
 
@@ -2314,6 +2446,7 @@ def delete_document(
             return False, DELETE_NOT_FOUND
     if deleted_out is not None:
         deleted_out.update(staged.get("doc") or existing)
+    _dispatch_onedrive("delete_document", document_id=document_id)
     return True, ""
 
 
@@ -2809,6 +2942,7 @@ def move_document(
         return None, ["Erreur lors du déplacement. Veuillez réessayer."], False
     if changed:
         provenance.note_commit(COLLECTION, document_id)
+        _dispatch_onedrive("sync_document", document_id=document_id)
     return doc, [], changed
 
 
@@ -2917,6 +3051,7 @@ def move_documents_bulk(
     for row in rows:
         if row["outcome"] == MOVE_MOVED:
             provenance.note_commit(COLLECTION, row["id"])
+            _dispatch_onedrive("sync_document", document_id=row["id"])
     return rows, []
 
 

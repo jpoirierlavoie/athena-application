@@ -26,8 +26,11 @@ without advertising VEVENT is a silent no-op on the client.
 
 import logging
 import xml.etree.ElementTree as ET
+from datetime import date, datetime, time, timedelta, timezone
 
 from flask import Blueprint, Response, request
+
+from tz import mtl_to_utc
 
 from dav.dav_auth import dav_auth_required
 from dav.sync import (
@@ -769,6 +772,153 @@ def requested_components(body_root: ET.Element | None) -> set[str] | None:
     return names or None
 
 
+def _parse_caldav_time_bound(raw: str | None) -> datetime | None:
+    """Parse one RFC 4791 §9.9 time-range bound into UTC datetime."""
+    if not raw or not isinstance(raw, str):
+        return None
+    val = raw.strip()
+    for fmt in ("%Y%m%dT%H%M%SZ", "%Y%m%dT%H%M%S", "%Y%m%d"):
+        try:
+            parsed = datetime.strptime(val, fmt)
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def requested_time_ranges(
+    body_root: ET.Element | None,
+) -> dict[str, tuple[datetime | None, datetime | None]]:
+    """Map component name -> (start_utc, end_utc) for any valid <C:time-range>."""
+    if body_root is None:
+        return {}
+    filter_el = body_root.find(caldav_tag("filter"))
+    if filter_el is None:
+        return {}
+    out: dict[str, tuple[datetime | None, datetime | None]] = {}
+    for outer in filter_el.findall(caldav_tag("comp-filter")):
+        outer_range = outer.find(caldav_tag("time-range"))
+        inners = outer.findall(caldav_tag("comp-filter"))
+        targets = [(inner, inner.get("name") or "") for inner in inners]
+        if not inners and outer_range is not None:
+            for comp_name in DOSSIER_COMPONENTS:
+                targets.append((outer, comp_name))
+        for el, raw_name in targets:
+            name = raw_name.upper()
+            if not name:
+                continue
+            tr_el = el.find(caldav_tag("time-range"))
+            if tr_el is None:
+                tr_el = outer_range
+            if tr_el is None:
+                continue
+            start_raw = tr_el.get("start")
+            end_raw = tr_el.get("end")
+            start_dt = _parse_caldav_time_bound(start_raw) if start_raw else None
+            end_dt = _parse_caldav_time_bound(end_raw) if end_raw else None
+            # Unparseable non-empty attributes degrade safely to unfiltered
+            if (start_raw and start_dt is None) or (end_raw and end_dt is None):
+                continue
+            if start_dt is not None or end_dt is not None:
+                out[name] = (start_dt, end_dt)
+    return out
+
+
+def _as_utc_dt(value: object) -> datetime | None:
+    if not isinstance(value, datetime):
+        if isinstance(value, date):
+            return mtl_to_utc(datetime.combine(value, time.min))
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _overlaps_range(
+    item_start: datetime,
+    item_end: datetime,
+    q_start: datetime | None,
+    q_end: datetime | None,
+) -> bool:
+    if item_end > item_start:
+        if q_start is not None and item_end <= q_start:
+            return False
+        if q_end is not None and item_start >= q_end:
+            return False
+        return True
+    if q_start is not None and item_start < q_start:
+        return False
+    if q_end is not None and item_start >= q_end:
+        return False
+    return True
+
+
+def _matches_time_range(
+    component: str,
+    obj: dict,
+    bounds: tuple[datetime | None, datetime | None] | None,
+) -> bool:
+    """RFC 4791 §9.9 half-open [start, end) overlap predicate."""
+    if bounds is None:
+        return True
+    q_start, q_end = bounds
+    if q_start is None and q_end is None:
+        return True
+
+    if component == "VEVENT":
+        start = obj.get("start_datetime")
+        end = obj.get("end_datetime")
+        if obj.get("all_day"):
+            if not hasattr(start, "date"):
+                return True
+            debut_d = start.date()
+            fin_d = (
+                end.date()
+                if end and hasattr(end, "date") and end.date() > debut_d
+                else debut_d + timedelta(days=1)
+            )
+            item_start = mtl_to_utc(datetime.combine(debut_d, time.min))
+            item_end = mtl_to_utc(datetime.combine(fin_d, time.min))
+        else:
+            item_start = _as_utc_dt(start)
+            if item_start is None:
+                return True
+            item_end = _as_utc_dt(end) or (item_start + timedelta(hours=1))
+        return _overlaps_range(item_start, item_end, q_start, q_end)
+
+    if component == "VTODO":
+        due = obj.get("due_date")
+        if due is not None:
+            if hasattr(due, "hour") and due.hour == 0 and due.minute == 0:
+                d = due.date()
+                item_start = mtl_to_utc(datetime.combine(d, time.min))
+                item_end = mtl_to_utc(datetime.combine(d + timedelta(days=1), time.min))
+            else:
+                item_start = _as_utc_dt(due)
+                if item_start is None:
+                    return True
+                item_end = item_start
+            return _overlaps_range(item_start, item_end, q_start, q_end)
+        fallback = obj.get("completed_date") or obj.get("created_at")
+        fb_utc = _as_utc_dt(fallback)
+        if fb_utc is not None:
+            return _overlaps_range(fb_utc, fb_utc, q_start, q_end)
+        return True
+
+    if component == "VJOURNAL":
+        if obj.get("dateless"):
+            return False
+        created = obj.get("created_at")
+        if not hasattr(created, "date"):
+            return False
+        d = created.date()
+        item_start = mtl_to_utc(datetime.combine(d, time.min))
+        item_end = mtl_to_utc(datetime.combine(d + timedelta(days=1), time.min))
+        return _overlaps_range(item_start, item_end, q_start, q_end)
+
+    return True
+
+
 def _handle_calendar_query(
     dossier_id: str, body_root: ET.Element, active: bool = True
 ) -> Response:
@@ -783,6 +933,7 @@ def _handle_calendar_query(
         return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
     wanted = requested_components(body_root)
+    time_ranges = requested_time_ranges(body_root)
     add_attributes(
         **{"dav.comp_filter": ",".join(sorted(wanted)) if wanted else "none"}
     )
@@ -801,7 +952,10 @@ def _handle_calendar_query(
     for component, objects, serialize in groups:
         if wanted is not None and component not in wanted:
             continue
+        bounds = time_ranges.get(component)
         for obj in objects:
+            if not _matches_time_range(component, obj, bounds):
+                continue
             href = f"{_href_prefix(dossier_id)}/{obj['id']}.ics"
             resp = add_response(multistatus, href)
             prop = add_propstat(resp)
@@ -1093,6 +1247,11 @@ def _put_hearing(
         # « Dossier:/Type:/Modalité:/… » block. `existing` is what the phone
         # was served.
         strip_hearing_description_suffix(data, existing)
+        if "dav_valarms" not in data:
+            if existing.get("dav_valarms"):
+                data["dav_valarms"] = []
+            if (existing.get("reminder_minutes") or 0) > 0:
+                data["reminder_minutes"] = 0
         updated, errors = update_hearing(resource_id, data)
         unreadable = _update_unreadable(dossier_id, errors)
         if unreadable is not None:
@@ -1259,6 +1418,8 @@ def _put_task(
         # included; stored as-is, every phone edit grew the description by
         # one « Dossier: … » block. `existing` is what the phone was served.
         strip_dav_description_suffix(data, existing)
+        if "dav_valarms" not in data and existing.get("dav_valarms"):
+            data["dav_valarms"] = []
         updated, errors = update_task(resource_id, data)
         unreadable = _update_unreadable(dossier_id, errors)
         if unreadable is not None:
