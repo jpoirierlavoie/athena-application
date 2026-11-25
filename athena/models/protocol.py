@@ -881,19 +881,12 @@ def _read_dossier_strict(dossier_id: str) -> Optional[dict]:
     return dict(snap.to_dict() or {})
 
 
-def _read_dossier(dossier_id: str) -> Optional[dict]:
-    """Read dossier document fail-open without importing models.dossier."""
-    try:
-        return _read_dossier_strict(dossier_id)
-    except Exception:
-        return None
-
-
 def _regime_errors(dossier_id: str, protocol_type: str) -> list[str]:
     """French, actionable refusal when the template regime is incoherent."""
     if protocol_type == "ouverture":
         return []
-    dossier = _read_dossier(dossier_id)
+    from models.dossier import get_dossier
+    dossier = get_dossier(dossier_id)
     if protocol_type == "prejudiciaire":
         if not regime_mismatch(protocol_type, dossier):
             return []
