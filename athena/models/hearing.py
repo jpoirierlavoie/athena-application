@@ -15,7 +15,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, dav_ids, db, provenance
 from models.record_ids import is_addressable_id
 from security import sanitize
-from tz import TORONTO, mtl_to_utc, to_mtl
+from tz import mtl_to_utc, to_mtl
 from utils import dav_classification, deadlines, ical_tz
 from utils.dav_text import remove_served_block
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -1849,7 +1849,6 @@ def hearing_to_vevent(hearing: dict) -> str:
     # DTSTART / DTEND — emit in America/Toronto with standard VTIMEZONE on
     # timed events so CalDAV clients display exact local wall time without
     # falling back to UTC Z. All-day events stay VALUE=DATE.
-    toronto = TORONTO
     start = hearing.get("start_datetime")
     end = hearing.get("end_datetime")
     if hearing.get("all_day"):
@@ -1875,17 +1874,9 @@ def hearing_to_vevent(hearing: dict) -> str:
         if start or end:
             cal.add_component(ical_tz.build_america_toronto_vtimezone())
         if start:
-            if start.tzinfo is None or start.tzinfo == timezone.utc:
-                start = start.replace(tzinfo=timezone.utc).astimezone(toronto)
-            else:
-                start = start.astimezone(toronto)
-            event.add("dtstart", start)
+            event.add("dtstart", to_mtl(start))
         if end:
-            if end.tzinfo is None or end.tzinfo == timezone.utc:
-                end = end.replace(tzinfo=timezone.utc).astimezone(toronto)
-            else:
-                end = end.astimezone(toronto)
-            event.add("dtend", end)
+            event.add("dtend", to_mtl(end))
 
     # LOCATION
     if hearing.get("location"):

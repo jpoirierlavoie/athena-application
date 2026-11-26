@@ -26,6 +26,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from config import Config
+from tz import EASTERN_TZID
 from utils import graph
 from utils.dav_classification import graph_sensitivity
 from utils.graph_calendrier import (
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 # zone IANA canonique de l'Est canadien (America/Montreal n'est qu'un alias) ;
 # si Graph la refusait un jour, le repli documenté est le nom Windows
 # « Eastern Standard Time ».
-_TZ_JOURNEE = "America/Toronto"
+_TZ_JOURNEE = EASTERN_TZID
 
 # Les champs que le diff compare ; rien de plus. Le corps (body) est
 # volontairement absent : Outlook réécrit texte → HTML à sa guise, et le

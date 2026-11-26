@@ -332,7 +332,10 @@ def test_public_rdv_page_and_demander_validation(portal_app, env, monkeypatch):
     bad_no_adverse = {**base_payload, "parties_adverses": ""}
     assert web.post("/api/rdv/demander", json=bad_no_adverse).status_code == 422
 
-    bad_slot = {**base_payload, "slot_debut_utc": "2026-12-01T15:00:00Z"}
+    bad_slot = {
+        **base_payload,
+        "slot_debut_utc": (slot + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
     assert web.post("/api/rdv/demander", json=bad_slot).status_code == 422
 
     signaux = []

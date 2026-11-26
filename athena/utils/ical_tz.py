@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timedelta
 
 import icalendar
+
+from tz import EASTERN_TZID
 
 __all__ = [
     "TORONTO_TZID",
@@ -16,19 +18,34 @@ __all__ = [
     "normalize_valarm_list",
 ]
 
-TORONTO_TZID = "America/Toronto"
+TORONTO_TZID = EASTERN_TZID
 
 MAX_VALARMS = 10
 MAX_VALARM_CHARS = 4096
 
 
 def build_america_toronto_vtimezone() -> icalendar.Timezone:
-    """Build a standard RFC 5545 VTIMEZONE for America/Toronto via zoneinfo."""
-    return icalendar.Timezone.from_tzid(
-        TORONTO_TZID,
-        first_date=date(2007, 1, 1),
-        last_date=date(2050, 1, 1),
-    )
+    """Build a standard RFC 5545 / MS-OXCICAL RRULE VTIMEZONE for America/Toronto."""
+    tz = icalendar.Timezone()
+    tz.add("tzid", TORONTO_TZID)
+
+    daylight = icalendar.TimezoneDaylight()
+    daylight.add("tzoffsetfrom", timedelta(hours=-5))
+    daylight.add("tzoffsetto", timedelta(hours=-4))
+    daylight.add("tzname", "EDT")
+    daylight.add("dtstart", datetime(2007, 3, 11, 2, 0, 0))
+    daylight.add("rrule", {"freq": "yearly", "byday": "2su", "bymonth": 3})
+    tz.add_component(daylight)
+
+    standard = icalendar.TimezoneStandard()
+    standard.add("tzoffsetfrom", timedelta(hours=-4))
+    standard.add("tzoffsetto", timedelta(hours=-5))
+    standard.add("tzname", "EST")
+    standard.add("dtstart", datetime(2007, 11, 4, 2, 0, 0))
+    standard.add("rrule", {"freq": "yearly", "byday": "1su", "bymonth": 11})
+    tz.add_component(standard)
+
+    return tz
 
 
 def parse_valarm_text(raw: object) -> icalendar.Alarm | None:

@@ -67,12 +67,13 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.partie as partie_model
     import models.task as task_model
     import models.trust as trust_model
+    import tz
     from config import Config
     from dav import dav_bp
     from dav import sync as dav_sync
     from dav.carddav import carddav_bp
     from dav.dossier_collections import dossier_dav_bp
-    from routes.calendrier_partage import calendrier_partage_bp
+    from routes.calendrier_partage import build_shared_calendar_ics, calendrier_partage_bp
     from routes.hearings import hearings_bp
     from routes.notes import notes_bp
     from routes.settings import settings_bp
@@ -916,6 +917,90 @@ def test_caldav_sequence_vtimezone_allday_valarm_and_time_range(fake_db, monkeyp
     xml_out = rep.get_data(as_text=True)
     assert h["id"] in xml_out
     assert h_allday["id"] not in xml_out  # Sept 1 outside July window!
+
+
+def test_unified_eastern_tz_and_rrule_vtimezone_winter_and_summer(fake_db):
+    assert tz.MTL.key == "America/Toronto"
+    assert tz.TORONTO is tz.MTL
+    assert tz.to_toronto is tz.to_mtl
+
+    vtz_str = ical_tz.build_america_toronto_vtimezone().to_ical().decode("utf-8")
+    assert vtz_str.count("BEGIN:DAYLIGHT") == 1
+    assert vtz_str.count("BEGIN:STANDARD") == 1
+    assert "RDATE" not in vtz_str
+    assert "2050" not in vtz_str
+    assert "DTSTART:20070311T020000" in vtz_str
+    assert "RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3" in vtz_str
+    assert "DTSTART:20071104T020000" in vtz_str
+    assert "RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11" in vtz_str
+
+    # Winter (EST, UTC-5): 15:00 local == 20:00 UTC
+    winter_start = datetime(2026, 11, 25, 20, 0, tzinfo=timezone.utc)
+    winter_end = datetime(2026, 11, 25, 21, 0, tzinfo=timezone.utc)
+    # Summer (EDT, UTC-4): 15:00 local == 19:00 UTC
+    summer_start = datetime(2026, 7, 15, 19, 0, tzinfo=timezone.utc)
+    summer_end = datetime(2026, 7, 15, 20, 0, tzinfo=timezone.utc)
+
+    h_winter, werrs = hearing_model.create_hearing(
+        {
+            "dossier_id": None,
+            "title": "Audience hiver",
+            "hearing_type": "autre",
+            "start_datetime": winter_start,
+            "end_datetime": winter_end,
+            "classification": "PUBLIC",
+        }
+    )
+    assert werrs == []
+
+    h_summer, serrs = hearing_model.create_hearing(
+        {
+            "dossier_id": None,
+            "title": "Audience été",
+            "hearing_type": "autre",
+            "start_datetime": summer_start,
+            "end_datetime": summer_end,
+            "classification": "PUBLIC",
+        }
+    )
+    assert serrs == []
+
+    shared_ics = build_shared_calendar_ics([h_winter, h_summer], now=winter_start)
+    assert "RDATE" not in shared_ics
+    assert "DTSTART;TZID=America/Toronto:20261125T150000" in shared_ics
+    assert "DTEND;TZID=America/Toronto:20261125T160000" in shared_ics
+    assert "DTSTART;TZID=America/Toronto:20260715T150000" in shared_ics
+    assert "DTEND;TZID=America/Toronto:20260715T160000" in shared_ics
+
+    w_vevent = hearing_model.hearing_to_vevent(h_winter)
+    assert "RDATE" not in w_vevent
+    assert "DTSTART;TZID=America/Toronto:20261125T150000" in w_vevent
+    assert "DTEND;TZID=America/Toronto:20261125T160000" in w_vevent
+    w_roundtrip = hearing_model.vevent_to_hearing(w_vevent)
+    assert w_roundtrip["start_datetime"] == winter_start
+    assert w_roundtrip["end_datetime"] == winter_end
+
+    s_vevent = hearing_model.hearing_to_vevent(h_summer)
+    assert "DTSTART;TZID=America/Toronto:20260715T150000" in s_vevent
+    assert "DTEND;TZID=America/Toronto:20260715T160000" in s_vevent
+    s_roundtrip = hearing_model.vevent_to_hearing(s_vevent)
+    assert s_roundtrip["start_datetime"] == summer_start
+    assert s_roundtrip["end_datetime"] == summer_end
+
+    # Timed winter VTODO round-trip
+    t_winter, terrs = task_model.create_task(
+        {
+            "dossier_id": None,
+            "title": "Tâche hiver",
+            "due_date": winter_start,
+        }
+    )
+    assert terrs == []
+    t_ics = task_model.task_to_vtodo(t_winter)
+    assert "RDATE" not in t_ics
+    assert "DUE;TZID=America/Toronto:20261125T150000" in t_ics
+    t_roundtrip = task_model.vtodo_to_task(t_ics)
+    assert t_roundtrip["due_date"] == winter_start
 
 
 def test_vcard4_unfolding_yearless_bday_and_secondary_email_tel(fake_db):

@@ -2,29 +2,20 @@
 
 All Firestore timestamps are stored as UTC.  The single user works from
 Montréal, so every datetime shown in the UI or serialised to CalDAV must
-be converted to America/Montreal first.
+be converted to Eastern Time (``America/Toronto``, the canonical IANA zone
+for Montréal — ``America/Montreal`` is a deprecated backward alias).
 """
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-MTL = ZoneInfo("America/Montreal")
-TORONTO = ZoneInfo("America/Toronto")
-
-
-def to_toronto(dt: datetime | None) -> datetime | None:
-    """Convert a UTC (or naive) datetime to America/Toronto."""
-    if dt is None:
-        return None
-    if not isinstance(dt, datetime):
-        return dt
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(TORONTO)
+EASTERN_TZID = "America/Toronto"
+MTL = ZoneInfo(EASTERN_TZID)
+TORONTO = MTL
 
 
 def to_mtl(dt: datetime | None) -> datetime | None:
-    """Convert a UTC (or naive) datetime to America/Montreal.
+    """Convert a UTC (or naive) datetime to Eastern Time (Montréal).
 
     Returns *None* unchanged so Jinja2 filters can be applied
     unconditionally.
@@ -38,6 +29,9 @@ def to_mtl(dt: datetime | None) -> datetime | None:
     return dt.astimezone(MTL)
 
 
+to_toronto = to_mtl
+
+
 def mtl_to_utc(dt: datetime | None) -> datetime | None:
     """Interpret a naive datetime as Montreal local time and convert to UTC.
 
@@ -49,3 +43,13 @@ def mtl_to_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=MTL)
     return dt.astimezone(timezone.utc)
+
+
+__all__ = [
+    "EASTERN_TZID",
+    "MTL",
+    "TORONTO",
+    "to_mtl",
+    "to_toronto",
+    "mtl_to_utc",
+]
