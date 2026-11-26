@@ -25,7 +25,7 @@ from models.dav_ids import (
     client_uid as _client_uid,
     valid_resource_id,
 )
-from tz import TORONTO
+from tz import to_mtl
 from security import sanitize
 from utils import dav_classification, deadlines, ical_tz, phases
 from utils.dav_text import remove_served_block
@@ -1148,7 +1148,6 @@ def task_to_vtodo(task: dict) -> str:
     todo.add("status", status_map.get(task.get("status", ""), "NEEDS-ACTION"))
 
     # DUE — emit in America/Toronto with standard VTIMEZONE for timed values
-    toronto = TORONTO
     due = task.get("due_date")
     if due:
         if hasattr(due, "hour") and due.hour == 0 and due.minute == 0:
@@ -1156,11 +1155,7 @@ def task_to_vtodo(task: dict) -> str:
             todo.add("due", due.date())
         elif hasattr(due, "hour"):
             cal.add_component(ical_tz.build_america_toronto_vtimezone())
-            if due.tzinfo is None or due.tzinfo == timezone.utc:
-                due = due.replace(tzinfo=timezone.utc).astimezone(toronto)
-            else:
-                due = due.astimezone(toronto)
-            todo.add("due", due)
+            todo.add("due", to_mtl(due))
         else:
             todo.add("due", due)
 

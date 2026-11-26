@@ -22,7 +22,7 @@ from flask import Blueprint, Response
 from models.hearing import _DAV_STATUS, _to_utc, list_hearings_range_strict
 from models.integrations import verify_shared_calendar_token
 from security import limiter
-from tz import TORONTO
+from tz import to_mtl
 from utils import dav_classification, ical_tz
 from utils.logging_setup import log_settings_event
 
@@ -54,19 +54,11 @@ def _add_event_bounds(event: icalendar.Event, hearing: dict) -> bool:
         return False
 
     if start:
-        if start.tzinfo is None or start.tzinfo == timezone.utc:
-            start = start.replace(tzinfo=timezone.utc).astimezone(TORONTO)
-        else:
-            start = start.astimezone(TORONTO)
-        event.add("dtstart", start)
+        event.add("dtstart", to_mtl(start))
     if end:
-        if end.tzinfo is None or end.tzinfo == timezone.utc:
-            end = end.replace(tzinfo=timezone.utc).astimezone(TORONTO)
-        else:
-            end = end.astimezone(TORONTO)
-        event.add("dtend", end)
+        event.add("dtend", to_mtl(end))
     elif start:
-        event.add("dtend", start + timedelta(hours=1))
+        event.add("dtend", to_mtl(_to_utc(start) + timedelta(hours=1)))
     return bool(start or end)
 
 

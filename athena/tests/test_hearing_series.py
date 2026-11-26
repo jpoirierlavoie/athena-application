@@ -537,8 +537,9 @@ def test_each_occurrence_serializes_as_an_ordinary_single_vevent(store):
     for o in occ:
         ical = h.hearing_to_vevent(o)
         assert ical.count("BEGIN:VEVENT") == 1
-        assert "RRULE" not in ical
-        assert "RECURRENCE-ID" not in ical
+        vevent = ical.split("BEGIN:VEVENT", 1)[1].split("END:VEVENT", 1)[0]
+        assert "RRULE" not in vevent
+        assert "RECURRENCE-ID" not in vevent
         assert "DTSTAMP:" in ical and "CREATED:" in ical
     # …et chaque occurrence a son propre UID, sinon le client n'en verrait
     # qu'une seule.
