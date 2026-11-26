@@ -67,7 +67,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.partie as partie_model
     import models.task as task_model
     import models.trust as trust_model
-    import tz
+    from tz import MTL, TORONTO, to_mtl, to_toronto
     from config import Config
     from dav import dav_bp
     from dav import sync as dav_sync
@@ -164,7 +164,6 @@ def _make_app(fake_db=None, monkeypatch=None) -> Flask:
     app.config["AUTHORIZED_USER_EMAIL"] = "test@example.com"
     app.config["REQUIRE_MFA"] = False
 
-    from tz import to_mtl
     from utils.format_fr import format_cents_fr
     from utils.html_attr import jsattr
     from utils.icons import ms
@@ -920,9 +919,9 @@ def test_caldav_sequence_vtimezone_allday_valarm_and_time_range(fake_db, monkeyp
 
 
 def test_unified_eastern_tz_and_rrule_vtimezone_winter_and_summer(fake_db):
-    assert tz.MTL.key == "America/Toronto"
-    assert tz.TORONTO is tz.MTL
-    assert tz.to_toronto is tz.to_mtl
+    assert MTL.key == "America/Toronto"
+    assert TORONTO is MTL
+    assert to_toronto is to_mtl
 
     vtz_str = ical_tz.build_america_toronto_vtimezone().to_ical().decode("utf-8")
     assert vtz_str.count("BEGIN:DAYLIGHT") == 1
